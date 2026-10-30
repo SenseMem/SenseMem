@@ -2,7 +2,8 @@
 
 The existing public SDK can combine native retrieval with bounded semantic queries. Enable
 `settings.recall_planning` and `settings.recall_query_expansion` explicitly. A single `ask` shares
-at most two additional semantic queries across all rounds. Repeated queries reuse their results;
+`settings.recall_max_queries` additional semantic queries across all rounds, default 6 and range
+1 through 32. Repeated queries reuse their results;
 successful routes remain available when a later query depends on an earlier bridge fact.
 
 The original `limit` window remains the grounding floor. Supplemental semantic routes take turns
@@ -11,14 +12,117 @@ rows are reserved before optional rows are priced. Predicate row/media limits an
 reporting remain enforced. A complete predicate read is not automatically the question's complete
 answer set: anchors and neighbors must still satisfy the question and its counting unit.
 
-When expansion is enabled, a strict abstention can trigger another bounded planning round.
-The planner receives at most 6000 characters of untrusted evidence summaries, with at most 1500
-characters per record and explicit truncation/omission counts. Streaming releases only the final
-selected round. Ordinary planning retains its existing policy when expansion is disabled.
+The first planner sees actual initial evidence. Its untrusted JSON observation has at most
+12,000 characters and 40 records, with at most 600 exact source-text characters per record,
+codepoint offsets, event dates and explicit truncation/omission counts. Query-related windows
+can expose a matching passage beyond a long source's opening. They do not establish that all
+relevant facts are visible.
+
+With expansion enabled, `unresolved` obligations can trigger another investigation round before
+answering, including under the strict policy. The planner may retain only the local `R` aliases
+it was shown. This reorders already-grounded rows after the original floor and prioritizes
+retained IDs within semantic routes before their existing caps. It does not guarantee source
+admission or restore omitted predicate rows. A ready plan can have no steps; no new
+evidence or search progress stops further investigation. Investigation and answer retries share
+`recall_rounds`, default 2. An abstention can use a remaining round under best-effort, or under
+strict when expansion is enabled. Streaming releases only the final selected answer.
 
 Sequence plans order the entire selected union after packing, using event time and SQLite
 insertion order for ties. Similarity rank, record IDs and creation timestamps do not substitute
 for the source's same-time order. Ordering does not add records or establish a complete history.
+
+## Bounded investigation recipe
+
+This configuration enables evidence-reading planning and typed answer rendering. It is a
+starting point for task-specific evaluation, not a measured accuracy improvement. It uses a
+text embedder and reader; configure image/video-capable backends separately when native media
+must be inspected. Install the `local` extra for the local model and configure the generation
+provider's credentials through its environment.
+
+```yaml
+data_dir: ./data/investigation
+embedding:
+  provider: sentence-transformers
+  model: google/embeddinggemma-2
+  revision: f9972ac22e696a105c482202646979e33e4b5a1e
+generation:
+  provider: openai
+  model: gpt-5-mini-2025-08-07
+  modalities: [text]
+  answer_format: structured
+  source_metadata_key: source_id
+settings:
+  recall_planning: true
+  recall_query_expansion: true
+  recall_rounds: 3
+  recall_max_queries: 6
+```
+
+For a DeepSeek-compatible endpoint, explicitly set `generation.response_format: json_object`
+when evaluating structured answers. Local typed parsing and evidence validation remain active;
+the generic configuration default stays `json_schema`. Set the endpoint and exact deployed model
+through the ordinary generation configuration and evaluate that provider/mode combination.
+
+An optional semantic reranker scores the eligible text pool before the result limit. Add this
+top-level section to evaluate a pinned cross-encoder; the named checkpoint is an example rather
+than a recommended model for every corpus:
+
+```yaml
+reranking:
+  provider: sentence-transformers
+  model: BAAI/bge-reranker-v2-m3
+  revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
+  device: cpu
+  batch_size: 32
+  max_length: 1024
+```
+
+SQLite hydration and filtering, relevance and the existing ambiguity decision happen first.
+The reranker receives exact windows from eligible text, including captions, without changing the
+Reader's source content. Empty-text media keep their positions; a media-only query without text
+skips it. Raw logits change ordering, while `SearchHit.score` remains bounded;
+`search_with_trace` exposes the separate `reranking_score`. Failed or malformed model responses
+raise an error. See [semantic reranking](configuration.md#semantic-reranking).
+
+GPS coordinates become place names only with an explicitly configured offline gazetteer. If
+needed, install the `gazetteer` extra, build or obtain the documented index, and add
+`generation.offline_gazetteer` with an explicit `index_path` and its complete `index_sha256`.
+The index is optional and is never downloaded or enabled by this recipe. See
+[offline gazetteer configuration](configuration.md#provider-fields).
+
+## Structured answers
+
+`generation.answer_format: structured` asks the reader for a typed draft. The runtime validates
+it against the final fitted evidence and renders the ordinary answer string. The default
+`text` format keeps free-text answering. Supported drafts cover text, source identifiers,
+witnessed ISO dates, scalar/sum/difference calculations, distinct counts and date-interval
+durations. Exact quotes and numeric/date values must match; operands preserve literal units,
+and interval endpoints declare closed or half-open semantics.
+
+Date drafts separate the witnessed `source_value` from the rendered answer. `granularity`
+selects year, month, day, minute or second. `format: iso8601` preserves the source timezone;
+`format: utc_datetime` requires a timestamp with an explicit timezone and renders UTC as
+`YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`. It never guesses an absent timezone. Numeric and
+duration drafts choose `format: with_unit` or `format: number`; requesting only a number does
+not remove the requirement to verify its source units. Defaults are ISO dates and units.
+
+For source identifiers, the model selects `E` evidence aliases. The runtime resolves the
+application's `metadata.source_id`, or the configured `source_metadata_key`, instead of trusting
+model-generated identifiers. Missing source metadata, invisible evidence labels and invalid
+witnesses raise `ModelError`; unchecked drafts are not returned as answers. Metadata remains
+application data, never an isolation or authorization boundary.
+
+An exact quote validates copied evidence, not relevance, alias resolution, real-world event
+identity or complete coverage. Natural-language dates and answers outside the narrow arithmetic
+forms can use the text draft. Structured streaming buffers the provider's JSON and releases the
+validated rendered answer. Evaluate answer quality, omissions and latency separately from
+deterministic parsing and arithmetic checks.
+
+Structured `AnswerResult.hits` reports only the model-declared support subset; the public SDK
+retains the kernel's selected-evidence order. These hits come from the fitted grounding pool and
+need not include everything the reader saw. Labels validate identity rather than semantic support.
+Evaluate the original retrieval ranking through `search`/`search_with_trace`; do not treat this
+selected support list as the full reader context.
 
 ## Optional query vision and answer style
 

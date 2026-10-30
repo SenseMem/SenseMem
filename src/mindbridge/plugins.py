@@ -14,6 +14,7 @@ from mindbridge.models.base import (
     FaceBackend,
     FormationBackend,
     GenerationBackend,
+    RerankingBackend,
     SpeechBackend,
     TranscriptionBackend,
     VisionDescriptionBackend,
@@ -40,8 +41,11 @@ class MemoryPlugins:
     face_analyzer: FaceBackend | None = None
     former: FormationBackend | None = None
     consolidator: ConsolidationBackend | None = None
+    reranker: RerankingBackend | None = None
 
     def __post_init__(self) -> None:
+        if self.reranker is not None and not isinstance(self.reranker, RerankingBackend):
+            raise ValidationError("plugins.reranker must implement RerankingBackend")
         if not isinstance(self.embedder, EmbeddingBackend):
             raise ValidationError("plugins.embedder must implement EmbeddingBackend")
         if self.answerer is not None and not isinstance(self.answerer, GenerationBackend):
@@ -134,7 +138,7 @@ class MemoryConfig:
     # the budget refills it. Lowering this reduces supplemental evidence;
     # `None` with a lower `limit` reduces the guaranteed count. Neither bounds provider tokens.
     evidence_budget_chars: _PositiveInt | None = 24_000
-    # Whether `ask` asks the answerer how to retrieve before retrieving. Off by default: it costs
+    # Whether `ask` inspects its initial evidence and plans further reads. Off by default: it costs
     # one extra generation call per question, and it only pays where similarity has no way to
     # express the question -- a count, a list of "all", an adjacency, everything about a person.
     # With it off, `ask` runs exactly the one search it always has.
@@ -142,6 +146,8 @@ class MemoryConfig:
     # Experimental query execution for similar steps, bounded across all rounds of one ask.
     # Default recall programs reuse the original question's ranking.
     recall_query_expansion: _StrictBool = False
+    # One shared search budget across investigation and answer-recovery rounds.
+    recall_max_queries: Annotated[int, Field(strict=True, ge=1, le=32)] = 6
     # Describe query images transiently for text retrieval, retaining their native image keys.
     query_vision: _StrictBool = False
     # How many characters of evidence a set, sequence or entity plan may add to the ranked
@@ -157,10 +163,10 @@ class MemoryConfig:
     # rather than silently thinned. It bounds the matched set only; the ranked window is outside
     # it. Only read when `recall_planning` is on.
     recall_set_max_rows: _PositiveInt = 60
-    # How many plan-and-answer rounds one `ask` may spend. A later round replans against the
-    # evidence and answer from the previous one: a low-confidence best-effort answer, or a
-    # strict abstention when query expansion is enabled. `1` disables it. Only read when
-    # `recall_planning` is on.
+    # How many investigation/recovery rounds one `ask` may spend. An unresolved fact can
+    # trigger another read before generating an answer; an eligible abstention may also use a
+    # remaining round. Planning stops early when ready or when repeated reads make no progress.
+    # `1` disables follow-up rounds. Only read when `recall_planning` is on.
     recall_rounds: _PositiveInt = 2
     # Whether the grounding window is widened with the records it is structurally linked to: the
     # capture an observation was committed under, a recognized person, a symbolic place, a claim's

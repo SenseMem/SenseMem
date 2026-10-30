@@ -169,6 +169,7 @@ def test_a_full_plan_parses_every_op_with_its_own_fields() -> None:
     "document",
     [
         {"shape": "hunch", "steps": [{"op": "similar", "query": "q"}]},
+        {"shape": ["point"], "steps": []},
         {"shape": "set", "steps": [{"op": "grep", "terms": ["a"]}]},
         {"shape": "set", "steps": [{"op": "match", "terms": ["a"], "rerank": True}]},
         {"shape": "set", "steps": [{"op": "match", "terms": ["a"], "k": 5, "query": "q"}]},
@@ -182,7 +183,7 @@ def test_a_full_plan_parses_every_op_with_its_own_fields() -> None:
         {"shape": "sequence", "steps": [{"op": "neighbors", "of": "step:9"}]},
         {"shape": "sequence", "steps": [{"op": "neighbors", "of": 0}]},
         {"shape": "point", "steps": [{"op": "match", "terms": ["Cairo"]}]},
-        {"shape": "set", "steps": []},
+        {"shape": "set", "steps": [], "unresolved": ["missing source"]},
         {"shape": "set", "steps": [{"op": "similar", "query": "  "}]},
         {"shape": "set", "steps": [{"op": "entity", "name": None}]},
         {"shape": "set", "steps": [{"op": "similar", "query": "q"}], "notes": "hi"},
@@ -192,6 +193,7 @@ def test_a_full_plan_parses_every_op_with_its_own_fields() -> None:
     ],
     ids=[
         "unknown-shape",
+        "non-scalar-shape",
         "unknown-op",
         "unknown-field",
         "field-the-op-cannot-honour",
@@ -205,7 +207,7 @@ def test_a_full_plan_parses_every_op_with_its_own_fields() -> None:
         "forward-reference",
         "anchor-not-a-step-reference",
         "point-plan-asking-for-a-set",
-        "no-steps",
+        "unresolved-without-read",
         "blank-query",
         "entity-without-a-name",
         "unknown-top-level-key",

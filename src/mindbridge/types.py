@@ -1939,7 +1939,8 @@ class RetrievalCandidateTrace:
     Dense values can come from an unquantized ANN hit or from exact persisted-vector scoring
     for quantized candidates and lexical-only parents. ``index_ids`` are the candidates that
     admitted the parent; they neither identify the admitting route nor list every persisted
-    part used by exact scoring.
+    part used by exact scoring. ``reranking_score`` is an optional raw query-document logit;
+    it can change ``rank`` without changing the bounded ``final_score`` or relevance gate.
     """
 
     memory_id: str | None
@@ -1955,6 +1956,7 @@ class RetrievalCandidateTrace:
     temporal_factor: float | None = None
     retention_factor: float | None = None
     final_score: float | None = None
+    reranking_score: float | None = None
     rank: int | None = None
     rejected_by: RetrievalRejection | None = None
 
@@ -1989,6 +1991,12 @@ class RetrievalCandidateTrace:
             "final_score",
         ):
             _trace_number(getattr(self, name), name, maximum=1.0)
+        if self.reranking_score is not None and (
+            isinstance(self.reranking_score, bool)
+            or not isinstance(self.reranking_score, int | float)
+            or not math.isfinite(self.reranking_score)
+        ):
+            raise ValidationError("trace reranking_score must be a finite number")
         if not isinstance(self.lexical_match, bool):
             raise ValidationError("trace lexical_match must be a boolean")
         if self.rank is not None and (

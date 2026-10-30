@@ -15,13 +15,15 @@ from itertools import chain
 
 from opentelemetry.trace import Tracer
 
-from mindbridge.exceptions import ModelError
+from mindbridge._telemetry import mark_model_requests
+from mindbridge.exceptions import MindBridgeError, ModelError
 from mindbridge.infrastructure.local.scoring import max_cosine_part_scores, max_cosine_scores
 from mindbridge.infrastructure.local.store import StoredEmbedding, StoredMemory
 from mindbridge.infrastructure.local.zvec_index import IndexHit
 from mindbridge.kernel.content import PreparedContent
 from mindbridge.kernel.contracts import Backends
 from mindbridge.kernel.embedding import DOCUMENT_TASK, MAX_RETRIEVAL_KEYS, Embedding
+from mindbridge.kernel.evidence_windows import query_evidence_windows
 from mindbridge.kernel.execution import Execution
 from mindbridge.kernel.hydration import Hydrator
 from mindbridge.kernel.lifecycle import Lifecycle, OperationAssets
@@ -76,6 +78,7 @@ from mindbridge.kernel.validation import (
 )
 from mindbridge.kernel.vision import Vision
 from mindbridge.models.base import EmbedTask, ModelInput
+from mindbridge.models.reranking import reranking_scores
 from mindbridge.types import (
     ContentInput,
     IndexQuantization,
@@ -753,6 +756,8 @@ class Retrieval(Traced):
                     margin=self._settings.ambiguity_margin,
                     temporal_range=temporal_range,
                 )
+                if not ambiguous:
+                    ranked = self._rerank_candidates(focused_text, ranked, ranked_traces)
                 extend_ranked_traces(
                     trace_candidates,
                     ranked_traces,
@@ -791,6 +796,60 @@ class Retrieval(Traced):
             },
             image_retrieval_matches=image_matches,
         )
+
+    def _rerank_candidates(
+        self,
+        query: str,
+        ranked: builtins.list[tuple[StoredMemory, float, float, bool]],
+        traces: builtins.dict[str, partial[RetrievalCandidateTrace]] | None,
+    ) -> builtins.list[tuple[StoredMemory, float, float, bool]]:
+        """Reorder eligible text sources without changing gates, scores or media positions."""
+        reranker = self._backends.reranker
+        if reranker is None or not query.strip():
+            return ranked
+        text_candidates = [
+            (index, row) for index, row in enumerate(ranked) if row[0].content.strip()
+        ]
+        if not text_candidates:
+            return ranked
+        documents = tuple(
+            "\n\n".join(
+                f"[Source text codepoints {window.start}:{window.end}]\n{window.text}"
+                for window in query_evidence_windows(query, row[0].content)
+            )
+            for _index, row in text_candidates
+        )
+        with self._model_trace(
+            "reranking",
+            "rerank",
+            model=reranker.reranking_model,
+            batch_size=len(documents),
+            modalities=(Modality.TEXT,),
+        ) as span:
+            span.set_attribute("mindbridge.reranking.scored_candidates", len(documents))
+            mark_model_requests(1)
+            try:
+                values = reranker.rerank(query, documents)
+            except MindBridgeError:
+                raise
+            except Exception:
+                raise ModelError("reranking model failed", reason="model_failed") from None
+            scores = reranking_scores(values, len(documents))
+        by_id = {
+            row[0].memory_id: score
+            for (_index, row), score in zip(text_candidates, scores, strict=True)
+        }
+        ordered = sorted(
+            (row for _index, row in text_candidates),
+            key=lambda row: (-by_id[row[0].memory_id], -row[1], row[0].memory_id),
+        )
+        result = list(ranked)
+        for (index, _row), replacement in zip(text_candidates, ordered, strict=True):
+            result[index] = replacement
+        if traces is not None:
+            for memory_id, score in by_id.items():
+                traces[memory_id] = partial(traces[memory_id], reranking_score=score)
+        return result
 
     def _image_matches(
         self,

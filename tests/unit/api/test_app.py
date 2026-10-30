@@ -1544,6 +1544,7 @@ def test_search_keeps_its_default_shape_and_explains_an_empty_result() -> None:
             "temporal_factor": None,
             "retention_factor": None,
             "final_score": 0.4,
+            "reranking_score": None,
             "rank": None,
             "rejected_by": "minimum_relevance",
         }

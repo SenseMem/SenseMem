@@ -30,6 +30,7 @@ _MODEL_STAGES = {
     "face": "recognize",
     "formation": "form",
     "generation": "generate",
+    "reranking": "reranking",
     "transcription": "transcribe",
     "vision": "describe",
 }

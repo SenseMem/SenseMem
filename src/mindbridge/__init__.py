@@ -25,6 +25,7 @@ from mindbridge.models.base import (
     FormationInput,
     GenerationBackend,
     ModelInput,
+    RerankingBackend,
     SpeakerEmbedding,
     SpeechAnalysis,
     SpeechBackend,
@@ -41,6 +42,7 @@ from mindbridge.models.funasr import (
 )
 from mindbridge.models.openai_sdk import OpenAIModels
 from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
+from mindbridge.models.reranking import SentenceTransformersReranker
 from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
 from mindbridge.plugins import MemoryConfig, MemoryPlugins
 from mindbridge.streams import (
@@ -229,6 +231,7 @@ __all__ = [
     "PendingCapture",
     "PrefetchResult",
     "ProvisionalActor",
+    "RerankingBackend",
     "RetentionPolicy",
     "RetentionReport",
     "RetrievalCandidateTrace",
@@ -239,6 +242,7 @@ __all__ = [
     "SceneBoundary",
     "SearchHit",
     "SentenceTransformersEmbedder",
+    "SentenceTransformersReranker",
     "SpatialAnchor",
     "SpatialContext",
     "SpeakerEmbedding",

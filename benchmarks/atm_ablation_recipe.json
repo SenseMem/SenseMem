@@ -1,0 +1,11 @@
+{
+  "base_config_path": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/structural-investigation.yaml",
+  "base_config_sha256": "0491bf21c8deddc82728b9e7b453c26b58d1a8b83b3cc09455a756e17dc92d9d",
+  "artifact_root": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/runs",
+  "variant": "investigation",
+  "raw_media": true,
+  "raw_media_root": "/home/yanhao/thomas/MindBridge/.benchmarks/data/atm-bench/data/raw_memory",
+  "source_store": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/runs/input-raw-gps/stores/benchmark-mf2g2llcmvxgg2bnnvqws3rnontw2/run-nfxha5lufvzgc5znm5yhg/unit-nvqws3s7ontw2",
+  "stage": "full",
+  "preflight": false
+}

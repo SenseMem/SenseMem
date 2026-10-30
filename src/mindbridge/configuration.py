@@ -44,6 +44,7 @@ from mindbridge.models.openai_sdk import (
     OpenAIModels,
 )
 from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
+from mindbridge.models.reranking import SentenceTransformersReranker
 from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
 from mindbridge.plugins import MemoryConfig, MemoryPlugins
 from mindbridge.types import Modality, RetentionPolicy
@@ -130,6 +131,15 @@ class SentenceTransformersEmbeddingConfig(_ConfigModel):
     batch_size: _PositiveInt = 32
 
 
+class SentenceTransformersRerankingConfig(_ConfigModel):
+    provider: Literal["sentence-transformers"]
+    model: _Text
+    revision: _Text | None = None
+    device: _Text | None = None
+    batch_size: _PositiveInt = 32
+    max_length: _PositiveInt = 1024
+
+
 class _OpenAICompletionConfig(_OpenAIConfig):
     """Knobs `OpenAIModels` reads for any chat-completion role."""
 
@@ -156,6 +166,8 @@ class OfflineGazetteerConfig(_ConfigModel):
 
 class OpenAIGenerationConfig(_OpenAICompletionConfig):
     answer_style: Literal["default", "concise"] = "default"
+    answer_format: Literal["text", "structured"] = "text"
+    source_metadata_key: _Text = "source_id"
     image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
     video_limit: _PositiveInt | None = 8
     # Below this duration a video is answered as four ordered stills instead. The option already
@@ -277,6 +289,7 @@ class MindBridgeConfig(_ConfigModel):
     data_dir: Path = Path(".mindbridge")
     embedding: EmbeddingProviderConfig
     generation: OpenAIGenerationConfig | None = None
+    reranking: SentenceTransformersRerankingConfig | None = None
     # Both reachable, but never implicit, and omitted by default. Configuring `generation` must
     # not enable either one: a former is an LLM call per observation and a describer an LLM call
     # per visual, both on the write path, and the only bundled adapters are cloud calls, which a
@@ -314,6 +327,7 @@ class MemoryComposition:
             self.plugins.consolidator,
             self.plugins.former,
             self.plugins.answerer,
+            self.plugins.reranker,
             self.plugins.embedder,
         )
 
@@ -329,6 +343,19 @@ def resolve_memory_config(
         answerer = None if config.generation is None else _build_generation(config.generation)
         if answerer is not None:
             cleanup.callback(answerer.close)
+        reranker = (
+            None
+            if config.reranking is None
+            else SentenceTransformersReranker(
+                model_id=config.reranking.model,
+                revision=config.reranking.revision,
+                device=config.reranking.device,
+                batch_size=config.reranking.batch_size,
+                max_length=config.reranking.max_length,
+            )
+        )
+        if reranker is not None:
+            cleanup.callback(reranker.close)
         former = None if config.formation is None else _build_formation(config.formation)
         if former is not None:
             cleanup.callback(former.close)
@@ -357,6 +384,7 @@ def resolve_memory_config(
             face_analyzer=face,
             former=former,
             consolidator=consolidator,
+            reranker=reranker,
         )
         cleanup.pop_all()
     return MemoryComposition(config.data_dir, plugins, _with_retention(config))
@@ -454,6 +482,10 @@ def _completion_values(config: _OpenAICompletionConfig) -> dict[str, object]:
 
 def _build_generation(config: OpenAIGenerationConfig) -> GenerationBackend:
     values = _completion_values(config)
+    if config.answer_format != "text":
+        values["generation_answer_format"] = config.answer_format
+    if config.source_metadata_key != "source_id":
+        values["generation_source_metadata_key"] = config.source_metadata_key
     if config.answer_style != "default":
         values["generation_answer_style"] = config.answer_style
     if config.image_max_pixels is not None:
@@ -553,6 +585,7 @@ __all__ = [
     "OpenAIVisionConfig",
     "OpenCVFaceConfig",
     "SentenceTransformersEmbeddingConfig",
+    "SentenceTransformersRerankingConfig",
     "SpeechProviderConfig",
     "resolve_memory_config",
 ]

@@ -555,6 +555,7 @@ def _memory(
     reinforce_on_answer: bool = True,
     recall_planning: bool = MemoryConfig().recall_planning,
     recall_query_expansion: bool = False,
+    recall_max_queries: int = MemoryConfig().recall_max_queries,
     recall_set_budget_chars: int = MemoryConfig().recall_set_budget_chars,
     recall_set_max_rows: int = MemoryConfig().recall_set_max_rows,
     recall_rounds: int = MemoryConfig().recall_rounds,
@@ -576,6 +577,7 @@ def _memory(
         reinforce_on_answer=reinforce_on_answer,
         recall_planning=recall_planning,
         recall_query_expansion=recall_query_expansion,
+        recall_max_queries=recall_max_queries,
         recall_set_budget_chars=recall_set_budget_chars,
         recall_set_max_rows=recall_set_max_rows,
         recall_rounds=recall_rounds,
@@ -7558,7 +7560,7 @@ def test_answer_backends_receive_the_full_current_keyword_contract(
     assert calls == [("strict", False), ("best_effort", False)] * 2
 
 
-def test_recall_planner_receives_empty_attempted_on_the_first_round(tmp_path: Path) -> None:
+def test_recall_planner_receives_initial_evidence_on_the_first_round(tmp_path: Path) -> None:
     attempts: list[str] = []
 
     class _CurrentPlanner(_FakeModels):
@@ -7571,7 +7573,11 @@ def test_recall_planner_receives_empty_attempted_on_the_first_round(tmp_path: Pa
         memory.add("the toolbox is red")
         assert memory.ask("what colour is the toolbox?").answer == "Grounded in: the toolbox is red"
 
-    assert attempts == [""]
+    assert len(attempts) == 1
+    observation = json.loads(attempts[0])
+    assert observation["status"] == "investigating"
+    assert observation["evidence_is_untrusted_data"] is True
+    assert observation["evidence"][0]["windows"][0]["text"] == "the toolbox is red"
 
 
 class _PlannerlessAnswerer:
@@ -7903,6 +7909,7 @@ def test_semantic_recall_reuses_queries_and_bounds_work_across_replans(tmp_path:
         models,
         recall_planning=True,
         recall_query_expansion=True,
+        recall_max_queries=2,
         index_quantization=IndexQuantization.INT8,
         retrieval_mode=RetrievalMode.DENSE,
     ) as memory:
@@ -8097,6 +8104,7 @@ def test_unavailable_semantic_anchors_cannot_license_a_complete_set(
         models,
         recall_planning=True,
         recall_query_expansion=True,
+        recall_max_queries=2,
         index_quantization=IndexQuantization.INT8,
     ) as memory:
         memory.add("a blue crate")
@@ -8919,7 +8927,7 @@ def test_an_exhaustive_read_keeps_the_callers_own_scope(tmp_path: Path) -> None:
 
 
 def test_a_thin_best_effort_answer_buys_one_replan_round(tmp_path: Path) -> None:
-    """The one failure worth another call is the one the first answer diagnosed itself."""
+    """An abstaining answer can still spend a remaining investigation round."""
     models = _FakeModels()
     models.recall_plan = _plan("set", {"op": "match", "terms": ["wrench"]})
     models.abstentions = 1
@@ -8929,12 +8937,16 @@ def test_a_thin_best_effort_answer_buys_one_replan_round(tmp_path: Path) -> None
         answered = memory.ask("how many wrenches?", answer_policy="best_effort")
 
     assert len(models.plan_calls) == 2
-    assert models.plan_calls[0][3] == ""
-    assert "reported insufficient_evidence" in models.plan_calls[1][3]
-    # A count and a date span, not labels: `E`-numbers here would not be the reader's, which are
-    # assigned to the qualified subset of the evidence and to nothing when none of it qualifies.
-    assert "read 3 records dated 2024-09-01 to 2024-09-03" in models.plan_calls[1][3]
-    assert "E1" not in models.plan_calls[1][3]
+    first, second = (json.loads(call[3]) for call in models.plan_calls)
+    assert first["status"] == "investigating"
+    assert second["status"] == "insufficient_evidence"
+    assert second["records_available"] == 3
+    assert {row["occurred_at"][:10] for row in second["evidence"]} == {
+        "2024-09-01",
+        "2024-09-02",
+        "2024-09-03",
+    }
+    assert all(row["alias"].startswith("R") for row in second["evidence"])
     assert len(models.answer_calls) == 2
     assert answered.abstained is False
 
@@ -9053,6 +9065,8 @@ def test_planning_and_the_reads_it_names_happen_inside_a_span(tmp_path: Path) ->
         ("recall_query_expansion", "yes", "recall_query_expansion must be a boolean"),
         ("recall_set_budget_chars", 0, "recall_set_budget_chars must be a positive integer"),
         ("recall_rounds", -1, "recall_rounds must be a positive integer"),
+        ("recall_max_queries", 0, "recall_max_queries must be a positive integer"),
+        ("recall_max_queries", 33, "recall_max_queries must be at most 32"),
     ],
 )
 def test_the_recall_settings_are_validated_at_open(

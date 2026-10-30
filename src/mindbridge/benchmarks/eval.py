@@ -226,6 +226,7 @@ from mindbridge.models.base import (
     FormationBackend,
     GenerationBackend,
     ModelInput,
+    RerankingBackend,
     SpeechAnalysis,
     SpeechBackend,
     TranscriptionBackend,
@@ -286,6 +287,17 @@ class _BorrowedBackend:
 
     def close(self) -> None:
         return None
+
+
+class _BorrowedRerankingBackend(_BorrowedBackend):
+    """Preserve the runtime protocol without giving a store ownership of the model."""
+
+    @property
+    def reranking_model(self) -> str:
+        return cast(RerankingBackend, self._backend).reranking_model
+
+    def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+        return cast(RerankingBackend, self._backend).rerank(query, documents)
 
 
 class _CachedVisionDescriber:
@@ -560,6 +572,11 @@ class _BackendPool:
             if plugins.answerer is None
             else cast(GenerationBackend, _BorrowedGenerationBackend(plugins.answerer))
         )
+        self._reranker = (
+            None
+            if plugins.reranker is None
+            else cast(RerankingBackend, _BorrowedRerankingBackend(plugins.reranker))
+        )
         self._transcriber = (
             None
             if plugins.transcriber is None
@@ -633,6 +650,7 @@ class _BackendPool:
                 data_dir,
                 embedder=self._embedder,
                 answerer=self._answerer,
+                reranker=self._reranker,
                 transcriber=self._transcriber,
                 face_analyzer=self._face_analyzer,
                 former=self._former,

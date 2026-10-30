@@ -5225,7 +5225,8 @@ def test_semantic_recall_capability_changes_the_actual_planner_system_instructio
     system = messages[0]["content"]
     assert "executes a text search for query" in system
     assert "over the question as asked, `k` deep" not in system
-    assert "At most two additional searches" in system
+    assert "state the shared search budget" in system
+    assert "read-only investigation context includes current evidence" in system
 
 
 def test_a_planner_that_replied_with_nothing_reports_an_invalid_response() -> None:

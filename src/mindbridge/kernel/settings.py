@@ -40,6 +40,7 @@ class Settings:
     evidence_budget: int | None
     recall_planning: bool
     recall_query_expansion: bool
+    recall_max_queries: int
     query_vision: bool
     recall_set_budget: int
     recall_set_max_rows: int
@@ -80,6 +81,7 @@ def resolve_settings(
     evidence_budget_chars: int | None,
     recall_planning: bool,
     recall_query_expansion: bool,
+    recall_max_queries: int,
     query_vision: bool,
     recall_set_budget_chars: int,
     recall_set_max_rows: int,
@@ -126,6 +128,7 @@ def resolve_settings(
         recall_set_budget=positive_int(recall_set_budget_chars, "recall_set_budget_chars"),
         recall_set_max_rows=positive_int(recall_set_max_rows, "recall_set_max_rows"),
         recall_rounds=positive_int(recall_rounds, "recall_rounds"),
+        recall_max_queries=positive_int(recall_max_queries, "recall_max_queries"),
         evidence_expansion=strict_bool(evidence_expansion, "evidence_expansion"),
         evidence_expansion_max_rows=_expansion_max_rows(evidence_expansion_max_rows),
         decay_half_life=validated_decay_half_life(decay_half_life_days),
@@ -143,6 +146,8 @@ def resolve_settings(
     )
     if not isinstance(settings.retention, RetentionPolicy):
         raise ValidationError("retention must be a RetentionPolicy value")
+    if settings.recall_max_queries > 32:
+        raise ValidationError("recall_max_queries must be at most 32")
     return settings
 
 

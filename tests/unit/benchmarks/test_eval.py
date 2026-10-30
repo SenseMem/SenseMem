@@ -1434,6 +1434,27 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
         assert getattr(borrowed, "marker", None) == name, name
 
 
+def test_borrowed_reranker_preserves_protocol_scores_and_ownership() -> None:
+    calls: list[tuple[str, Sequence[str]]] = []
+
+    class Reranker:
+        reranking_model = "fixed-reranker-revision"
+
+        def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+            calls.append((query, documents))
+            return (3.5, -1.0)
+
+        def close(self) -> None:
+            pytest.fail("a borrowed reranker cannot close its owner")
+
+    borrowed = eval_module._BorrowedRerankingBackend(Reranker())
+    assert isinstance(borrowed, base_module.RerankingBackend)
+    assert borrowed.reranking_model == "fixed-reranker-revision"
+    assert borrowed.rerank("requested fact", ("source a", "source b")) == (3.5, -1.0)
+    assert calls == [("requested fact", ("source a", "source b"))]
+    borrowed.close()
+
+
 def test_borrowed_face_backend_preserves_the_runtime_protocol() -> None:
     class Analyzer:
         face_capabilities = frozenset({Modality.IMAGE})

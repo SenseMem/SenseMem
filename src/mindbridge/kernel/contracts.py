@@ -23,6 +23,7 @@ from mindbridge.models.base import (
     FaceBackend,
     FormationBackend,
     GenerationBackend,
+    RerankingBackend,
     SpeechBackend,
     StreamingGenerationBackend,
     TranscriptionBackend,
@@ -288,6 +289,7 @@ class Backends:
     formation_space: str
     consolidation_model: str
     consolidation_recipe: str
+    reranker: RerankingBackend | None = None
 
     def resources(self) -> tuple[Closable, ...]:
         """Every distinct backend that may hold a client, in closing order."""
@@ -300,6 +302,7 @@ class Backends:
                 self.former,
                 self.consolidator,
                 self.answerer,
+                self.reranker,
             )
         )
 
@@ -313,8 +316,13 @@ def resolve_backends(
     face_analyzer: FaceBackend | None,
     former: FormationBackend | None,
     consolidator: ConsolidationBackend | None,
+    reranker: RerankingBackend | None = None,
 ) -> Backends:
     """Validate each backend's declared contract and fold the results into one value."""
+    if reranker is not None:
+        if not isinstance(reranker, RerankingBackend):
+            raise ValidationError("reranker must implement RerankingBackend")
+        _model_text(reranker.reranking_model, "reranking model")
     embedding_capabilities, embedding_model, space_id, embedding_dimension = _embedding_contract(
         embedder
     )
@@ -332,6 +340,7 @@ def resolve_backends(
         face_analyzer=face_analyzer,
         former=former,
         consolidator=consolidator,
+        reranker=reranker,
         embedding_capabilities=embedding_capabilities,
         embedding_model=embedding_model,
         space_id=space_id,

@@ -10,7 +10,7 @@ retrieval semantics stay the same whichever path you choose.
 | `Memory(...)` | The application injects individual backends or owns SDK clients directly |
 
 **Contract:** All three paths open the same embedded kernel. `EmbeddingBackend` is required;
-generation, speech, face, vision-description, formation, and consolidation capabilities are
+generation, text reranking, speech, face, vision-description, formation, and consolidation capabilities are
 optional.
 
 ## Install only the surfaces you use
@@ -20,7 +20,7 @@ model runtimes and transports:
 
 | Extra | Adds |
 | --- | --- |
-| `local` | Sentence Transformers embedding, plus FunASR speech |
+| `local` | Sentence Transformers embedding and cross-encoder reranking, plus FunASR speech |
 | `openai` | Official OpenAI SDK 3.x adapter, its `httpx2` transport, and media handling |
 | `face` | Local OpenCV face analysis |
 | `server` | FastAPI and Starlette REST adapter; bring your own ASGI server |
@@ -101,8 +101,9 @@ In this table, connection fields are `base_url`, `api_key`, `timeout`, and `max_
 | Slot and provider | Required | Optional defaults |
 | --- | --- | --- |
 | `embedding: sentence-transformers` | `model` | `revision=None`, `dimension=None`, `device=None`, `batch_size=32` |
+| `reranking: sentence-transformers` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=1024` |
 | `embedding: openai` | — | `model=text-embedding-3-small`, `dimension=1536`, `space=None`, `modalities=[text]` (at least one), `request_format=input`, `image_max_pixels=None`, plus connection fields |
-| `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
+| `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
 | `formation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `image_max_pixels=None`, `extra_body=None`, plus connection fields |
 | `vision: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[image]` (image and/or video only), `video_frames=4` (2–64), `image_max_pixels=None`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `extra_body=None`, plus connection fields |
 | `consolidation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `extra_body=None`, plus connection fields |
@@ -120,8 +121,8 @@ during configuration validation rather than at the first model request.
 
 Use an SDK base URL ending in `/v1`, not the complete `/chat/completions` URL: the SDK appends the
 operation path. The default `response_format="json_schema"` sends a strict JSON Schema for formation,
-consolidation, visual descriptions, media diagnosis, and recall planning. Free-text answers remain
-text. A compatible endpoint that supports only JSON mode must explicitly select
+consolidation, visual descriptions, media diagnosis, and recall planning. Answers remain text
+unless `generation.answer_format=structured` is enabled. A compatible endpoint that supports only JSON mode must explicitly select
 `response_format="json_object"`; this guarantees JSON syntax, not response shape or meaning.
 Both modes retain local validation, and a strict schema is never silently downgraded.
 
@@ -148,14 +149,40 @@ compatible models retain `max_tokens`. Leave headroom for reasoning when budgeti
 answers. Model snapshots make quality comparisons reproducible; changing a model or prompt still
 requires the [quality gate](operations.md#model-quality-gate).
 
-`generation.answer_style` accepts `default` or `concise`. The default keeps the existing reader
-prompt unchanged. `concise` asks the reader to return only the entities, relations, values or list
+`generation.answer_style` accepts `default` or `concise`. In the default text format, `default`
+keeps the existing reader prompt unchanged. `concise` asks the reader to return only the entities,
+relations, values or list
 items the question requests, without explanations, citations or introductory phrases, and to
 honor a requested output format. It still resolves relative times internally, but includes dates
 or durations only when asked for them. The evidence policy and insufficient-evidence marker keep
 their existing meanings. This is an opt-in presentation policy, not an established quality
 improvement; evaluate it with the chosen model and task. Formation, visual description and
 consolidation do not accept this answer-only control.
+
+`generation.answer_format` accepts `text` (default) or `structured`. Structured answering asks
+the model for a typed draft, then renders it against the final evidence that actually fits the
+request. Source-list drafts select local evidence aliases; the runtime resolves them through
+the configured `source_metadata_key` (default `source_id`) in application metadata. Supply that
+field when adding sources if application identifiers must be returned. Missing identifiers and
+invalid or unsupported drafts raise `ModelError`; they do not fall back to guessed identifiers
+or unchecked calculation text.
+
+With structured output, `AnswerResult.hits` contains only the model-declared support subset;
+the public SDK retains the kernel's selected-evidence order. It is not the full grounding pool
+or the original search ranking. Measure retrieval with `search`/`search_with_trace` when that
+ranking is the intended quantity.
+
+Structured date and calculation drafts require visible timestamp or exact quote witnesses.
+Supported calculations are scalar, sum, difference, distinct count, and date-interval union.
+Date drafts retain the original `source_value` and separately select `granularity` and `format`:
+`iso8601` preserves source timezone; `utc_datetime` converts an explicitly zoned timestamp to
+UTC and renders a space-separated date and time without a suffix. Numeric and duration drafts
+choose `with_unit` or `number` for presentation; both retain the same evidence validation.
+This checks copied values and performs narrow arithmetic; it does not prove that facts are
+relevant, identify duplicate real-world events, or establish a complete answer set. Supported
+answers outside these forms use a text draft. Structured streaming buffers the draft until it
+can be validated and emits the rendered answer, so it does not stream raw JSON fragments.
+See [the SDK contract](api/python-sdk.md#bundled-adapters) for the direct adapter options.
 
 `generation.offline_gazetteer` optionally supplies external-world map knowledge while answering.
 It is disabled by default and requires the `gazetteer` extra in addition to `openai`:
@@ -280,6 +307,40 @@ and `video`, because it is the visual capability set rather than a generation on
 `formation`, `vision`, and `consolidation` are separate slots and separate clients: setting one
 never enables another. See [visual descriptions](#visual-descriptions) for the write-path cost of
 the vision slot.
+
+## Semantic reranking
+
+The optional `reranking` slot loads a text query-document cross-encoder through the existing
+`local` extra. It is disabled when the slot is absent:
+
+```yaml
+reranking:
+  provider: sentence-transformers
+  model: BAAI/bge-reranker-v2-m3
+  revision: "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+  device: cpu
+  batch_size: 32
+  max_length: 1024
+```
+
+This is an example pinned checkpoint, not a claim of improved task accuracy. An omitted revision
+is resolved to an immutable Hub commit before loading; an explicit revision must be a complete
+40-character commit. Loading disables remote model code. `max_length` bounds the model's tokenized
+pair and can truncate evidence; it is separate from the answerer's output budget.
+
+SQLite hydration, caller scope, memory type, time filters, minimum relevance and the existing
+ambiguity decision run first. The cross-encoder scores every eligible non-empty text candidate
+before the requested result limit. Long documents supply exact query-related windows, retaining
+opening context and matching middle or tail passages; these windows do not change stored content
+or the original evidence delivered to the reader. Text-free media keep their original positions,
+and a query without text skips this text-only capability.
+
+The model returns aligned finite scores rather than source identifiers. These raw logits determine
+text ordering, with the original ranking as the tie-breaker. They do not change bounded
+`SearchHit.score`, the relevance gate or stored embeddings. `search_with_trace()` reports the
+independent `reranking_score`; a negative value is valid and is not a probability. Reranker failures
+raise a classified `ModelError` at the `reranking` stage instead of silently falling back.
+Changing this query-time model requires reopening the instance, not re-ingesting the store.
 
 ## Embedding choices
 
@@ -722,11 +783,12 @@ The `settings` mapping is the value-only `MemoryConfig` policy:
 | `ambiguity_margin` | `0.01` | Withhold an unresolved top-two tie when `limit=1`, including lexical matches |
 | `evidence_budget_chars` | `24000` | Soft budget for widening `ask` grounding; mandatory `limit` hits survive even when over budget. `None` disables ranked-tail expansion; planning and linked expansion may still add records. No provider token guarantee |
 | `recall_planning` | `False` | Ask the answerer for a recall plan during `ask`, and ground on the set, sequence or entity it names; off means `ask` runs the one search it always has. An answerer without `plan_recall` cannot plan: the store logs one warning when it opens and every question runs that same search |
-| `recall_query_expansion` | `False` | Experimental execution of `similar.query` when planning is on. At most two additional searches per `ask`, shared across steps and replans; each caches up to 100 ranked hits and may add at most `limit` novel hits before the replaceable ranked tail. Also enables bounded evidence-driven retries of strict abstentions. See the controls below |
+| `recall_query_expansion` | `False` | Execute planner `similar.query` through bounded semantic searches and investigate unresolved gaps before answering. Routes share the per-ask query cache, character/media budgets and `recall_max_queries` ceiling |
+| `recall_max_queries` | `6` | Maximum additional semantic searches across every step and planning round of one `ask`; integer from `1` through `32`. Failed searches and original-query deepening consume slots; cached reads do not |
 | `query_vision` | `False` | Describe query images through the configured image-capable vision backend and add transient description/OCR search routes. Retains native routes, caches only inside the operation, and writes no memory or description rows |
 | `recall_set_budget_chars` | `30000` | Soft character allowance used to pack a plan's additions after charging its mandatory window, narrowed by `evidence_budget_chars` when set. Also bounds experimental semantic additions; a point plan without query expansion keeps its normal ranked window. Read only when `recall_planning` is on |
 | `recall_set_max_rows` | `60` | Matched rows a set, sequence or entity plan may add at all, whatever the character budget leaves room for; the rows past it are reported as not shown, so the set is declared incomplete. Bounds the matched set only. Read only when `recall_planning` is on |
-| `recall_rounds` | `2` | Plan-and-answer rounds one `ask` may spend. A later round requires an abstention under `best_effort`, or under `strict` when `recall_query_expansion=True`. `1` disables retries. Read only when `recall_planning` is on |
+| `recall_rounds` | `2` | Shared ceiling on planning/investigation and answer-retry rounds. With query expansion, unresolved gaps can request a later evidence-driven plan before an answer; ready or non-progressing plans stop investigating. `1` disables follow-up rounds |
 | `evidence_expansion` | `False` | Widen `ask` grounding with exact query-media source context and existing structural links. An exact source in the scoped ranking can add its immediate corpus neighbors before semantic additions and the ranked tail; capture, person, place, lineage and evidence links spend the remaining budget. Adds no model call |
 | `evidence_expansion_max_rows` | `24` | Joint cap on added exact-source context and structural rows, within the remaining character and supplemental media budgets. Read only when `evidence_expansion` is on |
 | `decay_half_life_days` | `None` | Optional positive half-life for query-time decay |
@@ -754,8 +816,8 @@ embedder for durable index consistency.
 `similar(query, k)` reuses the original question's ranking; changing query text or increasing `k`
 does not initiate another search. With it, each distinct query caches a 100-hit ranking and the
 step reads its requested prefix. The original query reuses its initial ranking unless `k`
-requests greater depth; deepening consumes one of the same two additional-search slots. Failed
-embedding calls are cached and consume a slot; a third distinct search contributes no new rows.
+requests greater depth; deepening consumes one of the same `recall_max_queries` slots. Failed
+searches are cached and consume a slot; queries beyond that ceiling contribute no new rows.
 The cache and ceiling reset at the next `ask`. Whitespace at the ends is ignored for cache keys.
 Successful routes remain eligible across internal rounds, at the greatest depth actually
 requested, in discovery order. A later plan can name only its new query without losing an earlier
@@ -777,15 +839,26 @@ If no semantic row fits, the original grounding is restored. Added semantic medi
 `limit` rows. These are bounded rankings, never complete sets; semantic or tail packing cannot
 readmit matched rows omitted by a set's caps.
 
-With this switch on, an abstained `strict` answer can also trigger another internal round within
-`recall_rounds`. The next planner receives a JSON note of at most `6000` characters, containing
-the missing-evidence status, local `R` source aliases, source IDs, event dates and up to `1500`
-characters per read record, deduplicated by record ID. Omitted records and truncated excerpts are
-reported. The note explicitly marks its evidence as untrusted data, and the kernel still
-validates every proposed read. Ordinary planning retains its best-effort-only retry rule and
-count/date summary. A replaceable round is buffered, so streaming releases only the answer that
-stands. No new model or service is configured by the switch. Mechanism tests alone do not
-establish natural-language gains.
+The first planner already receives actual retrieved evidence. Every observation is a JSON note
+of at most `12000` characters, with at most `40` records and `600` source-text characters per
+record. Exact windows retain codepoint offsets, local `R` aliases, source IDs, event dates and
+explicit omitted/truncated markers. These observations are untrusted data, not authority.
+
+With expansion enabled, a planner can report `unresolved` gaps and use another round to inspect
+new evidence before the final answer, including under the `strict` answer policy. A ready plan
+can have empty `steps`; no new evidence or search progress stops further pre-answer investigation.
+Plans may `keep` only `R` aliases actually shown in their observation. Keep requests reorder
+already-grounded rows after the original floor and prioritize retained IDs within semantic
+routes before those routes' existing novelty, row, media and character caps. They do not
+guarantee admission or restore predicate rows omitted by a cap. An invalid keep alias makes
+the plan unusable.
+
+An abstained answer can still trigger a remaining round under `best_effort`, or under `strict`
+when query expansion is enabled. Investigation and retries share `recall_rounds`, not separate
+budgets. Streaming releases only the selected answer; a replaceable attempt is buffered. No new
+model or service is configured by these switches. See the
+[investigation recipe](grounded-multimodal-recall.md#bounded-investigation-recipe) and evaluate
+the chosen models before relying on a quality improvement.
 
 `minimum_relevance` uses the selected route's relevance scale: dense cosine in `dense`, native
 normalized full-text relevance in `lexical`, and the documented hybrid fusion in `hybrid`. Keep
@@ -1045,6 +1118,11 @@ declarative `vision: openai` supplies the bundled one. `add` and `add_many` call
 embedder whenever a visual asset has no description yet, and `AsyncVisionStream` additionally calls
 it at finality when the embedder lacks native image support and no external `VisionPartial`
 supplied a description, so speculative retrieval has a query before finality.
+
+`reranker=` accepts a `RerankingBackend`; `MemoryPlugins.reranker` exposes the same injection
+point, and declarative `reranking: sentence-transformers` constructs the bundled
+`SentenceTransformersReranker`. The kernel keeps source identity and filtering authoritative;
+the plugin supplies one score per text document in input order.
 
 `OpenAIModels` implements both reasoning protocols on its generation client, so one adapter can
 fill `answerer=`, `former=`, and `consolidator=`:

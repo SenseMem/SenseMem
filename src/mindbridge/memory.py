@@ -83,6 +83,7 @@ from mindbridge.models.base import (
     FormationBackend,
     GenerationBackend,
     RecallPlanningBackend,
+    RerankingBackend,
     SpeechBackend,
     TranscriptionBackend,
     VisionDescriptionBackend,
@@ -143,6 +144,7 @@ class Memory:
         face_analyzer: FaceBackend | None = None,
         former: FormationBackend | None = None,
         consolidator: ConsolidationBackend | None = None,
+        reranker: RerankingBackend | None = None,
         independent_evidence: bool = _DEFAULT_CONFIG.independent_evidence,
         formation_history_max_rows: int = _DEFAULT_CONFIG.formation_history_max_rows,
         formation_history_budget_chars: int = _DEFAULT_CONFIG.formation_history_budget_chars,
@@ -154,6 +156,7 @@ class Memory:
         evidence_budget_chars: int | None = _DEFAULT_CONFIG.evidence_budget_chars,
         recall_planning: bool = _DEFAULT_CONFIG.recall_planning,
         recall_query_expansion: bool = _DEFAULT_CONFIG.recall_query_expansion,
+        recall_max_queries: int = _DEFAULT_CONFIG.recall_max_queries,
         query_vision: bool = _DEFAULT_CONFIG.query_vision,
         recall_set_budget_chars: int = _DEFAULT_CONFIG.recall_set_budget_chars,
         recall_set_max_rows: int = _DEFAULT_CONFIG.recall_set_max_rows,
@@ -187,6 +190,7 @@ class Memory:
             evidence_budget_chars=evidence_budget_chars,
             recall_planning=recall_planning,
             recall_query_expansion=recall_query_expansion,
+            recall_max_queries=recall_max_queries,
             query_vision=query_vision,
             recall_set_budget_chars=recall_set_budget_chars,
             recall_set_max_rows=recall_set_max_rows,
@@ -228,6 +232,7 @@ class Memory:
             former,
             consolidator,
             answerer,
+            reranker,
         )
         try:
             self._backends = resolve_backends(
@@ -238,6 +243,7 @@ class Memory:
                 face_analyzer=face_analyzer,
                 former=former,
                 consolidator=consolidator,
+                reranker=reranker,
             )
             try:
                 validate_index_configuration(

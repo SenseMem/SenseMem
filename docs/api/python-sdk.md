@@ -71,6 +71,7 @@ Memory(
     data_dir: str | Path = ".mindbridge",
     *,
     embedder: EmbeddingBackend,
+    reranker: RerankingBackend | None = None,
     answerer: GenerationBackend | None = None,
     transcriber: SpeechBackend | TranscriptionBackend | None = None,
     vision_describer: VisionDescriptionBackend | None = None,
@@ -86,6 +87,7 @@ Memory(
     evidence_budget_chars: int | None = 24_000,
     recall_planning: bool = False,
     recall_query_expansion: bool = False,
+    recall_max_queries: int = 6,
     query_vision: bool = False,
     recall_set_budget_chars: int = 30_000,
     recall_set_max_rows: int = 60,
@@ -130,10 +132,20 @@ A plain `TranscriptionBackend` transcribes supported audio/video during `add` re
 evidence expansion follows stored links without another model call. Their budgets and retry-round
 rules are defined in [local memory settings](../configuration.md#local-memory-settings).
 `recall_query_expansion=True` additionally executes planner `similar.query` strings as bounded
-text searches, including point plans. It requires planning, preserves the original `limit`
+text searches, including point plans. `recall_max_queries` accepts 1 through 32, default 6,
+and bounds distinct additional queries across the entire operation. Repeated queries reuse their
+cached results. Expansion requires planning, preserves the original `limit`
 window and matched sets, and packs new evidence before the optional ranked tail. It remains
 experimental and disabled by default. It adds query embedding calls in dense/hybrid
 mode; lexical mode uses full-text search only. No HTTP endpoint or MCP tool schema changes.
+
+`reranker` optionally reorders the complete eligible text-candidate pool before the requested
+limit. SQLite hydration, scope, type and time filtering, the relevance gate and the existing
+ambiguity decision precede it. Empty-text media retain their original slots, and queries without
+text skip reranking. The kernel supplies bounded exact source windows and preserves source IDs;
+the backend returns aligned finite raw scores. `SearchHit.score` remains the existing bounded
+score and need not decrease with rank. See [semantic reranking](../configuration.md#semantic-reranking)
+for the bundled adapter and trace behavior.
 `query_vision=True` uses an already-configured image-capable `vision_describer` to add temporary
 query-image description and OCR routes to `search`, `ask`, and `compile`. Native query media stay
 intact; descriptions are cached only inside the operation and create no durable memory, identity,
@@ -175,14 +187,19 @@ audio asset, and 12,000 per video asset. `None` disables this ranked-tail expans
 enabled recall planning or linked expansion may still add evidence. The budget expands the
 guaranteed window rather than imposing a ceiling. Lowering `limit` and setting the budget to
 `None` reduces the basic ranked window, without guaranteeing a provider token fit.
-`AnswerResult.hits` reports every record the answer was grounded on,
+In the default text format, `AnswerResult.hits` reports the fitted grounding pool,
 which with the default budget is usually more than `limit` on a corpus of short records.
+Structured output instead reports only the model-declared support subset; `Memory.ask` and
+`ask_stream` retain the kernel's selected-evidence order. Those labels are validated against
+the fitted pool but do not establish semantic support.
+Use `search` or `search_with_trace` to evaluate the retrieval ranking itself.
 The per-setting semantics and calibration notes live in
 [configuration](../configuration.md#local-memory-settings).
 
 When any selected record has typed context, the answer receives all selected records as
 `E`-labelled evidence, including selected raw records. Answers with only raw records retain the
-unlabelled representation. Typed context distinguishes
+unlabelled representation in the default text format; structured answers always label the final
+fitted evidence. Typed context distinguishes
 validity, recording, and occurrence times; retrieval order is not event order. A derived record
 labels cited sources omitted from the prompt as `S` without claiming their content was inspected:
 shared lineage is not independent corroboration, `supersedes` denotes a correction, and confidence
@@ -459,20 +476,23 @@ guess, and is still reported as `abstained` with `AbstentionReason.NO_EVIDENCE`.
 the provider's own deltas, marker included; the terminal `AnswerResult` carries the cleaned
 answer, so render a stream on `abstained` rather than on the text.
 
-`ask_stream()` yields the deltas of one answer, never of two. With `recall_planning` on, a
-`"best_effort"` answer the answerer flagged as thin can buy another round within `recall_rounds`.
-With `recall_query_expansion=True`, a `"strict"` abstention can also trigger internal replanning.
-This experimental mode gives the planner a JSON evidence note capped at 6000 characters, with
-local source aliases, source IDs, event dates, record excerpts and explicit untrusted-data and
-omission markers. Each excerpt is at most 1500 characters; records are deduplicated by ID.
-Successful query routes remain eligible in later rounds in discovery order, so a new query can
-retain an earlier bridge fact. They reuse cached results and share the same character/media
-budget and per-query window. The original scope, temporal intent and shared two-query ceiling
-still apply. Ordinary planning
-keeps its count/date summary and best-effort-only retries. A round another round may replace is
-held rather than streamed: the concatenated deltas are always the answer the terminal
-`AnswerResult` carries. The cost is that round's time to first token; the last round streams
-without waiting for a possible replacement.
+`ask_stream()` yields the deltas of one answer, never of two. With `recall_planning` on, the
+first planner sees actual initial evidence. Its JSON observation is capped at 12,000 characters
+and 40 records, with at most 600 exact source characters per record, offsets, local `R` aliases,
+source IDs, event dates and explicit untrusted-data and omission markers. The planner can retain
+only aliases shown in that observation. Retention reorders already-grounded rows after the
+original floor and prioritizes IDs within semantic routes before their existing caps; it does
+not guarantee admission or recover omitted predicate rows. Query routes reuse cached results
+and share `recall_max_queries`.
+
+With expansion enabled, unresolved obligations can trigger another investigation round before
+answering, including under `"strict"`. A ready plan may return no steps; lack of new evidence or
+new queries stops investigation. `recall_rounds` (default 2) bounds both investigation and answer
+retries. Within the remaining rounds, a `"best_effort"` abstention can request another plan;
+expansion also allows this for a `"strict"` abstention. A round another round may replace is
+held rather than streamed, so the concatenated deltas are the answer the terminal
+`AnswerResult` carries. Structured output additionally buffers its draft until validation and
+rendering complete. See the [investigation recipe](../grounded-multimodal-recall.md#bounded-investigation-recipe).
 
 `ask` may run face recognition on a retrieved photo or video to identify who appears in it before
 answering. With the default `link_identities=True`, a voice-and-face pair corroborated across
@@ -1167,7 +1187,7 @@ semantics and complete examples.
 
 ### Root import inventory
 
-These are the 129 supported names exported by `mindbridge`:
+The supported names exported by `mindbridge` are:
 
 | Group | Names |
 | --- | --- |
@@ -1177,8 +1197,8 @@ These are the 129 supported names exported by `mindbridge`:
 | Delivery certificates | `ContextProof`, `ContextProofNode` |
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
 | Enums and literal aliases | `AnswerPolicy`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
-| Backend protocols and values | `EmbeddingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
-| Bundled adapters | `SentenceTransformersEmbedder`, `OpenAIModels`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
+| Backend protocols and values | `EmbeddingBackend`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
+| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `OpenAIModels`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
 | Exceptions | `MindBridgeError`, `ValidationError`, `MemoryNotFoundError`, `SpeakerNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
 
 ### Public values
@@ -1252,7 +1272,7 @@ The principal immutable values are:
 | `PrefetchResult` | `hits` |
 | `TracedSearchResult` | `hits`, `trace` |
 | `RetrievalTrace` | `candidates`, `candidate_limit`, `exhaustive`, `ambiguous` |
-| `RetrievalCandidateTrace` | `memory_id`, `index_ids`, `dense_relevance`, `dense_confidence`, `lexical_relevance`, `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`, `reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `rank`, `rejected_by` |
+| `RetrievalCandidateTrace` | `memory_id`, `index_ids`, `dense_relevance`, `dense_confidence`, `lexical_relevance`, `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`, `reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score=None`, `rank`, `rejected_by` |
 | `MemoryCapabilities` | `embedding`, `embedding_model`, `embedding_space`, `embedding_dimension`, `generation`, `transcription`, `vision`, `face`, `formation`, `generation_model`, `transcription_space`, `vision_model`, `face_model`, `formation_model`, `consolidation_model`, `speaker_recognition`, `streaming_generation`; `operations` property and `document()` |
 
 `abstained` is a protocol signal, not a refusal rate. The bundled grounded prompt asks for the
@@ -1300,6 +1320,11 @@ EmbeddingBackend.embed(
     inputs: Sequence[ModelInput],
     task: EmbedTask = EmbedTask.DOCUMENT,
 ) -> tuple[tuple[float, ...], ...]
+
+RerankingBackend.rerank(
+    query: str,
+    documents: Sequence[str],
+) -> tuple[float, ...]
 
 GenerationBackend.answer(
     question: ModelInput,
@@ -1352,6 +1377,14 @@ as alternatives. Deleting any member retires its whole conjunction. `None` uses 
 as the sole evidence member. A model declaration is provenance metadata, not a
 verified proof of complete or independent support.
 
+`rerank` accepts text only and returns one finite score per document in the same order. Raw
+scores may be negative and are not confidence probabilities. The kernel owns candidate identity,
+filtering and ordering; a backend never returns or substitutes source IDs. Invalid score counts,
+non-numeric or non-finite values raise `ModelError(reason="response_invalid", stage="reranking")`.
+Model failures are explicit, with no silent fallback. `RetrievalCandidateTrace.reranking_score`
+records the raw value separately from the bounded `final_score`, and remains `None` for unscored
+candidates. A reranker has no durable output space because its scores are request-local.
+
 The kernel always forwards `answer_policy` and `exhaustive` to generation backends, including
 their default values. Recall planners receive `attempted`, including an empty string. A streaming
 backend yields text deltas and returns an `AnswerResult` as its generator completion value;
@@ -1359,7 +1392,8 @@ that result carries the answer, used hits, and abstention status. Exhaustion wit
 returning a bare hit tuple is an invalid model response.
 
 Required properties are `embedding_capabilities`, `embedding_model`, `embedding_space`, and
-`embedding_dimension` for embedding; `transcription_capabilities`, `transcription_model`, and
+`embedding_dimension` for embedding; `reranking_model` for reranking;
+`transcription_capabilities`, `transcription_model`, and
 `transcription_space` for transcription and speech; `face_capabilities`, `face_model`,
 `face_space`, and `face_analysis_space` for faces; `vision_capabilities`, `vision_model`, and
 `vision_space` for visual description; `formation_capabilities`, `formation_model`, and
@@ -1416,8 +1450,10 @@ plan_recall(
 ```
 
 The return is the model's JSON text, not an executed plan. The kernel validates it and falls back
-to ordinary retrieval for an unusable plan. `attempted` describes a previous round and is empty
-on the first call.
+to ordinary retrieval for an unusable plan. `attempted` carries the bounded observation of actual
+initial evidence on the first call, then evidence and investigation progress on later calls.
+The planner may return a ready plan with no steps or request bounded searches and predicate reads,
+state unresolved obligations, and retain only the source aliases it was shown.
 
 `exhaustive` is true when a recall program produced the hits as every record its predicate
 matched, in time order, rather
@@ -1493,6 +1529,25 @@ SentenceTransformersEmbedder.load(
     batch_size: int = 32,
 ) -> SentenceTransformersEmbedder
 
+SentenceTransformersReranker(
+    encoder=None,
+    *,
+    model_id: str,
+    revision: str | None = None,
+    device: str | None = None,
+    batch_size: int = 32,
+    max_length: int = 1024,
+)
+
+SentenceTransformersReranker.load(
+    model_id: str,
+    *,
+    revision: str | None = None,
+    device: str | None = None,
+    batch_size: int = 32,
+    max_length: int = 1024,
+) -> SentenceTransformersReranker
+
 FunASRTranscriber(
     recipe: FunASRRecipe = DEFAULT_FUNASR_RECIPE,
     *,
@@ -1549,6 +1604,15 @@ For `google/embeddinggemma-2`, the generic loader uses FP32 and supports `128`, 
 from the pinned checkpoint. See the [EmbeddingGemma 2 configuration](../configuration.md#embeddinggemma-2)
 for a complete example and input limits.
 
+`SentenceTransformersReranker` uses the existing `local` extra and loads a pinned cross-encoder
+immediately when no encoder is supplied. An omitted revision is resolved through the Hub before
+loading; pass a 40-character immutable commit for reproducible or cached offline loading. An
+injected encoder also requires an explicit revision to avoid Hub resolution. Loading disables
+remote code. `max_length` bounds the tokenized query-document pair; batching and inference are
+serialized per adapter. Its `predict` call requests raw logits through identity activation and
+disables softmax. `Memory` owns and closes the adapter. This adapter changes request-time ranking
+without re-embedding stored content.
+
 `OpenAIModels` can fill embedding, generation, transcription, visual description, formation, and
 consolidation capabilities. Pass the
 same object only to the slots it should serve:
@@ -1585,6 +1649,8 @@ OpenAIModels(
     generation_media_policy: Literal["all", "on_demand"] = "all",
     generation_media_max_items: int = 2,
     generation_answer_style: Literal["default", "concise"] = "default",
+    generation_answer_format: Literal["text", "structured"] = "text",
+    generation_source_metadata_key: str = "source_id",
     vision_video_frames: int = 4,
     image_max_pixels: int | None = None,
     generation_gazetteer: OfflineGazetteer | None = None,
@@ -1609,10 +1675,38 @@ the visual-description recipe and cache identity. It does not change the four-fr
 `generation_answer_style="concise"` asks for only the answer's requested entities, relations,
 values or list items, matching the question's output format and omitting explanations, citations
 and introductory phrases. Time expressions are still resolved internally; dates and durations
-are stated only when requested. The default `"default"` preserves the existing reader prompt
-byte for byte. Both styles preserve strict and best-effort abstention semantics. Declarative
+are stated only when requested. In the default text format, `"default"` preserves the existing
+reader prompt byte for byte. Both styles preserve strict and best-effort abstention semantics. Declarative
 configuration exposes this as `generation.answer_style`; it affects answering only and requires
 task-specific quality evaluation before relying on it.
+
+`generation_answer_format="structured"` requests a typed draft and renders the validated result
+locally as the ordinary `AnswerResult.answer` string. The default `"text"` keeps free-text
+answering. Structured drafts support text, source-ID lists, witnessed ISO dates and bounded
+calculations: scalar, sum, difference, distinct count and date-interval duration. Evidence labels
+must refer to the final fitted prompt. Source-ID lists resolve those labels through each hit's
+application metadata at `generation_source_metadata_key` (default `"source_id"`); the model
+cannot invent an ID. Missing metadata, invalid labels and unsupported witnesses raise
+`ModelError` without returning an unchecked draft. Declarative configuration names these fields
+`generation.answer_format` and `generation.source_metadata_key`.
+
+A direct `OpenAIModels.answer` call reports supporting hits in draft order; the public memory
+facades intersect that selection with their grounded hits and retain the kernel's evidence order.
+
+Numeric and date witnesses must be exact, uniquely located source quotes with matching literal
+values, or an allowed `occurred_at` witness for dates. Arithmetic uses the validated operands;
+interval durations declare closed or half-open bounds. Quote validation does not establish
+semantic relevance, real-world event identity, unit conversion or completeness of a requested
+set. Natural-language dates can use the text draft. Structured streaming buffers the provider's
+draft and yields only the rendered answer after validation; raw JSON is never a text delta.
+
+Date drafts copy the original `source_value`, then choose `granularity` and `format` separately.
+The default `iso8601` preserves source timezone at the requested precision. `utc_datetime`
+requires an explicitly zoned timestamp and minute or second precision; the runtime converts it
+to UTC and emits `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`. Unknown timezones are rejected.
+Numeric and duration drafts default to `format: with_unit`; `format: number` omits the unit from
+the answer while preserving all source-unit checks. These controls are model-selected fields
+of the draft, not heuristics over question text or benchmark identifiers.
 
 `image_max_pixels` accepts an integer from 1 through 64,000,000, default `None`, and applies to
 embedding, visual description, and answering on this adapter. Oversized images are converted only
