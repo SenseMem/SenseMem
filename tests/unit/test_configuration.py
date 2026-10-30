@@ -1320,3 +1320,31 @@ def test_a_failing_describer_never_fails_the_write_it_was_decorating(
     attributes = vision_spans[0].attributes
     assert attributes is not None
     assert attributes[VISION_BATCHES_FAILED] == 1
+
+
+def test_builtin_openai_generation_maps_optional_request_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def build(**values: object) -> GenerationBackend:
+        captured.update(values)
+        return cast(GenerationBackend, object())
+
+    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    configuration._build_generation(configuration.OpenAIGenerationConfig(provider="openai"))
+    assert "generation_request_max_bytes" not in captured
+    configuration._build_generation(
+        configuration.OpenAIGenerationConfig(provider="openai", request_max_bytes=1_000_000)
+    )
+    assert captured["generation_request_max_bytes"] == 1_000_000
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "1000"])
+def test_generation_request_budget_requires_a_positive_integer(value: object) -> None:
+    with pytest.raises(PydanticValidationError):
+        configuration.OpenAIGenerationConfig.model_validate(
+            {"provider": "openai", "request_max_bytes": value}
+        )
+    with pytest.raises(ValidationError):
+        openai_sdk.OpenAIModels(generation_request_max_bytes=cast(int, value))

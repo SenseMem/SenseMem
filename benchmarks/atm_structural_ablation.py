@@ -64,6 +64,11 @@ class ExecutionTelemetry(EvaluationTelemetry):
                 "mindbridge.grounding.gazetteer.available_candidates",
                 "mindbridge.grounding.gazetteer.omitted_candidates",
                 "mindbridge.reranking.scored_candidates",
+                "mindbridge.grounding.request_bytes",
+                "mindbridge.grounding.request_max_bytes",
+                "mindbridge.grounding.budget_omitted_assets",
+                "mindbridge.grounding.budget_transcoded_images",
+                "mindbridge.grounding.budget_sampled_videos",
             ):
                 value = attributes.get(name)
                 if name.endswith(".index_sha256"):

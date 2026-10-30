@@ -486,6 +486,7 @@ class OpenAIModels:
         "_generation_media_policy",
         "_generation_min_video_seconds",
         "_generation_model",
+        "_generation_request_max_bytes",
         "_generation_response_format",
         "_generation_seed",
         "_generation_store",
@@ -543,7 +544,15 @@ class OpenAIModels:
         vision_video_frames: int = 4,
         image_max_pixels: int | None = None,
         generation_gazetteer: OfflineGazetteer | None = None,
+        generation_request_max_bytes: int | None = None,
     ) -> None:
+        if generation_request_max_bytes is not None and (
+            isinstance(generation_request_max_bytes, bool)
+            or not isinstance(generation_request_max_bytes, int)
+            or generation_request_max_bytes < 1
+        ):
+            raise ValidationError("generation_request_max_bytes must be a positive integer")
+        self._generation_request_max_bytes = generation_request_max_bytes
         if generation_gazetteer is not None and not isinstance(
             generation_gazetteer, OfflineGazetteer
         ):
@@ -1403,6 +1412,7 @@ class OpenAIModels:
             hits,
             answer_policy=answer_policy,
             exhaustive=exhaustive,
+            stream=True,
         )
         if isinstance(prepared, AbstentionReason):
             mark_model_requests(0, token_usage_expected=0)
@@ -1552,7 +1562,13 @@ class OpenAIModels:
             raise
         except Exception as error:
             fallback = self._media_rejection_fallback(
-                question, hits, grounded, error, answer_policy=answer_policy, exhaustive=exhaustive
+                question,
+                hits,
+                grounded,
+                error,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+                stream=stream,
             )
             if fallback is None:
                 raise ModelError(
@@ -1582,6 +1598,7 @@ class OpenAIModels:
         *,
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
+        stream: bool = False,
     ) -> tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]] | None:
         rejected = _rejected_media_modality(error)
         if rejected is None:
@@ -1607,6 +1624,7 @@ class OpenAIModels:
             answer_policy=answer_policy,
             diagnose_media=False,
             exhaustive=exhaustive,
+            stream=stream,
         )
         if isinstance(fallback, AbstentionReason):
             return None
@@ -1625,6 +1643,7 @@ class OpenAIModels:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
         diagnose_media: bool = True,
+        stream: bool = False,
     ) -> tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]] | AbstentionReason:
         question_input = ModelInput(text=question) if isinstance(question, str) else question
         if not isinstance(question_input, ModelInput):
@@ -1659,6 +1678,249 @@ class OpenAIModels:
             )
 
         source_hits = retrieved if omission_source_hits is None else omission_source_hits
+        original_assets = {asset.id for hit in grounded for asset in hit.assets}
+        original_parts = dict(sampled_parts)
+        rendered = self._render_answer_request(
+            question_input,
+            grounded,
+            source_hits,
+            sampled_parts,
+            capture_metadata,
+            answer_policy=answer_policy,
+            exhaustive=exhaustive,
+        )
+        if (
+            self._generation_request_max_bytes is not None
+            and _answer_wire_size(rendered[0], stream=stream) > self._generation_request_max_bytes
+        ):
+            metadata_source_hits = grounded
+            source_assets = question_input.assets + tuple(
+                asset for hit in metadata_source_hits for asset in hit.assets
+            )
+            capture_metadata = _source_capture_metadata(source_assets, cached=capture_metadata)
+            if self._generation_gazetteer is not None:
+                capture_metadata = _gazetteer_capture_metadata(
+                    capture_metadata, source_assets, self._generation_gazetteer
+                )
+            grounded = self._bound_answer_media(
+                question_input,
+                grounded,
+                source_hits,
+                sampled_parts,
+                capture_metadata,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+                stream=stream,
+            )
+            _record_grounding_fit(retrieved, grounded)
+            rendered = self._render_answer_request(
+                question_input,
+                grounded,
+                source_hits,
+                sampled_parts,
+                capture_metadata,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+                metadata_source_hits=metadata_source_hits,
+            )
+        request, modalities, assets, text_parts = rendered
+        unique_assets = _require_consistent_assets(assets)
+        for modality, name in (
+            (Modality.VIDEO, "video_sampled_assets"),
+            (Modality.IMAGE, "image_transcoded_assets"),
+        ):
+            trace.get_current_span().set_attribute(
+                f"mindbridge.grounding.{name}",
+                sum(
+                    asset.modality is modality and asset.id in sampled_parts
+                    for asset in unique_assets
+                ),
+            )
+        if self._generation_request_max_bytes is not None:
+            span = trace.get_current_span()
+            span.set_attribute(
+                "mindbridge.grounding.request_bytes", _answer_wire_size(request, stream=stream)
+            )
+            span.set_attribute(
+                "mindbridge.grounding.request_max_bytes", self._generation_request_max_bytes
+            )
+            span.set_attribute(
+                "mindbridge.grounding.budget_omitted_assets",
+                len(original_assets - {asset.id for asset in unique_assets}),
+            )
+            for modality, name in (
+                (Modality.IMAGE, "budget_transcoded_images"),
+                (Modality.VIDEO, "budget_sampled_videos"),
+            ):
+                span.set_attribute(
+                    f"mindbridge.grounding.{name}",
+                    sum(
+                        asset.modality is modality
+                        and asset.id in sampled_parts
+                        and sampled_parts[asset.id] != original_parts.get(asset.id)
+                        for asset in unique_assets
+                    ),
+                )
+        _record_grounding_request(grounded, assets, text_parts)
+        return request, grounded, modalities
+
+    def _bound_answer_media(  # noqa: C901 - deterministic admission against the complete wire body
+        self,
+        question: ModelInput,
+        hits: tuple[SearchHit, ...],
+        source_hits: Sequence[SearchHit],
+        sampled_parts: dict[str, tuple[dict[str, object], ...]],
+        capture_metadata: dict[str, dict[str, object]],
+        *,
+        answer_policy: AnswerPolicy,
+        exhaustive: bool,
+        stream: bool,
+    ) -> tuple[SearchHit, ...]:
+        maximum = cast(int, self._generation_request_max_bytes)
+
+        def size(selected: tuple[SearchHit, ...]) -> int:
+            request, _, _, _ = self._render_answer_request(
+                question,
+                selected,
+                source_hits,
+                sampled_parts,
+                capture_metadata,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+                metadata_source_hits=hits,
+            )
+            return _answer_wire_size(request, stream=stream)
+
+        if size(hits) <= maximum:
+            return hits
+        admitted = {asset.id for asset in question.assets}
+
+        def selected() -> tuple[SearchHit, ...]:
+            return tuple(
+                replace(
+                    hit,
+                    assets=assets,
+                    modality=ModelInput(assets=assets).modality if assets else Modality.TEXT,
+                )
+                for hit in hits
+                for assets in (tuple(asset for asset in hit.assets if asset.id in admitted),)
+            )
+
+        def shrink(asset: AssetRef, overflow: int, *, mandatory: bool = False) -> bool:
+            # Reserve space for the changed attachment label and JSON part wrappers. The full
+            # body is measured again; this allowance is not the final admission decision.
+            available = _transport_size(asset, sampled_parts) - overflow - 256
+            if mandatory and available <= 0:
+                # Several mandatory assets can jointly exceed the cap by more than any one
+                # asset. Make progress on each rather than requiring one to absorb all excess.
+                available = _transport_size(asset, sampled_parts) // 2
+            if available <= 0 or Modality.IMAGE not in self.generation_capabilities:
+                return False
+            if asset.modality is Modality.IMAGE:
+                try:
+                    url = _bounded_image_url(
+                        asset,
+                        self._image_max_pixels or 64_000_000,
+                        max_encoded_bytes=min(available, _MAX_INLINE_MODEL_ITEM_BYTES),
+                    )
+                except ModelError as error:
+                    if error.reason != "payload_too_large":
+                        raise
+                    return False
+                if url is None:
+                    return False
+                sampled_parts[asset.id] = ({"type": "image_url", "image_url": {"url": url}},)
+                return True
+            if asset.modality is Modality.VIDEO:
+                frames = _video_frame_urls(
+                    asset, count=16, max_frame_bytes=max(1, available // 16 - 256)
+                )
+                if frames is not None:
+                    sampled_parts[asset.id] = tuple(
+                        {"type": "image_url", "image_url": {"url": frame}} for frame in frames
+                    )
+                    return True
+            return False
+
+        current = selected()
+        current_size = size(current)
+        # Mandatory question assets can be resized/sampled, but never removed.
+        while current_size > maximum:
+            previous_size = current_size
+            for asset in reversed(_require_consistent_assets(question.assets)):
+                if current_size <= maximum:
+                    break
+                previous_parts = sampled_parts.get(asset.id)
+                if shrink(asset, current_size - maximum, mandatory=True):
+                    updated_size = size(current)
+                    if updated_size < current_size:
+                        current_size = updated_size
+                    elif previous_parts is None:
+                        sampled_parts.pop(asset.id, None)
+                    else:
+                        sampled_parts[asset.id] = previous_parts
+            if current_size >= previous_size:
+                break
+        if current_size > maximum:
+            raise ModelError(
+                "question, mandatory media and source text/metadata exceed generation request_max_bytes",
+                reason="payload_too_large",
+                stage="generate",
+            )
+        for asset in _require_consistent_assets(
+            tuple(asset for hit in hits for asset in hit.assets)
+        ):
+            if asset.id in admitted:
+                continue
+            admitted.add(asset.id)
+            candidate = selected()
+            candidate_size = size(candidate)
+            if candidate_size <= maximum:
+                current = candidate
+                continue
+            # Preserve a native video that fits on its own. Lack of room after earlier ranked
+            # assets causes an explicit omission, not an unnecessary loss of motion/audio.
+            sample_allowed = True
+            if asset.modality is Modality.VIDEO and asset.id not in sampled_parts:
+                alone = tuple(
+                    replace(
+                        hit,
+                        assets=assets,
+                        modality=ModelInput(assets=assets).modality if assets else Modality.TEXT,
+                    )
+                    for hit in hits
+                    for assets in (
+                        tuple(
+                            value
+                            for value in hit.assets
+                            if value.id in {*(value.id for value in question.assets), asset.id}
+                        ),
+                    )
+                )
+                sample_allowed = size(alone) > maximum
+            if (
+                sample_allowed
+                and shrink(asset, candidate_size - maximum)
+                and size(candidate) <= maximum
+            ):
+                current = candidate
+            else:
+                admitted.remove(asset.id)
+        # Every original hit and its full text survives, including media-only provenance.
+        return current
+
+    def _render_answer_request(
+        self,
+        question_input: ModelInput,
+        grounded: tuple[SearchHit, ...],
+        source_hits: Sequence[SearchHit],
+        sampled_parts: dict[str, tuple[dict[str, object], ...]],
+        capture_metadata: dict[str, dict[str, object]],
+        *,
+        answer_policy: AnswerPolicy,
+        exhaustive: bool,
+        metadata_source_hits: Sequence[SearchHit] | None = None,
+    ) -> tuple[dict[str, object], frozenset[Modality], tuple[AssetRef, ...], tuple[str, ...]]:
         omitted_media = _omitted_grounding_media(question_input, source_hits, grounded)
         assets = question_input.assets + tuple(asset for hit in grounded for asset in hit.assets)
         evidence_payloads = answer_evidence_payloads(
@@ -1671,6 +1933,7 @@ class OpenAIModels:
             if source_modalities[hit.id] != "text":
                 payload["source_modality"] = source_modalities[hit.id]
         constraints = answer_constraint_payloads(grounded, evidence_payloads)
+        metadata_only = metadata_source_hits is not None and bool(capture_metadata)
         text_parts = (
             _answer_text_parts(
                 question_input,
@@ -1678,8 +1941,9 @@ class OpenAIModels:
                 evidence_payloads,
                 capture_metadata=capture_metadata,
                 gazetteer=self._generation_gazetteer,
+                source_hits=metadata_source_hits,
             )
-            if assets
+            if assets or metadata_only
             else (
                 _json_text(
                     {
@@ -1736,7 +2000,7 @@ class OpenAIModels:
                 ),
                 sampled_parts=sampled_parts,
             )
-            if assets
+            if assets or metadata_only
             else text_parts[0]
         )
         if not isinstance(content, str):
@@ -1747,22 +2011,7 @@ class OpenAIModels:
                     (cast(str, part["text"]) for part in content if part["type"] == "text"),
                 )
             )
-        trace.get_current_span().set_attribute(
-            "mindbridge.grounding.video_sampled_assets",
-            sum(
-                asset.modality is Modality.VIDEO and asset.id in sampled_parts
-                for asset in unique_assets
-            ),
-        )
-        trace.get_current_span().set_attribute(
-            "mindbridge.grounding.image_transcoded_assets",
-            sum(
-                asset.modality is Modality.IMAGE and asset.id in sampled_parts
-                for asset in unique_assets
-            ),
-        )
         modalities = _generation_modalities(content)
-        _record_grounding_request(grounded, assets, text_parts)
         request: dict[str, object] = {
             "model": self._generation_model,
             "store": self._generation_store,
@@ -1783,7 +2032,7 @@ class OpenAIModels:
             request[output_limit_parameter(self._generation_model)] = self._generation_max_tokens
         if self._generation_extra_body is not None:
             request["extra_body"] = dict(self._generation_extra_body)
-        return request, grounded, modalities
+        return request, modalities, assets, text_parts
 
     def _on_demand_media(
         self, question: ModelInput, hits: tuple[SearchHit, ...]
@@ -3533,6 +3782,18 @@ def _require_answer_text_size(parts: Iterable[str]) -> None:
         )
 
 
+def _answer_wire_size(request: Mapping[str, object], *, stream: bool) -> int:
+    """Match the official SDK's top-level extra_body merge and UTF-8 JSON encoding."""
+    body = dict(request)
+    extra = cast(Mapping[str, object], body.pop("extra_body", {}))
+    if stream:
+        body.update(stream=True, stream_options={"include_usage": True})
+    body.update(extra)
+    return len(
+        json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    )
+
+
 def _answer_parts(
     question: ModelInput,
     hits: Sequence[SearchHit],
@@ -3654,21 +3915,35 @@ def _answer_text_parts(
     *,
     capture_metadata: Mapping[str, dict[str, object]] | None = None,
     gazetteer: OfflineGazetteer | None = None,
+    source_hits: Sequence[SearchHit] | None = None,
 ) -> tuple[str, ...]:
     if len(evidence_payloads) != len(hits):
         raise ValueError("answer evidence payloads must align with hits")
     media_labels = _media_labels(question, hits)
     assets = (*question.assets, *(asset for hit in hits for asset in hit.assets))
-    capture = _source_capture_metadata(
-        assets,
-        cached=capture_metadata,
+    capture = (
+        _source_capture_metadata(assets, cached=capture_metadata)
+        if source_hits is None
+        else dict(capture_metadata or {})
     )
-    if gazetteer is not None:
+    if gazetteer is not None and source_hits is None:
         capture = _gazetteer_capture_metadata(capture, assets, gazetteer)
+    original_assets = {} if source_hits is None else {hit.id: hit.assets for hit in source_hits}
 
     def source_metadata(assets: Sequence[AssetRef]) -> dict[str, object]:
         values = [
-            {"attachment": media_labels[asset.id], **capture[asset.id]}
+            {
+                **(
+                    {"attachment": media_labels[asset.id]}
+                    if asset.id in media_labels
+                    else {
+                        "media_omitted": True,
+                        "source_asset_id": asset.id,
+                        "source_modality": cast(Modality, asset.modality).value,
+                    }
+                ),
+                **capture[asset.id],
+            }
             for asset in assets
             if asset.id in capture
         ]
@@ -3713,7 +3988,7 @@ def _answer_text_parts(
                             media_labels[asset.id]: cast(Modality, asset.modality).value
                             for asset in hit.assets
                         },
-                        **source_metadata(hit.assets),
+                        **source_metadata(original_assets.get(hit.id, hit.assets)),
                         **(
                             {"image_retrieval_matches": image_matches[hit.id]}
                             if hit.id in image_matches
@@ -3931,6 +4206,7 @@ def _bounded_image_url(  # noqa: C901 - reuse source headers while bounding imag
     max_pixels: int,
     *,
     capture_metadata: dict[str, dict[str, object]] | None = None,
+    max_encoded_bytes: int = _MAX_INLINE_MODEL_ITEM_BYTES,
 ) -> str | None:
     """Inspect headers before decoding, and transform only when a source needs transport bounds."""
     _require_asset_integrity((asset,))
@@ -3956,8 +4232,7 @@ def _bounded_image_url(  # noqa: C901 - reuse source headers while bounding imag
                     )
                 if (
                     pixels <= max_pixels
-                    and _inline_item_size(asset, cast(int, asset.size_bytes))
-                    <= _MAX_INLINE_MODEL_ITEM_BYTES
+                    and _inline_item_size(asset, cast(int, asset.size_bytes)) <= max_encoded_bytes
                 ):
                     return None
                 image = (
@@ -3976,7 +4251,7 @@ def _bounded_image_url(  # noqa: C901 - reuse source headers while bounding imag
                     image.save(encoded, format="JPEG", quality=85, subsampling=2, optimize=False)
                     if (
                         len("data:image/jpeg;base64,") + _encoded_size(encoded.tell())
-                        <= _MAX_INLINE_MODEL_ITEM_BYTES
+                        <= max_encoded_bytes
                     ):
                         return "data:image/jpeg;base64," + base64.b64encode(
                             encoded.getvalue()
@@ -4511,6 +4786,7 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
     *,
     below_seconds: float | None = None,
     count: int = 4,
+    max_frame_bytes: int | None = None,
 ) -> tuple[str, ...] | None:
     """Decode ordered JPEG stills, optionally only for a video under a provider limit."""
     try:
@@ -4546,7 +4822,11 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
                     and timestamp >= targets[len(sampled)]
                 ):
                     if last_url is None:
-                        last_url = _jpeg_frame_url(frame)
+                        last_url = (
+                            _jpeg_frame_url(frame)
+                            if max_frame_bytes is None
+                            else _jpeg_frame_url(frame, max_encoded_bytes=max_frame_bytes)
+                        )
                     sampled.append(last_url)
                     encoded_bytes += len(last_url.partition(",")[2])
                     if (
@@ -4556,7 +4836,11 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
                         return None
             if last is None:
                 return None
-            last_url = last_url or _jpeg_frame_url(last)
+            last_url = last_url or (
+                _jpeg_frame_url(last)
+                if max_frame_bytes is None
+                else _jpeg_frame_url(last, max_encoded_bytes=max_frame_bytes)
+            )
             remaining = count - len(sampled)
             if (
                 len(last_url) > _MAX_INLINE_MODEL_ITEM_BYTES
@@ -4571,7 +4855,24 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
         return None
 
 
-def _jpeg_frame_url(frame: VideoFrame) -> str:
+def _jpeg_frame_url(frame: VideoFrame, *, max_encoded_bytes: int | None = None) -> str:
+    if max_encoded_bytes is not None:
+        from PIL import Image as PILImage
+
+        image = cast("Callable[[], Image]", frame.to_image)().convert("RGB")
+        while True:
+            encoded = BytesIO()
+            image.save(encoded, format="JPEG", quality=85)
+            url = "data:image/jpeg;base64," + base64.b64encode(encoded.getvalue()).decode("ascii")
+            if len(url) <= max_encoded_bytes:
+                return url
+            if image.width * image.height == 1:
+                raise ValueError("video frame cannot fit the request byte budget")
+            bound = max(1, image.width * image.height // 2)
+            scale = math.sqrt(bound / (image.width * image.height))
+            width = max(1, min(image.width, bound, int(image.width * scale)))
+            height = max(1, min(image.height, bound // width))
+            image = image.resize((width, height), PILImage.Resampling.LANCZOS)
     encoded = BytesIO()
     cast("Callable[[], Image]", frame.to_image)().convert("RGB").save(
         encoded, format="JPEG", quality=85

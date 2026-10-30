@@ -1683,6 +1683,7 @@ OpenAIModels(
     vision_video_frames: int = 4,
     image_max_pixels: int | None = None,
     generation_gazetteer: OfflineGazetteer | None = None,
+    generation_request_max_bytes: int | None = None,
 )
 ```
 
@@ -1696,6 +1697,17 @@ endpoints. Transcription prompt, keywords, and languages form the provider hint.
 `generation_min_video_seconds` converts shorter videos to four ordered stills when image generation
 capability is available; `generation_video_limit` caps retrieved evidence videos but not question
 media. `generation_extra_body` is forwarded to the SDK request.
+`generation_request_max_bytes` accepts a positive integer, default `None`, to bound the complete
+final answer JSON body before sending. It includes UTF-8 text, base64 media, merged `extra_body`,
+and streaming fields, excluding headers. A request that already fits retains its existing body.
+It preserves the question, mandatory query attachments,
+and fitted source text; retrieved media are admitted in rank order, optionally resized or sampled
+as 16 ordered video stills with explicit loss labels. Media omitted by this cap retain GPS/time and
+enabled offline map metadata beside their source, with `media_omitted=true` and `source_asset_id`
+instead of a nonexistent attachment alias. If mandatory inputs cannot fit, answering raises
+`ModelError(reason="payload_too_large")` locally. This affects final answers only, adds no HTTP 413
+retry, and leaves embedding and description identities unchanged. See
+[request limits](../configuration.md#provider-fields) for packing behavior and evaluation limits.
 `vision_video_frames` selects 2 through 64 ordered stills for visual descriptions, including the
 last frame; declarative configuration calls it `vision.video_frames`. A non-default count changes
 the visual-description recipe and cache identity. It does not change the four-frame

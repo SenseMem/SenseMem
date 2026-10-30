@@ -104,7 +104,7 @@ In this table, connection fields are `base_url`, `api_key`, `timeout`, and `max_
 | `reranking: sentence-transformers` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=1024` |
 | `reranking: qwen3-vl` | `model` | `revision=None`, `device=None`, `batch_size=1`, `max_length=2048` |
 | `embedding: openai` | — | `model=text-embedding-3-small`, `dimension=1536`, `space=None`, `modalities=[text]` (at least one), `request_format=input`, `image_max_pixels=None`, plus connection fields |
-| `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
+| `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `request_max_bytes=None`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
 | `formation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `image_max_pixels=None`, `extra_body=None`, plus connection fields |
 | `vision: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[image]` (image and/or video only), `video_frames=4` (2–64), `image_max_pixels=None`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `extra_body=None`, plus connection fields |
 | `consolidation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `extra_body=None`, plus connection fields |
@@ -302,6 +302,27 @@ in the answer request. A provider media rejection does not trigger another diagn
 `media_max_items` limits only `on_demand` diagnosis. Diagnosis has its own model span and request
 and token costs. SDK construction uses `generation_media_policy` and `generation_media_max_items`
 on `OpenAIModels`. This mechanism has local tests, not benchmark evidence of accuracy or cost gains.
+
+`generation.request_max_bytes` optionally bounds the complete final answer request JSON body in
+bytes, including inline base64 media, UTF-8 text, merged `extra_body`, and streaming fields. It
+accepts a positive integer; `None` preserves existing packing, and a request that already fits
+retains exactly the existing body. Set it to a body limit verified for
+your endpoint; headers and HTTP framing are excluded. The SDK name is
+`generation_request_max_bytes`. Planning, diagnosis, formation, embedding, and visual descriptions
+are unaffected, as are stored assets and embedding/description recipe identities.
+
+When the body exceeds this bound, the adapter retains the whole question, every mandatory question
+attachment, and all fitted source text. It then admits retrieved media in retrieval order. Images
+may be resized and JPEG-encoded; a video that cannot fit even by itself can be represented by 16
+ordered stills when image capability is available. Such labels explicitly report reduced image
+detail or missing video motion, audio, and exact timing. A native video that fits by itself is
+omitted when earlier ranked media leave insufficient room. Omitted media remain counted in each
+source's omission fields. GPS/capture time and enabled offline map candidates from media selected
+before this request cap remain source-bound `untrusted_source_metadata`; absent media have
+`media_omitted=true` and a
+`source_asset_id`, with no attachment alias. A mandatory question, source text, or metadata payload
+that still cannot fit fails locally with `payload_too_large`. There is no HTTP 413 retry. Local
+transport tests establish byte bounds; task-specific accuracy still requires evaluation.
 
 `vision` takes the same completion fields as `formation`, but its `modalities` accepts only `image`
 and `video`, because it is the visual capability set rather than a generation one. `generation`,

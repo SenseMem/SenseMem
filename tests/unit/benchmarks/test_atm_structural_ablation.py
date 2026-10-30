@@ -140,6 +140,8 @@ def test_execution_audit_retains_only_counts_and_allowlisted_attributes() -> Non
             span.set_attribute("mindbridge.reranking.scored_candidates", 12)
             span.set_attribute("mindbridge.grounding.gazetteer.index_sha256", "a" * 64)
             span.set_attribute("mindbridge.grounding.gazetteer.added_chars", 200)
+            span.set_attribute("mindbridge.grounding.request_bytes", 1024)
+            span.set_attribute("mindbridge.grounding.request_max_bytes", "DO_NOT_RETAIN_BODY")
             span.set_attribute("private.query", "DO_NOT_RETAIN_QUERY")
             span.set_attribute("provider.body", "DO_NOT_RETAIN_PROVIDER_BODY")
         result = cast(_ExecutionResult, collector).execution_result()
@@ -148,6 +150,7 @@ def test_execution_audit_retains_only_counts_and_allowlisted_attributes() -> Non
             "mindbridge.reranking.scored_candidates": {"12": 1},
             "mindbridge.grounding.gazetteer.index_sha256": {"a" * 64: 1},
             "mindbridge.grounding.gazetteer.added_chars": {"200": 1},
+            "mindbridge.grounding.request_bytes": {"1024": 1},
         }
         assert "DO_NOT_RETAIN" not in str(result)
     finally:

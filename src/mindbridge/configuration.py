@@ -176,6 +176,7 @@ class OfflineGazetteerConfig(_ConfigModel):
 
 
 class OpenAIGenerationConfig(_OpenAICompletionConfig):
+    request_max_bytes: _PositiveInt | None = None
     answer_style: Literal["default", "concise"] = "default"
     answer_format: Literal["text", "structured"] = "text"
     source_metadata_key: _Text = "source_id"
@@ -500,12 +501,14 @@ def _completion_values(config: _OpenAICompletionConfig) -> dict[str, object]:
 
 def _build_generation(config: OpenAIGenerationConfig) -> GenerationBackend:
     values = _completion_values(config)
-    if config.answer_format != "text":
-        values["generation_answer_format"] = config.answer_format
-    if config.source_metadata_key != "source_id":
-        values["generation_source_metadata_key"] = config.source_metadata_key
-    if config.answer_style != "default":
-        values["generation_answer_style"] = config.answer_style
+    for name, value, default in (
+        ("generation_request_max_bytes", config.request_max_bytes, None),
+        ("generation_answer_format", config.answer_format, "text"),
+        ("generation_source_metadata_key", config.source_metadata_key, "source_id"),
+        ("generation_answer_style", config.answer_style, "default"),
+    ):
+        if value != default:
+            values[name] = value
     if config.image_max_pixels is not None:
         values["image_max_pixels"] = config.image_max_pixels
     if config.video_limit != 8:
