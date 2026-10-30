@@ -842,14 +842,19 @@ def test_a_caption_keeps_its_labelled_lines_and_never_a_blank_line(tmp_path: Pat
     """
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
     reply = _caption_reply(
-        "  Shown:   two   people \n\n\n  Counts: 2 people  \n \n Fact: speaker_1 is called Lily "
+        "  Shown:   two   people \n\n\n  Counts: 2 people  \nText: Hall C\nText: QZ-4187\n"
+        "Events: first open the folder\nEvents: then close it\n \n"
+        " Fact: speaker_1 is called Lily "
     )
 
     with httpx.Client(transport=httpx.MockTransport(lambda _request: reply)) as client:
         model = _vision_model(_sdk_client(client), capabilities=frozenset({Modality.IMAGE}))
         captions = model.describe((ModelInput(assets=(picture,)),))
 
-    assert captions == ("Shown: two people\nCounts: 2 people\nFact: speaker_1 is called Lily",)
+    assert captions == (
+        "Shown: two people\nCounts: 2 people\nText: Hall C\nText: QZ-4187\n"
+        "Events: first open the folder\nEvents: then close it\nFact: speaker_1 is called Lily",
+    )
     assert "\n\n" not in captions[0]
 
 

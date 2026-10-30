@@ -270,7 +270,8 @@ conflicting descriptions. `generation.media_max_items` defaults to `2` and accep
 offered to diagnosis. Question attachments remain intact, and all retained memory text and
 provenance remain available. Invalid or failed diagnosis adds no media; omission metadata remains
 in the answer request. A provider media rejection does not trigger another diagnosis. The default
-`media_policy="all"` preserves existing generation. Diagnosis has its own model span and request
+`media_policy="all"` sends eligible retrieved media within the existing byte and video limits;
+`media_max_items` limits only `on_demand` diagnosis. Diagnosis has its own model span and request
 and token costs. SDK construction uses `generation_media_policy` and `generation_media_max_items`
 on `OpenAIModels`. This mechanism has local tests, not benchmark evidence of accuracy or cost gains.
 
@@ -547,9 +548,11 @@ whatever the caller wrote, each section carrying a `[visual description:<asset_i
 text is added to the record, never substituted for it.
 
 A caption is labelled lines rather than prose -- what is shown, readable text transcribed exactly,
-counts, place cues, a visible date or clock, and index tags -- because a question days later asks
-for the sign or the count, and free prose names whichever of those the model found interesting. A
-visual described while a speech backend is configured is also shown that clip's diarised
+counts, place cues, visible dates or clocks, ordered video events, and index tags. Categories can
+span several labelled lines so readable names, numbers, and smaller details survive alongside
+the main subject. Video descriptions preserve changes and event order across sampled stills,
+without inventing what happened between them. Visible instructions are recorded as untrusted
+content. A visual described while a speech backend is configured is also shown that clip's diarised
 transcript, and answers with `Fact:` lines: short declarative statements that stay true after the
 clip ends ("Lily is allergic to peanuts", "the yoga mat lives in the storage room"). Those land in
 their own `[facts:<asset_id>]` section, so the distillation is correctable separately from the
