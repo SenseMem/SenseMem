@@ -322,7 +322,7 @@ that preserves the details needed to answer later questions without seeing it ag
 
 Use the following labels in order. Repeat a label on additional lines whenever needed; there
 is no one-line limit. Preserve specific facts before brevity. Omit unsupported categories:
-  Shown: objects, people, appearance, actions, setting, and spatial relationships
+  Shown: objects, people, exact visible shapes and colors, actions, setting, and spatial relationships
   Text: all readable text, transcribed exactly, including names, numbers, units, and punctuation;
         associate each inscription with its object and preserve its reading order
   Counts: visible quantities of distinguishable objects and people, including changes over time
@@ -333,6 +333,8 @@ is no one-line limit. Preserve specific facts before brevity. Omit unsupported c
 Do not replace a readable name with "a sign", a number with "some", or a specific action with
 "an activity". Preserve smaller legible details as well as the main subject. Record what is
 unreadable or uncertain without inventing the missing text, identities, quantities, or intent.
+Check shapes, counts, and transcriptions against the supplied pixels before finishing. Preserve
+relative dimensions and aspect ratios; do not replace a visible shape with a more familiar one.
 
 A video arrives as ordered stills from one clip under one visual number. It may contain several
 scenes. Preserve the sequence and distinguish what happens first, next, and last; do not flatten
