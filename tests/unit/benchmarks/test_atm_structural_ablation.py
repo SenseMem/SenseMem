@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import runpy
 import sqlite3
 import struct
 from collections.abc import Callable, Sequence
-from contextlib import closing
+from contextlib import AbstractContextManager, closing
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ import pytest
 from PIL import Image
 
 from mindbridge import EmbedTask, Memory, MindBridgeConfig, Modality, ModelInput
+from mindbridge.benchmarks import eval as runner
 from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
 from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
 from mindbridge.benchmarks.task_catalog import TASKS
@@ -150,3 +152,29 @@ def test_execution_audit_retains_only_counts_and_allowlisted_attributes() -> Non
         assert "DO_NOT_RETAIN" not in str(result)
     finally:
         collector.close()
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("fails", [True, False])
+def test_search_replay_switch_preserves_default_and_restores_after_failure(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool, fails: bool
+) -> None:
+    calls: list[str] = []
+
+    async def native(*_args: object, **_kwargs: object) -> None:
+        calls.append("diagnostic replay")
+
+    monkeypatch.setattr(runner, "_measure_standalone_searches", native)
+    functions = runpy.run_path(
+        str(Path(__file__).parents[3] / "benchmarks/atm_structural_ablation.py")
+    )
+    configure = cast(Callable[[bool], AbstractContextManager[None]], functions["_search_replay"])
+    try:
+        with configure(enabled):
+            asyncio.run(runner._measure_standalone_searches())  # type: ignore[call-arg]
+            if fails:
+                raise RuntimeError("native pipeline failed")
+    except RuntimeError as error:
+        assert fails and str(error) == "native pipeline failed"
+    assert calls == (["diagnostic replay"] if enabled else [])
+    assert runner._measure_standalone_searches is native

@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from _feature_support import TinyEmbedder
@@ -41,9 +41,22 @@ def test_structured_answer_controls_map_to_the_generation_adapter(
     assert captured["generation_source_metadata_key"] == "document_id"
 
 
+@pytest.mark.parametrize(
+    ("provider", "adapter_name", "default_batch_size", "default_max_length"),
+    [
+        ("sentence-transformers", "SentenceTransformersReranker", 32, 1024),
+        ("qwen3-vl", "Qwen3VLReranker", 1, 2048),
+    ],
+)
+@pytest.mark.parametrize("explicit_controls", [False, True])
 def test_reranker_is_an_owned_optional_declarative_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    adapter_name: str,
+    default_batch_size: int,
+    default_max_length: int,
+    explicit_controls: bool,
 ) -> None:
     built: list[dict[str, object]] = []
     closed: list[str] = []
@@ -61,18 +74,19 @@ def test_reranker_is_an_owned_optional_declarative_backend(
             closed.append("reranker")
 
     monkeypatch.setattr(configuration, "_build_embedding", lambda _config: TinyEmbedder())
-    monkeypatch.setattr(configuration, "SentenceTransformersReranker", Reranker)
+    monkeypatch.setattr(configuration, adapter_name, Reranker)
+    reranking: dict[str, object] = {
+        "provider": provider,
+        "model": "org/reranker",
+        "revision": "a" * 40,
+    }
+    if explicit_controls:
+        reranking.update(device="cpu", batch_size=4, max_length=512)
     config = MindBridgeConfig.model_validate(
         {
             "data_dir": tmp_path,
             "embedding": {"provider": "openai"},
-            "reranking": {
-                "provider": "sentence-transformers",
-                "model": "org/reranker",
-                "revision": "a" * 40,
-                "batch_size": 4,
-                "max_length": 512,
-            },
+            "reranking": reranking,
             "settings": {"recall_max_queries": 4},
         }
     )
@@ -85,11 +99,44 @@ def test_reranker_is_an_owned_optional_declarative_backend(
         {
             "model_id": "org/reranker",
             "revision": "a" * 40,
-            "device": None,
-            "batch_size": 4,
-            "max_length": 512,
+            "device": "cpu" if explicit_controls else None,
+            "batch_size": 4 if explicit_controls else default_batch_size,
+            "max_length": 512 if explicit_controls else default_max_length,
         }
     ]
+
+
+@pytest.mark.parametrize("provider", ["sentence-transformers", "qwen3-vl"])
+def test_reranking_validation_reports_the_public_field_path(provider: str) -> None:
+    with pytest.raises(ValidationError, match=r"config\.reranking\.batch_size:"):
+        configuration.resolve_memory_config(
+            {
+                "embedding": {"provider": "openai"},
+                "reranking": {"provider": provider, "model": "org/reranker", "batch_size": 0},
+            }
+        )
+
+
+@pytest.mark.parametrize("provider", ["sentence-transformers", "qwen3-vl"])
+def test_native_benchmark_overrides_preserve_the_reranking_provider(
+    provider: Literal["sentence-transformers", "qwen3-vl"],
+) -> None:
+    from mindbridge.benchmarks.eval_config import _evaluation_memory_config
+    from mindbridge.benchmarks.model_config import ModelConfig
+
+    config = MindBridgeConfig.model_validate(
+        {
+            "embedding": {"provider": "openai"},
+            "generation": {"provider": "openai"},
+            "reranking": {"provider": provider, "model": "org/reranker", "revision": "a" * 40},
+        }
+    )
+    effective = _evaluation_memory_config(
+        config, ModelConfig(), gen_kwargs="max_tokens=2048", seed=0, device=None
+    )
+    assert effective is not None
+    assert effective.reranking == config.reranking
+    assert effective.reranking is not None and effective.reranking.provider == provider
 
 
 def test_invalid_reranker_releases_storage_ownership(tmp_path: Path) -> None:

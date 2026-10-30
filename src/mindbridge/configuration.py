@@ -31,6 +31,7 @@ from mindbridge.models.base import (
     FaceBackend,
     FormationBackend,
     GenerationBackend,
+    RerankingBackend,
     SpeechBackend,
     TranscriptionBackend,
     VisionDescriptionBackend,
@@ -44,6 +45,7 @@ from mindbridge.models.openai_sdk import (
     OpenAIModels,
 )
 from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
+from mindbridge.models.qwen3_vl_reranking import Qwen3VLReranker
 from mindbridge.models.reranking import SentenceTransformersReranker
 from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
 from mindbridge.plugins import MemoryConfig, MemoryPlugins
@@ -56,7 +58,7 @@ _NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 _Temperature = Annotated[float, Field(strict=True, ge=0, le=2)]
 _Seed = Annotated[int, Field(strict=True, ge=0, lt=2**63)]
 _UnitInterval = Annotated[float, Field(strict=True, ge=0, le=1)]
-_DISCRIMINATED_SLOTS = frozenset({"embedding", "speech"})
+_DISCRIMINATED_SLOTS = frozenset({"embedding", "reranking", "speech"})
 
 
 def _absolute_http_url(value: str) -> bool:
@@ -138,6 +140,15 @@ class SentenceTransformersRerankingConfig(_ConfigModel):
     device: _Text | None = None
     batch_size: _PositiveInt = 32
     max_length: _PositiveInt = 1024
+
+
+class Qwen3VLRerankingConfig(_ConfigModel):
+    provider: Literal["qwen3-vl"]
+    model: _Text
+    revision: _Text | None = None
+    device: _Text | None = None
+    batch_size: _PositiveInt = 1
+    max_length: _PositiveInt = 2048
 
 
 class _OpenAICompletionConfig(_OpenAIConfig):
@@ -277,6 +288,10 @@ EmbeddingProviderConfig = Annotated[
     OpenAIEmbeddingConfig | SentenceTransformersEmbeddingConfig,
     Field(discriminator="provider"),
 ]
+RerankingProviderConfig = Annotated[
+    SentenceTransformersRerankingConfig | Qwen3VLRerankingConfig,
+    Field(discriminator="provider"),
+]
 SpeechProviderConfig = Annotated[
     OpenAITranscriptionConfig | FunASRSpeechConfig,
     Field(discriminator="provider"),
@@ -289,7 +304,7 @@ class MindBridgeConfig(_ConfigModel):
     data_dir: Path = Path(".mindbridge")
     embedding: EmbeddingProviderConfig
     generation: OpenAIGenerationConfig | None = None
-    reranking: SentenceTransformersRerankingConfig | None = None
+    reranking: RerankingProviderConfig | None = None
     # Both reachable, but never implicit, and omitted by default. Configuring `generation` must
     # not enable either one: a former is an LLM call per observation and a describer an LLM call
     # per visual, both on the write path, and the only bundled adapters are cloud calls, which a
@@ -343,17 +358,20 @@ def resolve_memory_config(
         answerer = None if config.generation is None else _build_generation(config.generation)
         if answerer is not None:
             cleanup.callback(answerer.close)
-        reranker = (
-            None
-            if config.reranking is None
-            else SentenceTransformersReranker(
+        reranker: RerankingBackend | None = None
+        if config.reranking is not None:
+            factory = (
+                Qwen3VLReranker
+                if config.reranking.provider == "qwen3-vl"
+                else SentenceTransformersReranker
+            )
+            reranker = factory(
                 model_id=config.reranking.model,
                 revision=config.reranking.revision,
                 device=config.reranking.device,
                 batch_size=config.reranking.batch_size,
                 max_length=config.reranking.max_length,
             )
-        )
         if reranker is not None:
             cleanup.callback(reranker.close)
         former = None if config.formation is None else _build_formation(config.formation)
@@ -584,6 +602,8 @@ __all__ = [
     "OpenAITranscriptionConfig",
     "OpenAIVisionConfig",
     "OpenCVFaceConfig",
+    "Qwen3VLRerankingConfig",
+    "RerankingProviderConfig",
     "SentenceTransformersEmbeddingConfig",
     "SentenceTransformersRerankingConfig",
     "SpeechProviderConfig",

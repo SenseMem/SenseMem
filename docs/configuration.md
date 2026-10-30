@@ -20,7 +20,7 @@ model runtimes and transports:
 
 | Extra | Adds |
 | --- | --- |
-| `local` | Sentence Transformers embedding and cross-encoder reranking, plus FunASR speech |
+| `local` | Sentence Transformers embedding, local text reranking, and FunASR speech |
 | `openai` | Official OpenAI SDK 3.x adapter, its `httpx2` transport, and media handling |
 | `face` | Local OpenCV face analysis |
 | `server` | FastAPI and Starlette REST adapter; bring your own ASGI server |
@@ -102,6 +102,7 @@ In this table, connection fields are `base_url`, `api_key`, `timeout`, and `max_
 | --- | --- | --- |
 | `embedding: sentence-transformers` | `model` | `revision=None`, `dimension=None`, `device=None`, `batch_size=32` |
 | `reranking: sentence-transformers` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=1024` |
+| `reranking: qwen3-vl` | `model` | `revision=None`, `device=None`, `batch_size=1`, `max_length=2048` |
 | `embedding: openai` | — | `model=text-embedding-3-small`, `dimension=1536`, `space=None`, `modalities=[text]` (at least one), `request_format=input`, `image_max_pixels=None`, plus connection fields |
 | `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
 | `formation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `image_max_pixels=None`, `extra_body=None`, plus connection fields |
@@ -310,35 +311,43 @@ the vision slot.
 
 ## Semantic reranking
 
-The optional `reranking` slot loads a text query-document cross-encoder through the existing
-`local` extra. It is disabled when the slot is absent:
+The optional `reranking` slot loads a local query-document scorer through the existing `local`
+extra. It is disabled when the slot is absent:
 
 ```yaml
 reranking:
-  provider: sentence-transformers
-  model: BAAI/bge-reranker-v2-m3
-  revision: "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
-  device: cpu
-  batch_size: 32
-  max_length: 1024
+  provider: qwen3-vl
+  model: Qwen/Qwen3-VL-Reranker-8B
+  revision: "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
+  device: cuda
+  batch_size: 1
+  max_length: 2048
 ```
 
-This is an example pinned checkpoint, not a claim of improved task accuracy. An omitted revision
-is resolved to an immutable Hub commit before loading; an explicit revision must be a complete
-40-character commit. Loading disables remote model code. `max_length` bounds the model's tokenized
+This example selects a pinned checkpoint; task accuracy and SOTA performance require actual
+evaluation. This integration ranks query/document text windows through `RerankingBackend`.
+Its input contract does not include image or video assets. The Qwen adapter uses PyTorch and
+Transformers already supplied by `local`; no additional dependency is required. The alternative
+`sentence-transformers` provider constructs `SentenceTransformersReranker`, with defaults
+`batch_size=32` and `max_length=1024`.
+
+An omitted revision is resolved to an immutable Hub commit before loading; an explicit revision
+must be a complete 40-character commit. Loading disables remote model code. `max_length` bounds the model's tokenized
 pair and can truncate evidence; it is separate from the answerer's output budget.
 
 SQLite hydration, caller scope, memory type, time filters, minimum relevance and the existing
-ambiguity decision run first. The cross-encoder scores every eligible non-empty text candidate
+ambiguity decision run first. The reranker scores every eligible non-empty text candidate
 before the requested result limit. Long documents supply exact query-related windows, retaining
 opening context and matching middle or tail passages; these windows do not change stored content
 or the original evidence delivered to the reader. Text-free media keep their original positions,
 and a query without text skips this text-only capability.
 
-The model returns aligned finite scores rather than source identifiers. These raw logits determine
+The model returns aligned finite relevance scores rather than source identifiers. These scores determine
 text ordering, with the original ranking as the tie-breaker. They do not change bounded
 `SearchHit.score`, the relevance gate or stored embeddings. `search_with_trace()` reports the
-independent `reranking_score`; a negative value is valid and is not a probability. Reranker failures
+independent `reranking_score`. Qwen applies sigmoid to its yes/no logit difference, producing a
+relevance value in `[0, 1]`; this is not an answer-confidence estimate. Sentence Transformers
+returns raw logits, which may be negative. Reranker failures
 raise a classified `ModelError` at the `reranking` stage instead of silently falling back.
 Changing this query-time model requires reopening the instance, not re-ingesting the store.
 
@@ -1120,9 +1129,10 @@ it at finality when the embedder lacks native image support and no external `Vis
 supplied a description, so speculative retrieval has a query before finality.
 
 `reranker=` accepts a `RerankingBackend`; `MemoryPlugins.reranker` exposes the same injection
-point, and declarative `reranking: sentence-transformers` constructs the bundled
-`SentenceTransformersReranker`. The kernel keeps source identity and filtering authoritative;
-the plugin supplies one score per text document in input order.
+point. Declarative `reranking: qwen3-vl` constructs `Qwen3VLReranker`;
+`reranking: sentence-transformers` constructs `SentenceTransformersReranker`.
+The kernel keeps source identity and filtering authoritative; the plugin supplies one score per
+text document in input order.
 
 `OpenAIModels` implements both reasoning protocols on its generation client, so one adapter can
 fill `answerer=`, `former=`, and `consolidator=`:

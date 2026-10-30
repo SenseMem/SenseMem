@@ -1198,7 +1198,7 @@ The supported names exported by `mindbridge` are:
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
 | Enums and literal aliases | `AnswerPolicy`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
 | Backend protocols and values | `EmbeddingBackend`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
-| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `OpenAIModels`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
+| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `OpenAIModels`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
 | Exceptions | `MindBridgeError`, `ValidationError`, `MemoryNotFoundError`, `SpeakerNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
 
 ### Public values
@@ -1377,12 +1377,12 @@ as alternatives. Deleting any member retires its whole conjunction. `None` uses 
 as the sole evidence member. A model declaration is provenance metadata, not a
 verified proof of complete or independent support.
 
-`rerank` accepts text only and returns one finite score per document in the same order. Raw
-scores may be negative and are not confidence probabilities. The kernel owns candidate identity,
+`rerank` accepts text only and returns one finite relevance score per document in the same order.
+Score ranges depend on the backend and do not estimate answer confidence. The kernel owns candidate identity,
 filtering and ordering; a backend never returns or substitutes source IDs. Invalid score counts,
 non-numeric or non-finite values raise `ModelError(reason="response_invalid", stage="reranking")`.
 Model failures are explicit, with no silent fallback. `RetrievalCandidateTrace.reranking_score`
-records the raw value separately from the bounded `final_score`, and remains `None` for unscored
+records the backend value separately from the bounded `final_score`, and remains `None` for unscored
 candidates. A reranker has no durable output space because its scores are request-local.
 
 The kernel always forwards `answer_policy` and `exhaustive` to generation backends, including
@@ -1548,6 +1548,25 @@ SentenceTransformersReranker.load(
     max_length: int = 1024,
 ) -> SentenceTransformersReranker
 
+Qwen3VLReranker(
+    engine=None,
+    *,
+    model_id: str,
+    revision: str | None = None,
+    device: str | None = None,
+    batch_size: int = 1,
+    max_length: int = 2048,
+)
+
+Qwen3VLReranker.load(
+    model_id: str,
+    *,
+    revision: str | None = None,
+    device: str | None = None,
+    batch_size: int = 1,
+    max_length: int = 2048,
+) -> Qwen3VLReranker
+
 FunASRTranscriber(
     recipe: FunASRRecipe = DEFAULT_FUNASR_RECIPE,
     *,
@@ -1604,9 +1623,19 @@ For `google/embeddinggemma-2`, the generic loader uses FP32 and supports `128`, 
 from the pinned checkpoint. See the [EmbeddingGemma 2 configuration](../configuration.md#embeddinggemma-2)
 for a complete example and input limits.
 
-`SentenceTransformersReranker` uses the existing `local` extra and loads a pinned cross-encoder
-immediately when no encoder is supplied. An omitted revision is resolved through the Hub before
-loading; pass a 40-character immutable commit for reproducible or cached offline loading. An
+`Qwen3VLReranker` uses the existing `local` extra's PyTorch and Transformers runtimes to rank text
+query/document pairs with Qwen3-VL-Reranker. Retrieval supplies bounded exact text windows; the
+adapter's `RerankingBackend` contract accepts no image or video assets. The owning `Memory` closes
+the adapter. It pins an immutable checkpoint revision and uses the checkpoint's sigmoid of the
+yes/no logit difference as a request-local relevance value, not answer confidence.
+See [reranking configuration](../configuration.md#semantic-reranking) for a pinned
+Qwen3-VL-Reranker-8B example. Checkpoint selection and integration tests do not establish a
+benchmark score or SOTA result.
+
+`SentenceTransformersReranker` remains an optional provider using the existing `local` extra.
+It loads a pinned cross-encoder immediately when no encoder is supplied. An omitted revision is
+resolved through the Hub before loading; pass a 40-character immutable commit for reproducible
+or cached offline loading. An
 injected encoder also requires an explicit revision to avoid Hub resolution. Loading disables
 remote code. `max_length` bounds the tokenized query-document pair; batching and inference are
 serialized per adapter. Its `predict` call requests raw logits through identity activation and

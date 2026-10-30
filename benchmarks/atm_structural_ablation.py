@@ -12,8 +12,8 @@ import shutil
 import sqlite3
 import unicodedata
 from collections import Counter
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from threading import Lock
@@ -103,6 +103,23 @@ class Recipe(BaseModel):
     source_store: Path | None = None
     stage: Literal["full", "ingest"] = "full"
     preflight: bool = False
+    measure_search_replay: bool = True
+
+
+@contextmanager
+def _search_replay(enabled: bool) -> Iterator[None]:
+    """Optionally omit only the native post-answer performance replay."""
+    original = runner._measure_standalone_searches
+
+    async def skip(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    if not enabled:
+        vars(runner)["_measure_standalone_searches"] = skip
+    try:
+        yield
+    finally:
+        vars(runner)["_measure_standalone_searches"] = original
 
 
 def attach_raw_media(task: LoadedTask, raw: LoadedTask) -> LoadedTask:
@@ -404,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             "recipe_sha256": hashlib.sha256(cli.recipe.read_bytes()).hexdigest(),
             "base_config_sha256": hashlib.sha256(recipe.base_config_path.read_bytes()).hexdigest(),
             "embedding_contract_sha256": embedding_contract(config),
+            "measure_search_replay": recipe.measure_search_replay,
         }
         if recipe.preflight:
             (directory / "preflight.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -463,7 +481,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             )
             return 0
         (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        status = runner.main(["--config", str(config_path), "--resume"])
+        with _search_replay(recipe.measure_search_replay):
+            status = runner.main(["--config", str(config_path), "--resume"])
         result = json.loads((directory / "results/results.jsonl").read_text())
         row = result["tasks"][0]
         summary = {
@@ -475,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             "samples_sha256": result["samples_sha256"],
             "native_status": result["status"],
             "store": str(store),
+            "measure_search_replay": recipe.measure_search_replay,
         }
         (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary), flush=True)
@@ -485,7 +505,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
         if collected:
             (directory / "execution.json").write_text(
                 json.dumps(
-                    {"collections": [item.execution_result() for item in collected]}, indent=2
+                    {
+                        "measure_search_replay": recipe.measure_search_replay,
+                        "collections": [item.execution_result() for item in collected],
+                    },
+                    indent=2,
                 )
                 + "\n"
             )

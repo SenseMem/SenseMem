@@ -57,7 +57,6 @@ from mindbridge.kernel.contracts import Backends, fallback_unsupported, require_
 from mindbridge.kernel.derived import derived_text, has_stream_description, has_stream_transcript
 from mindbridge.kernel.execution import Execution
 from mindbridge.kernel.hydration import Hydrator
-from mindbridge.kernel.investigation import investigation_note, merge_investigation
 from mindbridge.kernel.lifecycle import Lifecycle, OperationAssets
 from mindbridge.kernel.materialization import Materializer
 from mindbridge.kernel.retrieval import RERANK_CANDIDATES, Retrieval
@@ -112,6 +111,10 @@ from mindbridge.types import (
 # matched every clip in the corpus is bounded here rather than by the character budget alone.
 _RECALL_MEDIA_FACTOR = 2
 
+# A per-ask ceiling, shared by all steps and replans, including a deeper original-query read.
+_RECALL_QUERY_LIMIT = 2
+
+
 ASYNC_QUEUE_TIME_MS: ContextVar[float | None] = ContextVar(
     "mindbridge_async_queue_time_ms",
     default=None,
@@ -153,14 +156,11 @@ class _RecallReads:
         hydrator: Hydrator,
         context: _RecallContext,
         retrieval: Retrieval | None = None,
-        *,
-        max_queries: int = 6,
     ) -> None:
         self._store = store
         self._hydrator = hydrator
         self._context = context
         self._retrieval = retrieval
-        self._max_queries = max_queries
         original = context.prepared.text.strip()
         self._cache = {original: context.ranked}
         self._depths = {original: context.ranked_depth}
@@ -176,7 +176,7 @@ class _RecallReads:
             return RecallRows(rows, len(rows))
         query = query.strip()
         if k > self._depths.get(query, 0):
-            if self.queries >= self._max_queries:
+            if self.queries >= _RECALL_QUERY_LIMIT:
                 self.limited.add(query)
                 self._unavailable.add(query)
                 return RecallRows(self._cache.get(query, ())[:k], k)
@@ -787,7 +787,7 @@ class Answering(Traced):
         self,
         context: _RecallContext,
     ) -> Generator[str, None, tuple[AnswerResult, tuple[SearchHit, ...]]]:
-        """Investigate unresolved facts before answering, within one shared read budget.
+        """Answer this question, replanning once when the first round's own answer asked for it.
 
         A round another round may replace is held rather than streamed. Two complete answers on
         one wire with no boundary between them is not something a caller can render, and the
@@ -795,70 +795,22 @@ class Answering(Traced):
         round are buffered and yielded only if that round is the one that stands. Every other
         round, the common case and always the last one, streams as the provider produces it.
         """
+        attempted = ""
         reads = _RecallReads(
             self._store,
             self._hydrator,
             context,
             self._retrieval if self._settings.recall_query_expansion else None,
-            max_queries=self._settings.recall_max_queries,
         )
-        rounds = self._settings.recall_rounds if self._settings.recall_planning else 1
-        pool = {hit.id: hit for hit in context.ranked}
-        program = None
-        result: AnswerResult | None = None
-        hits = context.ranked
-        preferred = context.ranked
-        retained: builtins.dict[str, SearchHit] = {}
-        observed: set[str] = set()
-        for attempt in range(rounds):
-            attempted, visible = investigation_note(
-                context.prepared.text,
-                pool,
-                preferred=(*retained.values(), *preferred),
-                round_number=attempt + 1,
-                rounds_remaining=rounds - attempt - 1,
-                searches_remaining=max(0, self._settings.recall_max_queries - reads.queries),
-                program=program,
-                result=result,
-            )
-            before = len(pool), reads.queries
-            observed.update(visible.values())
-            current = self._recall_program(
-                context, reads, attempted=attempted, replan=attempt > 0, visible=visible
-            )
-            if current is not None:
-                newly_read = any(hit.id not in observed for hit in current.hits)
-                observed.update(hit.id for hit in current.hits)
-                for hit in current.hits:
-                    pool.setdefault(hit.id, hit)
-                retained.update(
-                    (visible[alias], pool[visible[alias]]) for alias in current.plan.keep
-                )
-                retained = dict(tuple(retained.items())[:32])
-                program = merge_investigation(program, current)
-                if program.exhaustive:
-                    program = replace(program, exhaustive=reads.chronological(program.exhaustive))
-                preferred = current.hits
-                if (
-                    current.plan.unresolved
-                    and attempt + 1 < rounds
-                    and ((len(pool), reads.queries) != before or newly_read)
-                ):
-                    continue
+        for attempt in range(self._settings.recall_rounds if self._settings.recall_planning else 1):
             held: builtins.list[str] = []
             replannable = self._replan_possible(context, attempt=attempt)
-            with closing(
-                self._recall_round(
-                    context, reads, program=program, retained=tuple(retained.values())
-                )
-            ) as deltas:
+            with closing(self._recall_round(context, reads, attempted=attempted)) as deltas:
                 while True:
                     try:
                         delta = next(deltas)
                     except StopIteration as complete:
-                        result, hits = cast(
-                            tuple[AnswerResult, tuple[SearchHit, ...]], complete.value
-                        )
+                        result, hits = complete.value
                         break
                     if replannable:
                         held.append(delta)
@@ -867,9 +819,9 @@ class Answering(Traced):
             if not (result.abstained and replannable):
                 yield from held
                 break
-            pool.update((hit.id, hit) for hit in hits)
-            preferred = hits
-        assert result is not None
+            attempted = grounding.attempt_note(
+                hits, result, include_evidence=self._settings.recall_query_expansion
+            )
         return result, hits
 
     def _recall_round(
@@ -877,8 +829,7 @@ class Answering(Traced):
         context: _RecallContext,
         reads: _RecallReads,
         *,
-        program: RecallResult | None,
-        retained: tuple[SearchHit, ...],
+        attempted: str,
     ) -> Generator[str, None, tuple[AnswerResult, tuple[SearchHit, ...]]]:
         """Ground one attempt at this question and yield its answer deltas.
 
@@ -886,6 +837,7 @@ class Answering(Traced):
         has always run: the ranking's own grounding window, the routed question with the
         reference clock last, then the answer.
         """
+        program = self._recall_program(context, reads, attempted=attempted)
         semantic = (
             program is not None
             and self._settings.recall_query_expansion
@@ -904,35 +856,8 @@ class Answering(Traced):
         else:
             hits, note = self._grounded_recall(program, context, defer_tail=semantic)
             if program is not None and semantic:
-                hits, note = self._ground_semantic_recall(
-                    program,
-                    reads,
-                    context,
-                    hits,
-                    note,
-                    retained_ids=frozenset(hit.id for hit in retained),
-                )
-        if retained and not (program is not None and program.plan.exhaustive):
-            # Retention prioritizes eligible evidence; it cannot admit an omitted predicate
-            # row, evade a media cap, or shrink the window by applying a new packing policy.
-            floor_ids = {hit.id for hit in grounding.grounding_hits(context.ranked, context.limit)}
-            retained_ids = {hit.id for hit in retained}
-            hits = tuple(
-                sorted(
-                    hits,
-                    key=lambda hit: (
-                        0 if hit.id in floor_ids else 1 if hit.id in retained_ids else 2
-                    ),
-                )
-            )
+                hits, note = self._ground_semantic_recall(program, reads, context, hits, note)
         sequence = program is not None and program.plan.shape == "sequence"
-        if program is not None and program.plan.unresolved:
-            stopped_note = (
-                "The bounded investigation stopped with unresolved facts. Answer only what "
-                "the supplied evidence establishes; do not turn missing evidence into a "
-                "confident guess or claim that the answer set is complete."
-            )
-            note = f"{note} {stopped_note}" if note else stopped_note
         if sequence:
             # Ordering is a presentation step after every budget/route decision. Predicate
             # rows alone omit ranked anchors and semantic bridges, which may share their event
@@ -988,13 +913,7 @@ class Answering(Traced):
         return result, hits
 
     def _recall_program(
-        self,
-        context: _RecallContext,
-        reads: _RecallReads,
-        *,
-        attempted: str,
-        replan: bool,
-        visible: builtins.dict[str, str],
+        self, context: _RecallContext, reads: _RecallReads, *, attempted: str
     ) -> RecallResult | None:
         """Plan and run this question's reads, or None when planning is off.
 
@@ -1013,8 +932,6 @@ class Answering(Traced):
                 k=k,
                 attempted=attempted,
             )
-            if any(alias not in visible for alias in plan.keep):
-                plan = fallback_plan(question, k=k)
             program = execute(
                 plan,
                 reads,
@@ -1032,7 +949,7 @@ class Answering(Traced):
                     RECALL_EXHAUSTIVE_ROWS: len(program.exhaustive),
                     RECALL_COMPLETE: program.complete,
                     RECALL_NON_SELECTIVE_STEPS: program.non_selective_steps,
-                    RECALL_REPLAN: replan,
+                    RECALL_REPLAN: bool(attempted),
                     # Every way planning can fail resolves to this same plan, so equality with it
                     # is the only signal that says the planner did not decide this question --
                     # which is what a result claiming the feature ran has to be read against.
@@ -1193,8 +1110,6 @@ class Answering(Traced):
         context: _RecallContext,
         required: tuple[SearchHit, ...],
         note: str | None,
-        *,
-        retained_ids: frozenset[str] = frozenset(),
     ) -> tuple[tuple[SearchHit, ...], str | None]:
         """Pack query-local evidence before the replaceable original ranked tail.
 
@@ -1202,10 +1117,7 @@ class Answering(Traced):
         `limit`-sized window, after dedup; the character and media caps may narrow it further.
         The same limits apply to point and exhaustive plans, without licensing set totals.
         """
-        routes = tuple(
-            tuple(sorted(route, key=lambda hit: hit.id not in retained_ids))
-            for route in reads.semantic_routes()
-        )
+        routes = reads.semantic_routes()
         candidates = {hit.id for route in routes for hit in route}
         matched = {hit.id for hit in program.exhaustive}
         # Predicate rows keep their own row/media caps and completeness accounting.
@@ -1454,8 +1366,7 @@ class Answering(Traced):
                     f"\n{SEMANTIC_QUERY_CAPABILITY}\n"
                     "similar.query executes "
                     "a text search for that query within the original scope and temporal intent. "
-                    f"At most {self._settings.recall_max_queries} additional searches are allowed "
-                    "across all attempts; repeated "
+                    "At most two additional searches are allowed across all attempts; repeated "
                     "queries reuse results. Preserve the question's intent; use a focused "
                     "query for a missing fact rather than an invented answer. Semantic results "
                     "are bounded rankings and never establish completeness."

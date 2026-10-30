@@ -42,6 +42,7 @@ from mindbridge.models.funasr import (
 )
 from mindbridge.models.openai_sdk import OpenAIModels
 from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
+from mindbridge.models.qwen3_vl_reranking import Qwen3VLReranker
 from mindbridge.models.reranking import SentenceTransformersReranker
 from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
 from mindbridge.plugins import MemoryConfig, MemoryPlugins
@@ -231,6 +232,7 @@ __all__ = [
     "PendingCapture",
     "PrefetchResult",
     "ProvisionalActor",
+    "Qwen3VLReranker",
     "RerankingBackend",
     "RetentionPolicy",
     "RetentionReport",

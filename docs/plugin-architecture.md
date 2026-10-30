@@ -64,12 +64,12 @@ visual-grounding and semantic-extraction capabilities belong on this side only a
 concrete implementation proves a narrow contract.
 
 `RerankingBackend` is an optional text-only computation plugin. It receives a query and ordered
-documents and returns an equally sized tuple of finite raw scores. The retrieval plane owns
+documents and returns an equally sized tuple of finite relevance scores. The retrieval plane owns
 SQLite hydration and filtering, eligibility, exact source-window selection, candidate identity,
 and final ordering. Empty-text media retain their positions; queries without text skip the
 plugin. A reranker cannot introduce records, change source IDs, bypass the relevance or ambiguity
 gate, or rewrite stored content. Invalid results and model failures are explicit errors rather
-than silent fallback. Raw scores appear separately as `RetrievalCandidateTrace.reranking_score`;
+than silent fallback. Request-local scores appear separately as `RetrievalCandidateTrace.reranking_score`;
 the existing bounded score keeps its meaning.
 
 SQLite, the media CAS, the durable outbox, and Zvec are not public plugins. They have one supported
@@ -128,13 +128,15 @@ that works.
 `VisionDescriptionBackend` meets the rule through `OpenAIModels.describe`, the optional
 [`vision` configuration](configuration.md#visual-descriptions), and the `add`/`add_many` product path.
 
-`RerankingBackend` meets it through `SentenceTransformersReranker`, the optional
+`RerankingBackend` meets it through `Qwen3VLReranker` and `SentenceTransformersReranker`, the optional
 [`reranking` configuration](configuration.md#semantic-reranking), and the shared retrieval path
 used by `search`, `ask` and `compile`. It uses the existing `local` extra, pins an immutable
 checkpoint revision, disables remote code, serializes inference, validates aligned scores and
 closes with its owning `Memory`. Product-path tests cover full-pool reranking, stale-ID removal,
 scope/type/time filtering, media slots and failure mapping. Those tests establish integration;
 checkpoint quality and task-specific improvements require separate evaluation.
+The `qwen3-vl` provider uses the existing PyTorch/Transformers dependencies and ranks text windows.
+The public reranking protocol accepts text, including when the checkpoint can support visual input.
 
 ## Embodied integration boundary
 

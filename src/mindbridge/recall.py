@@ -16,7 +16,6 @@ rows keep their rank, and no score is ever recomputed.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
@@ -124,8 +123,6 @@ class RecallPlan:
 
     shape: RecallShape
     steps: tuple[RecallStep, ...]
-    unresolved: tuple[str, ...] = ()
-    keep: tuple[str, ...] = ()
 
     @property
     def exhaustive(self) -> bool:
@@ -284,28 +281,9 @@ def parse_recall_plan(payload: str, *, reference_at: datetime) -> RecallPlan | N
         return None
     shape = document.get("shape")
     raw_steps = document.get("steps")
-    if not isinstance(shape, str) or shape not in _SHAPES or not isinstance(raw_steps, list):
+    if shape not in _SHAPES or not isinstance(raw_steps, list) or not raw_steps:
         return None
-    if len(raw_steps) > _MAX_STEPS or set(document) - {"shape", "steps", "unresolved", "keep"}:
-        return None
-    unresolved, keep = document.get("unresolved", []), document.get("keep", [])
-    if (
-        not isinstance(unresolved, list)
-        or len(unresolved) > 8
-        or any(
-            not isinstance(value, str) or not value.strip() or len(value) > 500
-            for value in unresolved
-        )
-        or not isinstance(keep, list)
-        or len(keep) > 32
-        or any(
-            not isinstance(value, str) or re.fullmatch(r"R[1-9][0-9]*", value) is None
-            for value in keep
-        )
-        or len(set(keep)) != len(keep)
-    ):
-        return None
-    if not raw_steps and unresolved:
+    if len(raw_steps) > _MAX_STEPS or set(document) - {"shape", "steps"}:
         return None
     steps: list[RecallStep] = []
     for index, raw_step in enumerate(raw_steps):
@@ -318,12 +296,7 @@ def parse_recall_plan(payload: str, *, reference_at: datetime) -> RecallPlan | N
     # contradicted itself, and the fallback is what a point plan would have been anyway.
     if shape == "point" and any(step.op in _EXHAUSTIVE_OPS for step in steps):
         return None
-    return RecallPlan(
-        shape=cast(RecallShape, shape),
-        steps=tuple(steps),
-        unresolved=tuple(value.strip() for value in unresolved),
-        keep=tuple(keep),
-    )
+    return RecallPlan(shape=cast(RecallShape, shape), steps=tuple(steps))
 
 
 def execute(

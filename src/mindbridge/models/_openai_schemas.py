@@ -2,9 +2,7 @@
 
 from typing import Literal
 
-SchemaName = Literal[
-    "formation", "vision", "consolidation", "recall_plan", "media_selection", "answer"
-]
+SchemaName = Literal["formation", "vision", "consolidation", "recall_plan", "media_selection"]
 
 
 def _object(properties: dict[str, object]) -> dict[str, object]:
@@ -104,8 +102,6 @@ def response_schema(name: SchemaName) -> dict[str, object]:
         )
     if name == "vision":
         return _object({"descriptions": _array({"type": "string"})})
-    if name == "answer":
-        return _answer_schema()
     if name == "media_selection":
         return _object(
             {
@@ -163,128 +159,6 @@ def response_schema(name: SchemaName) -> dict[str, object]:
                 "enum": ["point", "set", "sequence", "entity", "composite"],
             },
             "steps": _array(_recall_steps()),
-            "unresolved": {
-                **_array({"type": "string", "minLength": 1, "maxLength": 500}),
-                "maxItems": 8,
-            },
-            "keep": {**_array({"type": "string", "pattern": "^R[1-9][0-9]*$"}), "maxItems": 32},
-        }
-    )
-
-
-def _answer_schema() -> dict[str, object]:
-    label: dict[str, object] = {"type": "string", "pattern": "^E[1-9][0-9]*$"}
-    labels = {**_array(label), "maxItems": 128}
-    quote: dict[str, object] = {"type": "string", "minLength": 1, "maxLength": 1_000}
-    quoted = {"evidence_label": label, "quote": quote}
-    operand = _object(
-        {
-            **quoted,
-            "value": {
-                "type": "string",
-                "pattern": r"^[+-]?(?:[0-9]{1,64}|[0-9]{1,3}(?:,[0-9]{3}){1,21})(?:\.[0-9]{1,32})?$",
-            },
-            "unit": {"type": "string", "minLength": 1, "maxLength": 64},
-        }
-    )
-    return _object(
-        {
-            "draft": {
-                "anyOf": [
-                    _object(
-                        {
-                            "kind": {"type": "string", "enum": ["text"]},
-                            "answer": {"type": "string", "minLength": 1},
-                            "evidence_labels": labels,
-                            "abstained": {"type": "boolean"},
-                        }
-                    ),
-                    _object(
-                        {
-                            "kind": {"type": "string", "enum": ["source_ids"]},
-                            "evidence_labels": {**labels, "minItems": 1},
-                        }
-                    ),
-                    _object(
-                        {
-                            "kind": {"type": "string", "enum": ["date"]},
-                            "source_value": {"type": "string", "minLength": 1},
-                            "format": {"type": "string", "enum": ["iso8601", "utc_datetime"]},
-                            "granularity": {
-                                "type": "string",
-                                "enum": ["year", "month", "day", "minute", "second"],
-                            },
-                            "evidence": _object(
-                                {
-                                    "evidence_label": label,
-                                    "quote": _nullable(quote),
-                                    "timestamp_field": {
-                                        "type": ["string", "null"],
-                                        "enum": ["occurred_at", "occurred_end", "created_at", None],
-                                    },
-                                }
-                            ),
-                        }
-                    ),
-                    _object(
-                        {
-                            "kind": {"type": "string", "enum": ["calculation"]},
-                            "operation": {
-                                "type": "string",
-                                "enum": ["scalar", "sum", "difference"],
-                            },
-                            "format": {"type": "string", "enum": ["with_unit", "number"]},
-                            "operands": {**_array(operand), "minItems": 1, "maxItems": 128},
-                        }
-                    ),
-                    _object(
-                        {
-                            "kind": {"type": "string", "enum": ["calculation"]},
-                            "operation": {"type": "string", "enum": ["count_distinct"]},
-                            "members": {
-                                **_array(
-                                    _object(
-                                        {
-                                            **quoted,
-                                            "key": {
-                                                "type": "string",
-                                                "minLength": 1,
-                                                "maxLength": 200,
-                                            },
-                                        }
-                                    )
-                                ),
-                                "minItems": 1,
-                                "maxItems": 128,
-                            },
-                        }
-                    ),
-                    _object(
-                        {
-                            "kind": {"type": "string", "enum": ["calculation"]},
-                            "operation": {"type": "string", "enum": ["duration_days"]},
-                            "format": {"type": "string", "enum": ["with_unit", "number"]},
-                            "interval_semantics": {
-                                "type": "string",
-                                "enum": ["half_open", "closed"],
-                            },
-                            "intervals": {
-                                **_array(
-                                    _object(
-                                        {
-                                            **quoted,
-                                            "start_date": {"type": "string", "minLength": 1},
-                                            "end_date": {"type": "string", "minLength": 1},
-                                        }
-                                    )
-                                ),
-                                "minItems": 1,
-                                "maxItems": 128,
-                            },
-                        }
-                    ),
-                ]
-            }
         }
     )
 
