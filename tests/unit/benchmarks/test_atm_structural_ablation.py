@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import runpy
+import socket
 import sqlite3
 import struct
 from collections.abc import Callable, Sequence
@@ -19,12 +22,157 @@ from PIL import Image
 from mindbridge import EmbedTask, Memory, MindBridgeConfig, Modality, ModelInput
 from mindbridge.benchmarks import eval as runner
 from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from mindbridge.benchmarks.eval_config import (
+    _Arguments,
+    _judge_config,
+    _load_memory_config,
+    _model_config,
+)
 from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
-from mindbridge.benchmarks.task_catalog import TASKS
+from mindbridge.benchmarks.task_catalog import TASKS, TaskSpec
 
 
 class _ExecutionResult(Protocol):
     def execution_result(self) -> dict[str, object]: ...
+
+
+def test_portable_retrieval_recipe_preflights_without_models_or_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = Path(__file__).parents[3]
+    recipe_path = Path("benchmarks/atm_ablation_recipe.json")
+    recipe = json.loads((repository / recipe_path).read_text())
+    config_path = Path(recipe["base_config_path"])
+    for relative in (recipe_path, config_path):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((repository / relative).read_bytes())
+    assert (
+        hashlib.sha256((tmp_path / config_path).read_bytes()).hexdigest()
+        == recipe["base_config_sha256"]
+    )
+    recipe["preflight"] = True
+    (tmp_path / recipe_path).write_text(json.dumps(recipe))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-embedding-key")
+    monkeypatch.setenv("MINDBRIDGE_GENERATION_API_KEY", "fixture-generation-key")
+    monkeypatch.setenv("MINDBRIDGE_JUDGE_API_KEY", "fixture-judge-key")
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("portable example preflight must not open models, network or storage")
+
+    monkeypatch.setattr(socket.socket, "connect", denied)
+    monkeypatch.setattr(socket.socket, "connect_ex", denied)
+    monkeypatch.setattr(sqlite3, "connect", denied)
+    monkeypatch.setattr(Memory, "from_config", denied)
+    monkeypatch.setattr(runner, "_BackendPool", denied)
+    functions = runpy.run_path(str(repository / "benchmarks/atm_structural_ablation.py"))
+    main = cast(Callable[[list[str]], int], functions["main"])
+    prepare = cast(
+        Callable[[Path], tuple[_Arguments, MindBridgeConfig, LoadedTask]], functions["_prepare"]
+    )
+    prepared: list[tuple[_Arguments, MindBridgeConfig, LoadedTask]] = []
+
+    def observe_prepare(path: Path) -> tuple[_Arguments, MindBridgeConfig, LoadedTask]:
+        result = prepare(path)
+        prepared.append(result)
+        return result
+
+    image = tmp_path / "original.jpg"
+    image.write_bytes(b"original fixture media with metadata")
+    item = MemoryItem("20300101_120000", ("Already fused source description",))
+    questions = tuple(
+        EvalQuestion(str(index), ("Question",), ("Reference",)) for index in range(1013)
+    )
+    task = LoadedTask(
+        TASKS["atm-bench-main-sgm"],
+        tmp_path / "qa.json",
+        "fixture-dataset-hash",
+        (EvalUnit("main_sgm", (item,), questions),),
+        {"memory": "fixture-memory-hash", "dataset": "fixture-dataset-hash"},
+    )
+    raw = replace(
+        task,
+        spec=TASKS["atm-bench-main"],
+        units=(replace(task.units[0], memories=(replace(item, content=(image,)),)),),
+        input_sha256={"memory": "fixture-raw-memory-hash"},
+    )
+    loads: list[str] = []
+
+    def load_fixture(spec: TaskSpec, *, root: Path, **kwargs: object) -> LoadedTask:
+        assert root.resolve() == tmp_path / ".benchmarks/atm-inputs"
+        loads.append(spec.name)
+        if spec.name == "atm-bench-main":
+            assert kwargs["media_root"] == tmp_path / recipe["raw_media_root"]
+            return raw
+        return task
+
+    monkeypatch.setattr(runner, "load_task", load_fixture)
+    monkeypatch.setitem(main.__globals__, "load_task", load_fixture)
+    monkeypatch.setitem(main.__globals__, "_prepare", observe_prepare)
+    assert main(["--recipe", str(recipe_path)]) == 0
+    arguments, config, loaded = prepared[0]
+    assert loaded.units[0].questions is questions
+    assert loaded.units[0].memories[0].content == (*item.content, image)
+    assert loads == ["atm-bench-main-sgm", "atm-bench-main"]
+    assert config.embedding.provider == "openai"
+    assert config.embedding.api_key is None
+    assert config.generation is not None and config.generation.provider == "openai"
+    assert config.generation.api_key is not None
+    assert config.generation.api_key.get_secret_value() == "fixture-generation-key"
+    assert config.generation.answer_format == "text"
+    assert config.generation.request_max_bytes == 33_554_432
+    assert config.vision is None and config.generation.offline_gazetteer is None
+    assert config.reranking is not None and config.reranking.provider == "qwen3-vl"
+    assert config.reranking.revision == "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
+    assert (config.reranking.batch_size, config.reranking.max_length) == (4, 2048)
+    assert config.settings.evidence_budget_chars == 64_000
+    assert (
+        config.settings.recall_rounds,
+        config.settings.recall_max_queries,
+        config.settings.recall_set_budget_chars,
+        config.settings.recall_set_max_rows,
+    ) == (2, 2, 64_000, 100)
+    assert arguments.answer_policy == "strict" and arguments.recall_limit == 20
+    assert (
+        arguments.request_concurrency,
+        arguments.unit_concurrency,
+        arguments.ingest_concurrency,
+        arguments.judge_concurrency,
+    ) == (16, 16, 16, 16)
+    directory = tmp_path / recipe["artifact_root"] / recipe["variant"]
+    manifest = json.loads((directory / "preflight.json").read_text())
+    assert manifest["source_store"] is None and manifest["raw_media"] is True
+    assert manifest["measure_search_replay"] is False
+    assert not (directory / "stores").exists()
+    local, overrides = _load_memory_config(directory / "input.yaml")
+    assert local is not None
+    judge = _judge_config(_model_config("", memory_config=local), arguments, overrides=overrides)
+    assert judge.model == "gpt-5-mini" and judge.api_key == "fixture-judge-key"
+
+
+def test_portable_recipe_rejects_yaml_drift_before_loading_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = Path(__file__).parents[3]
+    recipe = json.loads((repository / "benchmarks/atm_ablation_recipe.json").read_text())
+    source = repository / recipe["base_config_path"]
+    changed = tmp_path / "changed.yaml"
+    changed.write_bytes(source.read_bytes() + b"\n# changed after pinning\n")
+    recipe["base_config_path"] = str(changed)
+    recipe["artifact_root"] = str(tmp_path / "outputs")
+    path = tmp_path / "recipe.json"
+    path.write_text(json.dumps(recipe))
+    functions = runpy.run_path(str(repository / "benchmarks/atm_structural_ablation.py"))
+    main = cast(Callable[[list[str]], int], functions["main"])
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("changed config must fail before preparing inputs")
+
+    monkeypatch.setitem(main.__globals__, "_prepare", denied)
+    with pytest.raises(ValueError, match="SHA-256 differs"):
+        main(["--recipe", str(path)])
+    assert not (tmp_path / "outputs").exists()
 
 
 def test_raw_attachment_preserves_questions_text_and_timestamps(tmp_path: Path) -> None:

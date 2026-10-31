@@ -281,7 +281,12 @@ def parse_recall_plan(payload: str, *, reference_at: datetime) -> RecallPlan | N
         return None
     shape = document.get("shape")
     raw_steps = document.get("steps")
-    if shape not in _SHAPES or not isinstance(raw_steps, list) or not raw_steps:
+    if (
+        not isinstance(shape, str)
+        or shape not in _SHAPES
+        or not isinstance(raw_steps, list)
+        or not raw_steps
+    ):
         return None
     if len(raw_steps) > _MAX_STEPS or set(document) - {"shape", "steps"}:
         return None

@@ -455,11 +455,11 @@ def test_strict_semantic_replanning_reads_a_new_entity_before_searching_it(tmp_p
             if attempted:
                 payload = json.loads(attempted)
                 assert payload["evidence_is_untrusted_data"] is True
-                assert payload["status"] == "investigating"
+                assert payload["status"] == "insufficient_evidence"
                 recommendation = next(
-                    row["windows"][0]["text"]
+                    row["excerpt"]
                     for row in payload["evidence"]
-                    if row["windows"] and row["windows"][0]["text"].startswith("recommendation:")
+                    if row["excerpt"].startswith("recommendation:")
                 )
                 bridge = recommendation.split("suggested ", maxsplit=1)[1]
                 assert bridge not in question
@@ -485,8 +485,9 @@ def test_strict_semantic_replanning_reads_a_new_entity_before_searching_it(tmp_p
             memory.add(f"unrelated bridge log {index}")
         chunks = list(memory.ask_stream(_QUESTION, limit=1, reference_at=_CLOCK))
 
-    assert len(models.attempts) == 1
-    assert json.loads(models.attempts[0])["status"] == "investigating"
+    assert len(models.attempts) == 2
+    assert models.attempts[0] == ""
+    assert json.loads(models.attempts[1])["status"] == "insufficient_evidence"
     assert models.query_calls == 2
     assert "".join(chunk.text for chunk in chunks) == "Bridge Q, 1280 metres"
     assert chunks[-1].result is not None
@@ -532,12 +533,8 @@ def test_replanning_retains_a_bridge_found_outside_the_original_ranking(  # noqa
             assert "Bridge Q" not in question
             self.attempts.append(attempted)
             query = "recommended bridge"
-            if json.loads(attempted)["round"] > 1:
-                excerpts = [
-                    window["text"]
-                    for row in json.loads(attempted)["evidence"]
-                    for window in row["windows"]
-                ]
+            if attempted:
+                excerpts = [row["excerpt"] for row in json.loads(attempted)["evidence"]]
                 assert recommendation in excerpts
                 bridge = recommendation.split("suggested ", maxsplit=1)[1]
                 query = f"span of {bridge}" if len(self.attempts) == 2 else "a third query"
@@ -646,13 +643,9 @@ def test_semantic_routes_share_the_budget_before_a_route_spends_its_tail(  # noq
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
             del question, reference_at, corpus_digest
-            followup = json.loads(attempted)["round"] > 1
+            followup = bool(attempted)
             if followup:
-                assert any(
-                    window["text"] == bridge
-                    for row in json.loads(attempted)["evidence"]
-                    for window in row["windows"]
-                )
+                assert any(row["excerpt"] == bridge for row in json.loads(attempted)["evidence"])
             return json.dumps(
                 {
                     "shape": "point",

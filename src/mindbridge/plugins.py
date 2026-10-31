@@ -138,7 +138,7 @@ class MemoryConfig:
     # the budget refills it. Lowering this reduces supplemental evidence;
     # `None` with a lower `limit` reduces the guaranteed count. Neither bounds provider tokens.
     evidence_budget_chars: _PositiveInt | None = 24_000
-    # Whether `ask` inspects its initial evidence and plans further reads. Off by default: it costs
+    # Whether `ask` plans bounded reads before answering. Off by default: it costs
     # one extra generation call per question, and it only pays where similarity has no way to
     # express the question -- a count, a list of "all", an adjacency, everything about a person.
     # With it off, `ask` runs exactly the one search it always has.
@@ -146,7 +146,7 @@ class MemoryConfig:
     # Experimental query execution for similar steps, bounded across all rounds of one ask.
     # Default recall programs reuse the original question's ranking.
     recall_query_expansion: _StrictBool = False
-    # One shared search budget across investigation and answer-recovery rounds.
+    # One shared search budget across recall steps and abstention-triggered answer retries.
     recall_max_queries: Annotated[int, Field(strict=True, ge=1, le=32)] = 6
     # Describe query images transiently for text retrieval, retaining their native image keys.
     query_vision: _StrictBool = False
@@ -163,9 +163,8 @@ class MemoryConfig:
     # rather than silently thinned. It bounds the matched set only; the ranked window is outside
     # it. Only read when `recall_planning` is on.
     recall_set_max_rows: _PositiveInt = 60
-    # How many investigation/recovery rounds one `ask` may spend. An unresolved fact can
-    # trigger another read before generating an answer; an eligible abstention may also use a
-    # remaining round. Planning stops early when ready or when repeated reads make no progress.
+    # How many answer attempts one `ask` may spend. Only an eligible abstention triggers
+    # another plan: under best-effort, or under strict with query expansion enabled.
     # `1` disables follow-up rounds. Only read when `recall_planning` is on.
     recall_rounds: _PositiveInt = 2
     # Whether the grounding window is widened with the records it is structurally linked to: the

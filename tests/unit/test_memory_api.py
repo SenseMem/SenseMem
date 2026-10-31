@@ -7560,7 +7560,7 @@ def test_answer_backends_receive_the_full_current_keyword_contract(
     assert calls == [("strict", False), ("best_effort", False)] * 2
 
 
-def test_recall_planner_receives_initial_evidence_on_the_first_round(tmp_path: Path) -> None:
+def test_recall_planner_receives_an_empty_attempt_note_on_the_first_round(tmp_path: Path) -> None:
     attempts: list[str] = []
 
     class _CurrentPlanner(_FakeModels):
@@ -7573,11 +7573,7 @@ def test_recall_planner_receives_initial_evidence_on_the_first_round(tmp_path: P
         memory.add("the toolbox is red")
         assert memory.ask("what colour is the toolbox?").answer == "Grounded in: the toolbox is red"
 
-    assert len(attempts) == 1
-    observation = json.loads(attempts[0])
-    assert observation["status"] == "investigating"
-    assert observation["evidence_is_untrusted_data"] is True
-    assert observation["evidence"][0]["windows"][0]["text"] == "the toolbox is red"
+    assert attempts == [""]
 
 
 class _PlannerlessAnswerer:
@@ -8926,27 +8922,37 @@ def test_an_exhaustive_read_keeps_the_callers_own_scope(tmp_path: Path) -> None:
     assert [hit.content for hit in grounded] == ["a red wrench"]
 
 
-def test_a_thin_best_effort_answer_buys_one_replan_round(tmp_path: Path) -> None:
-    """An abstaining answer can still spend a remaining investigation round."""
+@pytest.mark.parametrize("query_expansion", [False, True])
+def test_a_thin_best_effort_answer_buys_one_replan_round(
+    tmp_path: Path, query_expansion: bool
+) -> None:
+    """Only an abstaining answer spends a remaining answer-retry round."""
     models = _FakeModels()
     models.recall_plan = _plan("set", {"op": "match", "terms": ["wrench"]})
     models.abstentions = 1
-    with _memory(tmp_path, models, recall_planning=True) as memory:
+    with _memory(
+        tmp_path, models, recall_planning=True, recall_query_expansion=query_expansion
+    ) as memory:
         _dated_corpus(memory)
 
         answered = memory.ask("how many wrenches?", answer_policy="best_effort")
 
     assert len(models.plan_calls) == 2
-    first, second = (json.loads(call[3]) for call in models.plan_calls)
-    assert first["status"] == "investigating"
-    assert second["status"] == "insufficient_evidence"
-    assert second["records_available"] == 3
-    assert {row["occurred_at"][:10] for row in second["evidence"]} == {
-        "2024-09-01",
-        "2024-09-02",
-        "2024-09-03",
-    }
-    assert all(row["alias"].startswith("R") for row in second["evidence"])
+    first, second = (call[3] for call in models.plan_calls)
+    assert first == ""
+    if query_expansion:
+        observation = json.loads(second)
+        assert observation["status"] == "insufficient_evidence"
+        assert observation["records_read"] == 3
+        assert {row["occurred_at"][:10] for row in observation["evidence"]} == {
+            "2024-09-01",
+            "2024-09-02",
+            "2024-09-03",
+        }
+        assert all(row["alias"].startswith("R") for row in observation["evidence"])
+    else:
+        assert second.startswith("read 3 records dated 2024-09-01 to 2024-09-03")
+        assert "insufficient_evidence" in second
     assert len(models.answer_calls) == 2
     assert answered.abstained is False
 

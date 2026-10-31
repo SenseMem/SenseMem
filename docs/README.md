@@ -73,6 +73,8 @@ contract.
 ## Evaluate
 
 - [Benchmarking](benchmarking.md) — reproducible behavior evaluation and local-index measurement.
+- [Fused ATM-Bench retrieval](atm-fused-retrieval.md) — caller-supplied descriptions and raw
+  media, pinned text-window reranking, and a portable evaluation recipe.
 - [Grounded multimodal recall](grounded-multimodal-recall.md) — bounded semantic routes,
   transient query vision, optional concise answers, and native-media transport.
 - [Offline semantic support audit](semantic-support-audit.md) — atomic-claim review, evidence

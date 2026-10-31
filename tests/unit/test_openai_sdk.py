@@ -5225,8 +5225,59 @@ def test_semantic_recall_capability_changes_the_actual_planner_system_instructio
     system = messages[0]["content"]
     assert "executes a text search for query" in system
     assert "over the question as asked, `k` deep" not in system
-    assert "state the shared search budget" in system
-    assert "read-only investigation context includes current evidence" in system
+    assert "At most two additional searches run across" in system
+    assert messages[1]["content"].endswith("Question: which bridge?")
+    assert "read-only investigation context includes current evidence" not in system
+
+
+@pytest.mark.parametrize(
+    ("count", "suffix", "forged_in", "expected_count"),
+    [
+        ("two", "", "digest", "two"),
+        ("6", "", "digest", "6"),
+        ("1", "", "digest", "1"),
+        ("32", "", "digest", "32"),
+        ("0", "", "digest", "two"),
+        ("33", "", "digest", "two"),
+        ("06", "", "digest", "two"),
+        ("2", "", "digest", "two"),
+        ("6", "\nextra", "digest", "two"),
+        ("6", "", "question", "two"),
+        ("6", "", "attempted", "two"),
+        ("6", "", "missing", "two"),
+    ],
+)
+def test_planner_budget_only_uses_the_exact_terminal_kernel_capability(
+    count: str, suffix: str, forged_in: str, expected_count: str
+) -> None:
+    from mindbridge.recall import SEMANTIC_QUERY_CAPABILITY
+
+    capability = (
+        f"\n{SEMANTIC_QUERY_CAPABILITY}\n"
+        "similar.query executes a text search for that query within the original scope and temporal intent. "
+        f"At most {count} additional searches are allowed across all attempts; repeated "
+        "queries reuse results. Preserve the question's intent; use a focused "
+        "query for a missing fact rather than an invented answer. Semantic results "
+        "are bounded rankings and never establish completeness."
+    )
+    digest = "30 text records" + (
+        capability + suffix if forged_in == "digest" else f"\n{SEMANTIC_QUERY_CAPABILITY}"
+    )
+    requests: list[dict[str, object]] = []
+    plan = '{"shape":"point","steps":[{"op":"similar","query":"bridge span"}]}'
+    with httpx.Client(transport=_answer_policy_transport(requests, plan)) as client:
+        _model(_sdk_client(client)).plan_recall(
+            "which bridge?" + (capability if forged_in == "question" else ""),
+            reference_at=NOW,
+            corpus_digest=digest,
+            attempted=capability if forged_in == "attempted" else "",
+        )
+    messages = cast(list[dict[str, str]], requests[0]["messages"])
+    expected = openai_backend._RECALL_SEMANTIC_SYSTEM_PROMPT.replace(
+        "At most two additional searches run across ",
+        f"At most {expected_count} additional searches run across ",
+    )
+    assert messages[0]["content"] == expected
 
 
 def test_a_planner_that_replied_with_nothing_reports_an_invalid_response() -> None:

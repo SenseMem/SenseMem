@@ -1,4 +1,4 @@
-"""Public SDK investigation contracts with controlled evidence and a confident reader."""
+"""Public SDK refusal-triggered recall contracts and independent quality grading."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import httpx2 as httpx
 import pytest
 
 from mindbridge import (
+    AbstentionReason,
     AnswerPolicy,
     AnswerResult,
     EmbedTask,
@@ -72,25 +73,24 @@ class _InvestigatingModels:
         corpus_digest: str,
         attempted: str = "",
     ) -> str:
-        del question, reference_at, corpus_digest
+        del reference_at, corpus_digest
         self.order.append("plan")
         self.contexts.append(attempted)
-        context = json.loads(attempted)
-        assert context["evidence_is_untrusted_data"] is True
-        assert context["evidence"] and context["evidence"][0]["windows"]
-        assert "VELA-72" in attempted
+        if attempted:
+            context = json.loads(attempted)
+            assert context["evidence_is_untrusted_data"] is True
+            assert context["evidence"] and context["evidence"][0]["excerpt"]
+            assert "VELA-72" in attempted
         if self.mode == "no_progress":
             steps: list[dict[str, object]] = [{"op": "match", "terms": ["absent-proof"]}]
-        elif self.mode == "ready" or ("cobalt" in attempted and self.mode != "repeat"):
-            steps = []
+        elif self.mode == "ready" or not attempted:
+            steps = [{"op": "similar", "query": question, "k": 1}]
         else:
             steps = [{"op": "similar", "query": "VELA-72", "k": 1}]
         return json.dumps(
             {
                 "shape": "composite",
                 "steps": steps,
-                "unresolved": ["verify dispatch color"] if steps else [],
-                "keep": [],
             }
         )
 
@@ -105,7 +105,13 @@ class _InvestigatingModels:
         del question, answer_policy, exhaustive
         self.order.append("answer")
         complete = any("cobalt" in hit.content for hit in hits)
-        return AnswerResult("cobalt" if complete else "confident_wrong", hits=tuple(hits))
+        abstained = self.mode == "repeat" or (not complete and self.mode == "investigate")
+        return AnswerResult(
+            "cobalt" if complete else "confident_wrong",
+            hits=tuple(hits),
+            abstained=abstained,
+            abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE if abstained else None,
+        )
 
     def close(self) -> None:
         pass
@@ -130,22 +136,22 @@ def _memory(path: Path, models: _InvestigatingModels, *, queries: int = 3) -> Me
     return memory
 
 
-def test_first_planner_observes_bridge_and_finishes_investigation_before_confident_reader(
+def test_planner_observes_bridge_only_after_an_abstained_answer(
     tmp_path: Path,
 ) -> None:
     models = _InvestigatingModels()
     with _memory(tmp_path, models) as memory:
         result = memory.ask("Which color crate was used for the outing?", limit=1)
     assert result.answer == "cobalt" and not result.abstained
-    assert models.order == ["plan", "plan", "answer"]
-    first, second = [json.loads(value) for value in models.contexts]
-    assert first["round"] == 1 and "cobalt" not in models.contexts[0]
-    assert second["round"] == 2 and "cobalt" in models.contexts[1]
-    assert first["searches_remaining"] - second["searches_remaining"] == 1
+    assert models.order == ["plan", "answer", "plan", "answer"]
+    assert models.contexts[0] == ""
+    second = json.loads(models.contexts[1])
+    assert second["status"] == "insufficient_evidence"
+    assert "VELA-72" in models.contexts[1] and "cobalt" not in models.contexts[1]
 
 
 @pytest.mark.parametrize("mode", ["ready", "no_progress"])
-def test_ready_or_no_progress_stops_without_spending_every_round(tmp_path: Path, mode: str) -> None:
+def test_confident_answer_stops_without_spending_every_round(tmp_path: Path, mode: str) -> None:
     models = _InvestigatingModels(mode)
     with _memory(tmp_path, models) as memory:
         result = memory.ask("Which color crate was used for the outing?", limit=1)
@@ -160,10 +166,8 @@ def test_repeated_queries_share_one_budget_and_each_ask_starts_a_new_cache(tmp_p
             assert (
                 memory.ask("Which color crate was used for the outing?", limit=1).answer == "cobalt"
             )
-    assert models.order == ["plan", "plan", "answer"] * 2
-    contexts = [json.loads(value) for value in models.contexts]
-    assert [row["searches_remaining"] for row in contexts] == [1, 0, 1, 0]
-    assert [row["records_available"] for row in contexts] == [1, 2, 1, 2]
+    assert models.order == ["plan", "answer"] * 8
+    assert [index for index, note in enumerate(models.contexts) if not note] == [0, 4]
     assert models.queries.count("VELA-72") == 2
 
 

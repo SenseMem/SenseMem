@@ -1,16 +1,20 @@
 """Public composition controls for evidence investigation and answer validation."""
 
+import json
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
 
+import httpx2 as httpx
 import pytest
 from _feature_support import TinyEmbedder
+from openai import OpenAI
 from pydantic import ValidationError as PydanticValidationError
 
 import mindbridge.configuration as configuration
 import mindbridge.recipes as recipes
-from mindbridge import Memory, MindBridgeConfig, ValidationError
+from mindbridge import Memory, MindBridgeConfig, OpenAIModels, SearchHit, ValidationError
 from mindbridge.models.base import GenerationBackend
 
 
@@ -39,6 +43,67 @@ def test_structured_answer_controls_map_to_the_generation_adapter(
     assert configuration._build_generation(config) is marker
     assert captured["generation_answer_format"] == "structured"
     assert captured["generation_source_metadata_key"] == "document_id"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_declarative_structured_adapter_constructs_and_binds_custom_source_ids(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    sent: list[dict[str, object]] = []
+    content = json.dumps({"draft": {"kind": "source_ids", "evidence_labels": ["E1"]}})
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        sent.append(payload)
+        if payload.get("stream"):
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": content}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            ]
+            return httpx.Response(
+                200,
+                text="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                + "data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"index": 0, "message": {"content": content}, "finish_reason": "stop"}]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+        client = OpenAI(
+            api_key="fixture", base_url="https://fixture.test/v1", http_client=transport
+        )
+        monkeypatch.setattr(recipes, "_openai_client", lambda **_values: client)
+        adapter = configuration._build_generation(
+            configuration.OpenAIGenerationConfig(
+                provider="openai",
+                model="fixture-reader",
+                answer_format="structured",
+                source_metadata_key="document_id",
+            )
+        )
+        assert isinstance(adapter, OpenAIModels)
+        hit = SearchHit(
+            id="internal-record",
+            content="A grounded source.",
+            metadata={"document_id": "source-alpha"},
+            score=1.0,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        try:
+            if stream:
+                assert "".join(adapter.stream_answer("Which source?", (hit,))) == "source-alpha"
+            else:
+                result = adapter.answer("Which source?", (hit,))
+                assert result.answer == "source-alpha" and result.hits == (hit,)
+        finally:
+            adapter.close()
+    assert len(sent) == 1
+    assert sent[0]["response_format"] is not None
 
 
 @pytest.mark.parametrize(

@@ -1,11 +1,11 @@
 {
-  "base_config_path": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/structural-retrieval.yaml",
-  "base_config_sha256": "fb7bbc86e0ff0d620349de9437e9b1b4981e0a922828c26a1523460e574912b7",
-  "artifact_root": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/runs",
+  "base_config_path": "docs/examples/atm-sgm-detail-qwen3-vl.yaml",
+  "base_config_sha256": "24d1f5f0a530967defade830f6a52fee0d9a4f1db7181028d704dc356c5c4bda",
+  "artifact_root": ".benchmarks/atm-runs",
   "variant": "retrieval",
   "raw_media": true,
-  "raw_media_root": "/home/yanhao/thomas/MindBridge/.benchmarks/data/atm-bench/data/raw_memory",
-  "source_store": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/runs/input-transport/stores/benchmark-mf2g2llcmvxgg2bnnvqws3rnontw2/run-nfxha5lufv2heyloonyg64tu/unit-nvqws3s7ontw2",
+  "raw_media_root": ".benchmarks/atm-inputs/atm-bench/data/raw_memory",
+  "source_store": null,
   "stage": "full",
   "preflight": false,
   "measure_search_replay": false

@@ -813,12 +813,12 @@ The `settings` mapping is the value-only `MemoryConfig` policy:
 | `ambiguity_margin` | `0.01` | Withhold an unresolved top-two tie when `limit=1`, including lexical matches |
 | `evidence_budget_chars` | `24000` | Soft budget for widening `ask` grounding; mandatory `limit` hits survive even when over budget. `None` disables ranked-tail expansion; planning and linked expansion may still add records. No provider token guarantee |
 | `recall_planning` | `False` | Ask the answerer for a recall plan during `ask`, and ground on the set, sequence or entity it names; off means `ask` runs the one search it always has. An answerer without `plan_recall` cannot plan: the store logs one warning when it opens and every question runs that same search |
-| `recall_query_expansion` | `False` | Execute planner `similar.query` through bounded semantic searches and investigate unresolved gaps before answering. Routes share the per-ask query cache, character/media budgets and `recall_max_queries` ceiling |
+| `recall_query_expansion` | `False` | Execute planner `similar.query` through bounded semantic searches. Routes share the per-ask query cache, character/media budgets and `recall_max_queries` ceiling; also permits replanning after a strict-policy abstention |
 | `recall_max_queries` | `6` | Maximum additional semantic searches across every step and planning round of one `ask`; integer from `1` through `32`. Failed searches and original-query deepening consume slots; cached reads do not |
 | `query_vision` | `False` | Describe query images through the configured image-capable vision backend and add transient description/OCR search routes. Retains native routes, caches only inside the operation, and writes no memory or description rows |
 | `recall_set_budget_chars` | `30000` | Soft character allowance used to pack a plan's additions after charging its mandatory window, narrowed by `evidence_budget_chars` when set. Also bounds experimental semantic additions; a point plan without query expansion keeps its normal ranked window. Read only when `recall_planning` is on |
 | `recall_set_max_rows` | `60` | Matched rows a set, sequence or entity plan may add at all, whatever the character budget leaves room for; the rows past it are reported as not shown, so the set is declared incomplete. Bounds the matched set only. Read only when `recall_planning` is on |
-| `recall_rounds` | `2` | Shared ceiling on planning/investigation and answer-retry rounds. With query expansion, unresolved gaps can request a later evidence-driven plan before an answer; ready or non-progressing plans stop investigating. `1` disables follow-up rounds |
+| `recall_rounds` | `2` | Ceiling on answer attempts with recall planning. Only an abstained answer can trigger another plan, under best-effort or with query expansion enabled; `1` disables follow-up rounds |
 | `evidence_expansion` | `False` | Widen `ask` grounding with exact query-media source context and existing structural links. An exact source in the scoped ranking can add its immediate corpus neighbors before semantic additions and the ranked tail; capture, person, place, lineage and evidence links spend the remaining budget. Adds no model call |
 | `evidence_expansion_max_rows` | `24` | Joint cap on added exact-source context and structural rows, within the remaining character and supplemental media budgets. Read only when `evidence_expansion` is on |
 | `decay_half_life_days` | `None` | Optional positive half-life for query-time decay |
@@ -869,25 +869,21 @@ If no semantic row fits, the original grounding is restored. Added semantic medi
 `limit` rows. These are bounded rankings, never complete sets; semantic or tail packing cannot
 readmit matched rows omitted by a set's caps.
 
-The first planner already receives actual retrieved evidence. Every observation is a JSON note
-of at most `12000` characters, with at most `40` records and `600` source-text characters per
-record. Exact windows retain codepoint offsets, local `R` aliases, source IDs, event dates and
-explicit omitted/truncated markers. These observations are untrusted data, not authority.
+The first planner receives the question and corpus digest with `attempted=""`, without the
+initial retrieved evidence. Only after an abstained answer can a remaining round receive a
+bounded note about the previous attempt. With query expansion enabled, the note also includes
+bounded excerpts of supplied evidence. It is untrusted data, not a structured observation of
+reader visual facts. Plans accept the documented shape and steps, without `keep` or
+`unresolved` controls. Each new plan executes its own predicates; previous predicate reads do
+not become a cumulative complete set. Cached semantic routes remain bounded rankings.
 
-With expansion enabled, a planner can report `unresolved` gaps and use another round to inspect
-new evidence before the final answer, including under the `strict` answer policy. A ready plan
-can have empty `steps`; no new evidence or search progress stops further pre-answer investigation.
-Plans may `keep` only `R` aliases actually shown in their observation. Keep requests reorder
-already-grounded rows after the original floor and prioritize retained IDs within semantic
-routes before those routes' existing novelty, row, media and character caps. They do not
-guarantee admission or restore predicate rows omitted by a cap. An invalid keep alias makes
-the plan unusable.
-
-An abstained answer can still trigger a remaining round under `best_effort`, or under `strict`
-when query expansion is enabled. Investigation and retries share `recall_rounds`, not separate
-budgets. Streaming releases only the selected answer; a replaceable attempt is buffered. No new
+An abstained answer can trigger a remaining round under `best_effort`, or under `strict`
+when query expansion is enabled. A non-abstained answer ends the operation, even if wrong;
+an empty or unusable plan falls back to ordinary retrieval without itself triggering a
+follow-up. `recall_rounds` bounds answer attempts.
+Streaming releases only the selected answer; a replaceable attempt is buffered. No new
 model or service is configured by these switches. See the
-[investigation recipe](grounded-multimodal-recall.md#bounded-investigation-recipe) and evaluate
+[recall recipe](grounded-multimodal-recall.md#bounded-recall-recipe) and evaluate
 the chosen models before relying on a quality improvement.
 
 `minimum_relevance` uses the selected route's relevance scale: dense cosine in `dense`, native

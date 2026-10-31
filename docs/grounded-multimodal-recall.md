@@ -12,28 +12,28 @@ rows are reserved before optional rows are priced. Predicate row/media limits an
 reporting remain enforced. A complete predicate read is not automatically the question's complete
 answer set: anchors and neighbors must still satisfy the question and its counting unit.
 
-The first planner sees actual initial evidence. Its untrusted JSON observation has at most
-12,000 characters and 40 records, with at most 600 exact source-text characters per record,
-codepoint offsets, event dates and explicit truncation/omission counts. Query-related windows
-can expose a matching passage beyond a long source's opening. They do not establish that all
-relevant facts are visible.
+The first planner receives the question and corpus digest, with an empty `attempted` string.
+It does not see the initial retrieved evidence. After an abstained answer, a remaining round
+may receive a bounded note about the previous attempt; enabling query expansion includes
+excerpts of that attempt's supplied evidence. This is untrusted source data, not a structured
+reader-to-planner account of visual facts.
 
-With expansion enabled, `unresolved` obligations can trigger another investigation round before
-answering, including under the strict policy. The planner may retain only the local `R` aliases
-it was shown. This reorders already-grounded rows after the original floor and prioritizes
-retained IDs within semantic routes before their existing caps. It does not guarantee source
-admission or restore omitted predicate rows. A ready plan can have no steps; no new
-evidence or search progress stops further investigation. Investigation and answer retries share
-`recall_rounds`, default 2. An abstention can use a remaining round under best-effort, or under
-strict when expansion is enabled. Streaming releases only the final selected answer.
+Only an abstained answer triggers replanning: under best-effort, or under strict when query
+expansion is enabled. A confident answer ends the operation. Plans do not support `keep` or
+`unresolved` control fields. Each round executes its own predicate plan; earlier predicates
+are not accumulated into a new complete set. Successful semantic routes remain available
+under their shared budgets, but they never establish completeness. `recall_rounds`, default 2,
+bounds answer attempts. An empty or unusable plan falls back to ordinary retrieval; it does
+not itself trigger another attempt. Streaming
+releases only the final selected answer.
 
 Sequence plans order the entire selected union after packing, using event time and SQLite
 insertion order for ties. Similarity rank, record IDs and creation timestamps do not substitute
 for the source's same-time order. Ordering does not add records or establish a complete history.
 
-## Bounded investigation recipe
+## Bounded recall recipe
 
-This configuration enables evidence-reading planning and typed answer rendering. It is a
+This configuration enables bounded recall planning and typed answer rendering. It is a
 starting point for task-specific evaluation, not a measured accuracy improvement. It uses a
 text embedder and reader; configure image/video-capable backends separately when native media
 must be inspected. Install the `local` extra for the local model and configure the generation
@@ -80,7 +80,7 @@ reranking:
 SQLite hydration and filtering, relevance and the existing ambiguity decision happen first.
 The reranker receives exact windows from eligible text, including captions, without changing the
 Reader's source content. Empty-text media keep their positions; a media-only query without text
-skips it. Raw logits change ordering, while `SearchHit.score` remains bounded;
+skips it. Model relevance scores change ordering, while `SearchHit.score` remains bounded;
 `search_with_trace` exposes the separate `reranking_score`. Failed or malformed model responses
 raise an error. See [semantic reranking](configuration.md#semantic-reranking).
 

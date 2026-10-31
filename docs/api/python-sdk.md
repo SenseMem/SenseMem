@@ -477,22 +477,20 @@ the provider's own deltas, marker included; the terminal `AnswerResult` carries 
 answer, so render a stream on `abstained` rather than on the text.
 
 `ask_stream()` yields the deltas of one answer, never of two. With `recall_planning` on, the
-first planner sees actual initial evidence. Its JSON observation is capped at 12,000 characters
-and 40 records, with at most 600 exact source characters per record, offsets, local `R` aliases,
-source IDs, event dates and explicit untrusted-data and omission markers. The planner can retain
-only aliases shown in that observation. Retention reorders already-grounded rows after the
-original floor and prioritizes IDs within semantic routes before their existing caps; it does
-not guarantee admission or recover omitted predicate rows. Query routes reuse cached results
-and share `recall_max_queries`.
+first planner receives the question and corpus digest with an empty `attempted` string;
+it does not see initial retrieved evidence. After an abstained answer, a later plan receives
+a bounded previous-attempt note, including evidence excerpts when query expansion is enabled.
+Plans do not accept `keep` or `unresolved` controls. Their predicate reads apply to the current
+plan, while successful semantic routes reuse cached results and share `recall_max_queries`.
+Historical bounded routes do not establish a cumulative complete answer set.
 
-With expansion enabled, unresolved obligations can trigger another investigation round before
-answering, including under `"strict"`. A ready plan may return no steps; lack of new evidence or
-new queries stops investigation. `recall_rounds` (default 2) bounds both investigation and answer
-retries. Within the remaining rounds, a `"best_effort"` abstention can request another plan;
-expansion also allows this for a `"strict"` abstention. A round another round may replace is
+`recall_rounds` (default 2) bounds answer attempts. Within the remaining rounds, a
+`"best_effort"` abstention can request another plan; expansion also allows this for a
+`"strict"` abstention. A non-abstained answer ends the operation; an empty or unusable plan
+falls back to ordinary retrieval without itself requesting a follow-up. A round another round may replace is
 held rather than streamed, so the concatenated deltas are the answer the terminal
 `AnswerResult` carries. Structured output additionally buffers its draft until validation and
-rendering complete. See the [investigation recipe](../grounded-multimodal-recall.md#bounded-investigation-recipe).
+rendering complete. See the [recall recipe](../grounded-multimodal-recall.md#bounded-recall-recipe).
 
 `ask` may run face recognition on a retrieved photo or video to identify who appears in it before
 answering. With the default `link_identities=True`, a voice-and-face pair corroborated across
@@ -1450,10 +1448,11 @@ plan_recall(
 ```
 
 The return is the model's JSON text, not an executed plan. The kernel validates it and falls back
-to ordinary retrieval for an unusable plan. `attempted` carries the bounded observation of actual
-initial evidence on the first call, then evidence and investigation progress on later calls.
-The planner may return a ready plan with no steps or request bounded searches and predicate reads,
-state unresolved obligations, and retain only the source aliases it was shown.
+to ordinary retrieval for an unusable plan. `attempted` is empty on the first call. A later call
+after an abstained answer receives a bounded previous-attempt note; query expansion includes
+evidence excerpts. Plans may request bounded searches and predicate reads, but have no `keep`
+or `unresolved` controls. Empty steps make a plan unusable. A non-abstained answer does not
+request another plan.
 
 `exhaustive` is true when a recall program produced the hits as every record its predicate
 matched, in time order, rather

@@ -111,10 +111,6 @@ from mindbridge.types import (
 # matched every clip in the corpus is bounded here rather than by the character budget alone.
 _RECALL_MEDIA_FACTOR = 2
 
-# A per-ask ceiling, shared by all steps and replans, including a deeper original-query read.
-_RECALL_QUERY_LIMIT = 2
-
-
 ASYNC_QUEUE_TIME_MS: ContextVar[float | None] = ContextVar(
     "mindbridge_async_queue_time_ms",
     default=None,
@@ -156,11 +152,14 @@ class _RecallReads:
         hydrator: Hydrator,
         context: _RecallContext,
         retrieval: Retrieval | None = None,
+        *,
+        max_queries: int,
     ) -> None:
         self._store = store
         self._hydrator = hydrator
         self._context = context
         self._retrieval = retrieval
+        self._max_queries = max_queries
         original = context.prepared.text.strip()
         self._cache = {original: context.ranked}
         self._depths = {original: context.ranked_depth}
@@ -176,7 +175,7 @@ class _RecallReads:
             return RecallRows(rows, len(rows))
         query = query.strip()
         if k > self._depths.get(query, 0):
-            if self.queries >= _RECALL_QUERY_LIMIT:
+            if self.queries >= self._max_queries:
                 self.limited.add(query)
                 self._unavailable.add(query)
                 return RecallRows(self._cache.get(query, ())[:k], k)
@@ -801,6 +800,7 @@ class Answering(Traced):
             self._hydrator,
             context,
             self._retrieval if self._settings.recall_query_expansion else None,
+            max_queries=self._settings.recall_max_queries,
         )
         for attempt in range(self._settings.recall_rounds if self._settings.recall_planning else 1):
             held: builtins.list[str] = []
@@ -1297,7 +1297,12 @@ class Answering(Traced):
         if not hits:
             return grounding.EvidenceExpansion(hits=(), edges={}, dropped=())
         with self._trace("mindbridge.expand", kind="stage") as span:
-            expansion = _RecallReads(self._store, self._hydrator, context).related(
+            expansion = _RecallReads(
+                self._store,
+                self._hydrator,
+                context,
+                max_queries=self._settings.recall_max_queries,
+            ).related(
                 tuple(hit.id for hit in hits),
                 ceiling=grounding.expansion_ceiling(
                     context.limit,
@@ -1362,11 +1367,13 @@ class Answering(Traced):
             mark_model_requests(1)
             digest = self._corpus_digest()
             if self._settings.recall_query_expansion:
+                limit = self._settings.recall_max_queries
+                query_count = "two" if limit == 2 else str(limit)
                 digest += (
                     f"\n{SEMANTIC_QUERY_CAPABILITY}\n"
                     "similar.query executes "
                     "a text search for that query within the original scope and temporal intent. "
-                    "At most two additional searches are allowed across all attempts; repeated "
+                    f"At most {query_count} additional searches are allowed across all attempts; repeated "
                     "queries reuse results. Preserve the question's intent; use a focused "
                     "query for a missing fact rather than an invented answer. Semantic results "
                     "are bounded rankings and never establish completeness."

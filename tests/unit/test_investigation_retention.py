@@ -1,4 +1,4 @@
-"""Investigation retention cannot change admitted evidence or its stated time order."""
+"""Recall attempts preserve the ranked floor and execute the current predicate plan."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from mindbridge import (
+    AbstentionReason,
     AnswerPolicy,
     AnswerResult,
     Memory,
@@ -40,7 +39,7 @@ class _Models:
     def plan_recall(
         self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
     ) -> str:
-        return json.dumps({"shape": "point", "steps": [], "keep": ["R1"]})
+        return json.dumps({"shape": "point", "steps": [{"op": "similar", "k": 1}]})
 
     def answer(
         self,
@@ -57,7 +56,7 @@ class _Models:
         pass
 
 
-def test_keeping_a_floor_record_does_not_apply_predicate_row_caps_to_ranked_tail(
+def test_point_plan_does_not_apply_predicate_row_caps_to_ranked_tail(
     tmp_path: Path,
 ) -> None:
     models = _Models()
@@ -80,14 +79,14 @@ def test_keeping_a_floor_record_does_not_apply_predicate_row_caps_to_ranked_tail
     assert len(models.delivered) == 8
 
 
-@pytest.mark.parametrize("retain_predicate", [False, True], ids=["no-keep", "keep-predicate"])
-def test_cross_round_predicate_union_is_chronological_before_claiming_time_order(
-    tmp_path: Path, retain_predicate: bool
+def test_replanning_uses_the_current_predicate_without_accumulating_previous_predicate_rows(
+    tmp_path: Path,
 ) -> None:
     class ChronologicalModels(_Models):
         def __init__(self) -> None:
             super().__init__()
             self.plan_calls = 0
+            self.reads: list[tuple[SearchHit, ...]] = []
 
         def embed(
             self, values: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
@@ -109,9 +108,25 @@ def test_cross_round_predicate_union_is_chronological_before_claiming_time_order
                     "steps": [
                         {"op": "match", "terms": ["later" if self.plan_calls == 1 else "earlier"]}
                     ],
-                    "unresolved": ["Read the other event."] if self.plan_calls == 1 else [],
-                    "keep": ["R2"] if retain_predicate and self.plan_calls == 2 else [],
                 }
+            )
+
+        def answer(
+            self,
+            question: ModelInput,
+            hits: Sequence[SearchHit],
+            *,
+            answer_policy: AnswerPolicy = "strict",
+            exhaustive: bool = False,
+        ) -> AnswerResult:
+            self.question, self.delivered = question, tuple(hits)
+            self.reads.append(tuple(hits))
+            abstained = self.plan_calls == 1
+            return AnswerResult(
+                "Missing earlier event." if abstained else "Earlier event.",
+                hits=tuple(hits),
+                abstained=abstained,
+                abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE if abstained else None,
             )
 
     models = ChronologicalModels()
@@ -120,6 +135,7 @@ def test_cross_round_predicate_union_is_chronological_before_claiming_time_order
         embedder=models,
         answerer=models,
         recall_planning=True,
+        recall_query_expansion=True,
         recall_rounds=2,
         retrieval_mode=RetrievalMode.DENSE,
         minimum_relevance=0.5,
@@ -132,8 +148,8 @@ def test_cross_round_predicate_union_is_chronological_before_claiming_time_order
         earlier = memory.add("earlier event", occurred_at=_CLOCK.replace(day=2))
         result = memory.ask("List the recorded events.", limit=1, reference_at=_CLOCK)
     assert models.plan_calls == 2
-    assert [hit.id for hit in result.hits if hit.id in {later.id, earlier.id}] == [
-        earlier.id,
-        later.id,
-    ]
-    assert "below, in corpus time order" in models.question.text
+    assert later.id in {hit.id for hit in models.reads[0]}
+    assert earlier.id in {hit.id for hit in result.hits}
+    assert later.id not in {hit.id for hit in result.hits}
+    assert "Recall program (set): records containing earlier (1)." in models.question.text
+    assert "records containing later" not in models.question.text
