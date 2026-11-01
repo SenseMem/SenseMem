@@ -75,9 +75,13 @@ class Reranker:
         self.closed += 1
 
 
+@pytest.mark.parametrize("borrowed", [False, True])
 def test_public_search_supplies_original_image_video_and_stable_source_binding(
     tmp_path: Path,
+    borrowed: bool,
 ) -> None:
+    from mindbridge.benchmarks.eval import _borrow_reranker
+
     class MediaReranker(Reranker):
         reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
 
@@ -99,10 +103,11 @@ def test_public_search_supplies_original_image_video_and_stable_source_binding(
     class MediaEmbedder(Embedder):
         embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
 
+    reranker = MediaReranker()
     with Memory(
         tmp_path,
         embedder=MediaEmbedder(),
-        reranker=MediaReranker(),
+        reranker=_borrow_reranker(reranker) if borrowed else reranker,
         minimum_relevance=0,
         ambiguity_margin=0,
     ) as memory:

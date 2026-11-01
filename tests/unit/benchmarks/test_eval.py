@@ -1351,7 +1351,22 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
         def close(self) -> None:
             raise AssertionError("a borrowed plugin must not close its owner")
 
-    plugins = MemoryPlugins(embedder=Embedder(), answerer=Answerer())
+    class Reranker:
+        reranking_model = "pooled-native-reranker"
+        reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
+
+        def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+            pytest.fail("media capability must survive the pool")
+
+        def rerank_media(
+            self, query: base_module.ModelInput, documents: Sequence[base_module.ModelInput]
+        ) -> tuple[float, ...]:
+            return tuple(0.5 for _ in documents)
+
+        def close(self) -> None:
+            raise AssertionError("a borrowed plugin must not close its owner")
+
+    plugins = MemoryPlugins(embedder=Embedder(), answerer=Answerer(), reranker=Reranker())
     settings = MemoryConfig(minimum_relevance=0.2)
     resolved = SimpleNamespace(
         plugins=plugins,
@@ -1387,6 +1402,10 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
     assert configured[0].generation.modalities == frozenset({Modality.TEXT, Modality.IMAGE})
     assert pool._answerer is not None
     assert pool._answerer.generation_capabilities == frozenset({Modality.TEXT, Modality.IMAGE})
+    assert isinstance(pool._reranker, base_module.MultimodalRerankingBackend)
+    assert pool._reranker.reranking_capabilities == Reranker.reranking_capabilities
+    query = base_module.ModelInput(text="native media query")
+    assert pool._reranker.rerank_media(query, (query,)) == (0.5,)
     asyncio.run(pool.memory(tmp_path).close())
     pool._embedder.close()
     assert closed == []
@@ -1447,11 +1466,59 @@ def test_borrowed_reranker_preserves_protocol_scores_and_ownership() -> None:
         def close(self) -> None:
             pytest.fail("a borrowed reranker cannot close its owner")
 
-    borrowed = eval_module._BorrowedRerankingBackend(Reranker())
+    borrowed = eval_module._borrow_reranker(Reranker())
     assert isinstance(borrowed, base_module.RerankingBackend)
+    assert not isinstance(borrowed, base_module.MultimodalRerankingBackend)
     assert borrowed.reranking_model == "fixed-reranker-revision"
     assert borrowed.rerank("requested fact", ("source a", "source b")) == (3.5, -1.0)
     assert calls == [("requested fact", ("source a", "source b"))]
+    borrowed.close()
+
+
+def test_borrowed_media_reranker_preserves_static_protocol_and_asset_identity(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[base_module.ModelInput, Sequence[base_module.ModelInput]]] = []
+
+    class Reranker:
+        reranking_model = "fixed-native-media-revision"
+        reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
+
+        def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+            pytest.fail("native media must not fall back to the text entry point")
+
+        def rerank_media(
+            self, query: base_module.ModelInput, documents: Sequence[base_module.ModelInput]
+        ) -> tuple[float, ...]:
+            calls.append((query, documents))
+            return (0.1, 0.9)
+
+        def close(self) -> None:
+            pytest.fail("a borrowed media backend cannot close its owner")
+
+    borrowed = eval_module._borrow_reranker(Reranker())
+    assert isinstance(borrowed, base_module.MultimodalRerankingBackend)
+    assert getattr_static(borrowed, "rerank_media") is not None
+    assert borrowed.reranking_capabilities == Reranker.reranking_capabilities
+    query = base_module.ModelInput(text="the requested red vehicle")
+    documents = tuple(
+        base_module.ModelInput(
+            text="identical description",
+            assets=(
+                AssetRef(
+                    id=kind.value,
+                    modality=kind,
+                    path=tmp_path / kind.value,
+                    media_type="image/png" if kind is Modality.IMAGE else "video/mp4",
+                    size_bytes=1,
+                    sha256="0" * 64,
+                ),
+            ),
+        )
+        for kind in (Modality.IMAGE, Modality.VIDEO)
+    )
+    assert borrowed.rerank_media(query, documents) == (0.1, 0.9)
+    assert calls == [(query, documents)]
     borrowed.close()
 
 

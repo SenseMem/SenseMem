@@ -1,8 +1,8 @@
 {
-  "base_config_path": "/home/yanhao/thomas/MindBridge/docs/research/2026-11-01-atm-multimodal-reranking/multimodal-ranked.yaml",
+  "base_config_path": "/home/yanhao/thomas/MindBridge/docs/research/2026-11-01-atm-multimodal-pooled-repair/base-config.yaml",
   "base_config_sha256": "f19d4236d8239c0d631e8fbe67abff77e5872275c126c08d690e831023d4193c",
-  "artifact_root": "/home/yanhao/thomas/MindBridge/docs/research/2026-11-01-atm-multimodal-reranking/runs",
-  "variant": "native-image-video",
+  "artifact_root": "/home/yanhao/thomas/MindBridge/docs/research/2026-11-01-atm-multimodal-pooled-repair/runs",
+  "variant": "native-image-video-pooled",
   "raw_media": true,
   "raw_media_root": "/home/yanhao/thomas/MindBridge/.benchmarks/data/atm-bench/data/raw_memory",
   "source_store": "/home/yanhao/thomas/MindBridge/docs/research/2026-10-31-atm-structural-ablations/runs/input-transport/stores/benchmark-mf2g2llcmvxgg2bnnvqws3rnontw2/run-nfxha5lufv2heyloonyg64tu/unit-nvqws3s7ontw2",

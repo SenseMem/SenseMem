@@ -13,6 +13,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from mindbridge import AssetRef, MindBridgeConfig, Modality, ModelInput, Qwen3VLReranker
+from mindbridge.benchmarks.eval import _borrow_reranker
+from mindbridge.models.base import MultimodalRerankingBackend
 
 
 def run_probe(config_path: Path, directory: Path) -> int:
@@ -106,12 +108,14 @@ def run_probe(config_path: Path, directory: Path) -> int:
         video_max_frames=config.video_max_frames,
         video_fps=config.video_fps,
     )
+    borrowed = _borrow_reranker(model)
+    assert isinstance(borrowed, MultimodalRerankingBackend)
     results = []
     try:
         for name, query, positive, negative in cases:
             begin = time.perf_counter()
             with tracer.start_as_current_span(name):
-                scores = model.rerank_media(ModelInput(text=query), (positive, negative))
+                scores = borrowed.rerank_media(ModelInput(text=query), (positive, negative))
             results.append(
                 {
                     "case": name,
@@ -143,6 +147,7 @@ def run_probe(config_path: Path, directory: Path) -> int:
     assert pixels["video_frames"] >= 16 and pixels["media_forward_count"] == 6
     report = {
         "model": identity,
+        "dispatch": "benchmark pool _borrow_reranker -> optional media protocol -> native adapter",
         "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "results": results,
         "native_pixels": pixels,
