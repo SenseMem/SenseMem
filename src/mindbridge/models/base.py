@@ -181,6 +181,18 @@ class RerankingBackend(Protocol):
 
 
 @runtime_checkable
+class MultimodalRerankingBackend(RerankingBackend, Protocol):
+    """An optional scorer for resolved query and candidate media in input order."""
+
+    @property
+    def reranking_capabilities(self) -> frozenset[Modality]: ...
+
+    def rerank_media(
+        self, query: ModelInput, documents: Sequence[ModelInput]
+    ) -> tuple[float, ...]: ...
+
+
+@runtime_checkable
 class FormationBackend(Protocol):
     """One thread-safe model that proposes typed semantics without writing storage."""
 

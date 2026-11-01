@@ -346,8 +346,8 @@ reranking:
 ```
 
 This example selects a pinned checkpoint; task accuracy and SOTA performance require actual
-evaluation. This integration ranks query/document text windows through `RerankingBackend`.
-Its input contract does not include image or video assets. The Qwen adapter uses PyTorch and
+evaluation. By default this integration ranks query/document text windows through `RerankingBackend`.
+The Qwen adapter uses PyTorch and
 Transformers already supplied by `local`; no additional dependency is required. The alternative
 `sentence-transformers` provider constructs `SentenceTransformersReranker`, with defaults
 `batch_size=32` and `max_length=1024`.
@@ -371,6 +371,48 @@ relevance value in `[0, 1]`; this is not an answer-confidence estimate. Sentence
 returns raw logits, which may be negative. Reranker failures
 raise a classified `ModelError` at the `reranking` stage instead of silently falling back.
 Changing this query-time model requires reopening the instance, not re-ingesting the store.
+
+Set `multimodal: true` on the `qwen3-vl` slot to refine text ranking using original images
+and videos:
+
+```yaml
+reranking:
+  provider: qwen3-vl
+  model: Qwen/Qwen3-VL-Reranker-8B
+  revision: "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
+  device: cuda
+  batch_size: 4
+  max_length: 2048
+  multimodal: true
+  media_candidates: 40
+  media_weight: 0.5
+  media_max_length: 4096
+  image_max_pixels: 1048576
+  video_max_pixels: 2097152
+  video_max_frames: 8
+  video_fps: 1.0
+```
+
+The adapter first scores all eligible text windows, then scores up to `media_candidates`
+media-bearing candidates in text-score order. Native visual scores and text scores are combined
+in yes/no logit space using `media_weight` in `(0, 1]`. Unselected candidates retain their text
+scores. Media-only candidates can participate; a query with media also enables native scoring
+of text candidates. Audio is not a supported reranking modality.
+
+Images are decoded from verified source bytes. Videos use PyAV sampling across the clip and
+native temporal visual tensors with original frame timestamps; no captions replace the pixels.
+`image_max_pixels` is a per-image processing bound, and `video_max_pixels` is the video
+processor's total spatial/temporal pixel budget. `video_fps` is the target sampling rate, with
+at least four frames and at most `video_max_frames` (which must be at least four).
+Each visual pair runs separately. Expanded visual tokens are never arbitrarily truncated;
+a pair exceeding `media_max_length` fails with `payload_too_large`. These settings change
+the reranking model identity, without changing the embedding contract or reader budgets.
+
+Custom adapters can implement `MultimodalRerankingBackend`: it extends the text protocol with
+`reranking_capabilities` and
+`rerank_media(query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]`.
+The kernel supplies resolved supported assets protected by candidate leases, retains source
+identity and validates aligned finite scores. Existing text-only adapters keep their contract.
 
 ## Embedding choices
 

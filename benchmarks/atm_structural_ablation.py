@@ -64,6 +64,14 @@ class ExecutionTelemetry(EvaluationTelemetry):
                 "mindbridge.grounding.gazetteer.available_candidates",
                 "mindbridge.grounding.gazetteer.omitted_candidates",
                 "mindbridge.reranking.scored_candidates",
+                "mindbridge.reranking.media_candidates",
+                "mindbridge.reranking.image_exposures",
+                "mindbridge.reranking.video_exposures",
+                "mindbridge.reranking.image_pairs",
+                "mindbridge.reranking.video_pairs",
+                "mindbridge.reranking.video_frames",
+                "mindbridge.reranking.max_input_tokens",
+                "mindbridge.reranking.media_forward_count",
                 "mindbridge.grounding.request_bytes",
                 "mindbridge.grounding.request_max_bytes",
                 "mindbridge.grounding.budget_omitted_assets",
@@ -106,7 +114,7 @@ class Recipe(BaseModel):
     raw_media: bool = False
     raw_media_root: Path | None = None
     source_store: Path | None = None
-    stage: Literal["full", "ingest"] = "full"
+    stage: Literal["full", "ingest", "reranking-probe"] = "full"
     preflight: bool = False
     measure_search_replay: bool = True
 
@@ -358,6 +366,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
         raise ValueError("base configuration SHA-256 differs from the frozen recipe")
     directory = recipe.artifact_root / recipe.variant
     directory.mkdir(parents=True, exist_ok=True)
+    if recipe.stage == "reranking-probe":
+        from multimodal_reranking_probe import run_probe
+
+        return run_probe(recipe.base_config_path, directory)
     config_path = directory / "input.yaml"
     payload = yaml.safe_load(recipe.base_config_path.read_text())
     if not isinstance(payload, dict) or not isinstance(payload.get("benchmark"), dict):
