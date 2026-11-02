@@ -75,6 +75,49 @@ class Reranker:
         self.closed += 1
 
 
+@pytest.mark.parametrize("borrowed", [False, True])
+def test_public_search_supplies_original_image_video_and_stable_source_binding(
+    tmp_path: Path,
+    borrowed: bool,
+) -> None:
+    from mindbridge.benchmarks.eval import _borrow_reranker
+
+    class MediaReranker(Reranker):
+        reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
+
+        def rerank_media(
+            self, query: ModelInput, documents: Sequence[ModelInput]
+        ) -> tuple[float, ...]:
+            assert query.text == "find evidence"
+            kinds = {asset.modality for document in documents for asset in document.assets}
+            assert kinds == {Modality.IMAGE, Modality.VIDEO}
+            for document in documents:
+                for asset in document.assets:
+                    assert asset.path is not None and asset.path.is_file()
+                    assert asset.path.read_bytes() in (b"original image", b"original video")
+            return tuple(
+                2.0 if any(asset.modality is Modality.VIDEO for asset in document.assets) else 0.1
+                for document in documents
+            )
+
+    class MediaEmbedder(Embedder):
+        embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
+
+    reranker = MediaReranker()
+    with Memory(
+        tmp_path,
+        embedder=MediaEmbedder(),
+        reranker=_borrow_reranker(reranker) if borrowed else reranker,
+        minimum_relevance=0,
+        ambiguity_margin=0,
+    ) as memory:
+        image = memory.add(("photo", Blob(b"original image", "image/png")))
+        video = memory.add(("clip", Blob(b"original video", "video/mp4")))
+        hits = memory.search("find evidence", limit=2)
+        assert [hit.id for hit in hits] == [video.id, image.id]
+        assert hits[0].assets[0].modality is Modality.VIDEO
+
+
 def test_complete_eligible_pool_is_reranked_before_limit_without_rewriting_scores(
     tmp_path: Path,
 ) -> None:

@@ -149,6 +149,14 @@ class Qwen3VLRerankingConfig(_ConfigModel):
     device: _Text | None = None
     batch_size: _PositiveInt = 1
     max_length: _PositiveInt = 2048
+    multimodal: bool = False
+    media_candidates: _PositiveInt = 40
+    media_weight: Annotated[float, Field(gt=0, le=1)] = 0.5
+    media_max_length: _PositiveInt = 4096
+    image_max_pixels: _PositiveInt = 1048576
+    video_max_pixels: _PositiveInt = 2097152
+    video_max_frames: Annotated[int, Field(strict=True, ge=4)] = 8
+    video_fps: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
 
 
 class _OpenAICompletionConfig(_OpenAIConfig):
@@ -361,18 +369,30 @@ def resolve_memory_config(
             cleanup.callback(answerer.close)
         reranker: RerankingBackend | None = None
         if config.reranking is not None:
-            factory = (
-                Qwen3VLReranker
-                if config.reranking.provider == "qwen3-vl"
-                else SentenceTransformersReranker
-            )
-            reranker = factory(
-                model_id=config.reranking.model,
-                revision=config.reranking.revision,
-                device=config.reranking.device,
-                batch_size=config.reranking.batch_size,
-                max_length=config.reranking.max_length,
-            )
+            if config.reranking.provider == "qwen3-vl":
+                reranker = Qwen3VLReranker(
+                    model_id=config.reranking.model,
+                    revision=config.reranking.revision,
+                    device=config.reranking.device,
+                    batch_size=config.reranking.batch_size,
+                    max_length=config.reranking.max_length,
+                    multimodal=config.reranking.multimodal,
+                    media_candidates=config.reranking.media_candidates,
+                    media_weight=config.reranking.media_weight,
+                    media_max_length=config.reranking.media_max_length,
+                    image_max_pixels=config.reranking.image_max_pixels,
+                    video_max_pixels=config.reranking.video_max_pixels,
+                    video_max_frames=config.reranking.video_max_frames,
+                    video_fps=config.reranking.video_fps,
+                )
+            else:
+                reranker = SentenceTransformersReranker(
+                    model_id=config.reranking.model,
+                    revision=config.reranking.revision,
+                    device=config.reranking.device,
+                    batch_size=config.reranking.batch_size,
+                    max_length=config.reranking.max_length,
+                )
         if reranker is not None:
             cleanup.callback(reranker.close)
         former = None if config.formation is None else _build_formation(config.formation)

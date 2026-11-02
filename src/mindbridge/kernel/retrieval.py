@@ -757,7 +757,14 @@ class Retrieval(Traced):
                     temporal_range=temporal_range,
                 )
                 if not ambiguous:
-                    ranked = self._rerank_candidates(focused_text, ranked, ranked_traces)
+                    ranked = self._rerank_candidates(
+                        ModelInput(
+                            text=focused_text,
+                            assets=self._hydrator.model_input(prepared).assets,
+                        ),
+                        ranked,
+                        ranked_traces,
+                    )
                 extend_ranked_traces(
                     trace_candidates,
                     ranked_traces,
@@ -799,23 +806,29 @@ class Retrieval(Traced):
 
     def _rerank_candidates(
         self,
-        query: str,
+        query: ModelInput,
         ranked: builtins.list[tuple[StoredMemory, float, float, bool]],
         traces: builtins.dict[str, partial[RetrievalCandidateTrace]] | None,
     ) -> builtins.list[tuple[StoredMemory, float, float, bool]]:
         """Reorder eligible text sources without changing gates, scores or media positions."""
         reranker = self._backends.reranker
-        if reranker is None or not query.strip():
+        media_reranker = self._backends.multimodal_reranker
+        media_enabled = bool(
+            self._backends.reranking_capabilities & {Modality.IMAGE, Modality.VIDEO}
+        )
+        if reranker is None or (not query.text.strip() and not media_enabled):
             return ranked
         text_candidates = [
-            (index, row) for index, row in enumerate(ranked) if row[0].content.strip()
+            (index, row)
+            for index, row in enumerate(ranked)
+            if row[0].content.strip() or (media_enabled and row[0].assets)
         ]
         if not text_candidates:
             return ranked
         documents = tuple(
             "\n\n".join(
                 f"[Source text codepoints {window.start}:{window.end}]\n{window.text}"
-                for window in query_evidence_windows(query, row[0].content)
+                for window in query_evidence_windows(query.text, row[0].content)
             )
             for _index, row in text_candidates
         )
@@ -829,7 +842,28 @@ class Retrieval(Traced):
             span.set_attribute("mindbridge.reranking.scored_candidates", len(documents))
             mark_model_requests(1)
             try:
-                values = reranker.rerank(query, documents)
+                if media_enabled and media_reranker is not None:
+                    supported = self._backends.reranking_capabilities
+                    media_documents = tuple(
+                        ModelInput(
+                            text=text or "Media evidence",
+                            assets=tuple(
+                                self._hydrator.asset_ref(asset)
+                                for asset in row[0].assets
+                                if Modality(asset.modality) in supported
+                            ),
+                        )
+                        for text, (_index, row) in zip(documents, text_candidates, strict=True)
+                    )
+                    media_query = ModelInput(
+                        text=query.text,
+                        assets=tuple(
+                            asset for asset in query.assets if asset.modality in supported
+                        ),
+                    )
+                    values = media_reranker.rerank_media(media_query, media_documents)
+                else:
+                    values = reranker.rerank(query.text, documents)
             except MindBridgeError:
                 raise
             except Exception:

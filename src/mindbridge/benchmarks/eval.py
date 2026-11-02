@@ -226,6 +226,7 @@ from mindbridge.models.base import (
     FormationBackend,
     GenerationBackend,
     ModelInput,
+    MultimodalRerankingBackend,
     RerankingBackend,
     SpeechAnalysis,
     SpeechBackend,
@@ -298,6 +299,25 @@ class _BorrowedRerankingBackend(_BorrowedBackend):
 
     def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
         return cast(RerankingBackend, self._backend).rerank(query, documents)
+
+
+class _BorrowedMultimodalRerankingBackend(_BorrowedRerankingBackend):
+    """Expose native media capabilities to the SDK's static protocol inspection."""
+
+    @property
+    def reranking_capabilities(self) -> frozenset[Modality]:
+        return cast(MultimodalRerankingBackend, self._backend).reranking_capabilities
+
+    def rerank_media(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
+        return cast(MultimodalRerankingBackend, self._backend).rerank_media(query, documents)
+
+
+def _borrow_reranker(backend: RerankingBackend) -> RerankingBackend:
+    return (
+        _BorrowedMultimodalRerankingBackend(backend)
+        if isinstance(backend, MultimodalRerankingBackend)
+        else _BorrowedRerankingBackend(backend)
+    )
 
 
 class _CachedVisionDescriber:
@@ -572,11 +592,7 @@ class _BackendPool:
             if plugins.answerer is None
             else cast(GenerationBackend, _BorrowedGenerationBackend(plugins.answerer))
         )
-        self._reranker = (
-            None
-            if plugins.reranker is None
-            else cast(RerankingBackend, _BorrowedRerankingBackend(plugins.reranker))
-        )
+        self._reranker = None if plugins.reranker is None else _borrow_reranker(plugins.reranker)
         self._transcriber = (
             None
             if plugins.transcriber is None

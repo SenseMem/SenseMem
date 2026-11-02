@@ -1,8 +1,8 @@
 {
   "base_config_path": "docs/examples/atm-sgm-detail-qwen3-vl.yaml",
-  "base_config_sha256": "24d1f5f0a530967defade830f6a52fee0d9a4f1db7181028d704dc356c5c4bda",
+  "base_config_sha256": "0feedfcd5261534beea7ed69e1e191fb4b6ecfb8f336286ccc179c9f37476b15",
   "artifact_root": ".benchmarks/atm-runs",
-  "variant": "retrieval",
+  "variant": "native-image-video",
   "raw_media": true,
   "raw_media_root": ".benchmarks/atm-inputs/atm-bench/data/raw_memory",
   "source_store": null,

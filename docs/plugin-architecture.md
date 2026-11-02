@@ -135,8 +135,12 @@ checkpoint revision, disables remote code, serializes inference, validates align
 closes with its owning `Memory`. Product-path tests cover full-pool reranking, stale-ID removal,
 scope/type/time filtering, media slots and failure mapping. Those tests establish integration;
 checkpoint quality and task-specific improvements require separate evaluation.
-The `qwen3-vl` provider uses the existing PyTorch/Transformers dependencies and ranks text windows.
-The public reranking protocol accepts text, including when the checkpoint can support visual input.
+The `qwen3-vl` provider uses the existing PyTorch/Transformers dependencies and ranks text windows
+by default. Its explicit `multimodal` mode also implements `MultimodalRerankingBackend`, with
+`reranking_capabilities` and `rerank_media(ModelInput, Sequence[ModelInput])`. The kernel
+resolves and leases supported assets after authoritative filtering; the adapter scores original
+image pixels and native sampled videos. Source binding, result limits, gates and durable vectors
+remain owned by the kernel. See the [processing budgets](configuration.md#semantic-reranking).
 
 ## Embodied integration boundary
 

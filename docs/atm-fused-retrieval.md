@@ -1,8 +1,9 @@
-# Evaluate fused ATM-Bench media with text reranking
+# Evaluate fused ATM-Bench media with native image and video reranking
 
 This example combines caller-supplied SGM and detailed descriptions with the original media and
-GPS, hybrid retrieval, and Qwen text-window reranking. It uses this checkout's refusal-triggered
-recall workflow, strict answering and ordinary text answers. It does not enable offline maps or
+GPS, hybrid retrieval, and Qwen native image/video reranking after text-window scoring. It uses
+this checkout's refusal-triggered recall workflow, strict answering and ordinary text answers.
+It does not enable offline maps or
 structured answer execution. The example is a portable configuration, not a quality guarantee or
 a completed benchmark result.
 
@@ -113,12 +114,26 @@ Never point this check at a running store. Copying vectors does not reuse answer
 ## Interpret the policy and outputs
 
 Qwen is pinned to `Qwen/Qwen3-VL-Reranker-8B` revision
-`b212dc8c91a8164aef1ea2de9c1a867611e75c04`, CUDA batch 4 and maximum length 2,048. It scores
-text query/document pairs using its native yes/no head. Each document contains at most three
-query-related original-text windows, totaling at most 1,200 codepoints plus offset labels. It
-does not receive candidate images/video; original retrieved media remain available to the answerer.
-This is a joint text-window and reranker policy, not native visual reranking or separate evidence
-of each component's effect. Sixteen benchmark requests share one locked GPU reranker.
+`b212dc8c91a8164aef1ea2de9c1a867611e75c04`, with `multimodal: true`. It first scores all eligible
+text query/document pairs using its native yes/no head, CUDA batch 4 and maximum length 2,048.
+Each document contains at most three query-related original-text windows, totaling at most 1,200
+codepoints plus offset labels. It then processes original images and sampled videos for the top
+40 media-bearing candidates. Video tensors retain frame order and original timestamps.
+
+The example combines native media and text scores with equal weight in yes/no logit space;
+unselected candidates retain their text scores. Media pairs run separately, with a 4,096-token
+ceiling, 1,048,576 pixels per image, and a total video pixel budget of 2,097,152 at a target 1fps
+and at most eight frames. See [semantic reranking](configuration.md#semantic-reranking) for the
+processing bounds and explicit failure behavior. Sixteen benchmark requests share one locked GPU
+reranker; the shared wrapper retains its native media interface and leaves ownership with the pool.
+
+The runner records actual image/video pairs, sampled frame exposures, media forward counts and
+maximum input tokens, and logs the first successful image and video forward separately. Check
+these execution records to establish that native media scoring ran. The synthetic
+`reranking-probe` stage checks image content, video content and video order through the same pool
+wrapper; it requires CUDA and a native media configuration, but no ATM corpus or reader/judge
+calls. Its output is a qualification check, not an ATM-Bench score. The combined policy and any
+accuracy claim still require a complete task evaluation.
 
 The example retains two recall rounds and two extra semantic queries, recall limit 20, 64,000-char
 evidence/set budgets, predicate limit 100 rows, no quantization or answer reinforcement, and a

@@ -52,6 +52,7 @@ class ExecutionTelemetry(EvaluationTelemetry):
         self._execution_lock = Lock()
         self._span_counts: Counter[str] = Counter()
         self._attribute_counts: dict[str, Counter[str]] = {}
+        self._native_reported_modalities: set[str] = set()
 
     def on_end(self, span: ReadableSpan) -> None:
         super().on_end(span)
@@ -64,6 +65,14 @@ class ExecutionTelemetry(EvaluationTelemetry):
                 "mindbridge.grounding.gazetteer.available_candidates",
                 "mindbridge.grounding.gazetteer.omitted_candidates",
                 "mindbridge.reranking.scored_candidates",
+                "mindbridge.reranking.media_candidates",
+                "mindbridge.reranking.image_exposures",
+                "mindbridge.reranking.video_exposures",
+                "mindbridge.reranking.image_pairs",
+                "mindbridge.reranking.video_pairs",
+                "mindbridge.reranking.video_frames",
+                "mindbridge.reranking.max_input_tokens",
+                "mindbridge.reranking.media_forward_count",
                 "mindbridge.grounding.request_bytes",
                 "mindbridge.grounding.request_max_bytes",
                 "mindbridge.grounding.budget_omitted_assets",
@@ -81,6 +90,30 @@ class ExecutionTelemetry(EvaluationTelemetry):
                 ):
                     continue
                 self._attribute_counts.setdefault(name, Counter())[str(value)] += 1
+            if span.name == "mindbridge.model.reranking":
+                for kind in ("image", "video"):
+                    pairs = attributes.get(f"mindbridge.reranking.{kind}_pairs", 0)
+                    if (
+                        isinstance(pairs, int)
+                        and pairs > 0
+                        and kind not in self._native_reported_modalities
+                    ):
+                        self._native_reported_modalities.add(kind)
+                        print(
+                            json.dumps(
+                                {
+                                    "native_reranking_first_forward": kind,
+                                    "pairs": pairs,
+                                    "video_frames": attributes.get(
+                                        "mindbridge.reranking.video_frames", 0
+                                    ),
+                                    "media_forward_count": attributes.get(
+                                        "mindbridge.reranking.media_forward_count", 0
+                                    ),
+                                }
+                            ),
+                            flush=True,
+                        )
 
     def execution_result(self) -> dict[str, object]:
         with self._execution_lock:
@@ -106,7 +139,7 @@ class Recipe(BaseModel):
     raw_media: bool = False
     raw_media_root: Path | None = None
     source_store: Path | None = None
-    stage: Literal["full", "ingest"] = "full"
+    stage: Literal["full", "ingest", "reranking-probe"] = "full"
     preflight: bool = False
     measure_search_replay: bool = True
 
@@ -358,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
         raise ValueError("base configuration SHA-256 differs from the frozen recipe")
     directory = recipe.artifact_root / recipe.variant
     directory.mkdir(parents=True, exist_ok=True)
+    if recipe.stage == "reranking-probe":
+        from multimodal_reranking_probe import run_probe
+
+        return run_probe(recipe.base_config_path, directory)
     config_path = directory / "input.yaml"
     payload = yaml.safe_load(recipe.base_config_path.read_text())
     if not isinstance(payload, dict) or not isinstance(payload.get("benchmark"), dict):
