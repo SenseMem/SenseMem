@@ -19,6 +19,7 @@ from mindbridge.benchmarks.eval_config import (
     _evaluation_memory_config,
     _load_memory_config,
     _model_config,
+    _positive_int,
 )
 from mindbridge.benchmarks.isolation import BenchmarkRun
 from mindbridge.benchmarks.locomo_refined import (
@@ -239,13 +240,6 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be a positive integer")
-    return parsed
 
 
 if __name__ == "__main__":

@@ -19,11 +19,11 @@ from mindbridge import Blob, Memory, Modality, ObservationContext, RetrievalMode
 from mindbridge._telemetry import MODEL_REQUEST_COUNT
 from mindbridge.exceptions import ModelError, ValidationError
 from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.types import MemoryType, RetrievalCandidateTrace
+from mindbridge.types import ContentInput, MemoryType, RetrievalCandidateTrace
 
 
 class Embedder:
-    embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
+    embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
     embedding_model = "reranking-fixture"
     embedding_space = "reranking-fixture:64"
     embedding_dimension = 64
@@ -56,66 +56,24 @@ class Embedder:
 
 class Reranker:
     reranking_model = "query-document-fixture@fixed"
+    reranking_capabilities = frozenset({Modality.TEXT})
 
     def __init__(self, *, scores: tuple[float, ...] | None = None, fail: bool = False) -> None:
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.calls: list[tuple[ModelInput, tuple[ModelInput, ...]]] = []
         self.scores = scores
         self.fail = fail
         self.closed = 0
 
-    def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+    def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
         self.calls.append((query, tuple(documents)))
         if self.fail:
             raise RuntimeError("private provider body")
         if self.scores is not None:
             return self.scores
-        return tuple(8.0 if "cancelled" in document else -3.0 for document in documents)
+        return tuple(8.0 if "cancelled" in document.text else -3.0 for document in documents)
 
     def close(self) -> None:
         self.closed += 1
-
-
-@pytest.mark.parametrize("borrowed", [False, True])
-def test_public_search_supplies_original_image_video_and_stable_source_binding(
-    tmp_path: Path,
-    borrowed: bool,
-) -> None:
-    from mindbridge.benchmarks.eval import _borrow_reranker
-
-    class MediaReranker(Reranker):
-        reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
-
-        def rerank_media(
-            self, query: ModelInput, documents: Sequence[ModelInput]
-        ) -> tuple[float, ...]:
-            assert query.text == "find evidence"
-            kinds = {asset.modality for document in documents for asset in document.assets}
-            assert kinds == {Modality.IMAGE, Modality.VIDEO}
-            for document in documents:
-                for asset in document.assets:
-                    assert asset.path is not None and asset.path.is_file()
-                    assert asset.path.read_bytes() in (b"original image", b"original video")
-            return tuple(
-                2.0 if any(asset.modality is Modality.VIDEO for asset in document.assets) else 0.1
-                for document in documents
-            )
-
-    class MediaEmbedder(Embedder):
-        embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
-
-    reranker = MediaReranker()
-    with Memory(
-        tmp_path,
-        embedder=MediaEmbedder(),
-        reranker=_borrow_reranker(reranker) if borrowed else reranker,
-        minimum_relevance=0,
-        ambiguity_margin=0,
-    ) as memory:
-        image = memory.add(("photo", Blob(b"original image", "image/png")))
-        video = memory.add(("clip", Blob(b"original video", "video/mp4")))
-        hits = memory.search("find evidence", limit=2)
-        assert [hit.id for hit in hits] == [video.id, image.id]
-        assert hits[0].assets[0].modality is Modality.VIDEO
 
 
 def test_complete_eligible_pool_is_reranked_before_limit_without_rewriting_scores(
@@ -212,7 +170,7 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
             row.memory_id for row in result.trace.candidates if row.reranking_score is not None
         } == {live.id}
         assert len(reranker.calls[-1][1]) == 1
-        assert "cancelled live" in reranker.calls[-1][1][0]
+        assert "cancelled live" in reranker.calls[-1][1][0].text
     shutil.rmtree(tmp_path / "zvec")
     document_calls = embedder.document_calls
     with Memory(
@@ -254,7 +212,7 @@ def test_empty_text_media_keep_positions_and_media_only_queries_skip_text_rerank
         mixed = memory.search("cancelled reservation", limit=4)
         assert mixed[0].id == media.id
         assert captioned.id in {row.id for row in mixed}
-        assert any("cancelled photo caption" in document for document in reranker.calls[-1][1])
+        assert any("cancelled photo caption" in document.text for document in reranker.calls[-1][1])
         assert len(reranker.calls[-1][1]) == 3
         calls = len(reranker.calls)
         memory.search(Blob(b"query", "image/png"), limit=3)
@@ -310,3 +268,97 @@ def test_trace_reranking_logits_allow_negative_values_without_relaxing_existing_
         RetrievalCandidateTrace("source", ("index",), reranking_score=float("inf"))
     with pytest.raises(ValidationError, match="must not exceed one"):
         RetrievalCandidateTrace("source", ("index",), final_score=8.0)
+
+
+@pytest.mark.parametrize("query_kind", ["text", "image", "video", "mixed"])
+def test_native_reranking_automatically_includes_original_query_and_candidate_media(
+    tmp_path: Path,
+    query_kind: str,
+) -> None:
+    class MultimodalReranker(Reranker):
+        reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
+
+        def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
+            self.calls.append((query, tuple(documents)))
+            for value in (query, *documents):
+                for asset in value.assets:
+                    assert asset.path is not None and asset.path.read_bytes()
+            return tuple(0.9 if value.assets else 0.1 for value in documents)
+
+    reranker = MultimodalReranker()
+    queries: dict[str, ContentInput] = {
+        "text": "Find this shape",
+        "image": Blob(b"query-image", "image/png"),
+        "video": Blob(b"query-video", "video/mp4"),
+        "mixed": (
+            "Find this shape",
+            Blob(b"query-image", "image/png"),
+            Blob(b"query-video", "video/mp4"),
+        ),
+    }
+    with Memory(
+        tmp_path,
+        embedder=Embedder(),
+        reranker=reranker,
+        retrieval_mode=RetrievalMode.DENSE,
+        minimum_relevance=0,
+        ambiguity_margin=0,
+    ) as memory:
+        text = memory.add("A text candidate")
+        captioned = memory.add(("A caption", Blob(b"original-image", "image/png")))
+        video = memory.add(Blob(b"original-video", "video/mp4"))
+        outcome = memory.search_with_trace(queries[query_kind], limit=3)
+        assert {hit.id for hit in outcome.hits[:2]} == {captioned.id, video.id}
+        assert outcome.hits[-1].id == text.id
+        query, documents = reranker.calls[-1]
+        assert (
+            query.modalities
+            == {
+                "text": frozenset({Modality.TEXT}),
+                "image": frozenset({Modality.IMAGE}),
+                "video": frozenset({Modality.VIDEO}),
+                "mixed": frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
+            }[query_kind]
+        )
+        assert len(documents) == 3
+        assert any(
+            value.text == "A caption" and value.assets[0].sha256 == captioned.assets[0].sha256
+            for value in documents
+            if value.assets
+        )
+        assert any(
+            not value.text and value.modalities == frozenset({Modality.VIDEO})
+            for value in documents
+        )
+        assert all(row.reranking_score is not None for row in outcome.trace.candidates)
+
+
+def test_candidate_media_stay_readable_during_reranking_and_are_released_on_failure(
+    tmp_path: Path,
+) -> None:
+    paths: list[Path] = []
+
+    class DeletingReranker(Reranker):
+        reranking_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
+
+        def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
+            path = documents[0].assets[0].path
+            assert path is not None
+            paths.append(path)
+            assert memory.delete(record.id)
+            assert path.read_bytes() == b"original-image"
+            raise RuntimeError("private failure after reading media")
+
+    with Memory(
+        tmp_path,
+        embedder=Embedder(),
+        reranker=DeletingReranker(),
+        retrieval_mode=RetrievalMode.DENSE,
+        minimum_relevance=0,
+        ambiguity_margin=0,
+    ) as memory:
+        record = memory.add(Blob(b"original-image", "image/png"))
+        with pytest.raises(ModelError, match="reranking model failed"):
+            memory.search("find image")
+        assert len(paths) == 1 and not paths[0].exists()
+        assert memory.search("find image") == ()

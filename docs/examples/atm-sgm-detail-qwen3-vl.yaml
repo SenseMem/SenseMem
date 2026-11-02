@@ -32,16 +32,13 @@ reranking:
   model: Qwen/Qwen3-VL-Reranker-8B
   revision: b212dc8c91a8164aef1ea2de9c1a867611e75c04
   device: cuda
-  batch_size: 4
-  max_length: 2048
-  multimodal: true
-  media_candidates: 40
-  media_weight: 0.5
-  media_max_length: 4096
-  image_max_pixels: 1048576
-  video_max_pixels: 2097152
-  video_max_frames: 8
-  video_fps: 1.0
+  batch_size: 32
+  max_length: 8192
+  gpu_memory_utilization: 0.9
+  image_limit: 8
+  video_limit: 2
+  image_max_pixels: 262144
+  video_frames: 8
 settings:
   retrieval_mode: hybrid
   index_quantization: none

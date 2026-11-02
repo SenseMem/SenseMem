@@ -340,7 +340,7 @@ lifecycle guidance is in [deployment](deployment.md), with backup and repair pro
 ## Generality and extensibility
 
 MindBridge keeps a stable memory kernel and varies computation at typed capability boundaries:
-`EmbeddingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`,
+`EmbeddingBackend`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`,
 `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, and
 `ConsolidationBackend`. Routing reads declared modalities and stable model-space identities, while
 the kernel retains control of validation, record identity, durability, evidence, final hydration,
@@ -348,7 +348,7 @@ and lifecycle.
 
 Applications can compose those objects directly, group them in `MemoryPlugins`, or use
 `Memory.from_config` for the bundled provider catalog. Current bundled adapters cover
-Sentence Transformers embedding with an application-selected model, OpenAI-compatible
+Sentence Transformers embedding and text reranking, Qwen3-VL text/image/video reranking, OpenAI-compatible
 embedding/generation/transcription/formation/vision/consolidation, FunASR speech, and OpenCV face
 analysis. Exact extras, provider fields, model revisions, and license constraints are maintained in
 [configuration](configuration.md).

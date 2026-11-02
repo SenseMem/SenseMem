@@ -118,17 +118,9 @@ See [Design principles](docs/design-principles.md) and
 
 MindBridge supports Python 3.11 through 3.14. Install only the surfaces you use:
 
-| Extra | Choose it when | Adds |
-| --- | --- | --- |
-| none | You provide an `EmbeddingBackend` | Core storage, retrieval, public types, and Zvec |
-| `local` | You want bundled local embedding or speech | Sentence Transformers and FunASR |
-| `openai` | You use OpenAI or an OpenAI-compatible endpoint | Official SDK adapter and media request handling |
-| `face` | You need local face analysis | OpenCV detection and recognition |
-| `server` | You expose REST | FastAPI and Starlette; install an ASGI server separately |
-| `mcp` | You expose agent tools | MCP server transport |
-| `observability` | You export traces | OpenTelemetry SDK |
-| `benchmarks` | You run evaluations | Download, parsing, scoring, YAML/Parquet, and telemetry dependencies |
-| `all` | You intentionally need every optional surface | The exact union of all extras |
+The base package provides local storage, retrieval, public types and Zvec. Model runtimes and
+transports live in optional extras; the [configuration guide](docs/configuration.md#install-only-the-surfaces-you-use)
+maintains their complete dependency catalog.
 
 Common choices:
 
@@ -136,6 +128,7 @@ Common choices:
 uv add "mindbridge[all]"                       # every optional integration
 uv add mindbridge                              # bring your own embedder
 uv add "mindbridge[local]"                     # first local add/search loop
+uv add "mindbridge[local,reranking]"           # local embedding and Qwen3-VL reranking
 uv add "mindbridge[openai]"                    # OpenAI-compatible models
 uv add "mindbridge[local,server]"              # local models plus REST
 uv add "mindbridge[openai,mcp]"                # remote models plus MCP

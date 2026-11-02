@@ -1,4 +1,4 @@
-"""Native image/video rank discrimination and memory qualification, without ATM questions."""
+"""Native image/video discrimination through the shared scorer, without ATM questions."""
 
 from __future__ import annotations
 
@@ -12,20 +12,25 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import AssetRef, MindBridgeConfig, Modality, ModelInput, Qwen3VLReranker
-from mindbridge.benchmarks.eval import _borrow_reranker
-from mindbridge.models.base import MultimodalRerankingBackend
+from mindbridge import (
+    AssetRef,
+    MindBridgeConfig,
+    Modality,
+    ModelInput,
+    Qwen3VLReranker,
+    RerankingBackend,
+)
+from mindbridge.benchmarks.eval import _BorrowedRerankingBackend
 
 
 def run_probe(config_path: Path, directory: Path) -> int:
     import av
-    import torch
     from PIL import Image, ImageDraw
 
     payload = yaml.safe_load(config_path.read_text())
-    payload.pop("benchmark")
+    payload.pop("benchmark", None)
     config = MindBridgeConfig.model_validate(payload).reranking
-    if config is None or config.provider != "qwen3-vl" or not config.multimodal:
+    if config is None or config.provider != "qwen3-vl":
         raise ValueError("probe requires native multimodal Qwen reranking")
     fixture_root = directory / "fixtures"
     fixture_root.mkdir(exist_ok=True)
@@ -91,7 +96,6 @@ def run_probe(config_path: Path, directory: Path) -> int:
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     tracer = provider.get_tracer("multimodal-reranking-probe")
-    torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     model = Qwen3VLReranker(
         model_id=config.model,
@@ -99,23 +103,20 @@ def run_probe(config_path: Path, directory: Path) -> int:
         device=config.device,
         batch_size=config.batch_size,
         max_length=config.max_length,
-        multimodal=True,
-        media_candidates=config.media_candidates,
-        media_weight=config.media_weight,
-        media_max_length=config.media_max_length,
+        gpu_memory_utilization=config.gpu_memory_utilization,
+        image_limit=config.image_limit,
+        video_limit=config.video_limit,
         image_max_pixels=config.image_max_pixels,
-        video_max_pixels=config.video_max_pixels,
-        video_max_frames=config.video_max_frames,
-        video_fps=config.video_fps,
+        video_frames=config.video_frames,
     )
-    borrowed = _borrow_reranker(model)
-    assert isinstance(borrowed, MultimodalRerankingBackend)
+    borrowed = _BorrowedRerankingBackend(model)
+    assert isinstance(borrowed, RerankingBackend)
     results = []
     try:
         for name, query, positive, negative in cases:
             begin = time.perf_counter()
             with tracer.start_as_current_span(name):
-                scores = borrowed.rerank_media(ModelInput(text=query), (positive, negative))
+                scores = borrowed.rerank(ModelInput(text=query), (positive, negative))
             results.append(
                 {
                     "case": name,
@@ -126,7 +127,6 @@ def run_probe(config_path: Path, directory: Path) -> int:
                 }
             )
         identity = model.reranking_model
-        peak = torch.cuda.max_memory_reserved()
     finally:
         model.close()
     spans = [
@@ -136,29 +136,18 @@ def run_probe(config_path: Path, directory: Path) -> int:
         }
         for span in exporter.get_finished_spans()
     ]
-    pixels = {
-        name: sum(
-            int((span.attributes or {}).get("mindbridge.reranking." + name, 0))
-            for span in exporter.get_finished_spans()
-        )
-        for name in ("image_pairs", "video_pairs", "video_frames", "media_forward_count")
-    }
-    assert pixels["image_pairs"] == 2 and pixels["video_pairs"] == 4
-    assert pixels["video_frames"] >= 16 and pixels["media_forward_count"] == 6
     report = {
         "model": identity,
-        "dispatch": "benchmark pool _borrow_reranker -> optional media protocol -> native adapter",
+        "dispatch": "benchmark pool shared scorer -> RerankingBackend -> vLLM classifier",
         "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "results": results,
-        "native_pixels": pixels,
         "spans": spans,
-        "peak_reserved_bytes": peak,
         "wall_seconds": time.perf_counter() - started,
         "fixtures_sha256": {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(fixture_root.iterdir())
         },
-        "pass_criteria": "All three positive candidates outrank negatives; native image/video tensors and temporal frames present; no OOM.",
+        "pass_criteria": "All three positive candidates outrank negatives, including reversed video order; no OOM. Worker GPU memory is not measured by this probe.",
         "passed": all(row["passed"] for row in results),
         "not_an_ATM_score": True,
     }

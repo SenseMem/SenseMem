@@ -23,7 +23,6 @@ from mindbridge.models.base import (
     FaceBackend,
     FormationBackend,
     GenerationBackend,
-    MultimodalRerankingBackend,
     RerankingBackend,
     SpeechBackend,
     StreamingGenerationBackend,
@@ -291,7 +290,6 @@ class Backends:
     consolidation_model: str
     consolidation_recipe: str
     reranker: RerankingBackend | None = None
-    multimodal_reranker: MultimodalRerankingBackend | None = None
     reranking_capabilities: frozenset[Modality] = frozenset()
 
     def resources(self) -> tuple[Closable, ...]:
@@ -322,16 +320,15 @@ def resolve_backends(
     reranker: RerankingBackend | None = None,
 ) -> Backends:
     """Validate each backend's declared contract and fold the results into one value."""
-    multimodal_reranker = reranker if isinstance(reranker, MultimodalRerankingBackend) else None
-    reranking_capabilities = (
-        frozenset()
-        if multimodal_reranker is None
-        else _modalities(multimodal_reranker.reranking_capabilities, "reranking")
-    )
     if reranker is not None:
         if not isinstance(reranker, RerankingBackend):
             raise ValidationError("reranker must implement RerankingBackend")
         _model_text(reranker.reranking_model, "reranking model")
+    reranking_capabilities = (
+        frozenset()
+        if reranker is None
+        else _modalities(reranker.reranking_capabilities, "reranking")
+    )
     embedding_capabilities, embedding_model, space_id, embedding_dimension = _embedding_contract(
         embedder
     )
@@ -350,7 +347,6 @@ def resolve_backends(
         former=former,
         consolidator=consolidator,
         reranker=reranker,
-        multimodal_reranker=multimodal_reranker,
         reranking_capabilities=reranking_capabilities,
         embedding_capabilities=embedding_capabilities,
         embedding_model=embedding_model,

@@ -52,6 +52,7 @@ all = [
     "tqdm>=4.66,<5",
     "transformers>=5.18,<6",
     "uvicorn>=0.54,<1",
+    "vllm>=0.20.2,<0.27 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 benchmarks = [
     # download.py imports httpx at module scope; huggingface-hub happens to require it today.
@@ -111,31 +112,37 @@ server = [
 mcp = [
     "mcp>=2.3,<3",
 ]
+reranking = [
+    "huggingface-hub>=0.30,<2",
+    # This range provides the Qwen3-VL pooling classifier on Python 3.11-3.14 with torch 2.11.
+    "vllm>=0.20.2,<0.27 ; platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
 
 [tool.uv]
 required-version = ">=0.12.5"
 
 [tool.uv.sources]
+# Match vLLM's prebuilt CUDA 13 runtime, including when local embedding and reranking coexist.
 torch = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 torchaudio = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 torchvision = [
-    { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
 
 # Keep contributor-specific uv mirrors out of the shared lockfile.
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
 default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [dependency-groups]
 dev = [

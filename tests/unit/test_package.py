@@ -311,6 +311,7 @@ def test_dependency_surface_is_exact() -> None:
         },
         "server": {"fastapi", "starlette", "uvicorn"},
         "mcp": {"mcp"},
+        "reranking": {"huggingface-hub", "vllm"},
     }
     declared = set(EXTRAS) | {_name(item) for item in DEPENDENCIES}
     declared |= {_name(item) for items in EXTRAS.values() for item in items}

@@ -10,7 +10,7 @@ retrieval semantics stay the same whichever path you choose.
 | `Memory(...)` | The application injects individual backends or owns SDK clients directly |
 
 **Contract:** All three paths open the same embedded kernel. `EmbeddingBackend` is required;
-generation, text reranking, speech, face, vision-description, formation, and consolidation capabilities are
+generation, reranking, speech, face, vision-description, formation, and consolidation capabilities are
 optional.
 
 ## Install only the surfaces you use
@@ -23,7 +23,9 @@ model runtimes and transports:
 | `local` | Sentence Transformers embedding, local text reranking, and FunASR speech |
 | `openai` | Official OpenAI SDK 3.x adapter, its `httpx2` transport, and media handling |
 | `face` | Local OpenCV face analysis |
-| `server` | FastAPI and Starlette REST adapter; bring your own ASGI server |
+| `gazetteer` | Offline place lookup using a caller-supplied, pinned index |
+| `reranking` | Qwen3-VL vLLM classifier on Linux x86-64 with CUDA |
+| `server` | FastAPI and Starlette REST adapter with Uvicorn |
 | `mcp` | MCP server transport |
 | `observability` | OpenTelemetry SDK export support |
 | `benchmarks` | Benchmark download, parsing, scoring, and telemetry dependencies; datasets are downloaded separately |
@@ -102,7 +104,7 @@ In this table, connection fields are `base_url`, `api_key`, `timeout`, and `max_
 | --- | --- | --- |
 | `embedding: sentence-transformers` | `model` | `revision=None`, `dimension=None`, `device=None`, `batch_size=32` |
 | `reranking: sentence-transformers` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=1024` |
-| `reranking: qwen3-vl` | `model` | `revision=None`, `device=None`, `batch_size=1`, `max_length=2048` |
+| `reranking: qwen3-vl` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=8192`, `gpu_memory_utilization=0.9`, `image_limit=8`, `video_limit=2`, `image_max_pixels=262144`, `video_frames=8` |
 | `embedding: openai` | — | `model=text-embedding-3-small`, `dimension=1536`, `space=None`, `modalities=[text]` (at least one), `request_format=input`, `image_max_pixels=None`, plus connection fields |
 | `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `request_max_bytes=None`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
 | `formation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `image_max_pixels=None`, `extra_body=None`, plus connection fields |
@@ -332,8 +334,12 @@ the vision slot.
 
 ## Semantic reranking
 
-The optional `reranking` slot loads a local query-document scorer through the existing `local`
-extra. It is disabled when the slot is absent:
+The optional `reranking` slot loads a local query-document scorer. It is disabled when the slot
+is absent. Install the `reranking` extra for Qwen3-VL's vLLM runtime:
+
+```bash
+uv sync --locked --default-index https://pypi.org/simple --all-groups --extra local --extra reranking
+```
 
 ```yaml
 reranking:
@@ -341,78 +347,112 @@ reranking:
   model: Qwen/Qwen3-VL-Reranker-8B
   revision: "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
   device: cuda
-  batch_size: 1
-  max_length: 2048
+  batch_size: 32
+  max_length: 8192
+  gpu_memory_utilization: 0.9
+  image_limit: 8
+  video_limit: 2
+  image_max_pixels: 262144
+  video_frames: 8
 ```
 
 This example selects a pinned checkpoint; task accuracy and SOTA performance require actual
-evaluation. By default this integration ranks query/document text windows through `RerankingBackend`.
-The Qwen adapter uses PyTorch and
-Transformers already supplied by `local`; no additional dependency is required. The alternative
+evaluation. MindBridge automatically combines each query and candidate's available text, original
+images and original videos into `ModelInput` values. No modality switch is needed. A caption
+accompanies its media rather than replacing it; image-only and video-only queries and candidates
+also participate. Qwen3-VL does not accept raw audio; available transcript text can participate.
+The Qwen adapter follows the
+[official vLLM notebook](https://github.com/QwenLM/Qwen3-VL-Embedding/blob/main/examples/reranker_vllm.ipynb):
+the pooling runner loads `Qwen3VLForSequenceClassification` with the checkpoint's `no`/`yes` head,
+then submits the entire candidate pool in one `LLM.classify` call. `batch_size` defaults to 32 and
+sets vLLM's maximum concurrent sequences. Tokenization preserves the publisher's prompt and
+the complete query, document and assistant suffix. `max_length` is a hard limit on the complete
+tokenized pair, including its template. Oversized pairs fail before inference with
+`ModelError(reason="payload_too_large", stage="reranking")`; they are never silently truncated.
+Increase the configured limit within the checkpoint's supported context and available GPU memory,
+or shorten the query/document explicitly before submitting it. Text length is checked locally;
+visual tokens count toward the same context limit and vLLM validates the expanded sequence.
+An expanded visual sequence exceeding the limit also raises `payload_too_large` at the
+`reranking` stage, with no retry or removal of media.
+
+`image_limit` and `video_limit` bound the combined media count in each query/candidate pair,
+defaulting to eight images and two videos. Exceeding either limit raises `payload_too_large`;
+media are never silently dropped. `image_max_pixels` bounds processed image resolution, default
+262144 pixels. Videos are uniformly sampled to `video_frames` frames, default eight, configurable
+from two through 64; decoded frames retain their source timestamps and are not sampled again by
+the model processor. The query's decoded media are reused across the batch. Candidate files remain
+leased while the model reads them, including when scoring fails.
+
+`gpu_memory_utilization` defaults to `0.9` and must be greater than zero and at most one. It is
+vLLM's fraction of total GPU memory for this instance; reduce it when sharing a GPU with an
+embedder or other models, while allowing enough space for the reranker weights and execution.
+The supported prebuilt runtime is Linux x86-64 with CUDA. `device` accepts only `cuda` or omission;
+use `CUDA_VISIBLE_DEVICES` before starting Python to select a GPU. The shared uv lock selects CUDA 13.0 PyTorch,
+TorchAudio and TorchVision builds to match vLLM's compiled runtime; a compatible NVIDIA driver
+is required. The `reranking` extra supplies the Qwen runtime.
+
+When using vLLM in a standalone Python script, create the reranker and its owning `Memory` inside
+an `if __name__ == "__main__":` guard. MindBridge loads the embedder before the reranker; if that
+embedder has already initialized CUDA, vLLM switches to the `spawn` multiprocessing method.
+The child imports the main module again, so creating models at module level can recursively
+initialize them and fail during process bootstrapping. Setting
+`VLLM_WORKER_MULTIPROC_METHOD=spawn` alone does not replace the guard. See
+[vLLM's multiprocessing requirements](https://docs.vllm.ai/en/latest/usage/troubleshooting/#python-multiprocessing).
+
+For example, save the equivalent configuration as `mindbridge.json` and load it in
+`run_memory.py`:
+
+```python
+import json
+from pathlib import Path
+
+from mindbridge import Memory
+
+
+def main() -> None:
+    config = json.loads(Path("mindbridge.json").read_text(encoding="utf-8"))
+    with Memory.from_config(config) as memory:
+        print(memory.search("Which reservation was cancelled?", limit=5))
+        # Each call automatically uses the modalities present in its input and candidates.
+        print(memory.search(Path("query.png"), limit=5))
+        print(memory.search(("Find this scene", Path("query.mp4")), limit=5))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Select GPUs before starting the process:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 VLLM_WORKER_MULTIPROC_METHOD=spawn uv run --frozen python run_memory.py
+```
+
+The alternative
 `sentence-transformers` provider constructs `SentenceTransformersReranker`, with defaults
-`batch_size=32` and `max_length=1024`.
+`batch_size=32` and `max_length=1024`, through the existing `local` extra.
 
 An omitted revision is resolved to an immutable Hub commit before loading; an explicit revision
-must be a complete 40-character commit. Loading disables remote model code. `max_length` bounds the model's tokenized
-pair and can truncate evidence; it is separate from the answerer's output budget.
+must be a complete 40-character commit. Loading disables remote model code. `max_length` bounds
+the model's tokenized pair; Qwen rejects oversized pairs, while Sentence Transformers owns its
+cross-encoder's truncation. This input limit is separate from the answerer's output budget.
 
 SQLite hydration, caller scope, memory type, time filters, minimum relevance and the existing
-ambiguity decision run first. The reranker scores every eligible non-empty text candidate
+ambiguity decision run first. The reranker scores every candidate with content in its supported modalities
 before the requested result limit. Long documents supply exact query-related windows, retaining
 opening context and matching middle or tail passages; these windows do not change stored content
-or the original evidence delivered to the reader. Text-free media keep their original positions,
-and a query without text skips this text-only capability.
+or the original evidence delivered to the reader. Original supported media accompany these windows.
+The Sentence Transformers adapter supports text; candidates without any supported content retain
+their positions, and a query without supported content skips scoring.
 
 The model returns aligned finite relevance scores rather than source identifiers. These scores determine
-text ordering, with the original ranking as the tie-breaker. They do not change bounded
+candidate ordering, with the original ranking as the tie-breaker. They do not change bounded
 `SearchHit.score`, the relevance gate or stored embeddings. `search_with_trace()` reports the
 independent `reranking_score`. Qwen applies sigmoid to its yes/no logit difference, producing a
 relevance value in `[0, 1]`; this is not an answer-confidence estimate. Sentence Transformers
 returns raw logits, which may be negative. Reranker failures
 raise a classified `ModelError` at the `reranking` stage instead of silently falling back.
 Changing this query-time model requires reopening the instance, not re-ingesting the store.
-
-Set `multimodal: true` on the `qwen3-vl` slot to refine text ranking using original images
-and videos:
-
-```yaml
-reranking:
-  provider: qwen3-vl
-  model: Qwen/Qwen3-VL-Reranker-8B
-  revision: "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
-  device: cuda
-  batch_size: 4
-  max_length: 2048
-  multimodal: true
-  media_candidates: 40
-  media_weight: 0.5
-  media_max_length: 4096
-  image_max_pixels: 1048576
-  video_max_pixels: 2097152
-  video_max_frames: 8
-  video_fps: 1.0
-```
-
-The adapter first scores all eligible text windows, then scores up to `media_candidates`
-media-bearing candidates in text-score order. Native visual scores and text scores are combined
-in yes/no logit space using `media_weight` in `(0, 1]`. Unselected candidates retain their text
-scores. Media-only candidates can participate; a query with media also enables native scoring
-of text candidates. Audio is not a supported reranking modality.
-
-Images are decoded from verified source bytes. Videos use PyAV sampling across the clip and
-native temporal visual tensors with original frame timestamps; no captions replace the pixels.
-`image_max_pixels` is a per-image processing bound, and `video_max_pixels` is the video
-processor's total spatial/temporal pixel budget. `video_fps` is the target sampling rate, with
-at least four frames and at most `video_max_frames` (which must be at least four).
-Each visual pair runs separately. Expanded visual tokens are never arbitrarily truncated;
-a pair exceeding `media_max_length` fails with `payload_too_large`. These settings change
-the reranking model identity, without changing the embedding contract or reader budgets.
-
-Custom adapters can implement `MultimodalRerankingBackend`: it extends the text protocol with
-`reranking_capabilities` and
-`rerank_media(query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]`.
-The kernel supplies resolved supported assets protected by candidate leases, retains source
-identity and validates aligned finite scores. Existing text-only adapters keep their contract.
 
 ## Embedding choices
 

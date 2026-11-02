@@ -125,13 +125,11 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     assert config.vision is None and config.generation.offline_gazetteer is None
     assert config.reranking is not None and config.reranking.provider == "qwen3-vl"
     assert config.reranking.revision == "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
-    assert (config.reranking.batch_size, config.reranking.max_length) == (4, 2048)
-    assert config.reranking.multimodal is True
-    assert (config.reranking.media_candidates, config.reranking.media_weight) == (40, 0.5)
-    assert config.reranking.media_max_length == 4096
-    assert config.reranking.image_max_pixels == 1_048_576
-    assert config.reranking.video_max_pixels == 2_097_152
-    assert (config.reranking.video_max_frames, config.reranking.video_fps) == (8, 1.0)
+    assert (config.reranking.batch_size, config.reranking.max_length) == (32, 8192)
+    assert config.reranking.gpu_memory_utilization == 0.9
+    assert (config.reranking.image_limit, config.reranking.video_limit) == (8, 2)
+    assert config.reranking.image_max_pixels == 262144
+    assert config.reranking.video_frames == 8
     assert config.settings.evidence_budget_chars == 64_000
     assert (
         config.settings.recall_rounds,
