@@ -10,7 +10,6 @@ from __future__ import annotations
 import builtins
 from collections.abc import Generator, Sequence
 from contextlib import closing, suppress
-from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -55,7 +54,7 @@ from mindbridge.kernel import grounding
 from mindbridge.kernel.content import PreparedContent, memory_modality, prepared_modalities
 from mindbridge.kernel.contracts import Backends
 from mindbridge.kernel.derived import has_stream_description, has_stream_transcript
-from mindbridge.kernel.execution import Execution
+from mindbridge.kernel.execution import ASYNC_QUEUE_TIME_MS, Execution
 from mindbridge.kernel.hydration import Hydrator
 from mindbridge.kernel.identity import Identities
 from mindbridge.kernel.lifecycle import Lifecycle, OperationAssets
@@ -118,11 +117,6 @@ from mindbridge.types import (
 # recognition run on each row before the answer call, and again on a replan -- so a set read that
 # matched every clip in the corpus is bounded here rather than by the character budget alone.
 _RECALL_MEDIA_FACTOR = 2
-
-ASYNC_QUEUE_TIME_MS: ContextVar[float | None] = ContextVar(
-    "mindbridge_async_queue_time_ms",
-    default=None,
-)
 
 
 @dataclass(frozen=True, slots=True)

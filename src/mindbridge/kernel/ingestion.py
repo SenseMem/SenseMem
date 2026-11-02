@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -475,6 +475,31 @@ class Ingestion(Traced):
             index += 1
         if grouped:
             self._flush_stream_group()
+
+    async def add_async_stream(
+        self,
+        contents: AsyncIterable[ContentInput | StreamInput],
+        *,
+        capture: bool = False,
+    ) -> AsyncIterator[MemoryRecord]:
+        if not isinstance(contents, AsyncIterable):
+            raise ValidationError("contents must be an async iterable of memory inputs")
+        capture = strict_bool(capture, "capture")
+        iterator = aiter(contents)
+        index = 0
+        while True:
+            try:
+                content = await anext(iterator)
+            except StopAsyncIteration:
+                return
+            except MindBridgeError as error:
+                if error.subject is None:
+                    error.subject = f"contents[{index}]"
+                raise
+            yield await self._execution.run(
+                self.add_stream_item, content, index=index, capture=capture
+            )
+            index += 1
 
     def add_stream_item(
         self,

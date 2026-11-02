@@ -73,7 +73,7 @@ contract.
 
 ## Evaluate
 
-- [Benchmarking](benchmarking.md) — reproducible behavior evaluation and local-index measurement.
+- [Benchmarking](benchmarking.md) — behavior evaluation, local-index measurement, and SDK load tests.
 - [Fused ATM-Bench retrieval](atm-fused-retrieval.md) — caller-supplied descriptions and raw
   media, pinned text-window reranking, and a portable evaluation recipe.
 - [Grounded multimodal recall](grounded-multimodal-recall.md) — bounded semantic routes,

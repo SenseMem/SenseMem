@@ -35,6 +35,7 @@ from mindbridge import (
     ModelError,
     ModelInput,
     SearchHit,
+    SearchResult,
     ValidationError,
 )
 from mindbridge._telemetry import (
@@ -211,11 +212,9 @@ class _RankedMemory:
             yield AnswerChunk(text=result.answer)
         yield AnswerChunk(result=result)
 
-    async def search(
-        self, _query: object, *, limit: int, **_kwargs: object
-    ) -> tuple[SearchHit, ...]:
+    async def search(self, _query: object, *, limit: int, **_kwargs: object) -> SearchResult:
         self.search_limits.append(limit)
-        return self._ranked
+        return SearchResult(hits=self._ranked)
 
 
 class _ForbiddenMemory:
@@ -224,7 +223,7 @@ class _ForbiddenMemory:
     async def ask(self, _question: object, **_kwargs: object) -> AnswerResult:
         raise AssertionError("a no-retrieval arm called Memory.ask")
 
-    async def search(self, _query: object, **_kwargs: object) -> tuple[SearchHit, ...]:
+    async def search(self, _query: object, **_kwargs: object) -> SearchResult:
         raise AssertionError("a no-retrieval arm called Memory.search")
 
     async def add_many(self, *_args: object, **_kwargs: object) -> tuple[object, ...]:
@@ -636,7 +635,7 @@ async def test_product_ranking_is_captured_without_a_scoring_search() -> None:
             yield AnswerChunk(result=AnswerResult("Ada"))
             answered += 1
 
-        async def search(self, _question: object, **_kwargs: object) -> tuple[SearchHit, ...]:
+        async def search(self, _question: object, **_kwargs: object) -> SearchResult:
             raise AssertionError("product retrieval issued a second scoring search")
 
     questions = tuple(_question(f"q{index}", evidence_ids=["gold-1"]) for index in range(3))
@@ -817,8 +816,8 @@ def test_every_arm_answers_the_same_questions_against_one_ingest(tmp_path: Path)
                 yield AnswerChunk(text=result.answer)
             yield AnswerChunk(result=result)
 
-        async def search(self, _query: object, **_kwargs: object) -> tuple[SearchHit, ...]:
-            return (_hit("s1", 0.9), _hit("gold-1", 0.5))
+        async def search(self, _query: object, **_kwargs: object) -> SearchResult:
+            return SearchResult(hits=(_hit("s1", 0.9), _hit("gold-1", 0.5)))
 
     class Context:
         async def __aenter__(self) -> AsyncMemory:

@@ -257,9 +257,6 @@ The [documentation index](docs/README.md) describes the current contracts.
 - Video-MME, EgoLifeQA, EgoMemReason, and MemEye tasks, their unused adapters and submission
   artifacts, duplicate scoring runners, the unused evaluation journal, and unused registries.
   Video-MME-v2 remains supported.
-- Completed implementation audits and intermediate development notes duplicated by current
-  guides and regression tests. Research protocols, measurements, and source pins stay local-only;
-  third-party scorer notices remain in the benchmark package.
 
 ### Limits
 

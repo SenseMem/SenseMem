@@ -107,7 +107,7 @@ def test_product_does_not_address_benchmarks() -> None:
 
 
 def test_imported_distributions_are_declared() -> None:
-    """Every third-party product import must have a direct dependency declaration."""
+    """Require direct imports to be declared; isolated CI installs check transitive dependencies."""
     declared = {
         canonicalize_name(_name(item))
         for item in [*DEPENDENCIES, *(item for items in EXTRAS.values() for item in items)]
@@ -153,11 +153,7 @@ def _installed_roots() -> dict[str, frozenset[str]]:
 
 
 def test_deferred_and_conditional_imports_are_classified(tmp_path: Path) -> None:
-    """Pin the classification the declaration check depends on, on inputs the source lacks.
-
-    Every deferred backend in this package loads through ``import_module``, so a scan that only
-    read import statements would run its new branch over a corpus with nothing to find.
-    """
+    """Classify deferred and conditional imports without treating prose as a dependency."""
     module = tmp_path / "sample.py"
     module.write_text(
         "import os\n"
