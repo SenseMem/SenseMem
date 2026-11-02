@@ -148,7 +148,8 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     ) == (16, 16, 16, 16)
     directory = tmp_path / recipe["artifact_root"] / recipe["variant"]
     manifest = json.loads((directory / "preflight.json").read_text())
-    assert manifest["source_store"] is None and manifest["raw_media"] is True
+    assert manifest["source_store"] == str(tmp_path / recipe["source_store"])
+    assert manifest["raw_media"] is True
     assert manifest["measure_search_replay"] is False
     assert not (directory / "stores").exists()
     local, overrides = _load_memory_config(directory / "input.yaml")

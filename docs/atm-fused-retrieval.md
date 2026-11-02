@@ -57,6 +57,9 @@ services. The localhost URLs are placeholders. Keep the configured model names a
 only when the services actually provide them. If input files live elsewhere, change
 `benchmark.download.benchmarks_root` and the recipe's `raw_media_root` accordingly. Set the
 recipe's `artifact_root` and `variant` to a new unused output location for each independent run.
+Set `source_store` to the physical data directory of an existing closed, compatible corpus store;
+the shipped path `.benchmarks/atm-source-store` is a caller-supplied local input, not a store
+created or downloaded by this recipe.
 
 Do not put credentials in either file. The embedding client uses the SDK's `OPENAI_API_KEY` when
 its `api_key` is omitted. The benchmark generation client uses
@@ -104,12 +107,16 @@ concurrency 16. Each variant has its own physical `stores/` and `results/` direc
 which is not an independent fresh run. Keep private inputs, artifacts and credentials outside
 versioned files. Results include private questions and answers; the example does not publish them.
 
-The shipped recipe has `source_store: null`, so a full run cold-imports and embeds the supplied
-corpus. A new embedding call, even to the same model alias, need not reproduce earlier vector
-bytes. To reuse an existing compatible corpus instead, set `source_store` to a closed physical
-store. The runner verifies source text, timestamps and asset bytes through the public SDK, copies
-to a distinct directory, checks authoritative embedding fingerprints, and reindexes the copy.
-Never point this check at a running store. Copying vectors does not reuse answer or judge caches.
+The shipped recipe reuses authoritative vectors from `source_store`. The runner verifies source
+text, timestamps and asset bytes through the public SDK, copies to a distinct directory, checks
+authoritative embedding fingerprints, and reindexes the copy. Never point this check at a running
+store. Copying vectors does not reuse answer or judge caches. The source store must match the
+supplied fused corpus and embedding contract; the configuration does not contain or distribute
+private corpus files or stored vectors.
+
+For a new corpus without a closed source store, explicitly set `source_store: null` to cold-import
+and embed it. A new embedding call, even to the same model alias, need not reproduce earlier vector
+bytes, so that is a different input state for evaluation.
 
 ## Interpret the policy and outputs
 
@@ -137,8 +144,9 @@ accuracy claim still require a complete task evaluation.
 
 The example retains two recall rounds and two extra semantic queries, recall limit 20, 64,000-char
 evidence/set budgets, predicate limit 100 rows, no quantization or answer reinforcement, and a
-32MiB complete generation-request budget. The generation output ceiling is 16,384 tokens, image
-limit 1,048,576 pixels and retrieved-video limit 8. With `media_policy: all`, `media_max_items: 8`
+32MiB complete generation-request budget. `answer_format: text` explicitly selects ordinary text
+answers and the existing refusal-triggered recall workflow. The generation output ceiling is
+16,384 tokens, image limit 1,048,576 pixels and retrieved-video limit 8. With `media_policy: all`, `media_max_items: 8`
 does not impose an eight-item combined image/video limit; existing grounding and byte budgets can
 still omit, resize or sample retrieved media. Request budgets do not guarantee gateway acceptance
 or preservation of every relevant pixel.

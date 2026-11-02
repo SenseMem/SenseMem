@@ -16,6 +16,7 @@ generation:
   model: deepseek-v4.1-flash
   modalities: [text, image, video]
   answer_style: concise
+  answer_format: text
   image_max_pixels: 1048576
   request_max_bytes: 33554432
   video_limit: 8
