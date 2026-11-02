@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import shutil
@@ -19,7 +18,7 @@ from typing import TYPE_CHECKING, TypeAlias, TypeVar
 from urllib.parse import urlparse
 
 from mindbridge.benchmarks.download import acquire_media
-from mindbridge.benchmarks.eval_adapters import MediaManifest
+from mindbridge.benchmarks.eval_adapters import Limit, MediaManifest, _selected
 from mindbridge.benchmarks.task_catalog import TaskSpec
 
 if TYPE_CHECKING:
@@ -57,7 +56,6 @@ _PREPARED_MEDIA_CACHE_VERSION = "ffmpeg-v2"
 _VIDEO_SEGMENT_CACHE_KEY_VERSION = "video-segment-v3"
 _T = TypeVar("_T")
 _R = TypeVar("_R")
-Limit: TypeAlias = int | float | None
 ProgressCallback: TypeAlias = Callable[[int, int], None]
 
 
@@ -1455,10 +1453,3 @@ def _number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError("benchmark media timestamp must be numeric")
     return float(value)
-
-
-def _selected(values: Sequence[_T], limit: Limit, offset: int) -> Sequence[_T]:
-    if limit is None or limit == -1:
-        return values[offset:]
-    count = max(1, math.ceil(len(values) * limit)) if limit < 1 else int(limit)
-    return values[offset : offset + count]

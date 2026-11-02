@@ -63,11 +63,13 @@ thresholds intrinsic to that model, or a caller-supplied remote SDK client. Pote
 visual-grounding and semantic-extraction capabilities belong on this side only after a
 concrete implementation proves a narrow contract.
 
-`RerankingBackend` is an optional text-only computation plugin. It receives a query and ordered
-documents and returns an equally sized tuple of finite relevance scores. The retrieval plane owns
+`RerankingBackend` is an optional computation plugin with explicit `reranking_capabilities`.
+It receives a query and ordered documents as `ModelInput` values and returns an equally sized
+tuple of finite relevance scores. The retrieval plane owns
 SQLite hydration and filtering, eligibility, exact source-window selection, candidate identity,
-and final ordering. Empty-text media retain their positions; queries without text skip the
-plugin. A reranker cannot introduce records, change source IDs, bypass the relevance or ambiguity
+and final ordering. It automatically includes supported text and original media, protects candidate
+files with temporary leases and preserves captioned originals. Inputs with no supported content
+are unscored; other candidates retain their positions. A reranker cannot introduce records, change source IDs, bypass the relevance or ambiguity
 gate, or rewrite stored content. Invalid results and model failures are explicit errors rather
 than silent fallback. Request-local scores appear separately as `RetrievalCandidateTrace.reranking_score`;
 the existing bounded score keeps its meaning.
@@ -130,17 +132,11 @@ that works.
 
 `RerankingBackend` meets it through `Qwen3VLReranker` and `SentenceTransformersReranker`, the optional
 [`reranking` configuration](configuration.md#semantic-reranking), and the shared retrieval path
-used by `search`, `ask` and `compile`. It uses the existing `local` extra, pins an immutable
-checkpoint revision, disables remote code, serializes inference, validates aligned scores and
-closes with its owning `Memory`. Product-path tests cover full-pool reranking, stale-ID removal,
-scope/type/time filtering, media slots and failure mapping. Those tests establish integration;
-checkpoint quality and task-specific improvements require separate evaluation.
-The `qwen3-vl` provider uses the existing PyTorch/Transformers dependencies and ranks text windows
-by default. Its explicit `multimodal` mode also implements `MultimodalRerankingBackend`, with
-`reranking_capabilities` and `rerank_media(ModelInput, Sequence[ModelInput])`. The kernel
-resolves and leases supported assets after authoritative filtering; the adapter scores original
-image pixels and native sampled videos. Source binding, result limits, gates and durable vectors
-remain owned by the kernel. See the [processing budgets](configuration.md#semantic-reranking).
+used by `search`, `ask` and `compile`. The plugin supplies aligned relevance scores; the kernel owns
+source identity, filtering and result ordering. Both adapters pin checkpoint revisions, disable
+remote code and close with their owning `Memory`. Their dependencies and runtime controls live
+in the configuration guide. Product-path tests establish integration; task-specific quality
+improvements require separate evaluation.
 
 ## Embodied integration boundary
 

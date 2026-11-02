@@ -14,7 +14,15 @@ from pydantic import ValidationError as PydanticValidationError
 
 import mindbridge.configuration as configuration
 import mindbridge.recipes as recipes
-from mindbridge import Memory, MindBridgeConfig, OpenAIModels, SearchHit, ValidationError
+from mindbridge import (
+    Memory,
+    MindBridgeConfig,
+    Modality,
+    ModelInput,
+    OpenAIModels,
+    SearchHit,
+    ValidationError,
+)
 from mindbridge.models.base import GenerationBackend
 
 
@@ -110,7 +118,7 @@ def test_declarative_structured_adapter_constructs_and_binds_custom_source_ids(
     ("provider", "adapter_name", "default_batch_size", "default_max_length"),
     [
         ("sentence-transformers", "SentenceTransformersReranker", 32, 1024),
-        ("qwen3-vl", "Qwen3VLReranker", 1, 2048),
+        ("qwen3-vl", "Qwen3VLReranker", 32, 8192),
     ],
 )
 @pytest.mark.parametrize("explicit_controls", [False, True])
@@ -128,11 +136,12 @@ def test_reranker_is_an_owned_optional_declarative_backend(
 
     class Reranker:
         reranking_model = "fixture@" + "a" * 40
+        reranking_capabilities = frozenset({Modality.TEXT})
 
         def __init__(self, **values: object) -> None:
             built.append(values)
 
-        def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+        def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
             raise AssertionError("composition must not score evidence")
 
         def close(self) -> None:
@@ -146,7 +155,10 @@ def test_reranker_is_an_owned_optional_declarative_backend(
         "revision": "a" * 40,
     }
     if explicit_controls:
-        reranking.update(device="cpu", batch_size=4, max_length=512)
+        reranking.update(device="cuda", batch_size=4, max_length=512)
+        if provider == "qwen3-vl":
+            reranking["gpu_memory_utilization"] = 0.7
+            reranking.update(image_limit=3, video_limit=1, image_max_pixels=131072, video_frames=4)
     config = MindBridgeConfig.model_validate(
         {
             "data_dir": tmp_path,
@@ -160,15 +172,47 @@ def test_reranker_is_an_owned_optional_declarative_backend(
     assert composition.settings.recall_max_queries == 4
     composition.close()
     assert closed == ["reranker"]
-    assert built == [
-        {
-            "model_id": "org/reranker",
-            "revision": "a" * 40,
-            "device": "cpu" if explicit_controls else None,
-            "batch_size": 4 if explicit_controls else default_batch_size,
-            "max_length": 512 if explicit_controls else default_max_length,
-        }
-    ]
+    expected: dict[str, object] = {
+        "model_id": "org/reranker",
+        "revision": "a" * 40,
+        "device": "cuda" if explicit_controls else None,
+        "batch_size": 4 if explicit_controls else default_batch_size,
+        "max_length": 512 if explicit_controls else default_max_length,
+    }
+    if provider == "qwen3-vl":
+        expected["gpu_memory_utilization"] = 0.7 if explicit_controls else 0.9
+        expected.update(
+            image_limit=3 if explicit_controls else 8,
+            video_limit=1 if explicit_controls else 2,
+            image_max_pixels=131072 if explicit_controls else 262144,
+            video_frames=4 if explicit_controls else 8,
+        )
+    assert built == [expected]
+
+
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {"gpu_memory_utilization": 0},
+        {"gpu_memory_utilization": 1.1},
+        {"gpu_memory_utilization": "0.9"},
+        {"device": "cpu"},
+        {"device": "cuda:1"},
+        {"image_limit": 0},
+        {"video_limit": 0},
+        {"image_max_pixels": 0},
+        {"video_frames": 1},
+        {"video_frames": 65},
+    ],
+)
+def test_qwen3_vl_runtime_controls_are_strict(controls: dict[str, object]) -> None:
+    with pytest.raises(PydanticValidationError):
+        MindBridgeConfig.model_validate(
+            {
+                "embedding": {"provider": "openai"},
+                "reranking": {"provider": "qwen3-vl", "model": "org/reranker", **controls},
+            }
+        )
 
 
 @pytest.mark.parametrize("provider", ["sentence-transformers", "qwen3-vl"])

@@ -315,8 +315,6 @@ def _dimensions(
         raise ModelError("embedding model does not declare its native dimension")
     if requested is None:
         return native, None
-    if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
-        raise ValidationError("dimension must be a positive integer")
     if requested == native:
         return requested, None
     advertised = _config_value(encoder, "matryoshka_dimensions")

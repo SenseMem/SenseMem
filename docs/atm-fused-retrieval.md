@@ -1,7 +1,7 @@
 # Evaluate fused ATM-Bench media with native image and video reranking
 
 This example combines caller-supplied SGM and detailed descriptions with the original media and
-GPS, hybrid retrieval, and Qwen native image/video reranking after text-window scoring. It uses
+GPS, hybrid retrieval, and Qwen text/image/video reranking through vLLM. It uses
 this checkout's refusal-triggered recall workflow, strict answering and ordinary text answers.
 It does not enable offline maps or
 structured answer execution. The example is a portable configuration, not a quality guarantee or
@@ -10,7 +10,7 @@ a completed benchmark result.
 Use the [YAML example](examples/atm-sgm-detail-qwen3-vl.yaml) with the
 [benchmark recipe](../benchmarks/atm_ablation_recipe.json). Run commands from the repository root:
 relative recipe paths and YAML data paths resolve against the working directory, not the recipe
-file's directory. Install the `benchmarks`, `openai` and `local` extras as described in
+file's directory. Install the `benchmarks`, `openai` and `reranking` extras as described in
 [Contributing](../CONTRIBUTING.md#setup); this guide does not install or launch model services.
 
 ## Supply the existing input corpus
@@ -121,25 +121,22 @@ bytes, so that is a different input state for evaluation.
 ## Interpret the policy and outputs
 
 Qwen is pinned to `Qwen/Qwen3-VL-Reranker-8B` revision
-`b212dc8c91a8164aef1ea2de9c1a867611e75c04`, with `multimodal: true`. It first scores all eligible
-text query/document pairs using its native yes/no head, CUDA batch 4 and maximum length 2,048.
-Each document contains at most three query-related original-text windows, totaling at most 1,200
-codepoints plus offset labels. It then processes original images and sampled videos for the top
-40 media-bearing candidates. Video tensors retain frame order and original timestamps.
+`b212dc8c91a8164aef1ea2de9c1a867611e75c04`. Every eligible pair's text and original visual media
+are assembled automatically and submitted together to vLLM's yes/no classifier. Each document
+contains at most three query-related original-text windows, totaling at most 1,200 codepoints,
+with its original images and videos. Captions do not replace visual evidence.
 
-The example combines native media and text scores with equal weight in yes/no logit space;
-unselected candidates retain their text scores. Media pairs run separately, with a 4,096-token
-ceiling, 1,048,576 pixels per image, and a total video pixel budget of 2,097,152 at a target 1fps
-and at most eight frames. See [semantic reranking](configuration.md#semantic-reranking) for the
-processing bounds and explicit failure behavior. Sixteen benchmark requests share one locked GPU
-reranker; the shared wrapper retains its native media interface and leaves ownership with the pool.
+The example uses 32 concurrent sequences, an 8,192-token pair ceiling, up to eight images and two
+videos per pair, 262,144 pixels per image and eight uniformly sampled frames per video. Frames
+retain source order and timestamps. See [semantic reranking](configuration.md#semantic-reranking)
+for processing bounds and explicit failure behavior. Benchmark requests share one locked GPU
+reranker; the shared wrapper preserves modalities and leaves ownership with the pool.
 
-The runner records actual image/video pairs, sampled frame exposures, media forward counts and
-maximum input tokens, and logs the first successful image and video forward separately. Check
-these execution records to establish that native media scoring ran. The synthetic
+The runner records scored-candidate counts and the ordinary retrieval/model stage telemetry.
+The synthetic
 `reranking-probe` stage checks image content, video content and video order through the same pool
-wrapper; it requires CUDA and a native media configuration, but no ATM corpus or reader/judge
-calls. Its output is a qualification check, not an ATM-Bench score. The combined policy and any
+wrapper; it requires CUDA and a Qwen reranking configuration, but no ATM corpus or reader/judge
+calls. The probe does not measure vLLM worker GPU memory. Its output is a qualification check, not an ATM-Bench score. The combined policy and any
 accuracy claim still require a complete task evaluation.
 
 The example retains two recall rounds and two extra semantic queries, recall limit 20, 64,000-char

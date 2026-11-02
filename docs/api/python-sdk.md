@@ -139,10 +139,11 @@ window and matched sets, and packs new evidence before the optional ranked tail.
 experimental and disabled by default. It adds query embedding calls in dense/hybrid
 mode; lexical mode uses full-text search only. No HTTP endpoint or MCP tool schema changes.
 
-`reranker` optionally reorders the complete eligible text-candidate pool before the requested
+`reranker` optionally reorders the complete eligible candidate pool before the requested
 limit. SQLite hydration, scope, type and time filtering, the relevance gate and the existing
-ambiguity decision precede it. Empty-text media retain their original slots, and queries without
-text skip reranking. The kernel supplies bounded exact source windows and preserves source IDs;
+ambiguity decision precede it. The kernel automatically combines available text, images and videos
+according to the backend's declared capabilities. Captioned media retain their originals.
+The kernel supplies bounded exact source windows and preserves source IDs;
 the backend returns aligned finite raw scores. `SearchHit.score` remains the existing bounded
 score and need not decrease with rank. See [semantic reranking](../configuration.md#semantic-reranking)
 for the bundled adapter and trace behavior.
@@ -1195,7 +1196,7 @@ The supported names exported by `mindbridge` are:
 | Delivery certificates | `ContextProof`, `ContextProofNode` |
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
 | Enums and literal aliases | `AnswerPolicy`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
-| Backend protocols and values | `EmbeddingBackend`, `RerankingBackend`, `MultimodalRerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
+| Backend protocols and values | `EmbeddingBackend`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
 | Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `OpenAIModels`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
 | Exceptions | `MindBridgeError`, `ValidationError`, `MemoryNotFoundError`, `SpeakerNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
 
@@ -1320,8 +1321,8 @@ EmbeddingBackend.embed(
 ) -> tuple[tuple[float, ...], ...]
 
 RerankingBackend.rerank(
-    query: str,
-    documents: Sequence[str],
+    query: ModelInput,
+    documents: Sequence[ModelInput],
 ) -> tuple[float, ...]
 
 GenerationBackend.answer(
@@ -1375,7 +1376,10 @@ as alternatives. Deleting any member retires its whole conjunction. `None` uses 
 as the sole evidence member. A model declaration is provenance metadata, not a
 verified proof of complete or independent support.
 
-`rerank` accepts text only and returns one finite relevance score per document in the same order.
+`rerank` accepts `ModelInput` values containing text and ordered resolved assets and returns one
+finite relevance score per document in the same order. `reranking_capabilities` declares the
+supported atomic modalities. Direct adapter calls reject unsupported modalities; the retrieval
+plane selects supported content automatically and skips inputs without any supported content.
 Score ranges depend on the backend and do not estimate answer confidence. The kernel owns candidate identity,
 filtering and ordering; a backend never returns or substitutes source IDs. Invalid score counts,
 non-numeric or non-finite values raise `ModelError(reason="response_invalid", stage="reranking")`.
@@ -1390,7 +1394,7 @@ that result carries the answer, used hits, and abstention status. Exhaustion wit
 returning a bare hit tuple is an invalid model response.
 
 Required properties are `embedding_capabilities`, `embedding_model`, `embedding_space`, and
-`embedding_dimension` for embedding; `reranking_model` for reranking;
+`embedding_dimension` for embedding; `reranking_capabilities` and `reranking_model` for reranking;
 `transcription_capabilities`, `transcription_model`, and
 `transcription_space` for transcription and speech; `face_capabilities`, `face_model`,
 `face_space`, and `face_analysis_space` for faces; `vision_capabilities`, `vision_model`, and
@@ -1553,8 +1557,13 @@ Qwen3VLReranker(
     model_id: str,
     revision: str | None = None,
     device: str | None = None,
-    batch_size: int = 1,
-    max_length: int = 2048,
+    batch_size: int = 32,
+    max_length: int = 8192,
+    gpu_memory_utilization: float = 0.9,
+    image_limit: int = 8,
+    video_limit: int = 2,
+    image_max_pixels: int = 262144,
+    video_frames: int = 8,
 )
 
 Qwen3VLReranker.load(
@@ -1562,8 +1571,13 @@ Qwen3VLReranker.load(
     *,
     revision: str | None = None,
     device: str | None = None,
-    batch_size: int = 1,
-    max_length: int = 2048,
+    batch_size: int = 32,
+    max_length: int = 8192,
+    gpu_memory_utilization: float = 0.9,
+    image_limit: int = 8,
+    video_limit: int = 2,
+    image_max_pixels: int = 262144,
+    video_frames: int = 8,
 ) -> Qwen3VLReranker
 
 FunASRTranscriber(
@@ -1622,10 +1636,30 @@ For `google/embeddinggemma-2`, the generic loader uses FP32 and supports `128`, 
 from the pinned checkpoint. See the [EmbeddingGemma 2 configuration](../configuration.md#embeddinggemma-2)
 for a complete example and input limits.
 
-`Qwen3VLReranker` uses the existing `local` extra's PyTorch and Transformers runtimes to rank text
-query/document pairs with Qwen3-VL-Reranker. Retrieval supplies bounded exact text windows; the
-adapter's `RerankingBackend` contract accepts no image or video assets. The owning `Memory` closes
-the adapter. It pins an immutable checkpoint revision and uses the checkpoint's sigmoid of the
+`Qwen3VLReranker` uses the optional `reranking` extra's vLLM pooling runner to rank each
+query/document pair's text, original images and original videos with Qwen3-VL-Reranker, following the
+[publisher's vLLM notebook](https://github.com/QwenLM/Qwen3-VL-Embedding/blob/main/examples/reranker_vllm.ipynb).
+It submits all pairs to `LLM.classify` together; `batch_size` limits the number of concurrently
+scheduled sequences, with a default of 32. `max_length` bounds each complete pair including its
+template and assistant suffix. An oversized query or document raises
+`ModelError(reason="payload_too_large", stage="reranking")` before inference; no input is silently
+truncated. The same error applies when vLLM's validation finds that expanded image or video tokens
+exceed the context limit; media are not dropped and the request is not retried.
+`gpu_memory_utilization` sets vLLM's per-instance fraction of total
+GPU memory in `(0, 1]`, defaulting to `0.9`; allow room for other local adapters.
+The supported runtime is Linux x86-64 with CUDA. `device` accepts `None` or `"cuda"`; select a GPU
+with `CUDA_VISIBLE_DEVICES` before starting Python. CPU, MPS and `cuda:N` device values are rejected.
+In standalone scripts, create the reranker and owning `Memory` under an
+`if __name__ == "__main__":` guard, including when another adapter has already initialized CUDA.
+See the [multiprocessing example](../configuration.md#semantic-reranking) for guarded startup.
+Retrieval supplies bounded exact text windows together with original visual assets automatically,
+including captioned media and media-only queries. `image_limit` and `video_limit` bound each pair's
+combined media count. `image_max_pixels` bounds processed image resolution; `video_frames` controls
+uniform video sampling, retaining source timing. Query media are decoded once per call and reused
+across candidates. Raw audio is unsupported; available transcript text can participate.
+The owning `Memory` closes
+the adapter and shuts down its vLLM engine. It pins both model and tokenizer to an immutable
+checkpoint revision, disables remote code, and uses the checkpoint's sigmoid of the
 yes/no logit difference as a request-local relevance value, not answer confidence.
 See [reranking configuration](../configuration.md#semantic-reranking) for a pinned
 Qwen3-VL-Reranker-8B example. Checkpoint selection and integration tests do not establish a

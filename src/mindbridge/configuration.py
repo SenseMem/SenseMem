@@ -146,17 +146,14 @@ class Qwen3VLRerankingConfig(_ConfigModel):
     provider: Literal["qwen3-vl"]
     model: _Text
     revision: _Text | None = None
-    device: _Text | None = None
-    batch_size: _PositiveInt = 1
-    max_length: _PositiveInt = 2048
-    multimodal: bool = False
-    media_candidates: _PositiveInt = 40
-    media_weight: Annotated[float, Field(gt=0, le=1)] = 0.5
-    media_max_length: _PositiveInt = 4096
-    image_max_pixels: _PositiveInt = 1048576
-    video_max_pixels: _PositiveInt = 2097152
-    video_max_frames: Annotated[int, Field(strict=True, ge=4)] = 8
-    video_fps: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
+    device: Literal["cuda"] | None = None
+    batch_size: _PositiveInt = 32
+    max_length: _PositiveInt = 8192
+    gpu_memory_utilization: Annotated[float, Field(strict=True, gt=0, le=1)] = 0.9
+    image_limit: _PositiveInt = 8
+    video_limit: _PositiveInt = 2
+    image_max_pixels: _PositiveInt = 262144
+    video_frames: Annotated[int, Field(strict=True, ge=2, le=64)] = 8
 
 
 class _OpenAICompletionConfig(_OpenAIConfig):
@@ -368,31 +365,27 @@ def resolve_memory_config(
         if answerer is not None:
             cleanup.callback(answerer.close)
         reranker: RerankingBackend | None = None
-        if config.reranking is not None:
-            if config.reranking.provider == "qwen3-vl":
-                reranker = Qwen3VLReranker(
-                    model_id=config.reranking.model,
-                    revision=config.reranking.revision,
-                    device=config.reranking.device,
-                    batch_size=config.reranking.batch_size,
-                    max_length=config.reranking.max_length,
-                    multimodal=config.reranking.multimodal,
-                    media_candidates=config.reranking.media_candidates,
-                    media_weight=config.reranking.media_weight,
-                    media_max_length=config.reranking.media_max_length,
-                    image_max_pixels=config.reranking.image_max_pixels,
-                    video_max_pixels=config.reranking.video_max_pixels,
-                    video_max_frames=config.reranking.video_max_frames,
-                    video_fps=config.reranking.video_fps,
-                )
-            else:
-                reranker = SentenceTransformersReranker(
-                    model_id=config.reranking.model,
-                    revision=config.reranking.revision,
-                    device=config.reranking.device,
-                    batch_size=config.reranking.batch_size,
-                    max_length=config.reranking.max_length,
-                )
+        if isinstance(config.reranking, Qwen3VLRerankingConfig):
+            reranker = Qwen3VLReranker(
+                model_id=config.reranking.model,
+                revision=config.reranking.revision,
+                device=config.reranking.device,
+                batch_size=config.reranking.batch_size,
+                max_length=config.reranking.max_length,
+                gpu_memory_utilization=config.reranking.gpu_memory_utilization,
+                image_limit=config.reranking.image_limit,
+                video_limit=config.reranking.video_limit,
+                image_max_pixels=config.reranking.image_max_pixels,
+                video_frames=config.reranking.video_frames,
+            )
+        elif config.reranking is not None:
+            reranker = SentenceTransformersReranker(
+                model_id=config.reranking.model,
+                revision=config.reranking.revision,
+                device=config.reranking.device,
+                batch_size=config.reranking.batch_size,
+                max_length=config.reranking.max_length,
+            )
         if reranker is not None:
             cleanup.callback(reranker.close)
         former = None if config.formation is None else _build_formation(config.formation)

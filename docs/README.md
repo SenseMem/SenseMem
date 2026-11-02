@@ -13,6 +13,7 @@ contract.
 | Understand what MindBridge can do | [Product capabilities](product-capabilities.md) | [Design principles](design-principles.md) |
 | Try MindBridge end to end | [Quick start](quickstart.md) | [Core concepts](concepts.md) |
 | Build a Python integration | [Configuration](configuration.md) | [Python SDK](api/python-sdk.md) |
+| Rerank text, images and videos | [Semantic reranking](configuration.md#semantic-reranking) | [Python SDK](api/python-sdk.md) |
 | Use a local WeMM embedding service | [Local WeMM deployment](use-local-wemm.md) | [Configuration](configuration.md) |
 | Use EmbeddingGemma 2 through vLLM | [Model server](deployment.md#embeddinggemma-2-model-server) | [Configuration](configuration.md#embeddinggemma-2-through-vllm) |
 | Give an agent a bounded context view | [Context compilation](context-compilation.md) | [Python SDK](api/python-sdk.md) |

@@ -39,8 +39,13 @@ The [documentation index](docs/README.md) describes the current contracts.
   unrelated dates, explanations or citations. The default reader prompt and both evidence-policy
   refusal rules are preserved; benchmark baseline arms honor the same configured style.
 - Explicit backend composition through `MemoryPlugins`, `MemoryConfig`, declarative
-  configuration, and named recipes. Local Sentence Transformers/Jina, FunASR, OpenCV face, and
+  configuration, and named recipes. Local Sentence Transformers, FunASR, OpenCV face, and
   caller-supplied OpenAI SDK adapters load their optional dependencies lazily.
+- Qwen3-VL reranking uses vLLM's pooling classifier and automatically combines query and candidate
+  text, original images and sampled videos. `RerankingBackend` declares `reranking_capabilities`
+  and accepts `ModelInput` pairs; the separate media interface and manual modality switch are removed.
+  Install the `reranking` extra; the shared lock uses CUDA 13 PyTorch builds. See
+  [semantic reranking](docs/configuration.md#semantic-reranking) for runtime controls and limits.
 - REST under `/v1`, fifteen typed MCP tools, and the `mindbridge` product CLI over the shared SDK.
   Capability documents describe the operations and modalities available on each surface.
 - OpenTelemetry stage spans, provider request IDs, token usage, streamed time to first token,

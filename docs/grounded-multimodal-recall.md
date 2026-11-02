@@ -63,26 +63,11 @@ when evaluating structured answers. Local typed parsing and evidence validation 
 the generic configuration default stays `json_schema`. Set the endpoint and exact deployed model
 through the ordinary generation configuration and evaluate that provider/mode combination.
 
-An optional semantic reranker scores the eligible text pool before the result limit. Add this
-top-level section to evaluate a pinned cross-encoder; the named checkpoint is an example rather
-than a recommended model for every corpus:
-
-```yaml
-reranking:
-  provider: sentence-transformers
-  model: BAAI/bge-reranker-v2-m3
-  revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
-  device: cpu
-  batch_size: 32
-  max_length: 1024
-```
-
-SQLite hydration and filtering, relevance and the existing ambiguity decision happen first.
-The reranker receives exact windows from eligible text, including captions, without changing the
-Reader's source content. Empty-text media keep their positions; a media-only query without text
-skips it. Model relevance scores change ordering, while `SearchHit.score` remains bounded;
-`search_with_trace` exposes the separate `reranking_score`. Failed or malformed model responses
-raise an error. See [semantic reranking](configuration.md#semantic-reranking).
+Optional [semantic reranking](configuration.md#semantic-reranking) scores eligible text and media
+before the result limit. Its owning configuration guide covers both providers, dependencies,
+GPU placement, batching, filtering and score semantics. Qwen3-VL automatically combines each
+input's text, images and videos, including captioned originals. Reranking changes candidate ordering while
+preserving the reader's original source content and the bounded `SearchHit.score`.
 
 GPS coordinates become place names only with an explicitly configured offline gazetteer. If
 needed, install the `gazetteer` extra, build or obtain the documented index, and add

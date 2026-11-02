@@ -170,26 +170,17 @@ class EmbeddingBackend(Protocol):
 
 @runtime_checkable
 class RerankingBackend(Protocol):
-    """A thread-safe text pair scorer; output positions retain caller-owned source IDs."""
-
-    @property
-    def reranking_model(self) -> str: ...
-
-    def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]: ...
-
-    def close(self) -> None: ...
-
-
-@runtime_checkable
-class MultimodalRerankingBackend(RerankingBackend, Protocol):
-    """An optional scorer for resolved query and candidate media in input order."""
+    """A thread-safe multimodal pair scorer; positions retain caller-owned source IDs."""
 
     @property
     def reranking_capabilities(self) -> frozenset[Modality]: ...
 
-    def rerank_media(
-        self, query: ModelInput, documents: Sequence[ModelInput]
-    ) -> tuple[float, ...]: ...
+    @property
+    def reranking_model(self) -> str: ...
+
+    def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]: ...
+
+    def close(self) -> None: ...
 
 
 @runtime_checkable

@@ -10,12 +10,14 @@ from typing import Protocol, cast
 
 from mindbridge._telemetry import mark_model_requests, record_unmetered_model_usage
 from mindbridge.exceptions import ModelError, ValidationError
+from mindbridge.models.base import ModelInput
 from mindbridge.models.sentence_transformers import (
     _optional_text,
     _positive_integer,
     _revision,
     _text,
 )
+from mindbridge.types import Modality
 
 
 class _ScoreArray(Protocol):
@@ -111,20 +113,16 @@ class SentenceTransformersReranker:
         )
 
     @property
+    def reranking_capabilities(self) -> frozenset[Modality]:
+        return frozenset({Modality.TEXT})
+
+    @property
     def reranking_model(self) -> str:
         return f"{self._model_id}@{self._revision}"
 
-    def rerank(self, query: str, documents: Sequence[str]) -> tuple[float, ...]:
+    def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
         """Return one finite raw relevance score for each supplied document."""
-        query = _text(query, "query")
-        if isinstance(documents, (str, bytes)):
-            raise ValidationError("documents must be a sequence of text values")
-        try:
-            batch = tuple(documents)
-        except TypeError:
-            raise ValidationError("documents must be a sequence of text values") from None
-        if any(not isinstance(document, str) for document in batch):
-            raise ValidationError("documents must be a sequence of text values")
+        batch = _reranking_inputs(query, documents, self.reranking_capabilities)
         with self._lock:
             if self._closed:
                 raise ModelError("reranking backend is closed", stage="reranking")
@@ -133,7 +131,7 @@ class SentenceTransformersReranker:
             mark_model_requests(1, token_usage_expected=0)
             try:
                 result = self._encoder.predict(
-                    [(query, document) for document in batch],
+                    [(query.text, document.text) for document in batch],
                     batch_size=self._batch_size,
                     show_progress_bar=False,
                     convert_to_numpy=True,
@@ -160,6 +158,24 @@ class SentenceTransformersReranker:
                     close()
                 except Exception:
                     raise ModelError("failed to close reranking model", stage="reranking") from None
+
+
+def _reranking_inputs(
+    query: ModelInput, documents: Sequence[ModelInput], capabilities: frozenset[Modality]
+) -> tuple[ModelInput, ...]:
+    if not isinstance(query, ModelInput):
+        raise ValidationError("reranking query must be a ModelInput")
+    if isinstance(documents, (str, bytes)):
+        raise ValidationError("documents must be a sequence of ModelInput values")
+    try:
+        batch = tuple(documents)
+    except TypeError:
+        raise ValidationError("documents must be a sequence of ModelInput values") from None
+    if any(not isinstance(document, ModelInput) for document in batch):
+        raise ValidationError("documents must be a sequence of ModelInput values")
+    if any(value.modalities - capabilities for value in (query, *batch)):
+        raise ValidationError("reranking input contains an unsupported modality")
+    return batch
 
 
 def reranking_scores(values: object, expected_count: int) -> tuple[float, ...]:
