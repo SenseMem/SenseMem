@@ -190,7 +190,7 @@ def test_byte_limit_can_reduce_pixels_further_than_configured_maximum(
 ) -> None:
     source = _image(tmp_path)
     monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 2500)
-    url = backend._bounded_image_url(source, 4096)
+    url = backend._bounded_image_url(source, 4096, max_encoded_bytes=2500)
     assert url is not None and len(url) <= 2500
     assert _pixels(url) < 4096
 
@@ -200,7 +200,7 @@ def test_original_size_jpeg_reencoding_is_available_when_pixels_already_fit(
 ) -> None:
     source = _image(tmp_path)
     monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 100_000)
-    url = backend._bounded_image_url(source, 60_000)
+    url = backend._bounded_image_url(source, 60_000, max_encoded_bytes=100_000)
     assert url is not None and len(url) <= 100_000
     assert _pixels(url) == 60_000
 
@@ -302,7 +302,7 @@ def test_image_integrity_changes_are_never_swallowed(tmp_path: Path, operation: 
             elif operation == "form":
                 model.form((_formation(source),))
             else:
-                model.answer("What?", (_hit(source),))
+                model.answer(ModelInput(text="What?"), (_hit(source),))
     assert failure.value.reason == "asset_changed"
 
 
@@ -334,7 +334,7 @@ def test_an_undecodable_image_is_omitted_for_answers_and_refused_for_embedding(
     source.path.write_bytes(b"x" * cast(int, source.size_bytes))
     with httpx.Client(transport=httpx.MockTransport(lambda _request: _reply())) as transport:
         model = _model(_client(transport))
-        result = model.answer("What?", (_hit(source),))
+        result = model.answer(ModelInput(text="What?"), (_hit(source),))
         assert result.hits[0].assets == ()
         with pytest.raises(ModelError) as failure:
             model.embed((ModelInput(assets=(source,)),))

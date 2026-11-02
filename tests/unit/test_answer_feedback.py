@@ -12,6 +12,7 @@ from mindbridge import (
     AnswerPolicy,
     AnswerResult,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     SearchHit,
@@ -65,10 +66,13 @@ def test_abstention_preserves_ranking_and_only_success_reinforces(
     started = datetime.now(timezone.utc)
     reference = started + timedelta(days=1)
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), answerer=answerer, minimum_relevance=0
+        tmp_path,
+        embedder=TinyEmbedder(),
+        answerer=answerer,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         records = memory.add_many(("The kettle is red.", "The crate is blue."))
-        before = memory.search("kettle", limit=2, reference_at=reference)
+        before = memory.search("kettle", limit=2, reference_at=reference).hits
         for _attempt in range(3):
             if streaming:
                 chunks = tuple(memory.ask_stream("kettle", limit=2, reference_at=reference))
@@ -84,7 +88,7 @@ def test_abstention_preserves_ranking_and_only_success_reinforces(
             assert stored is not None
             assert stored.access_count == 0
             assert stored.last_accessed_at is None
-        assert memory.search("kettle", limit=2, reference_at=reference) == before
+        assert memory.search("kettle", limit=2, reference_at=reference).hits == before
         assert memory._store.control.read_repeated_query_failures(
             limit=10, since=started, minimum=3
         )

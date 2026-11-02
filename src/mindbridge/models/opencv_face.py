@@ -13,6 +13,7 @@ from threading import RLock
 from typing import Protocol, cast
 
 from mindbridge._telemetry import mark_model_requests, record_unmetered_model_usage
+from mindbridge._validation import positive_int, unit_interval
 from mindbridge.exceptions import ModelError, ValidationError
 from mindbridge.models.base import FaceAnalysis, FaceEmbedding
 from mindbridge.types import AssetRef, Modality
@@ -86,11 +87,11 @@ class OpenCVFaceAnalyzer:
     ) -> None:
         self._detector_model = _model_path(detector_model, "detector_model")
         self._recognizer_model = _model_path(recognizer_model, "recognizer_model")
-        self._score_threshold = _unit_interval(score_threshold, "score_threshold")
-        self._nms_threshold = _unit_interval(nms_threshold, "nms_threshold")
-        self._top_k = _positive_integer(top_k, "top_k")
-        self._frame_interval_ms = _positive_integer(frame_interval_ms, "frame_interval_ms")
-        self._max_video_frames = _positive_integer(max_video_frames, "max_video_frames")
+        self._score_threshold = unit_interval(score_threshold, "score_threshold")
+        self._nms_threshold = unit_interval(nms_threshold, "nms_threshold")
+        self._top_k = positive_int(top_k, "top_k")
+        self._frame_interval_ms = positive_int(frame_interval_ms, "frame_interval_ms")
+        self._max_video_frames = positive_int(max_video_frames, "max_video_frames")
         detector_digest = _file_digest(self._detector_model)
         recognizer_digest = _file_digest(self._recognizer_model)
         self._model = f"opencv-sface:{recognizer_digest[:16]}"
@@ -292,23 +293,6 @@ def _file_digest(path: Path) -> str:
     except OSError:
         raise ValidationError("face model file could not be read") from None
     return digest.hexdigest()
-
-
-def _unit_interval(value: object, name: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(float(value))
-        or not 0.0 <= value <= 1.0
-    ):
-        raise ValidationError(f"{name} must be between zero and one")
-    return float(value)
-
-
-def _positive_integer(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValidationError(f"{name} must be a positive integer")
-    return value
 
 
 def _image_size(image: _Image) -> tuple[int, int]:

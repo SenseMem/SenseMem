@@ -590,6 +590,126 @@ def retrieval_is_ambiguous(
     return difference < margin
 
 
+def rank_memories(
+    memories: Sequence[StoredMemory],
+    *,
+    dense_relevance: Mapping[str, float],
+    dense_confidence: Mapping[str, float],
+    lexical_relevance_by_rank: Mapping[str, float],
+    lexical_matches: set[str],
+    lexical_queries: Sequence[str],
+    index_ids_by_memory: Mapping[str, tuple[str, ...]],
+    retrieval_mode: RetrievalMode,
+    reference_at: datetime,
+    temporal_range: tuple[datetime, datetime] | None,
+    decay_half_life: timedelta | None,
+    capture_trace: bool,
+) -> tuple[
+    list[tuple[StoredMemory, float, float, bool]],
+    dict[str, partial[RetrievalCandidateTrace]] | None,
+]:
+    """Calculate scores and diagnostics from the same authoritative candidate set."""
+    lexical_coverage: dict[str, float] = {}
+    if retrieval_mode is RetrievalMode.HYBRID:
+        for query in lexical_queries:
+            for memory_id, strength in lexical_relevance(query, memories).items():
+                lexical_coverage[memory_id] = max(lexical_coverage.get(memory_id, 0.0), strength)
+    ranked = []
+    ranked_traces: dict[str, partial[RetrievalCandidateTrace]] | None = (
+        {} if capture_trace else None
+    )
+    for memory in memories:
+        memory_id = memory.memory_id
+        lexical_match = memory_id in lexical_matches
+        lexical_strength = lexical_coverage.get(memory_id, 0.0) if lexical_match else 0.0
+        lexical_score = (
+            LEXICAL_FULL_COVERAGE_RELEVANCE * lexical_relevance_by_rank.get(memory_id, 0.0)
+            if lexical_strength >= LEXICAL_FULL_COVERAGE
+            else 0.0
+        )
+        if retrieval_mode is RetrievalMode.LEXICAL:
+            # This diagnostic mode exposes Zvec's own normalized full-text route:
+            # stemmed and n-gram FTS, RRF-fused when both apply. Hybrid-only term
+            # coverage and dense fusion must not alter its admission or order.
+            relevance = lexical_relevance_by_rank.get(memory_id, 0.0)
+            base = relevance
+            lexical_score = relevance
+        else:
+            base = max(dense_relevance.get(memory_id, 0.0), lexical_score)
+            relevance = bounded_scale(
+                base,
+                1.0 + MAX_LEXICAL_RERANK_BONUS * lexical_strength,
+            )
+        lexical_rerank_bonus = relevance - base
+        (
+            final_score,
+            reinforcement_factor,
+            temporal_factor,
+            retention_factor,
+        ) = ranking_signals(
+            memory,
+            relevance,
+            reference_at=reference_at,
+            temporal_range=temporal_range,
+            decay_half_life=decay_half_life,
+        )
+        # `minimum_relevance` gates evidence quality on the relevance scale: how well
+        # this memory matches, times how sure the observation itself was. It used to
+        # gate dense *confidence*, `(1 + cosine) / 2`, which made the 0.55 default
+        # admit cosine 0.15 and reject 0.05 while the caller read cosine back; and any
+        # full-text hit was handed a flat 0.6 there whatever its match strength, so one
+        # shared rare term carried a document at cosine -1.0 past the default floor and
+        # no floor above 0.6 could keep the lexical route at all. Both routes now
+        # contribute on this one scale and scale with match strength.
+        #
+        # The gate takes the signals the *query* asked about and leaves out the ones it
+        # did not. Temporal proximity is in: a caller who asks "in 2024" made the year
+        # part of the question, so overlapping it is evidence and missing it is not,
+        # and the boost is what lets an in-window full-text hit clear a floor its bare
+        # rank could not. Reinforcement and `decay_half_life_days` retention are out:
+        # neither is anything the query mentioned. They are bounded below by
+        # `RANK_FLOOR`, so with retention inside the gate a *perfectly* relevant
+        # memory decayed to 0.30 and to 0.09 once a window also missed it, under the
+        # 0.10 default — turning "prefer recent" into "hide old" for exactly the
+        # caller who enabled decay and then asked about last year. A long-lived
+        # personal memory may rank an old event last; it may not stop returning it.
+        #
+        # The cost is that `SearchHit.score` carries every factor and so can sit below
+        # the floor the caller set. `search(..., explain=True)` reports the gated quantity as
+        # `gate_relevance`, beside the `retention_factor` that moved the score off it.
+        gate_relevance = relevance
+        if temporal_factor is not None:
+            gate_relevance = bounded_scale(gate_relevance, temporal_factor)
+        if memory.context is not None:
+            final_score *= memory.context.confidence
+            gate_relevance *= memory.context.confidence
+        ranked.append(
+            (
+                memory,
+                final_score,
+                gate_relevance,
+                lexical_match,
+            )
+        )
+        record_ranked_trace(
+            ranked_traces,
+            memory_id,
+            index_ids_by_memory,
+            dense_relevance,
+            dense_confidence,
+            lexical_relevance=lexical_score,
+            lexical_rerank_bonus=lexical_rerank_bonus,
+            lexical_match=lexical_match,
+            gate_relevance=gate_relevance,
+            base_relevance=relevance,
+            reinforcement_factor=reinforcement_factor,
+            temporal_factor=temporal_factor,
+            retention_factor=retention_factor,
+            final_score=final_score,
+        )
+    return ranked, ranked_traces
+
+
 def ranking_signals(
     memory: StoredMemory,
     relevance: float,

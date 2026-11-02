@@ -23,6 +23,7 @@ from mindbridge import (
     FormationProposal,
     IdentityClaim,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryOperation,
@@ -141,8 +142,7 @@ def test_model_cannot_change_an_authorized_policy(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, other = _observations(memory, "Ana asked for brief answers", "Ana repeats it")
         policy = _apply_policy(memory, source.id)
@@ -184,8 +184,7 @@ def test_model_cannot_forget_a_policy_ancestor_and_preserves_unrelated_work(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, unrelated = _observations(memory, "Ana asked for brief answers", "Unrelated note")
         middle = memory.apply(
@@ -228,8 +227,7 @@ def test_model_cannot_implicitly_supersede_a_policy_ancestor(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, new = _observations(memory, "Ana lives in Paris", "Ana moved to Rome")
         ancestor = memory.apply(
@@ -287,8 +285,7 @@ def test_model_cannot_mutate_policy_support_or_replace_it_during_consolidation(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, other = _observations(memory, "Ana requested brief replies", "A separate request")
         ancestor = memory.apply(
@@ -383,8 +380,7 @@ def test_refusing_policy_replacement_preserves_independent_batch_state_conflicts
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         memory.add("Madrid", occurred_at=OCCURRED)
         ancestor = next(
@@ -425,9 +421,9 @@ def test_host_can_reinforce_a_naming_assertion_supporting_a_response_policy(tmp_
         embedder=TinyEmbedder(),
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
-        independent_evidence=True,
-        identity_link_min_assets=1,
-        minimum_relevance=0,
+        config=MemoryConfig(
+            independent_evidence=True, identity_link_min_assets=1, minimum_relevance=0
+        ),
     ) as memory:
         sources = tuple(
             memory.add(
@@ -436,7 +432,7 @@ def test_host_can_reinforce_a_naming_assertion_supporting_a_response_policy(tmp_
             )
             for index in range(3)
         )
-        identity_id = memory.faces(sources[0].id)[0].identity_id
+        identity_id = memory.perceive(sources[0].id).faces[0].identity_id
         claim = IdentityClaim(identity_id=identity_id, name="Ana")
         naming_operations = [
             memory.apply(
@@ -475,8 +471,7 @@ def test_automatic_formation_refuses_policy_replacement_and_keeps_valid_siblings
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         memory.add("Ana lives in Paris", occurred_at=OCCURRED)
         ancestor = next(
@@ -518,8 +513,7 @@ def test_policy_created_during_model_work_is_protected_by_the_apply_transaction(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        minimum_relevance=0,
-        independent_evidence=independent,
+        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         (source,) = _observations(memory, "Ana requested brief replies")
 
@@ -559,12 +553,12 @@ def test_a_response_policy_a_former_proposes_is_refused(tmp_path: Path) -> None:
         tmp_path,
         embedder=TinyEmbedder(),
         former=PolicyFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         _observations(memory, "Ana asked for shorter answers")
 
         assert _policies(memory) == []
-        assert memory.search("briefly", limit=10, memory_type=MemoryType.PROCEDURAL) == ()
+        assert memory.search("briefly", limit=10, memory_type=MemoryType.PROCEDURAL).hits == ()
         # The refusal costs that one proposal: its sibling from the same observation stands.
         assert any(
             record.context is not None and record.context.kind is MemoryKind.ENTITY
@@ -577,7 +571,7 @@ def test_a_response_policy_a_consolidator_proposes_is_refused(tmp_path: Path) ->
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=PolicyConsolidator(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first, second = _observations(memory, "Ana asked for less", "Ana asked for less again")
 
@@ -593,7 +587,7 @@ def test_a_host_authored_response_policy_is_stored_as_response_feedback(tmp_path
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=PolicyConsolidator(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first, second = _observations(memory, "Ana asked for less", "Ana asked for less again")
 
@@ -614,7 +608,8 @@ def test_a_host_authored_response_policy_is_stored_as_response_feedback(tmp_path
         assert derived.context.visible is True
         assert derived.memory_type is MemoryType.PROCEDURAL
         assert [
-            hit.id for hit in memory.search("briefly", limit=10, memory_type=MemoryType.PROCEDURAL)
+            hit.id
+            for hit in memory.search("briefly", limit=10, memory_type=MemoryType.PROCEDURAL).hits
         ] == [derived.id]
         assert [procedure.id for procedure in memory.compile("briefly").procedures] == [derived.id]
 
@@ -627,7 +622,9 @@ def test_a_logged_response_policy_replays_as_the_duplicate_it_is(tmp_path: Path)
     `model_inference` in its JSON -- minted a second ID on replay instead of being recognised
     as already applied.
     """
-    with Memory(tmp_path, embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         first, second = _observations(memory, "Ana asked for less", "Ana asked for less again")
         operation = MemoryOperation(
             intent=MemoryIntent.CONSOLIDATE,

@@ -14,6 +14,7 @@ from mindbridge import (
     EmbedTask,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     MemoryType,
     Modality,
     ModelInput,
@@ -65,9 +66,9 @@ def test_temporal_lexical_discovery_keeps_topk_bounded_beyond_global_window(
     with Memory(
         tmp_path,
         embedder=embedder,
-        retrieval_mode=mode,
-        index_quantization=quantization,
-        minimum_relevance=0.4,
+        config=MemoryConfig(
+            retrieval_mode=mode, index_quantization=quantization, minimum_relevance=0.4
+        ),
     ) as memory:
         memory.add_many(
             tuple(f"common witness {number}" for number in range(384)),
@@ -110,7 +111,8 @@ def test_temporal_lexical_discovery_keeps_topk_bounded_beyond_global_window(
             )
 
         monkeypatch.setattr(memory._index, "lexical_search", measured)
-        outcome = memory.search_with_trace(query, limit=5, reference_at=_REFERENCE)
+        outcome = memory.search(query, limit=5, reference_at=_REFERENCE, explain=True)
+        assert outcome.trace is not None
 
         assert target.id in {
             candidate.memory_id for candidate in outcome.trace.candidates if candidate.lexical_match
@@ -224,8 +226,7 @@ def test_temporal_lexical_routes_preserve_hard_filters_and_global_fallback(
     with Memory(
         tmp_path,
         embedder=_OrthogonalEmbedder(),
-        retrieval_mode=mode,
-        minimum_relevance=0.4,
+        config=MemoryConfig(retrieval_mode=mode, minimum_relevance=0.4),
     ) as memory:
         target = memory.add("common witness", occurred_at=_TARGET_TIME)
         outside = memory.add("global fallback in 2024", occurred_at=_REFERENCE)
@@ -241,24 +242,27 @@ def test_temporal_lexical_routes_preserve_hard_filters_and_global_fallback(
             occurred_from=_REFERENCE,
             occurred_until=_REFERENCE + timedelta(days=1),
             reference_at=_REFERENCE,
-        )
+        ).hits
         assert [hit.id for hit in disjoint] == [outside.id]
-        assert {hit.id for hit in memory.search("common witness in 2024")} >= {
+        assert {hit.id for hit in memory.search("common witness in 2024").hits} >= {
             target.id,
             episodic.id,
         }
         assert [
             hit.id
-            for hit in memory.search("common witness in 2024", memory_type=MemoryType.EPISODIC)
+            for hit in memory.search("common witness in 2024", memory_type=MemoryType.EPISODIC).hits
         ] == [episodic.id]
         assert (
-            memory.search("common witness in 2024", scope=RetrievalScope(place_id="missing")) == ()
+            memory.search("common witness in 2024", scope=RetrievalScope(place_id="missing")).hits
+            == ()
         )
-        assert memory.search("unmatchedxyz") == ()
+        assert memory.search("unmatchedxyz").hits == ()
 
 
 def test_temporal_lexical_scores_do_not_depend_on_requested_result_count(tmp_path: Path) -> None:
-    with Memory(tmp_path, embedder=_OrthogonalEmbedder(), minimum_relevance=0.4) as memory:
+    with Memory(
+        tmp_path, embedder=_OrthogonalEmbedder(), config=MemoryConfig(minimum_relevance=0.4)
+    ) as memory:
         memory.add_many(
             tuple(f"common witness outside {number}" for number in range(140)),
             occurred_at=(_REFERENCE,) * 140,
@@ -267,8 +271,8 @@ def test_temporal_lexical_scores_do_not_depend_on_requested_result_count(tmp_pat
             tuple(f"common witness target {number}" for number in range(12)),
             occurred_at=(_TARGET_TIME,) * 12,
         )
-        narrow = memory.search("common witness in 2024", limit=5, reference_at=_REFERENCE)
-        wide = memory.search("common witness in 2024", limit=10, reference_at=_REFERENCE)
+        narrow = memory.search("common witness in 2024", limit=5, reference_at=_REFERENCE).hits
+        wide = memory.search("common witness in 2024", limit=10, reference_at=_REFERENCE).hits
         assert len(narrow) == 5
         assert narrow == wide[:5]
 
@@ -284,8 +288,7 @@ def test_weak_temporal_lexical_match_does_not_displace_exact_global_match(
     with Memory(
         tmp_path,
         embedder=_OrthogonalEmbedder(),
-        retrieval_mode=RetrievalMode.LEXICAL,
-        minimum_relevance=0.4,
+        config=MemoryConfig(retrieval_mode=RetrievalMode.LEXICAL, minimum_relevance=0.4),
     ) as memory:
         exact = memory.add(query, occurred_at=_REFERENCE)
         memory.add("Alice coffee", occurred_at=_TARGET_TIME)
@@ -294,6 +297,6 @@ def test_weak_temporal_lexical_match_does_not_displace_exact_global_match(
                 tuple(f"Alice bought telescope sample {number}" for number in range(crowd)),
                 occurred_at=(_REFERENCE,) * crowd,
             )
-        assert [hit.id for hit in memory.search(query, limit=1, reference_at=_REFERENCE)] == [
+        assert [hit.id for hit in memory.search(query, limit=1, reference_at=_REFERENCE).hits] == [
             exact.id
         ]

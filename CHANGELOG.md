@@ -10,6 +10,25 @@ The [documentation index](docs/README.md) describes the current contracts.
 
 ### Added
 
+- `mindbridge-bench eval --tasks videozerobench` downloads pinned VideoZeroBench inputs, reuses
+  per-video memory and media preparation, and runs five diagnostic levels with deterministic
+  bilingual answer, temporal and spatial scoring. Primary accuracy uses Level-3; terminal output
+  and paired comparisons cover all seven named metrics across Level-1 through Level-5. Named
+  joint metrics retain upstream thresholds and denominators. Comparisons record `score_scale`
+  so regression thresholds retain their meaning for percentage scores. Reports identify the
+  memory transport's differences from the upstream frame-sampling protocol.
+- Native `embedding_routes`, typed `EmbeddingRoute` asset-count limits and `supports_embedding`
+  share their declarations with execution. Capability documents also publish `reranking` and
+  `reranking_model`. `AsyncMemory` now mirrors `forget_identity`.
+
+- Automatic source-backed modality conversion across writes, queries, answering and formation;
+  explicit `GenerationRouter`, same-space `EmbeddingRouter`, and joint-input support contracts.
+  `generation_routes` and `supports_generation` describe executable combinations: native T+I
+  and T+V routes do not imply T+I+V.
+- Per-asset perception `coverage` preserves successful empty analysis and skip reasons on
+  Python, REST, MCP and CLI.
+- Typed visual facts and speaker naming proposals, with identity behavior owned by the identity
+  plane. Provider-neutral `EvidenceGeneration` composes media selection and source enrichment.
 - Image-bearing `ask` inputs carry temporary `VisualRetrievalMatch` values from existing
   image-only embedding keys. Answer transport labels only associations whose source media
   actually reached the reader; similarities do not become durable facts or verified identities.
@@ -46,7 +65,7 @@ The [documentation index](docs/README.md) describes the current contracts.
   and accepts `ModelInput` pairs; the separate media interface and manual modality switch are removed.
   Install the `reranking` extra; the shared lock uses CUDA 13 PyTorch builds. See
   [semantic reranking](docs/configuration.md#semantic-reranking) for runtime controls and limits.
-- REST under `/v1`, fifteen typed MCP tools, and the `mindbridge` product CLI over the shared SDK.
+- REST under `/v1`, typed MCP tools, and the `mindbridge` product CLI over the shared SDK.
   Capability documents describe the operations and modalities available on each surface.
 - OpenTelemetry stage spans, provider request IDs, token usage, streamed time to first token,
   retrieval explanations, and classified retryable errors without ordinary content logging.
@@ -58,13 +77,69 @@ The [documentation index](docs/README.md) describes the current contracts.
 
 ### Changed
 
+- Remove adapter-only plain-string embedding and generation inputs; direct model calls now use
+  `ModelInput` consistently. The public memory methods still accept text. Structured answer
+  parsing requires the `format` field already required by its wire schema. Benchmark rejudging
+  preserves saved local metrics without repairing scores from obsolete artifacts.
+- Validate plugin protocols once at assembly for every constructor path, before opening storage.
+  Normalize and validate answer evidence at the result boundary; invalid plugin output reports
+  `response_invalid` instead of failing later during evidence reconciliation.
+- Preserve cached speech and its recipe when its producer is omitted. Configured incompatible
+  recipes remain rejected. Embedding names are diagnostic; space and dimension decide compatibility.
+- Replace `EmbeddingInputSupport.supports_embedding_input` with immutable `embedding_routes`.
+  Remove `streaming_generation`: all configured answerers support `ask_stream`, with one complete
+  delta when their selected backend cannot generate incrementally. These are breaking API changes.
+- Separate retrieval query preparation, authoritative candidate expansion and pure score
+  calculation without changing scoring policy or source leases.
+- Distinguish invalid vector representations from programming `ValueError`s so corrupt persisted
+  vectors retain the storage-error path without broadly wrapping internal failures.
+
+- Expert constructor policy uses `config=MemoryConfig(...)`; backend keyword injection and
+  `from_plugins` remain. Remove flattened policy keywords and repeated policy forwarding.
+- Use `register_identity` for face and voice IDs; remove `register_speaker` and its speaker-only
+  exception. Unknown identities consistently raise `IdentityNotFoundError`.
+- Every search returns `SearchResult` with `hits` and optional `trace`; use
+  `search(..., explain=True)` instead of `search_with_trace` and `TracedSearchResult`.
+- `consolidate` processes one evidence set. `consolidate_pending` and CLI `consolidate-pending`
+  own candidate scheduling, `max_rounds` and `idle`. Both return `ConsolidationReport`, replacing
+  `deliberate` and `DeliberationReport`.
+- `perceive` returns typed speech and face observations, replacing `speech` and `faces` methods.
+  REST uses `/v1/perception`; MCP uses `perceive_memory`, with thirteen tools in total.
+- Share completed stream-item dispatch across synchronous, asynchronous, and live capture paths;
+  preserve distinct batch and streaming convenience methods and their resource lifecycles.
+- Keep evidence behavior in the kernel, generic resource ownership outside the kernel, and
+  structured provider-response parsing beside its adapter. Model clients no longer import
+  kernel implementation.
+- SDK clients own vision transport retries; remove kernel retries, fixed waits, and the
+  `retried_batches` metric. The adapter classifies aborted generation as `provider_unavailable`.
+- Preserve original errors when caption conversion is required. Optional enhancement failures
+  retain usable native media or transcripts. Translate concrete storage failures while
+  preserving programming errors and persisted-data validation.
+- Surface Sentence Transformers capability-probe failures, remove repeated configuration and
+  scope checks, and use one immutable capability snapshot for routing and public inspection.
+- Normalize embeddings in the kernel only. Direct bundled-adapter calls return the model's
+  vector scale; memory retrieval and normalized FP32 persistence retain their contract.
+- Prepare lexical speech queries through the shared transcription path, preserve every text key
+  for atomic-only encoders, and route each attachment against its own derived representation.
+  Stored captions remain usable without a loaded producer; empty transcripts cannot satisfy a
+  media fallback. Naming and identity-link reindexing prepare vectors outside the write lock,
+  revalidate affected records at commit, and preserve unattributed speech turns.
+- Run speech inference and embedding outside the instance write lock, atomically revalidating and
+  committing speech identities with records. Settle independent captures concurrently and batch
+  plain text; roll index scheduling forward as capacity becomes free. Overlap independent temporal
+  routes, cloud transcription requests, and voice/face inference.
+- Allow optional transcription recipe initialization until speech derivations have been persisted.
+  Visual caches use typed descriptions and are recomputed under the new cache identity.
+- Remove `OpenAIModels.generation_media_policy`, `generation_media_max_items` and
+  `generation_gazetteer` constructor arguments. Use `EvidenceGeneration`, a selector, and
+  `GazetteerEnricher`; declarative `generation` media/geography keys are preserved. Plain caption
+  strings no longer cause identity writes. See [plugin architecture](docs/plugin-architecture.md).
 - Require Python 3.11–3.14 and Pillow 13; update HTTPX2, Pydantic, MCP and the server/telemetry
   dependency chains. Remove CairoSVG and the CI system-library installation it needed.
 - Remove the Jina-specific Sentence Transformers adaptation and `jina-omni` recipe. Local models
   use the standard Sentence Transformers loader with remote code disabled. MindBridge evaluation
   and serving require an explicit embedding configuration; existing stores keep their original vector-space
   identity and need a fresh directory when changing models.
-
 - Operation-log decoding requires the complete current payload. Removed missing-field defaults,
   outdated benchmark object-shape fallbacks and non-protocol MCP error-field handling; older
   incomplete payloads must be replaced by re-ingesting source observations. CLI `apply --operation`
@@ -165,7 +240,7 @@ The [documentation index](docs/README.md) describes the current contracts.
 
 ### Removed
 
-- Unused generic token-F1 scoring helpers and the withdrawn raw-video experiment proposal.
+- Unused generic token-F1 and ungraded NDCG helpers and the withdrawn raw-video experiment proposal.
   Dataset-specific official scorers and the historical measurement records remain available.
 - Unused single-item storage wrappers and the unused media-size query; internal callers use
   the existing batch operations.

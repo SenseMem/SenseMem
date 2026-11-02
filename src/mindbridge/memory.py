@@ -36,6 +36,7 @@ from typing import cast
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
 
+from mindbridge._resources import close_quietly, unique_resources
 from mindbridge._telemetry import TRACER_NAME
 from mindbridge.configuration import MindBridgeConfig, resolve_memory_config
 from mindbridge.exceptions import (
@@ -45,15 +46,11 @@ from mindbridge.exceptions import (
     ValidationError,
 )
 from mindbridge.infrastructure.local.assets import AssetStore
+from mindbridge.infrastructure.local.store import LocalStore
 from mindbridge.infrastructure.local.zvec_index import ZvecIndex, validate_index_configuration
 from mindbridge.kernel.answering import ASYNC_QUEUE_TIME_MS, Answering
 from mindbridge.kernel.compilation import Compilation
-from mindbridge.kernel.contracts import (
-    close_quietly,
-    declared_capabilities,
-    resolve_backends,
-    unique_resources,
-)
+from mindbridge.kernel.contracts import resolve_backends
 from mindbridge.kernel.control_plane import ControlPlane
 from mindbridge.kernel.embedding import Embedding
 from mindbridge.kernel.execution import Execution
@@ -99,12 +96,9 @@ from mindbridge.types import (
     ContentInput,
     ContextBudget,
     ContextBundle,
-    DeliberationReport,
     ExportBundle,
-    FaceObservation,
     IdentityErasure,
     IdentityProfile,
-    IndexQuantization,
     MemoryCapabilities,
     MemoryOperation,
     MemoryOperationRecord,
@@ -115,18 +109,15 @@ from mindbridge.types import (
     ObservationContext,
     Page,
     PendingCapture,
-    RetentionPolicy,
+    PerceptionKind,
+    PerceptionResult,
     RetentionReport,
-    RetrievalMode,
     RetrievalScope,
-    SearchHit,
-    SpeakerSegment,
+    SearchResult,
     StreamInput,
-    TracedSearchResult,
 )
 
 _LOGGER = logging.getLogger(__name__)
-_DEFAULT_CONFIG = MemoryConfig()
 _STREAM_EXHAUSTED = object()
 
 
@@ -145,70 +136,12 @@ class Memory:
         former: FormationBackend | None = None,
         consolidator: ConsolidationBackend | None = None,
         reranker: RerankingBackend | None = None,
-        independent_evidence: bool = _DEFAULT_CONFIG.independent_evidence,
-        formation_history_max_rows: int = _DEFAULT_CONFIG.formation_history_max_rows,
-        formation_history_budget_chars: int = _DEFAULT_CONFIG.formation_history_budget_chars,
-        index_speech: bool = _DEFAULT_CONFIG.index_speech,
-        index_quantization: IndexQuantization = _DEFAULT_CONFIG.index_quantization,
-        retrieval_mode: RetrievalMode = _DEFAULT_CONFIG.retrieval_mode,
-        minimum_relevance: float = _DEFAULT_CONFIG.minimum_relevance,
-        ambiguity_margin: float = _DEFAULT_CONFIG.ambiguity_margin,
-        evidence_budget_chars: int | None = _DEFAULT_CONFIG.evidence_budget_chars,
-        recall_planning: bool = _DEFAULT_CONFIG.recall_planning,
-        recall_query_expansion: bool = _DEFAULT_CONFIG.recall_query_expansion,
-        recall_max_queries: int = _DEFAULT_CONFIG.recall_max_queries,
-        query_vision: bool = _DEFAULT_CONFIG.query_vision,
-        recall_set_budget_chars: int = _DEFAULT_CONFIG.recall_set_budget_chars,
-        recall_set_max_rows: int = _DEFAULT_CONFIG.recall_set_max_rows,
-        recall_rounds: int = _DEFAULT_CONFIG.recall_rounds,
-        evidence_expansion: bool = _DEFAULT_CONFIG.evidence_expansion,
-        evidence_expansion_max_rows: int = _DEFAULT_CONFIG.evidence_expansion_max_rows,
-        decay_half_life_days: float | None = _DEFAULT_CONFIG.decay_half_life_days,
-        reinforce_on_answer: bool = _DEFAULT_CONFIG.reinforce_on_answer,
-        speaker_similarity: float = _DEFAULT_CONFIG.speaker_similarity,
-        speaker_margin: float = _DEFAULT_CONFIG.speaker_margin,
-        face_similarity: float = _DEFAULT_CONFIG.face_similarity,
-        face_margin: float = _DEFAULT_CONFIG.face_margin,
-        identity_link_min_assets: int = _DEFAULT_CONFIG.identity_link_min_assets,
-        memory_budget_records: int | None = _DEFAULT_CONFIG.memory_budget_records,
-        query_failure_window_seconds: float = _DEFAULT_CONFIG.query_failure_window_seconds,
-        query_failure_history: int = _DEFAULT_CONFIG.query_failure_history,
-        retention: RetentionPolicy = _DEFAULT_CONFIG.retention,
+        config: MemoryConfig | None = None,
         tracer: Tracer | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser().resolve()
         tracer = trace.get_tracer(TRACER_NAME) if tracer is None else tracer
-        self._settings = resolve_settings(
-            index_speech=index_speech,
-            independent_evidence=independent_evidence,
-            formation_history_max_rows=formation_history_max_rows,
-            formation_history_budget_chars=formation_history_budget_chars,
-            index_quantization=index_quantization,
-            retrieval_mode=retrieval_mode,
-            minimum_relevance=minimum_relevance,
-            ambiguity_margin=ambiguity_margin,
-            evidence_budget_chars=evidence_budget_chars,
-            recall_planning=recall_planning,
-            recall_query_expansion=recall_query_expansion,
-            recall_max_queries=recall_max_queries,
-            query_vision=query_vision,
-            recall_set_budget_chars=recall_set_budget_chars,
-            recall_set_max_rows=recall_set_max_rows,
-            recall_rounds=recall_rounds,
-            evidence_expansion=evidence_expansion,
-            evidence_expansion_max_rows=evidence_expansion_max_rows,
-            decay_half_life_days=decay_half_life_days,
-            reinforce_on_answer=reinforce_on_answer,
-            speaker_similarity=speaker_similarity,
-            speaker_margin=speaker_margin,
-            face_similarity=face_similarity,
-            face_margin=face_margin,
-            identity_link_min_assets=identity_link_min_assets,
-            memory_budget_records=memory_budget_records,
-            query_failure_window_seconds=query_failure_window_seconds,
-            query_failure_history=query_failure_history,
-            retention=retention,
-        )
+        self._settings = resolve_settings(config)
         if (
             self._settings.recall_planning
             and answerer is not None
@@ -222,7 +155,7 @@ class Memory:
                 "fallback plan"
             )
 
-        self._store = open_store(self.data_dir)
+        store: LocalStore | None = None
         execution: Execution | None = None
         injected = (
             embedder,
@@ -251,13 +184,13 @@ class Memory:
                 )
             except ValueError as error:
                 raise ValidationError(str(error)) from None
+            self._store = store = open_store(self.data_dir)
             assets = AssetStore(self.data_dir)
             self._storage = Storage(
                 store=self._store,
                 assets=assets,
                 write_lock=RLock(),
                 formation_lock=RLock(),
-                settle_lock=RLock(),
             )
             self._write_lock = self._storage.write_lock
             # Validate authoritative state and queue index recovery before opening Zvec.
@@ -272,30 +205,15 @@ class Memory:
                 storage=self._storage,
                 lifecycle=self._lifecycle,
             )
-            speech = Speech(
-                tracer=tracer,
-                storage=self._storage,
-                backends=self._backends,
-                settings=self._settings,
-                hydrator=self._hydrator,
-            )
-            embedding = Embedding(
-                tracer=tracer,
-                storage=self._storage,
-                backends=self._backends,
-                settings=self._settings,
-                hydrator=self._hydrator,
-                speech=speech,
-            )
             self._lifecycle.collect_orphan_assets(scan_physical=True)
             index_path = self.data_dir / "zvec"
-            Recovery(
+            self._backends = Recovery(
                 storage=self._storage,
                 backends=self._backends,
                 settings=self._settings,
             ).prepare(index_path)
         except BaseException:
-            close_quietly(*injected, execution, self._store)
+            close_quietly(*injected, execution, store)
             raise
 
         try:
@@ -316,6 +234,21 @@ class Memory:
                 "failed to open the local search index", stage="open", reason="index_missing"
             ) from error
 
+        speech = Speech(
+            tracer=tracer,
+            storage=self._storage,
+            backends=self._backends,
+            settings=self._settings,
+            hydrator=self._hydrator,
+        )
+        embedding = Embedding(
+            tracer=tracer,
+            storage=self._storage,
+            backends=self._backends,
+            settings=self._settings,
+            hydrator=self._hydrator,
+            speech=speech,
+        )
         self._projection = Projection(
             tracer=tracer,
             storage=self._storage,
@@ -330,9 +263,6 @@ class Memory:
             lifecycle=self._lifecycle,
             hydrator=self._hydrator,
             materializer=materializer,
-            speech=speech,
-            embedding=embedding,
-            projection=self._projection,
         )
         self._retrieval = Retrieval(
             tracer=tracer,
@@ -370,6 +300,8 @@ class Memory:
             projection=self._projection,
             vision=self._vision,
             formation=self._formation,
+            settings=self._settings,
+            execution=self._execution,
         )
         self._ingestion = Ingestion(
             tracer=tracer,
@@ -385,6 +317,7 @@ class Memory:
             vision=self._vision,
             formation=self._formation,
             identities=self._identities,
+            execution=self._execution,
         )
         self._answering = Answering(
             tracer=tracer,
@@ -398,6 +331,7 @@ class Memory:
             vision=self._vision,
             retrieval=self._retrieval,
             execution=self._execution,
+            identities=self._identities,
         )
         self._compilation = Compilation(
             tracer=tracer,
@@ -452,18 +386,11 @@ class Memory:
         """Open memory from an explicit capability bundle and local policy."""
         if not isinstance(plugins, MemoryPlugins):
             raise ValidationError("plugins must be a MemoryPlugins value")
-        if config is None:
-            config = MemoryConfig()
-        elif not isinstance(config, MemoryConfig):
-            raise ValidationError("config must be a MemoryConfig value")
-        # The constructor takes exactly these two dataclasses' fields flattened, so unpacking them
-        # is the whole translation. A field added to either reaches the constructor without a line
-        # here.
         return cls(
             data_dir,
             tracer=tracer,
             **{field.name: getattr(plugins, field.name) for field in fields(plugins)},
-            **{field.name: getattr(config, field.name) for field in fields(config)},
+            config=config,
         )
 
     @classmethod
@@ -583,8 +510,8 @@ class Memory:
         record parked at the ceiling is retried, quarantined by simply never being named, or
         settled ahead of the queue. IDs that are not queued are skipped.
 
-        One settlement runs at a time per `Memory`. A concurrent call waits rather than paying
-        for the same model work twice, and usually then finds the queue already drained.
+        Settlement claims individual records: calls over disjoint records can overlap, while
+        callers naming the same record share its completed work.
         """
         return self._ingestion.settle(limit=limit, max_attempts=max_attempts, memory_ids=memory_ids)
 
@@ -631,7 +558,8 @@ class Memory:
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         scope: RetrievalScope | None = None,
-    ) -> tuple[SearchHit, ...]:
+        explain: bool = False,
+    ) -> SearchResult:
         """Return ranked memories for a native or mixed-modal query."""
         return self._retrieval.search(
             query,
@@ -641,28 +569,7 @@ class Memory:
             occurred_from=occurred_from,
             occurred_until=occurred_until,
             scope=scope,
-        )
-
-    def search_with_trace(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-    ) -> TracedSearchResult:
-        """Return ranked memories plus an opt-in candidate trace without evidence content."""
-        return self._retrieval.search_with_trace(
-            query,
-            limit=limit,
-            memory_type=memory_type,
-            reference_at=reference_at,
-            occurred_from=occurred_from,
-            occurred_until=occurred_until,
-            scope=scope,
+            explain=explain,
         )
 
     def ask(
@@ -759,37 +666,17 @@ class Memory:
         Published so a caller does not have to construct a probe write to find out, and so a
         transport can report the composition instead of a bare liveness flag.
         """
-        return declared_capabilities(
-            embedder=self._backends.embedder,
-            answerer=self._backends.answerer,
-            transcriber=self._backends.transcriber,
-            vision_describer=self._backends.vision_describer,
-            face_analyzer=self._backends.face_analyzer,
-            former=self._backends.former,
-            consolidator=self._backends.consolidator,
-        )
+        return self._backends.capabilities
 
     def get(self, memory_id: str) -> MemoryRecord:
         """Return one memory or raise `MemoryNotFoundError`."""
         return self._records.get(memory_id)
 
-    def speech(self, memory_id: str) -> tuple[SpeakerSegment, ...]:
-        """Transcribe speech and resolve stable local speaker identities."""
-        return self._identities.speech(memory_id)
-
-    def faces(self, memory_id: str) -> tuple[FaceObservation, ...]:
-        """Detect faces and resolve stable local face-and-voice identities."""
-        return self._identities.faces(memory_id)
-
-    def register_speaker(
-        self,
-        speaker_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        """Assign or replace a human-readable name for one recognized speaker."""
-        return self._identities.register_speaker(speaker_id, name, relationship=relationship)
+    def perceive(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult:
+        """Recognize a stored memory with configured plugins, or explicitly selected kinds."""
+        return self._identities.perceive_memory(memory_id, kinds=kinds)
 
     def register_identity(
         self,
@@ -909,34 +796,13 @@ class Memory:
         already committed -- evidence links, lineage disagreement, recorded confirmations,
         recorded recall failures, the configured record budget -- rather than from a clock. Hand
         a row's `memory_ids` straight to `consolidate(evidence_ids=...)` with the row's
-        `trigger`, or let `deliberate()` do it.
+        `trigger`, or call `consolidate_pending()` to run the candidate loop.
 
         `idle` is the operator declaring an approved idle or charging window. The kernel does not
         guess it from a clock: whether now is a good time to spend the device's battery on
         reasoning is the host's knowledge.
         """
         return self._control.consolidation_candidates(limit=limit, idle=idle)
-
-    def deliberate(
-        self,
-        *,
-        limit: int = 32,
-        max_rounds: int = 4,
-        idle: bool = False,
-    ) -> DeliberationReport:
-        """Run the memory-management loop to a fixed point, or to `max_rounds`.
-
-        One round asks `consolidation_candidates()` what is due and runs `consolidate()` over
-        each row with the row's own trigger. Applying operations can make further work due --
-        a derived record gains evidence, a corrected lineage stops disagreeing -- so the loop
-        repeats until nothing is due or the ceiling is reached.
-
-        It terminates on a backend that proposes nothing, because a pass records that it weighed
-        its evidence set whatever it yielded, and candidate derivation excludes a candidate
-        weighed since its own signal. The report then says so: rounds and `weighed` non-zero,
-        `applied` zero.
-        """
-        return self._control.deliberate(limit=limit, max_rounds=max_rounds, idle=idle)
 
     def consolidate(
         self,
@@ -946,10 +812,19 @@ class Memory:
         limit: int = 32,
         trigger: MemoryTrigger = MemoryTrigger.MANUAL,
     ) -> ConsolidationReport:
-        """Deliberate over a bounded evidence set and apply the operations policy accepts."""
+        """Process one explicit or selected evidence set in a single pass."""
         return self._control.consolidate(
-            evidence_ids=evidence_ids, query=query, limit=limit, trigger=trigger
+            evidence_ids=evidence_ids,
+            query=query,
+            limit=limit,
+            trigger=trigger,
         )
+
+    def consolidate_pending(
+        self, *, limit: int = 32, max_rounds: int = 4, idle: bool = False
+    ) -> ConsolidationReport:
+        """Run due consolidation candidates within the supplied scheduling budget."""
+        return self._control.consolidate_pending(limit=limit, max_rounds=max_rounds, idle=idle)
 
     def apply(self, operation: MemoryOperation) -> MemoryOperationRecord:
         """Apply one operation the host supplies, through the same kernel validation.
@@ -1087,12 +962,6 @@ class Memory:
         """Merge staged Zvec vectors into the configured index."""
         return self._projection.optimize()
 
-    def _add_stream_input(self, item: StreamInput) -> MemoryRecord:
-        return self._ingestion.add_stream_input(item)
-
-    def _capture_stream_input(self, item: StreamInput) -> MemoryRecord:
-        return self._ingestion.capture_stream_input(item)
-
     def close(self, *, timeout_seconds: float = 30.0) -> None:
         """Close model, index, and SQLite resources; repeated calls are harmless."""
         # A constructor that failed before wiring already closed what it had opened and left
@@ -1196,12 +1065,6 @@ class AsyncMemory:
             context=context,
         )
 
-    async def _add_stream_input(self, item: StreamInput) -> MemoryRecord:
-        return await self._memory._execution.run(self._memory._add_stream_input, item)
-
-    async def _capture_stream_input(self, item: StreamInput) -> MemoryRecord:
-        return await self._memory._execution.run(self._memory._capture_stream_input, item)
-
     async def add_many(
         self,
         contents: Sequence[ContentInput],
@@ -1266,6 +1129,13 @@ class AsyncMemory:
             self._memory.pending_captures, limit=limit, memory_ids=memory_ids
         )
 
+    async def _write_stream_item(
+        self, content: ContentInput | StreamInput, *, capture: bool, index: int | None = None
+    ) -> MemoryRecord:
+        return await self._memory._execution.run(
+            self._memory._ingestion.add_stream_item, content, index=index, capture=capture
+        )
+
     async def add_stream(
         self,
         contents: AsyncIterable[ContentInput | StreamInput],
@@ -1290,21 +1160,7 @@ class AsyncMemory:
                 if error.subject is None:
                     error.subject = f"contents[{index}]"
                 raise
-            try:
-                if isinstance(content, StreamInput):
-                    record = (
-                        await self._capture_stream_input(content)
-                        if capture
-                        else await self._add_stream_input(content)
-                    )
-                elif capture:
-                    record = await self.capture(content)
-                else:
-                    record = await self.add(content)
-            except MindBridgeError as error:
-                if error.subject is None:
-                    error.subject = f"contents[{index}]"
-                raise
+            record = await self._write_stream_item(content, index=index, capture=capture)
             yield record
             index += 1
 
@@ -1318,7 +1174,8 @@ class AsyncMemory:
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         scope: RetrievalScope | None = None,
-    ) -> tuple[SearchHit, ...]:
+        explain: bool = False,
+    ) -> SearchResult:
         return await self._memory._execution.run(
             self._memory.search,
             query,
@@ -1328,28 +1185,7 @@ class AsyncMemory:
             occurred_from=occurred_from,
             occurred_until=occurred_until,
             scope=scope,
-        )
-
-    async def search_with_trace(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-    ) -> TracedSearchResult:
-        return await self._memory._execution.run(
-            self._memory.search_with_trace,
-            query,
-            limit=limit,
-            memory_type=memory_type,
-            reference_at=reference_at,
-            occurred_from=occurred_from,
-            occurred_until=occurred_until,
-            scope=scope,
+            explain=explain,
         )
 
     async def ask(
@@ -1511,27 +1347,10 @@ class AsyncMemory:
     async def get(self, memory_id: str) -> MemoryRecord:
         return await self._memory._execution.run(self._memory.get, memory_id)
 
-    async def speech(self, memory_id: str) -> tuple[SpeakerSegment, ...]:
-        return await self._memory._execution.run(self._memory.speech, memory_id)
-
-    async def faces(self, memory_id: str) -> tuple[FaceObservation, ...]:
-        return await self._memory._execution.run(self._memory.faces, memory_id)
-
-    async def register_speaker(
-        self,
-        speaker_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        await self._memory._execution.run(
-            partial(
-                self._memory.register_speaker,
-                speaker_id,
-                name,
-                relationship=relationship,
-            )
-        )
+    async def perceive(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult:
+        return await self._memory._execution.run(self._memory.perceive, memory_id, kinds=kinds)
 
     async def register_identity(
         self,
@@ -1554,6 +1373,9 @@ class AsyncMemory:
 
     async def unlink_identity(self, alias_id: str) -> str | None:
         return await self._memory._execution.run(self._memory.unlink_identity, alias_id)
+
+    async def forget_identity(self, identity_id: str) -> IdentityErasure:
+        return await self._memory._execution.run(self._memory.forget_identity, identity_id)
 
     async def record_consent(
         self,
@@ -1597,22 +1419,6 @@ class AsyncMemory:
             partial(self._memory.consolidation_candidates, limit=limit, idle=idle)
         )
 
-    async def deliberate(
-        self,
-        *,
-        limit: int = 32,
-        max_rounds: int = 4,
-        idle: bool = False,
-    ) -> DeliberationReport:
-        return await self._memory._execution.run(
-            partial(
-                self._memory.deliberate,
-                limit=limit,
-                max_rounds=max_rounds,
-                idle=idle,
-            )
-        )
-
     async def apply(self, operation: MemoryOperation) -> MemoryOperationRecord:
         return await self._memory._execution.run(self._memory.apply, operation)
 
@@ -1643,6 +1449,13 @@ class AsyncMemory:
                 limit=limit,
                 trigger=trigger,
             )
+        )
+
+    async def consolidate_pending(
+        self, *, limit: int = 32, max_rounds: int = 4, idle: bool = False
+    ) -> ConsolidationReport:
+        return await self._memory._execution.run(
+            self._memory.consolidate_pending, limit=limit, max_rounds=max_rounds, idle=idle
         )
 
     async def forget(self, memory_ids: Sequence[str]) -> MemoryOperationRecord | None:

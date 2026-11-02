@@ -8,7 +8,7 @@ must also bound HTTP connections and MCP sessions.
 
 ## Surface
 
-The optional MCP adapter exposes fifteen typed tools over one injected synchronous `Memory`, or
+The optional MCP adapter exposes thirteen typed tools over one injected synchronous `Memory`, or
 fewer when the host withholds a group of them.
 It validates tool input, calls the matching SDK operation, and returns structured public values.
 It does not own storage, provider selection, or the injected memory. Finalized media arrives
@@ -22,7 +22,7 @@ erase a person on request, and record which memories were useful. `build_mcp_ser
 inside the process that holds the `Memory` it is given and every tool is one call on it, so an
 embodied operation is no less reachable here than `add_memory` is.
 
-Naming a person is host authority. `register_speaker` and `register_identity` assert a name on
+Naming a person is host authority. `register_identity` assert a name on
 the host's behalf: the assertion is a versioned memory record, it is written to the operation
 log, and it is reversible, and the tool descriptions say so. Splitting a wrong merge is written
 to the log and reversible too, and erasing a person leaves an irreversible row so the request
@@ -37,8 +37,8 @@ an agent should not discover a boundary by failing.
 
 | Switch | Withholds | Why a host would |
 | --- | --- | --- |
-| `identity_operations` | `register_speaker`, `register_identity`, `get_identity`, `unlink_identity`, `forget_identity` | Naming and erasing a person is host authority |
-| `embodied_operations` | `analyze_speech`, `analyze_faces` | `analyze_faces` also commits the corroborated cross-modal identity merge, so leaving it registered keeps identity *binding* on the wire even with the identity tools withheld. `ask_memory` reaches the same merge through its own face recognition, so this switch also passes `link_identities=embodied_operations` into every `ask_memory` call |
+| `identity_operations` | `register_identity`, `get_identity`, `unlink_identity`, `forget_identity` | Naming and erasing a person is host authority |
+| `embodied_operations` | `perceive_memory` | `perceive_memory` also commits the corroborated cross-modal identity merge, so leaving it registered keeps identity *binding* on the wire even with the identity tools withheld. `ask_memory` reaches the same merge through its own face recognition, so this switch also passes `link_identities=embodied_operations` into every `ask_memory` call |
 | `write_operations` | `add_memory`, `delete_memory`, `reinforce_memories` | The agent should consume context and change nothing |
 
 ```python
@@ -111,7 +111,7 @@ the preferred way to obtain context, and that cognitive forgetting, consolidatio
 rollback have no tool here. The document's `operations` list agrees with that prose: it is narrowed
 to the operations this server's tools exercise -- some directly, some while `add_memory` ingests or
 `ask_memory` answers -- so `consolidate` is never listed however the
-composition is configured, `speech` and `faces` are listed only with `embodied_operations=True`,
+composition is configured, `perceive` is listed only with `embodied_operations=True`,
 and `formation` and `describe_vision` -- which run on the write path alone -- only with
 `write_operations=True`. `transcribe` stays listed either way, because a read tool transcribes
 the audio a question arrives as.
@@ -160,9 +160,7 @@ rejected. The MCP-specific media bounds are listed below.
 | `list_memories` | `limit=100`; `cursor=None` | `PageResult` | read-only |
 | `delete_memory` | required `memory_id` | `{"deleted":bool}` | destructive, idempotent |
 | `reinforce_memories` | required `memory_ids`, 1 through 100 | `{"reinforced":int}` | write, not idempotent |
-| `analyze_speech` | required `memory_id` | `{"segments":[SpeakerSegment,...]}` | write, not idempotent |
-| `analyze_faces` | required `memory_id` | `{"observations":[FaceObservation,...]}` | write, not idempotent |
-| `register_speaker` | required `speaker_id`, `name`; `relationship=None` | `{"registered":true}` | idempotent write |
+| `perceive_memory` | required `memory_id`; `kinds=null` or an array containing `"speech"` and/or `"faces"` | `{"speech":[SpeakerSegment,...],"faces":[FaceObservation,...],"coverage":[PerceptionCoverage,...]}` | write, not idempotent |
 | `register_identity` | required `identity_id`, `name`; `relationship=None` | `{"registered":true}` | idempotent write |
 | `get_identity` | required `identity_id` | `{"identity":IdentityProfile\|null}` | read-only |
 | `unlink_identity` | required `alias_id` | `{"restored_identity_id":str\|null}` | destructive, idempotent |
@@ -224,15 +222,14 @@ them into the opt-in.
 
 The embodied and identity tools follow the SDK operation they dispatch to:
 
-- `analyze_speech` and `analyze_faces` read one stored memory's assets. Results cover that
-  memory's audio and video, or image and video, assets and are not paged, because the bound is
-  the stored media rather than a caller limit. A memory with no matching asset returns an empty
-  result instead of failing. When matching media exists, the operation needs a speech-capable
-  transcription backend or a face backend and returns `model_error` when it is unavailable.
-- `register_speaker` names a recognized voice and `register_identity` names an identity that may
-  also have been seen. Both replace an existing name and both leave a recorded `relationship`
-  intact when the argument is omitted; there is deliberately no way to clear one. An unknown ID
-  returns `speaker_not_found` or `identity_not_found`.
+- `perceive_memory` recognizes one stored memory's applicable assets. `coverage` records each
+  kind/asset analysis or its skip reason, so an empty detection result is distinct from skipped
+  analysis. A null reason means completed or cached analysis. Results retain separate
+  typed speech and face collections. Omitting `kinds` selects configured plugins automatically;
+  selecting a kind explicitly requires that backend when relevant media exists. Recognition
+  caches identity evidence and may apply a corroborated cross-modal merge.
+- `register_identity` names any recognized face or voice identity. It replaces an existing name
+  and preserves `relationship` when omitted. An unknown ID returns `identity_not_found`.
 - `get_identity` follows merge aliases and returns `identity: null` when no registered profile is
   found, including for an unknown ID.
 - `unlink_identity` reverses one face-and-voice merge and returns the restored ID, or `null` when
@@ -258,7 +255,7 @@ coordinate frames, units, or media sources; they are part of the tool schema, no
 
 ### Retrieval trace
 
-`search_memories` with `explain=true` routes to `Memory.search_with_trace` and adds a `trace`
+`search_memories` with `explain=true` routes to `Memory.search(..., explain=True)` and adds a `trace`
 object beside the unchanged `hits`. `trace.candidates` lists every candidate that was considered
 with its effective score components (`dense_relevance`, `dense_confidence`, `lexical_relevance`,
 `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
@@ -306,14 +303,14 @@ The compile tool accepts `budget.selected_proofs=false`. Opting in delivers the 
 `proofs` array. Each witness has `anchor_id` and complete `nodes` with `memory_id`, `confidence`,
 `sources`, and nullable `capture_id`. The full evidence audit union stays on every hit. Certificate
 text and its records are budgeted together; `scope.known_at` retains full provenance. Other
-deliveries return `proofs=[]`. The MCP surface still contains fifteen tools.
+deliveries return `proofs=[]`. The MCP surface still contains thirteen tools.
 
-The last four are the SDK dataclasses `Memory.speech`, `Memory.faces`, `Memory.identity`, and
-`Memory.forget_identity` return, published field for field rather than reshaped:
+Perception, identity, and erasure results publish the SDK values returned by `Memory.perceive`,
+`Memory.identity`, and `Memory.forget_identity`, field for field:
 `bounding_box` is `[x, y, width, height]` normalized within the frame, `identity_score` and
 `speaker_name` are `null` until an identity is resolved and named, and `observed_at_ms` is the
-offset within a video. A `speaker_id` or `identity_id` from either analysis tool is accepted by
-`get_identity`, `register_speaker`, `register_identity`, `unlink_identity`, and
+offset within a video. A `speaker_id` or `identity_id` from the perception tool is accepted by
+`get_identity`, `register_identity`, `unlink_identity`, and
 `forget_identity`.
 
 The other fields have the same meanings as the [REST response objects](rest.md#response-objects).
@@ -352,7 +349,7 @@ succeeds for every failure, including `memory_not_found`, `model_error`, and `st
 ```
 
 Stable SDK codes are `mindbridge_error`, `validation_error`, `memory_not_found`,
-`speaker_not_found`, `identity_not_found`, `model_error`, `model_output_truncated`,
+`identity_not_found`, `model_error`, `model_output_truncated`,
 `storage_error`, and `index_unavailable`; unexpected failures use `internal_error`. Reasons and
 retryability use the [shared vocabulary](rest.md#codes-and-reasons).
 
@@ -368,7 +365,7 @@ details are still never serialized.
 
 ### Operations without a tool
 
-Twenty-one Python operations have no MCP tool. Two are transport limitations and the rest are
+Twenty Python operations have no MCP tool. Two are transport limitations and the rest are
 decisions; none is withheld because it touches owner-process state, since every tool already
 does.
 
@@ -377,13 +374,12 @@ does.
 | `add_stream` | **Transport limitation.** It consumes a lazy iterable and yields records as it goes, and one tool call is a finite request with one response, so a stream cannot be started, fed, and drained through it. Call `add_memory` for each completed observation, or use the SDK for a live source. |
 | `ask_stream` | **Transport limitation.** One MCP tool call has one finite response. Call `ask_memory` for the completed answer, or use the Python SDK or REST `POST /v1/answers/stream` when time to first token matters. |
 | `add_many` | Every item is already reachable through `add_memory`, so this buys one model batch rather than a capability. Its parallel arrays must line up with `contents` position by position, and a misalignment stores real memories under the wrong timestamps, which is a worse failure than slower ingestion. Use `POST /v1/memories/batch` for bulk loading. |
-| `search_with_trace` | No tool of its own, because the same trace is reachable from the tool that produces the hits: call `search_memories` with `explain=true`. Use the SDK or the CLI when diagnosing retrieval outside an agent loop. |
 | `reindex` | Rebuilds the whole search projection from SQLite. The duration grows with the store and has no upper bound, so it does not belong behind a client that expects one timely response. It is also an operator decision, not a caller's. |
 | `optimize` | Merges staged vectors into the index. An agent has no basis for deciding when that is worth doing, and the operator scheduling it has the CLI. |
 | `capture`, `settle`, `pending_captures` | Deferred enrichment is the owning process's scheduling decision: how long a record may stay unsearchable is a property of that host's loop, not of a caller's request. Use `add_memory`, which returns searchable. |
 | `record_consent`, `consent` | Consent is a statement its subject makes, relayed by the host. An agent that could record one could manufacture permission to process a person, which is the same reason a `CONSENT` operation proposed by a model is refused as `unauthorized`. A host application collects the statement and calls the SDK, or `POST /v1/identities/{identity_id}/consent` behind its own `identity_operations` switch. |
 | `export`, `apply_retention` | The two remaining data-subject rights, and both are host authority over a person's whole record: an export is everything held about somebody, and retention physically deletes. They stay with the process that owns the `data_dir`, and reach a network only through REST's `identity_operations` switch. |
-| `consolidation_candidates`, `consolidate`, `deliberate`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | The memory control plane rewrites and retires derived memory and is deliberately not reachable from a client. It stays with the process that owns the `Memory`, which is also the process that can audit and reverse it through the operation log. `deliberate` additionally spends that owner's model budget on its own schedule, and `apply` applies an operation with no proposal behind it, which is host authority itself. |
+| `consolidation_candidates`, `consolidate`, `consolidate_pending`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | The memory control plane rewrites and retires derived memory and is deliberately not reachable from a client. It stays with the process that owns the `Memory`, which can audit and reverse it through the operation log. `consolidate_pending` spends that owner's model budget on its own schedule; `apply` applies an operation supplied by the host. |
 
 `Memory.capabilities` has no tool either: it is a property rather than an operation, published
 here as the server `instructions` and by REST in [`GET /healthz`](rest.md#endpoints). The tools

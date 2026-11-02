@@ -30,6 +30,7 @@ from mindbridge import (
     FormationProposal,
     IdentityNotFoundError,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryNotFoundError,
@@ -155,8 +156,7 @@ def _memory(tmp_path: Path, **kwargs: object) -> Memory:
         embedder=TinyEmbedder(),
         transcriber=PersonSpeech(),
         face_analyzer=PersonFace(),
-        identity_link_min_assets=1,
-        minimum_relevance=0,
+        config=MemoryConfig(identity_link_min_assets=1, minimum_relevance=0),
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -169,7 +169,7 @@ def test_consent_is_a_reversible_assertion_in_the_operation_log(tmp_path: Path) 
     """Recording consent logs it, supersedes the previous statement, and rolls back to it."""
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
 
         assert memory.consent(identity_id) is None
 
@@ -226,7 +226,7 @@ def test_no_model_may_state_or_retire_consent(tmp_path: Path) -> None:
     """
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
         recorded = memory.record_consent(identity_id, ConsentState.WITHDRAWN)
         assert recorded is not None
         (assertion_id,) = recorded.created_ids
@@ -236,7 +236,9 @@ def test_no_model_may_state_or_retire_consent(tmp_path: Path) -> None:
         consent=ConsentClaim(identity_id=identity_id, state=ConsentState.GRANTED),
     )
     with _memory(tmp_path, consolidator=ScriptedConsolidator(proposed)) as memory:
-        assert [reason for _operation, reason in memory.consolidate().rejected] == ["unauthorized"]
+        assert [reason for _operation, reason in memory.consolidate_pending().rejected] == [
+            "unauthorized"
+        ]
         # The same refusal on the public replay path, which is not a shortcut around it either.
         with pytest.raises(ValidationError) as refused:
             memory.apply(proposed)
@@ -269,20 +271,23 @@ def test_withdrawn_consent_stops_enrolment_but_not_recognition(tmp_path: Path) -
     """A second observation adds no exemplar, yet still resolves to the same person."""
     with _memory(tmp_path / "consented") as memory:
         first = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(first.id)[0].identity_id
+        identity_id = memory.perceive(first.id).faces[0].identity_id
         second = memory.add(Blob(b"a-2 returns", "video/mp4", "a-2.mp4"))
-        assert memory.faces(second.id)[0].identity_id == identity_id
+        assert memory.perceive(second.id).faces[0].identity_id == identity_id
         assert _enrolled(memory, identity_id) == (2, 2)
 
     with _memory(tmp_path / "withdrawn") as memory:
         first = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(first.id)[0].identity_id
+        identity_id = memory.perceive(first.id).faces[0].identity_id
         assert memory.record_consent(identity_id, ConsentState.WITHDRAWN) is not None
 
         second = memory.add(Blob(b"a-2 returns", "video/mp4", "a-2.mp4"))
         # Recognition still answers, from the exemplars already held.
-        assert memory.faces(second.id)[0].identity_id == identity_id
-        assert memory.speech(second.id)[0].speaker_id == identity_id
+        assert memory.perceive(second.id).faces[0].identity_id == identity_id
+        assert (
+            memory.perceive(second.id, kinds=frozenset({"speech"})).speech[0].speaker_id
+            == identity_id
+        )
         # Nothing was learned from it.
         assert _enrolled(memory, identity_id) == (1, 1)
 
@@ -292,12 +297,12 @@ def test_withheld_consent_stops_the_cross_modal_merge(tmp_path: Path) -> None:
     with _memory(tmp_path / "merged") as memory:
         voice = memory.add(Blob(b"a-1 speaking", "audio/wav", "a-1.wav"))
         face = memory.add(Blob(b"a-2 seen", "image/png", "a-2.png"))
-        voice_id = memory.speech(voice.id)[0].speaker_id
-        face_id = memory.faces(face.id)[0].identity_id
+        voice_id = memory.perceive(voice.id, kinds=frozenset({"speech"})).speech[0].speaker_id
+        face_id = memory.perceive(face.id).faces[0].identity_id
         assert voice_id is not None and voice_id != face_id
 
         both = memory.add(Blob(b"a-3 seen and heard", "video/mp4", "a-3.mp4"))
-        memory.faces(both.id)
+        memory.perceive(both.id)
         merged = [
             record
             for record in memory.operations()
@@ -308,13 +313,13 @@ def test_withheld_consent_stops_the_cross_modal_merge(tmp_path: Path) -> None:
     with _memory(tmp_path / "refused") as memory:
         voice = memory.add(Blob(b"a-1 speaking", "audio/wav", "a-1.wav"))
         face = memory.add(Blob(b"a-2 seen", "image/png", "a-2.png"))
-        voice_id = memory.speech(voice.id)[0].speaker_id
-        face_id = memory.faces(face.id)[0].identity_id
+        voice_id = memory.perceive(voice.id, kinds=frozenset({"speech"})).speech[0].speaker_id
+        face_id = memory.perceive(face.id).faces[0].identity_id
         assert voice_id is not None
         assert memory.record_consent(face_id, ConsentState.WITHHELD) is not None
 
         both = memory.add(Blob(b"a-3 seen and heard", "video/mp4", "a-3.mp4"))
-        memory.faces(both.id)
+        memory.perceive(both.id)
         assert not [
             record
             for record in memory.operations()
@@ -322,15 +327,17 @@ def test_withheld_consent_stops_the_cross_modal_merge(tmp_path: Path) -> None:
         ]
         assert memory.identity(voice_id) is not None
         assert memory.identity(face_id) is not None
-        assert memory.speech(both.id)[0].speaker_id == voice_id
-        assert memory.faces(both.id)[0].identity_id == face_id
+        assert (
+            memory.perceive(both.id, kinds=frozenset({"speech"})).speech[0].speaker_id == voice_id
+        )
+        assert memory.perceive(both.id).faces[0].identity_id == face_id
 
 
 def test_a_withheld_person_leaves_a_compiled_bundle_with_an_unknown(tmp_path: Path) -> None:
     """The named actor is dropped, the omission is reported, and the evidence stays."""
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
         episode = memory.add("Ann fixed the gate on Tuesday", occurred_at=OCCURRED)
 
@@ -367,7 +374,7 @@ def test_compile_names_an_observed_person_only_as_of_the_requested_knowledge_tim
 ) -> None:
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
         before_naming = datetime.now(timezone.utc)
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
 
@@ -408,7 +415,7 @@ def test_a_withheld_person_is_not_named_by_a_clip_alone(tmp_path: Path) -> None:
             memory_type=MemoryType.EPISODIC,
             occurred_at=OCCURRED,
         )
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
         # Episodic evidence only, so the naming assertion -- a semantic `ENTITY` -- is never
         # retrieved, and the clip's face edge is the only thing that can name her.
@@ -441,15 +448,15 @@ def test_an_export_carries_the_whole_subject_and_nobody_else(tmp_path: Path) -> 
     """Naming assertion, episodes including a forgotten one, and every log row that moved them."""
     with _memory(tmp_path) as memory:
         first = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        subject_id = memory.faces(first.id)[0].identity_id
+        subject_id = memory.perceive(first.id).faces[0].identity_id
         memory.register_identity(subject_id, "Ann", relationship="neighbour")
         second = memory.add(Blob(b"a-2 returns", "video/mp4", "a-2.mp4"))
-        assert memory.faces(second.id)[0].identity_id == subject_id
+        assert memory.perceive(second.id).faces[0].identity_id == subject_id
         forgotten = memory.forget((second.id,))
         assert forgotten is not None
 
         other = memory.add(Blob(b"b-1 arrives", "video/mp4", "b-1.mp4"))
-        other_id = memory.faces(other.id)[0].identity_id
+        other_id = memory.perceive(other.id).faces[0].identity_id
         assert other_id != subject_id
 
         bundle = memory.export(identity_id=subject_id)
@@ -507,13 +514,16 @@ def test_a_clip_two_people_share_is_exported_to_both_of_them(tmp_path: Path) -> 
     """
     with _memory(tmp_path) as memory:
         alone = memory.add(Blob(b"a-1 speaking", "audio/wav", "a-1.wav"))
-        first_id = memory.speech(alone.id)[0].speaker_id
+        first_id = memory.perceive(alone.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         other = memory.add(Blob(b"b-1 speaking", "audio/wav", "b-1.wav"))
-        second_id = memory.speech(other.id)[0].speaker_id
+        second_id = memory.perceive(other.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         assert first_id is not None and second_id is not None and first_id != second_id
 
         shared = memory.add(Blob(b"ab-1 both speaking", "audio/wav", "ab-1.wav"))
-        heard = {segment.speaker_id for segment in memory.speech(shared.id)}
+        heard = {
+            segment.speaker_id
+            for segment in memory.perceive(shared.id, kinds=frozenset({"speech"})).speech
+        }
         assert heard == {first_id, second_id}
 
         for subject, neighbour in ((first_id, second_id), (second_id, first_id)):
@@ -687,7 +697,7 @@ def test_retention_flushes_the_index_once_for_a_page_of_deletions(tmp_path: Path
         assert report.deleted == 3
         assert flushes == 1
         assert memory._store.index.pending_index_operations() == ()
-        assert memory.search("aged note", limit=10) == ()
+        assert memory.search("aged note", limit=10).hits == ()
 
 
 def test_an_undeclared_policy_deletes_nothing(tmp_path: Path) -> None:
@@ -712,7 +722,7 @@ def test_the_cli_translates_consent_export_and_retention(tmp_path: Path) -> None
     parser = cli._parser()
     with _memory(tmp_path, retention=RetentionPolicy(forgotten_days=_AGED)) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
 
         stated = cli._LOCAL["record-consent"](
             memory,
@@ -795,7 +805,7 @@ def test_formation_cannot_manufacture_consent_through_an_ordinary_proposal(
     """
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.faces(clip.id)[0].identity_id
+        identity_id = memory.perceive(clip.id).faces[0].identity_id
         memory.register_identity(identity_id, "Alice")
         assert memory.record_consent(identity_id, ConsentState.GRANTED) is not None
 

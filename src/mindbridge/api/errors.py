@@ -30,7 +30,6 @@ _PRIVATE_SUBJECT_CODES = frozenset({"index_unavailable", "internal_error", "stor
 # reason with no row falls back to its code, which is deliberately coarse.
 REASON_STATUS: Mapping[str, int] = {
     "memory_not_found": status.HTTP_404_NOT_FOUND,
-    "speaker_not_found": status.HTTP_404_NOT_FOUND,
     "identity_not_found": status.HTTP_404_NOT_FOUND,
     # The request body and one inline media value are the same condition seen from two sides, and
     # both are fixed by sending less, so both say 413 rather than blaming the provider with 502.
@@ -75,7 +74,6 @@ STATUS_BY_CODE: Mapping[str, int] = {
     "internal_error": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "validation_error": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "memory_not_found": status.HTTP_404_NOT_FOUND,
-    "speaker_not_found": status.HTTP_404_NOT_FOUND,
     "identity_not_found": status.HTTP_404_NOT_FOUND,
     "model_error": status.HTTP_502_BAD_GATEWAY,
     "model_output_truncated": status.HTTP_502_BAD_GATEWAY,

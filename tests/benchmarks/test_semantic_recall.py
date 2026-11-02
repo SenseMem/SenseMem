@@ -23,6 +23,7 @@ from mindbridge import (
     EmbedTask,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     ObservationContext,
@@ -161,10 +162,12 @@ def test_sequence_orders_the_entire_selected_union_without_changing_selection_or
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        recall_planning=planning,
-        evidence_budget_chars=None,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            recall_planning=planning,
+            evidence_budget_chars=None,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         records = memory.add_many(
             ("first red turn 3", "middle blue turn", "last green turn"),
@@ -173,7 +176,7 @@ def test_sequence_orders_the_entire_selected_union_without_changing_selection_or
         assert len({record.created_at for record in records}) == 1
         insertion = [record.id for record in records]
         assert insertion != sorted(insertion)
-        ranked = memory.search("what happened?", limit=3, reference_at=_CLOCK)
+        ranked = memory.search("what happened?", limit=3, reference_at=_CLOCK).hits
         assert [hit.id for hit in ranked] == insertion[::-1]
         result = memory.ask("what happened?", limit=3, reference_at=_CLOCK)
 
@@ -233,12 +236,14 @@ def test_sequence_orders_additions_after_packing_without_licensing_completeness(
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        recall_planning=True,
-        recall_query_expansion=semantic,
-        evidence_expansion=not semantic,
-        evidence_budget_chars=None,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            recall_planning=True,
+            recall_query_expansion=semantic,
+            evidence_expansion=not semantic,
+            evidence_budget_chars=None,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         early = memory.add(
             "span: Bridge Q has a main span of 1280 metres",
@@ -276,12 +281,14 @@ def test_semantic_recall_recovers_a_missing_route_candidate(
             tmp_path / str(enabled),
             embedder=models,
             answerer=models,
-            retrieval_mode=RetrievalMode.DENSE,
-            index_quantization=quantization,
-            recall_planning=True,
-            recall_query_expansion=enabled,
-            evidence_budget_chars=None,
-            reinforce_on_answer=False,
+            config=MemoryConfig(
+                retrieval_mode=RetrievalMode.DENSE,
+                index_quantization=quantization,
+                recall_planning=True,
+                recall_query_expansion=enabled,
+                evidence_budget_chars=None,
+                reinforce_on_answer=False,
+            ),
         ) as memory:
             anchor = memory.add("recommendation: my colleague suggested Bridge Q")
             texts = [f"unrelated bridge log {index}" for index in range(230)]
@@ -292,7 +299,8 @@ def test_semantic_recall_recovers_a_missing_route_candidate(
                 record = memory.add(text)
                 if text.startswith("span:"):
                     support_id = record.id
-            original = memory.search_with_trace(_QUESTION, limit=100, reference_at=_CLOCK)
+            original = memory.search(_QUESTION, limit=100, reference_at=_CLOCK, explain=True)
+            assert original.trace is not None
             assert support_id not in {row.memory_id for row in original.trace.candidates}
             start = models.query_calls
             result = memory.ask(_QUESTION, limit=1, reference_at=_CLOCK)
@@ -327,11 +335,13 @@ def test_semantic_recall_distinguishes_delivery_from_reader_success(
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        recall_planning=True,
-        recall_query_expansion=True,
-        evidence_budget_chars=budget,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            recall_planning=True,
+            recall_query_expansion=True,
+            evidence_budget_chars=budget,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         anchor = memory.add("recommendation: my colleague suggested Bridge Q")
         # Stored content cannot change the runtime's query budget or scope.
@@ -400,11 +410,13 @@ def test_semantic_support_precedes_a_saturated_original_tail(
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        recall_planning=True,
-        recall_query_expansion=True,
-        evidence_budget_chars=budget,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            recall_planning=True,
+            recall_query_expansion=True,
+            evidence_budget_chars=budget,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         anchor = memory.add(
             (anchor_text, Blob(b"anchor", "image/png", "anchor.png")) if media else anchor_text
@@ -414,7 +426,8 @@ def test_semantic_support_precedes_a_saturated_original_tail(
         )
         for index in range(230):
             memory.add(f"unrelated bridge log {index}")
-        original = memory.search_with_trace(_QUESTION, limit=100, reference_at=_CLOCK)
+        original = memory.search(_QUESTION, limit=100, reference_at=_CLOCK, explain=True)
+        assert original.trace is not None
         assert support.id not in {row.memory_id for row in original.trace.candidates}
         result = memory.ask(_QUESTION, limit=1, reference_at=_CLOCK)
 
@@ -473,11 +486,13 @@ def test_strict_semantic_replanning_reads_a_new_entity_before_searching_it(tmp_p
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        recall_planning=True,
-        recall_query_expansion=True,
-        evidence_budget_chars=100,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            recall_planning=True,
+            recall_query_expansion=True,
+            evidence_budget_chars=100,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         memory.add("recommendation: my colleague suggested Bridge Q")
         memory.add("span: Bridge Q has a main span of 1280 metres")
@@ -566,21 +581,24 @@ def test_replanning_retains_a_bridge_found_outside_the_original_ranking(  # noqa
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        index_quantization=IndexQuantization.NONE,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=3,
-        recall_max_queries=2,
-        evidence_budget_chars=budget,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            index_quantization=IndexQuantization.NONE,
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=3,
+            recall_max_queries=2,
+            evidence_budget_chars=budget,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         memory.add(anchor_text)
         bridge_record = memory.add(recommendation)
         span_record = memory.add(span)
         for index in range(230):
             memory.add(f"unrelated bridge log {index}")
-        original = memory.search_with_trace(_QUESTION, limit=100, reference_at=_CLOCK)
+        original = memory.search(_QUESTION, limit=100, reference_at=_CLOCK, explain=True)
+        assert original.trace is not None
         assert {bridge_record.id, span_record.id}.isdisjoint(
             row.memory_id for row in original.trace.candidates
         )
@@ -679,25 +697,28 @@ def test_semantic_routes_share_the_budget_before_a_route_spends_its_tail(  # noq
         tmp_path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        index_quantization=IndexQuantization.NONE,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=2,
-        evidence_budget_chars=budget,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            index_quantization=IndexQuantization.NONE,
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=2,
+            evidence_budget_chars=budget,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         anchors = tuple(memory.add(text) for text in anchor_texts)
         a, b = memory.add(bridge), memory.add(span)
         distractors = tuple(memory.add(f"{noise}report number {index}") for index in range(11))
         for index in range(230):
             memory.add(f"original-pool distractor {index}")
-        original = memory.search_with_trace(_QUESTION, limit=100, reference_at=_CLOCK)
+        original = memory.search(_QUESTION, limit=100, reference_at=_CLOCK, explain=True)
+        assert original.trace is not None
         assert {a.id, b.id, *(row.id for row in distractors)}.isdisjoint(
             row.memory_id for row in original.trace.candidates
         )
-        route_a = memory.search(query_a, limit=12, reference_at=_CLOCK)
-        route_b = memory.search(query_b, limit=12, reference_at=_CLOCK)
+        route_a = memory.search(query_a, limit=12, reference_at=_CLOCK).hits
+        route_b = memory.search(query_b, limit=12, reference_at=_CLOCK).hits
         assert route_a[0].id == a.id
         assert {hit.id for hit in route_a[1:]} == {row.id for row in distractors}
         assert route_b[0].id == (a.id if duplicate_bridge else b.id)

@@ -166,7 +166,7 @@ def test_judge_failure_zeros_judge_derived_metrics_without_erasing_local_metrics
     assert scores["llm_judge"] == 0.0
 
 
-async def test_saved_judge_error_replays_prediction_and_restores_deterministic_f1(
+async def test_saved_judge_error_retries_judge_and_preserves_local_metrics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     requests: list[dict[str, object]] = []
@@ -188,10 +188,10 @@ async def test_saved_judge_error_replays_prediction_and_restores_deterministic_f
     )
     sample = replace(
         _sample(),
-        score=0.0,
+        score=0.75,
         error_code="JudgeError",
-        scorer_error="BadRequestError: old unsupported temperature",
-        metrics={"f1": 0.0, "bleu_1": 1.0, "retrieval_recall@10": 0.5},
+        scorer_error="APIConnectionError: connection failed",
+        metrics={"f1": 0.75, "bleu_1": 1.0, "retrieval_recall@10": 0.5},
     )
     arguments = cast(
         _Arguments, SimpleNamespace(quiet=True, use_cache=None, run_id="replay", log_samples=False)
@@ -207,6 +207,7 @@ async def test_saved_judge_error_replays_prediction_and_restores_deterministic_f
     assert result.latency_ms == sample.latency_ms
     assert result.error_code is None
     assert result.scorer_error is None
-    assert result.score == result.metrics["f1"] == result.metrics["llm_judge"] == 1.0
+    assert result.score == result.metrics["f1"] == sample.metrics["f1"]
+    assert result.metrics["llm_judge"] == 1.0
     assert result.metrics["retrieval_recall@10"] == 0.5
     assert "temperature" not in requests[0]

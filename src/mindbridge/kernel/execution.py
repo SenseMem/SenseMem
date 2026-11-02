@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import Executor, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from contextvars import copy_context
 from functools import partial
@@ -27,6 +27,9 @@ class _Workers:
         self.parent = ThreadPoolExecutor(max_workers=64, thread_name_prefix="mindbridge-async")
         self.index = ThreadPoolExecutor(max_workers=16, thread_name_prefix="mindbridge-index")
         self.speech = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mindbridge-speech")
+        self.perception = ThreadPoolExecutor(
+            max_workers=16, thread_name_prefix="mindbridge-perception"
+        )
         self.lock = Lock()
         self.streams: list[ThreadPoolExecutor] = []
         self.idle: list[ThreadPoolExecutor] = []
@@ -135,6 +138,8 @@ class Execution:
         self.streams = StreamWorkers(require_open=lifecycle.require_open)
         workers = _process_workers()
         self._index, self._speech, self._async = workers.index, workers.speech, workers.parent
+        self._perception = workers.perception
+        self._perception_slots = BoundedSemaphore(4)
         self._index_slots, self._speech_slots = BoundedSemaphore(4), BoundedSemaphore(2)
         self._async_slots = Capacity(32, parent=_PROCESS_SUBMISSIONS)
         self.requests = Capacity(32, parent=_PROCESS_REQUESTS)
@@ -179,18 +184,31 @@ class Execution:
         return future
 
     def index_routes(self, calls: Sequence[Callable[[], _T]]) -> tuple[_T, ...]:
-        results: list[_T] = []
-        # At most four pending routes per admitted operation, including temporal supplements.
-        for offset in range(0, len(calls), 4):
-            futures: list[Future[_T]] = []
-            try:
-                for call in calls[offset : offset + 4]:
-                    futures.append(self._submit(self._index, self._index_slots, call))
-            finally:
-                # Even a later submission failure cannot release the caller's assets early.
-                wait(futures)
-            results.extend(future.result() for future in futures)
-        return tuple(results)
+        return self._routes(calls, self._index, self._index_slots)
+
+    def perception(self, calls: Sequence[Callable[[], _T]]) -> tuple[_T, ...]:
+        """Bound independent perception or settlement work, separately from index routes."""
+        return self._routes(calls, self._perception, self._perception_slots)
+
+    def _routes(
+        self, calls: Sequence[Callable[[], _T]], executor: Executor, slots: BoundedSemaphore
+    ) -> tuple[_T, ...]:
+        futures: list[Future[_T]] = []
+        pending: set[Future[_T]] = set()
+        iterator = iter(calls)
+        try:
+            for call in iterator:
+                if len(pending) == 4:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for completed in done:
+                        completed.result()
+                future = self._submit(executor, slots, call)
+                futures.append(future)
+                pending.add(future)
+        finally:
+            # Submission and inference failures still keep every started asset user leased.
+            wait(futures)
+        return tuple(future.result() for future in futures)
 
     @contextmanager
     def overlap_speech(

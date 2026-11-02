@@ -126,7 +126,7 @@ generation model. Its character and item budgets differ from `ask()`'s grounding
 [context compilation](context-compilation.md) when the host constructs its own prompt.
 
 **Guidance:** Handle empty search results and answer abstention as ordinary outcomes. Use
-`search_with_trace()` for one local ranking investigation; normal telemetry intentionally omits
+`search(..., explain=True)` for one local ranking investigation; normal telemetry intentionally omits
 candidate identifiers.
 
 ## Continue by task

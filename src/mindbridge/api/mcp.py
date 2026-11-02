@@ -54,6 +54,8 @@ from mindbridge.types import (
     MemoryType,
     Modality,
     ObservationContext,
+    PerceptionCoverage,
+    PerceptionKind,
     RetrievalScope,
     RetrievalTrace,
     SpeakerSegment,
@@ -126,9 +128,7 @@ _TOOL_ARGUMENTS = {
     "get_memory": frozenset({"memory_id"}),
     "list_memories": frozenset({"limit", "cursor"}),
     "delete_memory": frozenset({"memory_id"}),
-    "analyze_speech": frozenset({"memory_id"}),
-    "analyze_faces": frozenset({"memory_id"}),
-    "register_speaker": frozenset({"speaker_id", "name", "relationship"}),
+    "perceive_memory": frozenset({"memory_id", "kinds"}),
     "register_identity": frozenset({"identity_id", "name", "relationship"}),
     "get_identity": frozenset({"identity_id"}),
     "unlink_identity": frozenset({"alias_id"}),
@@ -196,12 +196,8 @@ _MEMORY_ID_DESCRIPTION = (
 )
 # Prose the identity tool schemas share. An identity ID and a memory ID are different vocabularies,
 # and passing one where the other belongs is the mistake these strings exist to prevent.
-_SPEAKER_ID_DESCRIPTION = (
-    "A `speaker_id` from an `analyze_speech` segment. It names one recognized voice, never a"
-    " stored memory."
-)
 _IDENTITY_ID_DESCRIPTION = (
-    "An `identity_id` from `analyze_faces` or `analyze_speech`, or a `speaker_id`: a merged alias"
+    "An `identity_id` from `perceive_memory`, or a `speaker_id`: a merged alias"
     " resolves to the person it was bound into. It never names a stored memory."
 )
 _PERSON_NAME_DESCRIPTION = (
@@ -309,12 +305,10 @@ class DeleteResult(_ToolResult):
 # `forget_identity` wraps rather than returning `IdentityErasure` directly because the MCP SDK
 # cannot build a schema for a slotted dataclass as a top-level return type: it reads the slot
 # descriptors as defaults, rejects them, and silently publishes no output schema at all.
-class SpeechResult(_ToolResult):
-    segments: tuple[SpeakerSegment, ...]
-
-
-class FacesResult(_ToolResult):
-    observations: tuple[FaceObservation, ...]
+class PerceptionResult(_ToolResult):
+    speech: tuple[SpeakerSegment, ...]
+    faces: tuple[FaceObservation, ...]
+    coverage: tuple[PerceptionCoverage, ...]
 
 
 class IdentityResult(_ToolResult):
@@ -452,13 +446,13 @@ def build_mcp_server(
     process that holds it.
 
     The three switches are the host's choice about which authority an agent holds. All default to
-    True, which is the published fifteen-tool surface; each False withholds its group by never
+    True, which is the published thirteen-tool surface; each False withholds its group by never
     registering it, because a tool an agent cannot see is better than one it must be trusted not
     to call, and the server instructions say which groups are missing.
 
     - ``identity_operations``: naming, reading, unlinking and erasing a person.
-    - ``embodied_operations``: ``analyze_speech`` and ``analyze_faces``. Withholding these also
-      withholds the cross-modal identity merge, which ``analyze_faces`` commits -- and which
+    - ``embodied_operations``: ``perceive_memory``. Withholding these also
+      withholds the cross-modal identity merge, which ``perceive_memory`` commits -- and which
       ``ask_memory`` can otherwise reach on its own, through the same face recognition it runs to
       answer a question over a photo or video. ``build_mcp_server`` passes
       ``link_identities=embodied_operations`` into every ``ask_memory`` call, so recall access
@@ -470,7 +464,7 @@ def build_mcp_server(
     recall and compile alone.
 
     ``deliberate_every`` is the same opt-in slow loop ``create_app`` takes, off by default: a
-    number of seconds after which this process runs ``deliberate()`` on the memory it serves, in
+    number of seconds after which this process runs ``consolidate()`` on the memory it serves, in
     the server lifespan. No tool reaches the control plane, and one physical ``data_dir`` has one
     live owner, so without it an MCP-only deployment records ``QUERY_FAILURE`` signals that
     nothing ever reads. It is refused when no consolidation backend is configured, or when the
@@ -575,28 +569,17 @@ def build_mcp_server(
         candidate. Stores no memory and is safe to retry, though it may cache a transcript for
         media it had to transcribe.
         """
-        content = content_input(query)
-        if not explain:
-            hits = memory.search(
-                content,
-                limit=limit,
-                memory_type=memory_type,
-                reference_at=reference_at,
-                occurred_from=occurred_from,
-                occurred_until=occurred_until,
-                scope=scope,
-            )
-            return SearchResult.model_validate({"hits": hits})
-        traced = memory.search_with_trace(
-            content,
+        result = memory.search(
+            content_input(query),
             limit=limit,
             memory_type=memory_type,
             reference_at=reference_at,
             occurred_from=occurred_from,
             occurred_until=occurred_until,
             scope=scope,
+            explain=explain,
         )
-        return SearchResult.model_validate({"hits": traced.hits, "trace": traced.trace})
+        return SearchResult.model_validate(result)
 
     @server.tool(annotations=_NON_IDEMPOTENT_WRITE)
     @_stable_errors
@@ -643,7 +626,7 @@ def build_mcp_server(
         When this server was built with `embodied_operations=False`, answering over a
         photo or video may still identify who appears in it, but a corroborated voice-and-face
         pair is never fused into one identity: that merge authority stays withheld along with
-        `analyze_faces`.
+        `perceive_memory`.
         """
         result = memory.ask(
             content_input(question),
@@ -877,7 +860,7 @@ def _register_write_tools(server: MCPServer[None], memory: Memory, *, enabled: b
 def _register_embodied_tools(server: MCPServer[None], memory: Memory, *, enabled: bool) -> None:
     """Register the embodied tools, unless the host withheld them.
 
-    Asking who spoke and who was seen is where recognition enters the store: `analyze_faces`
+    Asking who spoke and who was seen is where recognition enters the store: `perceive_memory`
     also commits the corroborated cross-modal merge, which is identity authority reached
     through an analysis call. A host that withholds the identity tools but leaves these
     registered has withheld naming and kept binding, so both switches exist and both default
@@ -888,43 +871,26 @@ def _register_embodied_tools(server: MCPServer[None], memory: Memory, *, enabled
 
     @server.tool(annotations=_NON_IDEMPOTENT_WRITE)
     @_stable_errors
-    def analyze_speech(
+    def perceive_memory(
         memory_id: Annotated[_Identifier, Field(description=_MEMORY_ID_DESCRIPTION)],
-    ) -> SpeechResult:
-        """Transcribe one stored memory's audio and video, and resolve who spoke.
+        kinds: Annotated[
+            frozenset[PerceptionKind] | None,
+            Field(
+                description="Recognition kinds: speech and/or faces. Null uses configured plugins.",
+                min_length=1,
+            ),
+        ] = None,
+    ) -> PerceptionResult:
+        """Recognize who spoke and who was seen in one stored memory.
 
-        Call this to learn what was said in a memory whose content is speech, or which person
-        said it. Segments are returned per asset in time order and cover only this one memory's
-        audio and video assets; there is no page cursor because the bound is the stored media. A
-        memory with no audio or video returns no segments rather than failing.
-
-        Side effects: caches the transcript and records the voice as identity evidence, so an
-        identical retry is safe but may resolve a speaker an earlier call left unnamed.
-        `speaker_id` is stable and accepted by `register_speaker` and `get_identity`. Fails with
-        `model_error` when the configured transcription backend cannot recognize speakers.
+        Returns typed `speech` segments and `faces` observations for the memory's assets.
+        Null kinds selects configured recognition plugins; an explicit unavailable kind fails
+        when the memory contains applicable media. Recognition caches source-local observations,
+        records identity evidence and may commit a corroborated face/voice merge. The owner's
+        operation log records that merge; `unlink_identity` reverses it. Use `register_identity`
+        to name any returned voice or face identity. Text-only memories return empty collections.
         """
-        return SpeechResult(segments=memory.speech(memory_id))
-
-    @server.tool(annotations=_NON_IDEMPOTENT_WRITE)
-    @_stable_errors
-    def analyze_faces(
-        memory_id: Annotated[_Identifier, Field(description=_MEMORY_ID_DESCRIPTION)],
-    ) -> FacesResult:
-        """Detect the faces in one stored memory's images and video, and resolve who was seen.
-
-        Call this to learn which people appear in a visual memory. Observations cover only this
-        one memory's image and video assets, each with a frame-normalized bounding box and, for
-        video, the offset it was observed at; there is no page cursor because the bound is the
-        stored media. A memory with no image or video returns no observations rather than failing.
-
-        Side effects: records the face as identity evidence and may bind it to a voice already
-        seen with it, so an identical retry is safe but may resolve an identity an earlier call
-        left unnamed. That binding is a merge the owner's operation log records and can reverse,
-        and `unlink_identity` reverses it from here. `identity_id` is stable and accepted
-        by `register_identity` and `get_identity`. Fails with `model_error` when no face backend
-        is configured or when it does not support the stored modality.
-        """
-        return FacesResult(observations=memory.faces(memory_id))
+        return PerceptionResult.model_validate(memory.perceive(memory_id, kinds=kinds))
 
 
 def _register_identity_tools(
@@ -940,36 +906,11 @@ def _register_identity_tools(
     `rollback()`, and erasure leaves an irreversible row so the request stays auditable.
     Reading who somebody is changes nothing and logs nothing. A host that does not want an agent
     holding that authority builds the server with `identity_operations=False`, and then these
-    five tools are never registered at all -- an agent cannot call a tool it cannot see, which
+    four tools are never registered at all -- an agent cannot call a tool it cannot see, which
     is stronger than trusting it not to.
     """
     if not enabled:
         return
-
-    @server.tool(annotations=_IDEMPOTENT_WRITE)
-    @_stable_errors
-    def register_speaker(
-        speaker_id: Annotated[_Identifier, Field(description=_SPEAKER_ID_DESCRIPTION)],
-        name: Annotated[_Identifier, Field(description=_PERSON_NAME_DESCRIPTION)],
-        relationship: Annotated[
-            _Identifier | None, Field(description=_RELATIONSHIP_DESCRIPTION)
-        ] = None,
-    ) -> RegisterResult:
-        """Name the person behind one `speaker_id` from `analyze_speech`.
-
-        Naming a person is host authority, exercised through you: this asserts, on the host's
-        behalf, that this voice belongs to this name. Call it once a conversation establishes
-        who a recognized voice belongs to, and not to record a guess. The assertion is a
-        versioned memory record, it is written to the operation log, and it is reversible:
-        naming again supersedes it and a rollback restores the previous name.
-
-        Repeating the same name changes nothing, so retrying is safe; omitting `relationship`
-        leaves any recorded relationship intact rather than clearing it. Naming a speaker also
-        rewrites the stored memories that quote them, so later searches can find the person by
-        name. Fails with `speaker_not_found` when the ID is not a recognized speaker.
-        """
-        memory.register_speaker(speaker_id, name, relationship=relationship)
-        return RegisterResult(registered=True)
 
     @server.tool(annotations=_IDEMPOTENT_WRITE)
     @_stable_errors
@@ -980,12 +921,12 @@ def _register_identity_tools(
             _Identifier | None, Field(description=_RELATIONSHIP_DESCRIPTION)
         ] = None,
     ) -> RegisterResult:
-        """Name the person behind one `identity_id` from `analyze_faces` or `analyze_speech`.
+        """Name the person behind one `identity_id` from `perceive_memory`.
 
         Naming a person is host authority, exercised through you: this asserts, on the host's
         behalf, that this recognized person is called this. Call it for an identity that may
         have been seen as well as heard, and only once something establishes the name; use
-        `register_speaker` only for a voice-only speaker ID. The assertion is a versioned
+        the same entry point for face and voice IDs. The assertion is a versioned
         memory record, it is written to the operation log, and it is reversible: naming again
         supersedes it and a rollback restores the previous name.
 
@@ -1186,15 +1127,15 @@ def _request_telemetry(tracer: Tracer) -> ServerMiddleware[Any]:
     return cast(ServerMiddleware[Any], observe)
 
 
-# Which of `MemoryCapabilities.operations` one of the fifteen tools can actually reach, mirroring
+# Which of `MemoryCapabilities.operations` one of the thirteen tools can actually reach, mirroring
 # `app._ROUTED_OPERATIONS`. Consolidation, cognitive forgetting and rollback stay with the owning
 # process (`docs/context-os.md`), so the greeting's prose and its JSON must agree that there is no
-# `consolidate` here; `speech` and `faces` reach a tool only when the host opts in, and so do
+# `consolidate` here; `perceive` reaches a tool only when the host opts in, and so do
 # `formation` and `describe_vision`, which run on the write path alone -- a read-only server has
 # no tool that forms, and none that captions a frame. `transcribe` stays unconditional: a read
 # tool transcribes the audio a caller asks its question with.
 _TOOLED_OPERATIONS = frozenset({"ask", "transcribe"})
-_EMBODIED_TOOLED_OPERATIONS = frozenset({"speech", "faces"})
+_EMBODIED_TOOLED_OPERATIONS = frozenset({"perceive"})
 _WRITTEN_TOOLED_OPERATIONS = frozenset({"formation", "describe_vision"})
 
 
@@ -1227,8 +1168,8 @@ def _instructions(
             "Cognitive forgetting, consolidation and operation rollback have no tool here; they"
             " stay with the process that owns this memory.",
             (
-                "Naming a person is host authority exercised through you: register_speaker and"
-                " register_identity assert a name on the host's behalf, are recorded in the"
+                "Naming a person is host authority exercised through you: register_identity"
+                " asserts a name on the host's behalf, are recorded in the"
                 " operation log, and are reversible."
                 if identity_operations
                 else "Identity operations are not exposed here: naming, reading, unlinking and"
@@ -1241,8 +1182,8 @@ def _instructions(
                 " photo or video to answer a question, but it will not fuse a voice and a face"
                 " into one identity while this is withheld."
                 if not embodied_operations
-                else "analyze_speech and analyze_faces resolve who was heard and seen;"
-                " analyze_faces may also bind one voice to one face, which is logged and"
+                else "perceive_memory resolves who was heard and seen;"
+                " perceive_memory may also bind one voice to one face, which is logged and"
                 " reversible by the owner. ask_memory can reach the same bind when it answers"
                 " over a photo or video."
             ),

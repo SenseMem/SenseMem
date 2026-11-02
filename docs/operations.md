@@ -363,7 +363,7 @@ Every span sets `mindbridge.span.kind` to `operation`, `stage`, `model`, or `tra
 | Model | `mindbridge.model.embedding`, `.transcription`, `.face`, `.generation`, `.formation`, `.vision` |
 | Transport | `mindbridge.http.request`, `mindbridge.mcp.request` |
 
-Each `add_stream()` item creates an ordinary `mindbridge.add` span. `search_with_trace()` and
+Each `add_stream()` item creates an ordinary `mindbridge.add` span. `search(..., explain=True)` and
 speculative prefetch use `mindbridge.search`. `AsyncMemory` preserves tracing context across its
 worker thread. Both buffered `AsyncMemory.ask()` and `AsyncMemory.ask_stream()` record their
 initial executor queue delay.
@@ -490,7 +490,7 @@ Watch these degradation and recognition attributes:
 Spans never record memory text, media bytes, paths, IDs, metadata, request or response bodies, or
 exception details. Apart from the non-content response model, fingerprint, and provider request IDs
 above, a failed span
-receives only generic error status. Use `search_with_trace()` for one retrieval investigation and
+receives only generic error status. Use `search(..., explain=True)` for one retrieval investigation and
 the structured error envelope for failures.
 
 ## Model quality gate

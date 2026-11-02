@@ -49,17 +49,24 @@ from mindbridge._telemetry import (
     current_model_request_count,
     mark_model_requests,
 )
-from mindbridge.exceptions import MindBridgeError, ModelError, StorageError
+from mindbridge.exceptions import MindBridgeError, ModelError, StorageError, ValidationError
 from mindbridge.infrastructure.local.store import LocalStore, RecallRead, datetime_text
 from mindbridge.kernel import grounding
-from mindbridge.kernel.content import PreparedContent, memory_modality
-from mindbridge.kernel.contracts import Backends, fallback_unsupported, require_audio_transcription
-from mindbridge.kernel.derived import derived_text, has_stream_description, has_stream_transcript
+from mindbridge.kernel.content import PreparedContent, memory_modality, prepared_modalities
+from mindbridge.kernel.contracts import Backends
+from mindbridge.kernel.derived import has_stream_description, has_stream_transcript
 from mindbridge.kernel.execution import Execution
 from mindbridge.kernel.hydration import Hydrator
+from mindbridge.kernel.identity import Identities
 from mindbridge.kernel.lifecycle import Lifecycle, OperationAssets
 from mindbridge.kernel.materialization import Materializer
 from mindbridge.kernel.retrieval import RERANK_CANDIDATES, Retrieval
+from mindbridge.kernel.routing import (
+    derived_modalities,
+    has_derived_text,
+    route_input,
+    with_descriptions,
+)
 from mindbridge.kernel.runtime import Storage, translate_storage_errors
 from mindbridge.kernel.settings import Settings
 from mindbridge.kernel.speech import Speech
@@ -80,6 +87,7 @@ from mindbridge.kernel.validation import (
 from mindbridge.kernel.vision import Vision
 from mindbridge.models.base import (
     GenerationBackend,
+    GenerationRoutingBackend,
     ModelInput,
     RecallPlanningBackend,
     StreamingGenerationBackend,
@@ -414,6 +422,7 @@ class Answering(Traced):
         vision: Vision,
         retrieval: Retrieval,
         execution: Execution,
+        identities: Identities,
     ) -> None:
         super().__init__(tracer)
         self._store = storage.store
@@ -427,6 +436,7 @@ class Answering(Traced):
         self._vision = vision
         self._retrieval = retrieval
         self._execution = execution
+        self._identities = identities
 
     def ask(
         self,
@@ -665,46 +675,41 @@ class Answering(Traced):
         self,
         prepared: PreparedContent,
         operation: OperationAssets,
+        *,
+        capabilities: frozenset[Modality] | None = None,
     ) -> ModelInput:
-        value = self._hydrator.model_input(prepared)
-        missing = value.modalities - self._backends.generation_capabilities
-        if (
-            missing == {Modality.TEXT}
-            and (prepared.audio_transcript or prepared.visual_description)
-            and value.modalities - {Modality.TEXT} <= self._backends.generation_capabilities
-        ):
-            return ModelInput(assets=value.assets)
-        unsupported = fallback_unsupported(
-            prepared,
-            self._backends.generation_capabilities,
-            "generation",
-        )
+        supported = self._backends.generation_capabilities if capabilities is None else capabilities
         if self._speech.answer_speech_assets(prepared.assets):
             prepared = self._speech.with_speech_identities(prepared, operation)
-        if Modality.AUDIO in unsupported and not prepared.audio_transcript:
-            require_audio_transcription(self._backends.transcription_capabilities)
+        missing = prepared_modalities(prepared) - supported
+        if missing & self._speech.transcript_fallback(prepared.assets):
             prepared = self._speech.with_audio_transcripts(prepared, operation)
-        value = self._hydrator.model_input(prepared)
-        unsupported = value.modalities - self._backends.generation_capabilities
-        if not unsupported:
-            return value
-        text = derived_text(value.text, prepared.assets)
-        fallback = {Modality.AUDIO}
-        if prepared.visual_description:
-            fallback.update((Modality.IMAGE, Modality.VIDEO))
-        assets = tuple(asset for asset in value.assets if asset.modality not in unsupported)
-        if unsupported <= fallback and (text or assets):
-            routed = ModelInput(
-                text=text,
-                assets=assets,
-            )
-            if not routed.modalities - self._backends.generation_capabilities:
-                return routed
-        names = ", ".join(sorted(modality.value for modality in unsupported))
-        raise ModelError(
-            f"configured generation model does not support: {names}",
-            reason="unsupported_modality",
+        visuals = tuple(
+            asset
+            for asset in prepared.assets
+            if Modality(asset.modality) in missing & {Modality.IMAGE, Modality.VIDEO}
+            and not has_stream_description(prepared.text, (asset,))
         )
+        if visuals:
+            self._vision.query_descriptions(
+                replace(prepared, assets=visuals),
+                operation,
+                required=frozenset(
+                    asset.asset_id
+                    for asset in visuals
+                    if not has_derived_text(prepared.text, asset.asset_id, Modality(asset.modality))
+                ),
+            )
+            identifiers = {asset.asset_id for asset in visuals}
+            prepared = with_descriptions(
+                prepared,
+                {
+                    key: value
+                    for key, value in operation.query_descriptions.items()
+                    if key in identifiers
+                },
+            )
+        return route_input(prepared, self._hydrator.model_input(prepared), supported, "generation")
 
     def _route_generation_hits(
         self,
@@ -712,6 +717,7 @@ class Answering(Traced):
         operation: OperationAssets,
         *,
         link_identities: bool = True,
+        capabilities: frozenset[Modality] | None = None,
     ) -> tuple[SearchHit, ...]:
         asset_ids = tuple(asset.id for hit in hits for asset in hit.assets)
         with (
@@ -738,40 +744,16 @@ class Answering(Traced):
                     visual_description=has_stream_description(hit.content, assets),
                 )
             )
-        if Modality.AUDIO not in self._backends.generation_capabilities:
-            for prepared in prepared_hits:
-                fallback_unsupported(
-                    prepared,
-                    self._backends.generation_capabilities,
-                    "generation",
-                )
-        speech_assets = self._speech.answer_speech_assets(
-            tuple(asset for prepared in prepared_hits for asset in prepared.assets)
+        self._identities.perceive(
+            tuple(asset for prepared in prepared_hits for asset in prepared.assets),
+            operation,
+            link=link_identities,
         )
-        if speech_assets:
-            self._speech.recognize(speech_assets, operation)
-        elif Modality.AUDIO not in self._backends.generation_capabilities:
-            self._speech.cache_audio_transcripts(
-                tuple(
-                    asset
-                    for prepared in prepared_hits
-                    if not prepared.audio_transcript
-                    for asset in prepared.assets
-                ),
-                operation,
-            )
-        face_assets = self._vision.answer_face_assets(
-            tuple(asset for prepared in prepared_hits for asset in prepared.assets)
-        )
-        if face_assets:
-            self._vision.recognize(face_assets, operation, link_identities=link_identities)
         routed = []
         for hit, prepared in zip(hits, prepared_hits, strict=True):
             if self._vision.answer_face_assets(prepared.assets):
-                prepared = self._vision.with_face_identities(
-                    prepared, operation, link_identities=link_identities
-                )
-            model_input = self._route_generation(prepared, operation)
+                prepared = self._vision.with_face_identities(prepared, operation)
+            model_input = self._route_generation(prepared, operation, capabilities=capabilities)
             routed.append(
                 replace(
                     hit,
@@ -869,7 +851,27 @@ class Answering(Traced):
                 "it does not establish a complete event history or answer set."
             )
             note = f"{note} {order_note}" if note else order_note
-        routed = context.routed
+        answerer = context.answerer
+        if isinstance(answerer, GenerationRoutingBackend):
+            convertible = (
+                self._backends.vision_capabilities
+                | self._backends.transcription_capabilities
+                | derived_modalities(
+                    (context.routed, *(ModelInput(hit.content, hit.assets) for hit in hits))
+                )
+            )
+            answerer = answerer.select(context.routed, hits, convertible=convertible)
+        routed = self._route_generation(
+            context.prepared, context.assets, capabilities=answerer.generation_capabilities
+        )
+        routed = replace(
+            routed,
+            image_retrieval_matches=tuple(
+                match
+                for match in context.routed.image_retrieval_matches
+                if any(asset.id == match.query_asset_id for asset in routed.assets)
+            ),
+        )
         question = (
             grounding.with_reference_time(
                 grounding.with_recall_note(routed, note), context.reference
@@ -877,11 +879,13 @@ class Answering(Traced):
             if routed.text
             else routed
         )
+        question = replace(question, evidence_sources=tuple(hits))
         routed_hits = (
             self._route_generation_hits(
                 hits,
                 context.assets,
                 link_identities=context.link_identities,
+                capabilities=answerer.generation_capabilities,
             )
             if hits
             else ()
@@ -901,7 +905,7 @@ class Answering(Traced):
             self._answer_chunks(
                 question,
                 routed_hits,
-                answerer=context.answerer,
+                answerer=answerer,
                 answer_policy=context.answer_policy,
                 # This existing backend flag selects the program-order prompt, not a promise
                 # of completeness. Sequence hits are ordered even for a pure similarity plan;
@@ -1487,6 +1491,10 @@ class Answering(Traced):
                     raise ModelError(
                         "generation model returned an invalid answer", reason="response_invalid"
                     )
+            except ValidationError as error:
+                raise ModelError(
+                    "generation model returned an invalid answer", reason="response_invalid"
+                ) from error
             except MindBridgeError:
                 raise
             except Exception as error:

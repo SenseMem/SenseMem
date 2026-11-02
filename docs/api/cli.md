@@ -2,7 +2,7 @@
 
 ## Surface
 
-`mindbridge` provides 35 SDK operation commands plus `doctor`; each invocation runs one command in
+`mindbridge` provides 32 SDK operation commands plus `doctor`; each invocation runs one command in
 one process and emits one JSON result. Local commands dispatch to the corresponding `Memory`
 method, except for the diagnostic `doctor`; remote commands forward to a running owner's `/v1`
 route. The CLI owns argument decoding, composition selection, JSON projection, and exit-code
@@ -57,9 +57,8 @@ only to `--url`. Inapplicable options fail instead of being ignored. `--app` fol
 
 The listed flags are the complete direct-composition surface. Use `--app MODULE:ATTR` for index
 quantization, face analysis, speaker/face thresholds, a custom backend, or any other `Memory`
-setting. In particular the `faces` command needs a face analyzer, which is built from local model
-files rather than a named recipe, so it has no flag: compose it in an application and select that
-application with `--app`.
+setting. Face recognition through `perceive` uses a face analyzer built from local model files
+rather than a named recipe: compose it in an application and select that application with `--app`.
 
 There is no `--answer-policy` flag. The product CLI uses the SDK's `strict` answer policy in both
 local and remote mode. Use the Python SDK or REST `AnswerRequest` for `best_effort`.
@@ -107,14 +106,11 @@ mindbridge --embedder openai --former openai --vision openai add @panel.png
 | `capture` | same operands and options as `add` | memory object | yes |
 | `settle` | optional `MEMORY_ID...`; `--limit`; `--max-attempts` | `{"settled":int}` | yes |
 | `pending-captures` | optional `MEMORY_ID...`; `--limit` | `{"pending":[...]}` | yes |
-| `search` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--occurred-from`; `--occurred-until` | `{"hits":[...]}` | yes |
-| `search-with-trace` | search options | `{"hits":[...],"trace":{...}}` | yes |
+| `search` | content; `--explain`; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--occurred-from`; `--occurred-until` | `{"hits":[...],"trace":null}` (or the requested trace) | yes |
 | `ask` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--link-identities`/`--no-link-identities` | answer object | yes (`--link-identities` is local-only) |
 | `compile` | content; `--max-chars`; `--max-items`; `--max-media-items`; repeatable `--memory-type`; `--min-confidence`; `--freshness-seconds`; `--max-latency-ms`; `--reference-at`; `--scope`; `--allow-partial-sources` | context bundle plus `rendered` | yes |
 | `get` | `MEMORY_ID` | memory object | yes |
-| `speech` | `MEMORY_ID` | `{"segments":[...]}` | yes when the owner enables `embodied_operations` |
-| `faces` | `MEMORY_ID` | `{"observations":[...]}` | yes when the owner enables `embodied_operations` |
-| `register-speaker` | `SPEAKER_ID NAME`; `--relationship` | `{}` | no |
+| `perceive` | `MEMORY_ID`; optional repeatable `--kind speech` / `--kind faces` | `{"speech":[...],"faces":[...],"coverage":[...]}` | yes when the owner enables `embodied_operations` |
 | `register-identity` | `IDENTITY_ID NAME`; `--relationship` | `{}` | yes when the owner enables `identity_operations` |
 | `identity` | `IDENTITY_ID` | `{"identity":{...}}` or `{"identity":null}` | yes when the owner enables `identity_operations` |
 | `record-consent` | `IDENTITY_ID STATE`; `--note` | `{"operation":{...}}` or `{"operation":null}` | yes when the owner enables `identity_operations` |
@@ -123,8 +119,8 @@ mindbridge --embedder openai --former openai --vision openai add @panel.png
 | `unlink-identity` | `ALIAS_ID` | `{"restored_identity_id":...}` | yes when the owner enables `identity_operations` |
 | `reinforce` | one or more `MEMORY_ID` values | `{"reinforced":int}` | yes |
 | `consolidation-candidates` | `--limit`; `--idle` | `{"candidates":[{"trigger":...,"memory_ids":[...],"evidence_count":int}]}` | no |
-| `consolidate` | optional goal content; `--evidence-id`; `--limit`; `--trigger` | `{"operations":[...],"rejected":[...],"weighed":int}` | no |
-| `deliberate` | `--limit`; `--max-rounds`; `--idle` | `{"rounds":int,"weighed":int,"skipped":int,"applied":int,"rejected":int,"model_calls":int}` | no |
+| `consolidate` | optional goal content; `--evidence-id`; `--limit`; `--trigger` | `{"operations":[...],"rejected":[...],"weighed":int,"rounds":int,"skipped":int,"applied":int,"model_calls":int}` | no |
+| `consolidate-pending` | `--limit`; `--max-rounds`; `--idle` | same `ConsolidationReport` fields | no |
 | `apply` | `--operation` | `{"operation":{...}}` | no |
 | `record-outcome` | `OPERATION_ID OUTCOME`; `--note` | `{"recorded":bool}` | no |
 | `forget` | one or more `MEMORY_ID` values | `{"operation":{...}}` or `{"operation":null}` | no |
@@ -141,12 +137,12 @@ mindbridge --embedder openai --former openai --vision openai add @panel.png
 Defaults match the SDK: `add`, `add-many`, `add-stream`, and `capture` use
 `memory_type=semantic`; search uses `limit=10`; ask uses `limit=5`; list, `settle`,
 `pending-captures`, and `operations` use `limit=100`; `settle` also uses `max-attempts=3`;
-`consolidate`, `consolidation-candidates`, and `deliberate` use `limit=32`, `consolidate` defaults
-to `trigger=manual`, and `deliberate` also defaults to `max-rounds=4`; optional
+`consolidate` and `consolidation-candidates` use `limit=32`, `consolidate` defaults
+to `trigger=manual`, and `consolidate-pending` defaults to `max-rounds=4`; optional
 retrieval roles and timestamps are unset. Timestamps must be timezone-aware ISO 8601 values.
-Cursors are opaque and passed through unchanged. `ask` requires the selected composition to supply an answerer. `speech` and `faces`
-return an empty result without a model call when the record has no corresponding media; otherwise
-they require the matching capability. `compile` mirrors the
+Cursors are opaque and passed through unchanged. `ask` requires the selected composition to supply an answerer. `perceive`
+returns separate typed speech and face collections. It selects configured recognition plugins
+automatically; an explicit `--kind` requires that capability when applicable media exists. `compile` mirrors the
 [`ContextBudget` defaults](../context-compilation.md#budget) and repeats `--memory-type` to keep
 more than one type; `--max-latency-ms` is a deadline the compiler checks between stages, and the
 printed bundle carries `elapsed_ms`, `deadline_exceeded`, and `unknowns` alongside its sections.
@@ -172,7 +168,7 @@ operation, are post-hoc and never fed back into a decision, and a later `record-
 replaces an earlier judgement the same way `rollback` replaces a standing operation.
 
 `consolidation-candidates`'s `--idle` declares an approved idle window, admitting lineages
-nothing has ever weighed; the CLI never infers idleness from a clock. `deliberate` runs
+nothing has ever weighed; the CLI never infers idleness from a clock. `consolidate-pending` runs
 `consolidation-candidates` and `consolidate` in a loop, each round consolidating every row
 `consolidation-candidates` returns with that row's own trigger, until a round yields no
 candidates or `--max-rounds` is reached; the counters it prints are summed across every round,
@@ -237,7 +233,7 @@ abstention adds no reinforcement. Use `--app` to construct a memory with that po
 
 `ask` may run face recognition on a retrieved photo or video before answering. With the default
 `--link-identities` (true), a voice-and-face pair corroborated across enough assets is fused into
-one identity and logged as a `merge` row, the same as `analyze_faces`; `--no-link-identities`
+one identity and logged as a `merge` row, the same as `perceive_memory`; `--no-link-identities`
 still runs recognition to answer the question but never commits that bind. `--url` compositions
 send no such request to REST: `POST /v1/answers` decides the same question from `create_app`'s own
 `embodied_operations` switch instead, so `--link-identities` has no effect there and the remote
@@ -245,7 +241,7 @@ answerer links identities only when the host has opted in to embodied operations
 
 ### Content and JSONL input
 
-Content commands (`add`, `capture`, `search`, `search-with-trace`, `ask`, `compile`, and
+Content commands (`add`, `capture`, `search`, `ask`, `compile`, and
 `consolidate`) accept exactly one of these forms:
 
 - Positional atoms: bare values are text, `@PATH` is a local file, `@@TEXT` is text beginning with
@@ -302,7 +298,7 @@ to first token matters.
 
 On success, stdout contains one JSON document and a trailing newline. Local results use the same
 memory, hit, answer, page, and deletion field vocabulary as [REST response objects](rest.md#response-objects).
-`search-with-trace` serializes the [Python retrieval trace](python-sdk.md#public-values).
+`search --explain` serializes the [Python retrieval trace](python-sdk.md#public-values).
 `SpeakerSegment` and `FaceObservation` use their public Python fields. Memory and hit documents
 carry `context` when typed semantics exist, identically in local and `--url` mode, with enum
 values as JSON strings and datetimes as ISO 8601. Every timestamp the CLI prints -- including
@@ -368,7 +364,6 @@ inspected together. Operational diagnosis is covered in [operations](../operatio
 | 2 | — | argparse syntax or type error |
 | 3 | `validation_error` | input rejected |
 | 4 | `memory_not_found` | memory does not exist |
-| 5 | `speaker_not_found` | speaker does not exist |
 | 6 | `model_error` | inspect `reason` and `retryable` |
 | 7 | `storage_error` | storage or remote request failure |
 | 8 | `index_unavailable` | vector index unavailable |
@@ -390,9 +385,9 @@ the complete list. Twelve commands exit 10 with `unsupported_in_remote_mode` bec
 operation has no route at all, not because the CLI declines to send one:
 
 - The control plane is SDK-only by [documented design](../context-os.md): `consolidation-candidates`,
-  `consolidate`, `deliberate`, `apply`, `record-outcome`, `forget`, `rollback`, and `operations`.
+  `consolidate`, `apply`, `record-outcome`, `forget`, `rollback`, and `operations`.
 - `add-stream`, `reindex`, and `optimize` are local ingestion and index maintenance on the owner's
-  own directory, and `register-speaker` has no route of its own.
+  own directory, and identity naming shares one face/voice route.
 
 A gated command sent to an owner that did not enable the matching switch also exits 10, naming
 that switch: `create_app` never registers those routes, so the owner answers that the route does

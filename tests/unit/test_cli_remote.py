@@ -118,7 +118,7 @@ def test_reinforce_and_traced_search_round_trip(
     assert status == 0
     assert reinforced == {"reinforced": 1}
 
-    status, traced, _ = _run(capsys, "--url", URL, "-q", "search-with-trace", "spare key")
+    status, traced, _ = _run(capsys, "--url", URL, "-q", "search", "--explain", "spare key")
     assert status == 0
     # The traced operation runs only when the request carries `explain`, so a null trace here
     # means the CLI reached the plain search route with the same body.
@@ -269,8 +269,7 @@ def test_a_reshaped_response_prints_the_document_the_command_prints_locally(
 @pytest.mark.parametrize(
     ("command", "operands", "switch"),
     (
-        ("speech", ("memory-1",), "embodied_operations"),
-        ("faces", ("memory-1",), "embodied_operations"),
+        ("perceive", ("memory-1",), "embodied_operations"),
         ("register-identity", ("identity-1", "Ana"), "identity_operations"),
         ("export", ("--identity-id", "identity-1"), "identity_operations"),
         ("apply-retention", (), "identity_operations"),

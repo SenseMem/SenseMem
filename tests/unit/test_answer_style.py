@@ -7,7 +7,7 @@ import pytest
 from test_openai_sdk import _answer_policy_transport, _sdk_client, _search_hit
 
 import mindbridge.models.openai_sdk as adapter
-from mindbridge import AnswerPolicy, OpenAIModels
+from mindbridge import AnswerPolicy, ModelInput, OpenAIModels
 
 
 @pytest.mark.parametrize("policy", ["strict", "best_effort"])
@@ -22,7 +22,9 @@ def test_reader_styles_preserve_answer_and_abstention_semantics(
     with httpx.Client(transport=_answer_policy_transport(requests, reply)) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_style=style)
         result = model.answer(
-            "Was the appointment before or after the trip?", (_search_hit(),), answer_policy=policy
+            ModelInput(text="Was the appointment before or after the trip?"),
+            (_search_hit(),),
+            answer_policy=policy,
         )
     system = cast(list[dict[str, str]], requests[0]["messages"])[0]["content"]
     base = (

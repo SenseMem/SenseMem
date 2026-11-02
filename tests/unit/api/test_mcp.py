@@ -36,11 +36,11 @@ from mindbridge.api import content
 from mindbridge.api import mcp as mcp_adapter
 from mindbridge.api.mcp import build_mcp_server
 from mindbridge.exceptions import (
+    IdentityNotFoundError,
     IndexUnavailableError,
     MemoryNotFoundError,
     ModelError,
     ModelOutputTruncatedError,
-    SpeakerNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -52,7 +52,6 @@ from mindbridge.types import (
     ContentInput,
     ContextBudget,
     ContextBundle,
-    FaceObservation,
     IdentityErasure,
     IdentityProfile,
     MemoryCapabilities,
@@ -61,10 +60,10 @@ from mindbridge.types import (
     Modality,
     ObservationContext,
     Page,
+    PerceptionKind,
+    PerceptionResult,
     RetrievalScope,
-    SearchHit,
-    SpeakerSegment,
-    TracedSearchResult,
+    SearchResult,
 )
 
 CAPABILITIES = MemoryCapabilities(
@@ -119,7 +118,8 @@ class FakeMemory:
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         scope: RetrievalScope | None = None,
-    ) -> tuple[SearchHit, ...]:
+        explain: bool = False,
+    ) -> SearchResult:
         self._fail()
         self.calls.append(
             (
@@ -132,32 +132,7 @@ class FakeMemory:
                 occurred_until,
             )
         )
-        return (_hit(),)
-
-    def search_with_trace(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-    ) -> TracedSearchResult:
-        self._fail()
-        self.calls.append(
-            (
-                "search_with_trace",
-                query,
-                limit,
-                memory_type,
-                reference_at,
-                occurred_from,
-                occurred_until,
-            )
-        )
-        return TracedSearchResult(hits=(), trace=_trace())
+        return SearchResult(hits=() if explain else (_hit(),), trace=_trace() if explain else None)
 
     @property
     def capabilities(self) -> MemoryCapabilities:
@@ -213,25 +188,12 @@ class FakeMemory:
         self.calls.append(("delete", memory_id))
         return True
 
-    def speech(self, memory_id: str) -> tuple[SpeakerSegment, ...]:
+    def perceive(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult:
         self._fail()
-        self.calls.append(("speech", memory_id))
-        return (SEGMENT,)
-
-    def faces(self, memory_id: str) -> tuple[FaceObservation, ...]:
-        self._fail()
-        self.calls.append(("faces", memory_id))
-        return (FACE,)
-
-    def register_speaker(
-        self,
-        speaker_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        self._fail()
-        self.calls.append(("register_speaker", speaker_id, name, relationship))
+        self.calls.append(("perceive", memory_id, kinds))
+        return PerceptionResult(speech=(SEGMENT,), faces=(FACE,))
 
     def register_identity(
         self,
@@ -280,9 +242,7 @@ async def test_mcp_publishes_only_the_flat_local_tools() -> None:
         "get_memory",
         "list_memories",
         "delete_memory",
-        "analyze_speech",
-        "analyze_faces",
-        "register_speaker",
+        "perceive_memory",
         "register_identity",
         "get_identity",
         "unlink_identity",
@@ -326,9 +286,7 @@ async def test_mcp_publishes_only_the_flat_local_tools() -> None:
         "get_memory": {"memory_id"},
         "list_memories": {"limit", "cursor"},
         "delete_memory": {"memory_id"},
-        "analyze_speech": {"memory_id"},
-        "analyze_faces": {"memory_id"},
-        "register_speaker": {"speaker_id", "name", "relationship"},
+        "perceive_memory": {"memory_id", "kinds"},
         "register_identity": {"identity_id", "name", "relationship"},
         "get_identity": {"identity_id"},
         "unlink_identity": {"alias_id"},
@@ -355,8 +313,8 @@ async def test_mcp_publishes_only_the_flat_local_tools() -> None:
     assert f"{budget.max_chars:,} characters and {budget.max_items} items" in budget_description
     assert tools["get_identity"].annotations is not None
     assert tools["get_identity"].annotations.read_only_hint is True
-    assert tools["register_speaker"].annotations is not None
-    assert tools["register_speaker"].annotations.idempotent_hint is True
+    assert tools["register_identity"].annotations is not None
+    assert tools["register_identity"].annotations.idempotent_hint is True
     # Reversing a merge discards the alias's evidence, and reinforcement accumulates, so neither
     # may claim to be a safe no-op on retry.
     assert tools["unlink_identity"].annotations is not None
@@ -365,7 +323,7 @@ async def test_mcp_publishes_only_the_flat_local_tools() -> None:
     assert tools["reinforce_memories"].annotations.read_only_hint is False
     assert tools["reinforce_memories"].annotations.idempotent_hint is False
     # Analysis persists identity evidence, so it cannot be advertised read-only.
-    for analysis in ("analyze_speech", "analyze_faces"):
+    for analysis in ("perceive_memory",):
         annotations = tools[analysis].annotations
         assert annotations is not None
         assert annotations.read_only_hint is False
@@ -462,16 +420,27 @@ async def test_mcp_returns_structured_results_and_does_not_close_injected_memory
     assert memory.close_count == 0
 
 
+@pytest.mark.parametrize("kinds", (None, ["speech"], [], ["unknown"]))
+async def test_perception_selection_schema(kinds: list[str] | None) -> None:
+    memory = FakeMemory()
+    async with Client(build_mcp_server(cast(Memory, memory))) as client:
+        result = await client.call_tool(
+            "perceive_memory", {"memory_id": "memory_1", "kinds": kinds}
+        )
+    valid = kinds is None or kinds == ["speech"]
+    assert result.is_error is not valid
+    assert bool(memory.calls) is valid
+
+
 async def test_mcp_dispatches_the_embodied_and_identity_operations() -> None:
     """An agent driving a robot can ask who spoke and who was seen, and name them."""
     memory = FakeMemory()
 
     async with Client(build_mcp_server(cast(Memory, memory))) as client:
-        speech = await client.call_tool("analyze_speech", {"memory_id": "memory_1"})
-        faces = await client.call_tool("analyze_faces", {"memory_id": "memory_1"})
+        perceived = await client.call_tool("perceive_memory", {"memory_id": "memory_1"})
         named_speaker = await client.call_tool(
-            "register_speaker",
-            {"speaker_id": "speaker_1", "name": "Ann", "relationship": "daughter"},
+            "register_identity",
+            {"identity_id": "speaker_1", "name": "Ann", "relationship": "daughter"},
         )
         named_identity = await client.call_tool(
             "register_identity",
@@ -484,8 +453,9 @@ async def test_mcp_dispatches_the_embodied_and_identity_operations() -> None:
             {"memory_ids": ["memory_1", "memory_2", "memory_1"]},
         )
 
-    assert speech.structured_content == {
-        "segments": [
+    assert perceived.structured_content == {
+        "coverage": [],
+        "speech": [
             {
                 "asset_id": "b" * 64,
                 "start_ms": 0,
@@ -495,10 +465,8 @@ async def test_mcp_dispatches_the_embodied_and_identity_operations() -> None:
                 "speaker_name": "Ann",
                 "identity_score": 0.82,
             }
-        ]
-    }
-    assert faces.structured_content == {
-        "observations": [
+        ],
+        "faces": [
             {
                 "asset_id": "c" * 64,
                 "bounding_box": [0.1, 0.2, 0.3, 0.4],
@@ -507,7 +475,7 @@ async def test_mcp_dispatches_the_embodied_and_identity_operations() -> None:
                 "identity_score": 0.77,
                 "observed_at_ms": 250,
             }
-        ]
+        ],
     }
     assert named_speaker.structured_content == {"registered": True}
     assert named_identity.structured_content == {"registered": True}
@@ -523,9 +491,8 @@ async def test_mcp_dispatches_the_embodied_and_identity_operations() -> None:
     assert unlinked.structured_content == {"restored_identity_id": "identity_3"}
     assert reinforced.structured_content == {"reinforced": 2}
     assert memory.calls == [
-        ("speech", "memory_1"),
-        ("faces", "memory_1"),
-        ("register_speaker", "speaker_1", "Ann", "daughter"),
+        ("perceive", "memory_1", None),
+        ("register_identity", "speaker_1", "Ann", "daughter"),
         # An omitted relationship stays omitted rather than clearing the recorded one.
         ("register_identity", "identity_1", "Ann", None),
         ("identity", "identity_1"),
@@ -763,7 +730,7 @@ async def test_mcp_wraps_native_argument_failures_with_a_stable_code(
     [
         (ValidationError("content is invalid"), "validation_error", True),
         (MemoryNotFoundError("memory is missing"), "memory_not_found", True),
-        (SpeakerNotFoundError("speaker is missing"), "speaker_not_found", True),
+        (IdentityNotFoundError("speaker is missing"), "identity_not_found", True),
         (ModelError("routing failed"), "model_error", True),
         (ModelOutputTruncatedError("answer was cut off"), "model_output_truncated", True),
         (StorageError("durable write failed"), "storage_error", True),
@@ -1051,7 +1018,7 @@ async def test_search_keeps_its_default_shape_and_explains_an_empty_result() -> 
     ]
     assert memory.calls == [
         ("search", "toolbox", 10, None, None, None, None),
-        ("search_with_trace", "toolbox", 10, None, None, None, None),
+        ("search", "toolbox", 10, None, None, None, None),
     ]
 
 
@@ -1311,9 +1278,8 @@ _READ_TOOLS = {
     "list_memories",
 }
 _WRITE_TOOLS = {"add_memory", "delete_memory", "reinforce_memories"}
-_EMBODIED_TOOLS = {"analyze_speech", "analyze_faces"}
+_EMBODIED_TOOLS = {"perceive_memory"}
 _IDENTITY_TOOLS = {
-    "register_speaker",
     "register_identity",
     "get_identity",
     "unlink_identity",
@@ -1347,7 +1313,7 @@ async def test_every_tool_belongs_to_exactly_one_withholdable_group() -> None:
     published = await _exposed()
 
     assert published == set().union(*groups)
-    assert len(published) == sum(len(group) for group in groups) == 15
+    assert len(published) == sum(len(group) for group in groups) == 13
 
     assert await _exposed(write_operations=False) == published - _WRITE_TOOLS
     assert await _exposed(embodied_operations=False) == published - _EMBODIED_TOOLS
@@ -1394,7 +1360,7 @@ async def test_a_withheld_group_is_announced_and_its_tools_are_unknown() -> None
     async with Client(server) as client:
         refused = [
             await client.call_tool("add_memory", {"content": "x"}),
-            await client.call_tool("analyze_faces", {"memory_id": "memory_1"}),
+            await client.call_tool("perceive_memory", {"memory_id": "memory_1"}),
         ]
 
     assert all(result.is_error is True for result in refused)
@@ -1407,7 +1373,6 @@ async def test_a_withheld_group_is_announced_and_its_tools_are_unknown() -> None
 async def test_a_host_can_withhold_the_identity_tools_from_an_agent() -> None:
     """Naming people is host authority, so the host decides whether it is on the wire."""
     identity_tools = {
-        "register_speaker",
         "register_identity",
         "get_identity",
         "unlink_identity",
@@ -1425,7 +1390,7 @@ async def test_a_host_can_withhold_the_identity_tools_from_an_agent() -> None:
         )
 
     assert refused.is_error is True
-    assert len(exposed) == 15
+    assert len(exposed) == 13
     assert identity_tools <= exposed
     assert withheld == exposed - identity_tools
     assert "Identity operations are not exposed here" in cast(str, server.instructions)
@@ -1435,7 +1400,7 @@ async def test_naming_tools_state_that_naming_is_host_authority() -> None:
     async with Client(build_mcp_server(cast(Memory, FakeMemory()))) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
 
-    for name in ("register_speaker", "register_identity"):
+    for name in ("register_identity",):
         description = cast(str, tools[name].description)
         assert "host authority" in description, name
         assert "operation log" in description, name

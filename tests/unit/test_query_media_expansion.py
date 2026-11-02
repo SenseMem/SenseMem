@@ -16,6 +16,7 @@ from mindbridge import (
     Blob,
     EmbedTask,
     Memory,
+    MemoryConfig,
     MemoryRecord,
     MemoryType,
     Modality,
@@ -121,18 +122,20 @@ def _memory(
         path,
         embedder=_Embedder(),
         answerer=answerer,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=minimum_relevance,
-        ambiguity_margin=0.0,
-        reinforce_on_answer=False,
-        query_vision=False,
-        recall_planning=planning,
-        recall_query_expansion=semantic,
-        recall_set_max_rows=set_max_rows,
-        recall_set_budget_chars=set_budget,
-        evidence_expansion=enabled,
-        evidence_expansion_max_rows=max_rows,
-        evidence_budget_chars=budget,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=minimum_relevance,
+            ambiguity_margin=0.0,
+            reinforce_on_answer=False,
+            query_vision=False,
+            recall_planning=planning,
+            recall_query_expansion=semantic,
+            recall_set_max_rows=set_max_rows,
+            recall_set_budget_chars=set_budget,
+            evidence_expansion=enabled,
+            evidence_expansion_max_rows=max_rows,
+            evidence_budget_chars=budget,
+        ),
     )
 
 
@@ -184,7 +187,7 @@ def test_native_context_uses_tight_budget_before_replaceable_rank_tail(
     answerer = _Answerer(semantic=semantic)
     with _memory(tmp_path, answerer) as memory:
         code, plot, tail = _add(memory)
-        ranked = {hit.id: hit for hit in memory.search(QUERY, limit=100)}
+        ranked = {hit.id: hit for hit in memory.search(QUERY, limit=100).hits}
         budget = evidence_cost(ranked[code.id]) + evidence_cost(ranked[plot.id])
     with _memory(tmp_path, answerer, budget=budget, planning=semantic, semantic=semantic) as memory:
         memory.ask(QUERY, limit=1)
@@ -269,7 +272,7 @@ def test_repeated_assets_and_multiple_source_records_use_one_joint_added_row_cap
         memory.ask((QUERY[0], CODE, CODE), limit=2)
         hits = answerer.calls[-1][1]
         assert len({hit.id for hit in hits}) == len(hits)
-        floor = {hit.id for hit in memory.search(QUERY, limit=2)}
+        floor = {hit.id for hit in memory.search(QUERY, limit=2).hits}
         assert floor <= {hit.id for hit in hits}
         assert len({hit.id for hit in hits} - floor) <= 1
         assert code.id in {hit.id for hit in hits}
@@ -324,7 +327,7 @@ def test_predicate_budget_reserves_required_floor_before_first_supplemental_row(
         memory.add(("matched second source", CODE), occurred_at=NOW)
         for index in range(3):
             memory.add(f"unrelated row {index}", occurred_at=NOW)
-        hits = {hit.id: hit for hit in memory.search(QUERY, limit=100)}
+        hits = {hit.id: hit for hit in memory.search(QUERY, limit=100).hits}
         budget = evidence_cost(hits[floor.id]) + evidence_cost(hits[matched.id]) - 1
     with _memory(
         tmp_path, answerer, enabled=enabled, budget=budget, planning=True, set_budget=budget
@@ -364,7 +367,7 @@ def test_no_novel_native_context_keeps_original_structural_seeds(tmp_path: Path)
         linked = memory.add(
             "linked D", occurred_at=NOW, context=ObservationContext(source_id="other capture")
         )
-        ranked = memory.search(QUERY, limit=100)
+        ranked = memory.search(QUERY, limit=100).hits
         assert [hit.id for hit in ranked[:3]] == [anchor.id, before.id, after.id]
         assert linked.id not in {hit.id for hit in ranked}
         memory.ask(QUERY, limit=3)

@@ -9,10 +9,12 @@ from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from enum import Enum
+from itertools import combinations
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 
+from mindbridge._validation import positive_int, unit_interval
 from mindbridge.exceptions import ValidationError
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -339,7 +341,7 @@ class ObservationContext:
         object.__setattr__(
             self,
             "confidence",
-            _unit_interval(self.confidence, "observation confidence"),
+            unit_interval(self.confidence, "observation confidence"),
         )
         _require_named_interval(
             self.valid_from,
@@ -480,7 +482,7 @@ class FormationProposal:
         object.__setattr__(
             self,
             "confidence",
-            _unit_interval(self.confidence, "formation confidence"),
+            unit_interval(self.confidence, "formation confidence"),
         )
         _require_named_interval(
             self.valid_from,
@@ -559,7 +561,7 @@ class MemoryContext:
         object.__setattr__(
             self,
             "confidence",
-            _unit_interval(self.confidence, "memory context confidence"),
+            unit_interval(self.confidence, "memory context confidence"),
         )
         _require_named_interval(
             self.valid_from,
@@ -934,21 +936,30 @@ class ConsolidationCandidate:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsolidationReport:
-    """What one consolidation pass applied and which proposals the kernel refused.
+    """What a bounded consolidation run applied and which proposals the kernel refused.
 
     `weighed` is how many evidence records the backend was actually shown. Zero means the pass
-    reached no backend at all -- every named record had been forgotten, corrected, or deleted by
-    the time the pass opened -- which is a different thing from a backend that was shown evidence
-    and proposed nothing.
+    reached no backend at all. `rounds` counts executed passes, `skipped` counts inactive
+    candidate sets, and `model_calls` counts backend round trips. Explicit evidence runs one
+    pass; automatic candidate runs aggregate the same values and operation records.
     """
 
     operations: tuple[MemoryOperationRecord, ...] = ()
     rejected: tuple[tuple[MemoryOperation, str], ...] = ()
     weighed: int = 0
+    rounds: int = 0
+    skipped: int = 0
+    model_calls: int = 0
+
+    @property
+    def applied(self) -> int:
+        return len(self.operations)
 
     def __post_init__(self) -> None:
-        if isinstance(self.weighed, bool) or not isinstance(self.weighed, int) or self.weighed < 0:
-            raise ValidationError("consolidation weighed must be a non-negative integer")
+        for name in ("weighed", "rounds", "skipped", "model_calls"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(f"consolidation {name} must be a non-negative integer")
         operations = tuple(self.operations)
         if any(not isinstance(value, MemoryOperationRecord) for value in operations):
             raise ValidationError("consolidation operations are invalid")
@@ -965,32 +976,6 @@ class ConsolidationReport:
             raise ValidationError("consolidation rejections are invalid")
         object.__setattr__(self, "operations", operations)
         object.__setattr__(self, "rejected", rejected)
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class DeliberationReport:
-    """What one bounded run of the memory-management loop did.
-
-    `rounds` counts candidate passes actually run, so a loop that stopped because nothing was due
-    reports the rounds it did rather than the ceiling it was given. `weighed` counts candidates
-    handed to the backend and `skipped` counts candidates whose evidence had all become inactive
-    by the time the pass opened, so `weighed + skipped` is the candidate total. `model_calls` is
-    the loop's cost proxy: the `ConsolidationBackend` protocol reports no token or currency cost,
-    so this counts backend round trips instead of inventing one.
-    """
-
-    rounds: int = 0
-    weighed: int = 0
-    skipped: int = 0
-    applied: int = 0
-    rejected: int = 0
-    model_calls: int = 0
-
-    def __post_init__(self) -> None:
-        for name in ("rounds", "weighed", "skipped", "applied", "rejected", "model_calls"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValidationError(f"deliberation {name} must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1441,23 +1426,6 @@ def _require_named_interval(
         raise ValidationError(f"{end_name} must be later than {start_name}")
 
 
-def _unit_interval(value: object, name: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(float(value))
-        or not 0 <= value <= 1
-    ):
-        raise ValidationError(f"{name} must be between zero and one")
-    return float(value)
-
-
-def _positive_int(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValidationError(f"{name} must be a positive integer")
-    return value
-
-
 def _bounded_optional(
     value: object | None,
     name: str,
@@ -1572,7 +1540,7 @@ class VisualRetrievalMatch:
         _text(self.query_asset_id, "query asset id")
         _text(self.memory_id, "memory id")
         _text(self.source_asset_id, "source asset id")
-        _positive_int(self.rank, "visual retrieval rank")
+        positive_int(self.rank, "visual retrieval rank")
         value = self.cosine_similarity
         if (
             isinstance(value, bool)
@@ -1845,6 +1813,46 @@ class RetentionReport:
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingRoute:
+    """One exact native input combination, with its repeated-media constraint."""
+
+    modalities: frozenset[Modality]
+    max_assets_per_modality: int | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.modalities, frozenset)
+            or not self.modalities
+            or any(
+                not isinstance(value, Modality) or value is Modality.OMNI
+                for value in self.modalities
+            )
+        ):
+            raise ValidationError("embedding route must contain atomic modalities")
+        if self.max_assets_per_modality is not None:
+            positive_int(self.max_assets_per_modality, "max_assets_per_modality")
+
+    @classmethod
+    def combinations(
+        cls, modalities: frozenset[Modality], *, max_assets_per_modality: int | None = None
+    ) -> tuple[EmbeddingRoute, ...]:
+        """Declare every non-empty subset when a backend has no joint-input restrictions."""
+        ordered = sorted(modalities, key=lambda value: value.value)
+        return tuple(
+            cls(frozenset(values), max_assets_per_modality=max_assets_per_modality)
+            for size in range(1, len(ordered) + 1)
+            for values in combinations(ordered, size)
+        )
+
+    def supports(self, modalities: frozenset[Modality], *, assets_per_modality: int = 1) -> bool:
+        """Match the exact combination and maximum asset count of any one media kind."""
+        return modalities == self.modalities and (
+            self.max_assets_per_modality is None
+            or assets_per_modality <= self.max_assets_per_modality
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryCapabilities:
     """What one composition can actually do, declared by its backends rather than inferred.
 
@@ -1858,11 +1866,15 @@ class MemoryCapabilities:
     embedding_model: str
     embedding_space: str
     embedding_dimension: int
+    embedding_routes: tuple[EmbeddingRoute, ...] = ()
     generation: frozenset[Modality] = frozenset()
+    generation_routes: tuple[frozenset[Modality], ...] = ()
     transcription: frozenset[Modality] = frozenset()
     vision: frozenset[Modality] = frozenset()
     face: frozenset[Modality] = frozenset()
     formation: frozenset[Modality] = frozenset()
+    reranking: frozenset[Modality] = frozenset()
+    reranking_model: str | None = None
     generation_model: str | None = None
     transcription_space: str | None = None
     vision_model: str | None = None
@@ -1870,21 +1882,95 @@ class MemoryCapabilities:
     formation_model: str | None = None
     consolidation_model: str | None = None
     # A `TranscriptionBackend` yields text; only a `SpeechBackend` resolves speakers, and the two
-    # occupy the same slot, so whether `speech()` will work is not visible from the modalities.
+    # occupy the same slot, so whether speech perception will work is not visible from the modalities.
     speaker_recognition: bool = False
-    streaming_generation: bool = False
 
     def __post_init__(self) -> None:
         _text(self.embedding_model, "embedding_model")
         _text(self.embedding_space, "embedding_space")
         if not isinstance(self.embedding_dimension, int) or self.embedding_dimension <= 0:
             raise ValidationError("embedding_dimension must be a positive integer")
-        for name in ("embedding", "generation", "transcription", "vision", "face", "formation"):
+        for name in (
+            "embedding",
+            "generation",
+            "transcription",
+            "vision",
+            "face",
+            "formation",
+            "reranking",
+        ):
             values = getattr(self, name)
             if not isinstance(values, frozenset) or any(
-                not isinstance(value, Modality) for value in values
+                not isinstance(value, Modality) or value is Modality.OMNI for value in values
             ):
                 raise ValidationError(f"{name} capabilities must be a frozenset of modalities")
+        embedding_routes = tuple(self.embedding_routes) or EmbeddingRoute.combinations(
+            self.embedding
+        )
+        if (
+            any(not isinstance(route, EmbeddingRoute) for route in embedding_routes)
+            or frozenset(modality for route in embedding_routes for modality in route.modalities)
+            != self.embedding
+        ):
+            raise ValidationError(
+                "embedding_routes must cover exactly the declared embedding modalities"
+            )
+        object.__setattr__(self, "embedding_routes", tuple(dict.fromkeys(embedding_routes)))
+        routes = tuple(self.generation_routes) or ((self.generation,) if self.generation else ())
+        if (
+            any(
+                not isinstance(route, frozenset)
+                or not route
+                or any(not isinstance(modality, Modality) for modality in route)
+                or not route <= self.generation
+                for route in routes
+            )
+            or frozenset(modality for route in routes for modality in route) != self.generation
+        ):
+            raise ValidationError(
+                "generation_routes must cover exactly the declared generation modalities"
+            )
+        object.__setattr__(self, "generation_routes", tuple(dict.fromkeys(routes)))
+
+    def supports_embedding(
+        self, modalities: frozenset[Modality], *, assets_per_modality: int = 1
+    ) -> bool:
+        """Whether one native embedding route accepts this combination, before atomic fallback."""
+        if (
+            not isinstance(modalities, frozenset)
+            or not modalities
+            or any(
+                not isinstance(value, Modality) or value is Modality.OMNI for value in modalities
+            )
+        ):
+            raise ValidationError(
+                "modalities must be a non-empty frozenset of atomic Modality values"
+            )
+        if (
+            isinstance(assets_per_modality, bool)
+            or not isinstance(assets_per_modality, int)
+            or assets_per_modality < 0
+        ):
+            raise ValidationError("assets_per_modality must be a non-negative integer")
+        return any(
+            route.supports(modalities, assets_per_modality=assets_per_modality)
+            for route in self.embedding_routes
+        )
+
+    def supports_generation(self, modalities: frozenset[Modality]) -> bool:
+        """Whether one native route covers the full modality combination, before conversion."""
+        if (
+            not isinstance(modalities, frozenset)
+            or not modalities
+            or any(
+                not isinstance(modality, Modality) or modality is Modality.OMNI
+                for modality in modalities
+            )
+        ):
+            raise ValidationError(
+                "modalities must be a non-empty frozenset of atomic Modality values"
+            )
+        return any(modalities <= route for route in self.generation_routes)
 
     @property
     def operations(self) -> frozenset[str]:
@@ -1896,12 +1982,12 @@ class MemoryCapabilities:
         """
         available = {
             "ask": bool(self.generation),
-            "speech": self.speaker_recognition and bool(self.transcription),
+            "perceive": (self.speaker_recognition and bool(self.transcription)) or bool(self.face),
             "transcribe": bool(self.transcription),
-            "faces": bool(self.face),
             "describe_vision": bool(self.vision),
             "formation": bool(self.formation),
             "consolidate": self.consolidation_model is not None,
+            "consolidate_pending": self.consolidation_model is not None,
         }
         return frozenset(name for name, ready in available.items() if ready)
 
@@ -1928,6 +2014,16 @@ class MemoryCapabilities:
             for declared in fields(self)
         }
         operations = self.operations
+        values["generation_routes"] = [
+            sorted(value.value for value in route) for route in self.generation_routes
+        ]
+        values["embedding_routes"] = [
+            {
+                "modalities": sorted(value.value for value in route.modalities),
+                "max_assets_per_modality": route.max_assets_per_modality,
+            }
+            for route in self.embedding_routes
+        ]
         values["operations"] = sorted(operations if served is None else operations & served)
         return values
 
@@ -2033,19 +2129,77 @@ class RetrievalTrace:
 
 
 @dataclass(frozen=True, slots=True)
-class TracedSearchResult:
-    """Search hits paired with their opt-in retrieval trace."""
+class SearchResult:
+    """Ranked search hits with an optional diagnostic trace."""
 
     hits: tuple[SearchHit, ...]
-    trace: RetrievalTrace
+    trace: RetrievalTrace | None = None
 
     def __post_init__(self) -> None:
         hits = tuple(self.hits)
         if any(not isinstance(hit, SearchHit) for hit in hits):
-            raise ValidationError("traced search hits are invalid")
-        if not isinstance(self.trace, RetrievalTrace):
-            raise ValidationError("traced search trace is invalid")
+            raise ValidationError("search hits are invalid")
+        if self.trace is not None and not isinstance(self.trace, RetrievalTrace):
+            raise ValidationError("search trace is invalid")
         object.__setattr__(self, "hits", hits)
+
+
+PerceptionKind: TypeAlias = Literal["speech", "faces"]
+PerceptionSkipReason: TypeAlias = Literal[
+    "not_requested", "backend_not_configured", "unsupported_modality"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionCoverage:
+    """One asset's completed analysis, or the reason it was not analyzed."""
+
+    kind: PerceptionKind
+    asset_id: str
+    reason: PerceptionSkipReason | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"speech", "faces"}:
+            raise ValidationError("perception kind is invalid")
+        _text(self.asset_id, "asset_id")
+        if self.reason not in {
+            None,
+            "not_requested",
+            "backend_not_configured",
+            "unsupported_modality",
+        }:
+            raise ValidationError("perception skip reason is invalid")
+
+    @property
+    def processed(self) -> bool:
+        """Analysis ran successfully or an existing analysis was reused."""
+        return self.reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionResult:
+    """Source-local speech and face observations, retaining their distinct value types."""
+
+    speech: tuple[SpeakerSegment, ...] = ()
+    faces: tuple[FaceObservation, ...] = ()
+    coverage: tuple[PerceptionCoverage, ...] = ()
+
+    def __post_init__(self) -> None:
+        speech = tuple(self.speech)
+        faces = tuple(self.faces)
+        if any(not isinstance(value, SpeakerSegment) for value in speech):
+            raise ValidationError("perception speech is invalid")
+        if any(not isinstance(value, FaceObservation) for value in faces):
+            raise ValidationError("perception faces are invalid")
+        object.__setattr__(self, "speech", speech)
+        object.__setattr__(self, "faces", faces)
+        coverage = tuple(self.coverage)
+        if any(not isinstance(value, PerceptionCoverage) for value in coverage):
+            raise ValidationError("perception coverage is invalid")
+        keys = {(value.kind, value.asset_id) for value in coverage}
+        if len(keys) != len(coverage):
+            raise ValidationError("perception coverage must be unique per kind and asset")
+        object.__setattr__(self, "coverage", coverage)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2059,6 +2213,13 @@ class AnswerResult:
 
     def __post_init__(self) -> None:
         _text(self.answer, "answer")
+        try:
+            hits = tuple(self.hits)
+        except TypeError:
+            raise ValidationError("answer hits must contain SearchHit values") from None
+        if any(not isinstance(hit, SearchHit) for hit in hits):
+            raise ValidationError("answer hits must contain SearchHit values")
+        object.__setattr__(self, "hits", hits)
         if not isinstance(self.abstained, bool):
             raise ValidationError("abstained must be a boolean")
         if self.abstention_reason is not None and not isinstance(
@@ -2155,8 +2316,8 @@ class ContextBudget:
     def __post_init__(self) -> None:
         if not isinstance(self.selected_proofs, bool):
             raise ValidationError("budget selected_proofs must be a boolean")
-        object.__setattr__(self, "max_chars", _positive_int(self.max_chars, "budget max_chars"))
-        object.__setattr__(self, "max_items", _positive_int(self.max_items, "budget max_items"))
+        object.__setattr__(self, "max_chars", positive_int(self.max_chars, "budget max_chars"))
+        object.__setattr__(self, "max_items", positive_int(self.max_items, "budget max_items"))
         if self.max_media_items is not None:
             if isinstance(self.max_media_items, bool) or not isinstance(self.max_media_items, int):
                 raise ValidationError("budget max_media_items must be a non-negative integer")
@@ -2166,7 +2327,7 @@ class ContextBudget:
             object.__setattr__(
                 self,
                 "max_latency_ms",
-                _positive_int(self.max_latency_ms, "budget max_latency_ms"),
+                positive_int(self.max_latency_ms, "budget max_latency_ms"),
             )
         if self.memory_types is not None:
             memory_types = frozenset(self.memory_types)
@@ -2176,7 +2337,7 @@ class ContextBudget:
         object.__setattr__(
             self,
             "min_confidence",
-            _unit_interval(self.min_confidence, "budget min_confidence"),
+            unit_interval(self.min_confidence, "budget min_confidence"),
         )
         if self.freshness is not None and (
             not isinstance(self.freshness, timedelta) or self.freshness <= timedelta(0)
@@ -2576,7 +2737,7 @@ class ContextProofNode:
     def __post_init__(self) -> None:
         object.__setattr__(self, "memory_id", _text(self.memory_id, "proof memory_id"))
         object.__setattr__(self, "sources", _memory_ids(self.sources, "proof sources"))
-        object.__setattr__(self, "confidence", _unit_interval(self.confidence, "proof confidence"))
+        object.__setattr__(self, "confidence", unit_interval(self.confidence, "proof confidence"))
         object.__setattr__(self, "capture_id", _optional_text(self.capture_id, "proof capture_id"))
         if bool(self.sources) == (self.capture_id is not None) or self.confidence == 0.0:
             raise ValidationError(

@@ -16,12 +16,12 @@ from mindbridge import (
 )
 from mindbridge.exceptions import (
     RETRYABLE_REASONS,
+    IdentityNotFoundError,
     IndexUnavailableError,
     MemoryNotFoundError,
     MindBridgeError,
     ModelError,
     ModelOutputTruncatedError,
-    SpeakerNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -46,7 +46,7 @@ from mindbridge.types import (
     RetrievalRejection,
     RetrievalTrace,
     SearchHit,
-    TracedSearchResult,
+    SearchResult,
 )
 
 NOW = datetime(2026, 8, 27, tzinfo=timezone.utc)
@@ -176,7 +176,7 @@ def test_retrieval_trace_values_are_immutable_and_bounded() -> None:
         final_score=hit.score,
         rank=1,
     )
-    result = TracedSearchResult(
+    result = SearchResult(
         hits=(hit,),
         trace=RetrievalTrace(
             candidates=(candidate,),
@@ -369,7 +369,7 @@ def test_retryability_is_a_lookup_on_reason_and_defaults_to_false() -> None:
 
 def test_single_condition_errors_default_their_own_reason() -> None:
     assert MemoryNotFoundError("missing").reason == "memory_not_found"
-    assert SpeakerNotFoundError("missing").reason == "speaker_not_found"
+    assert IdentityNotFoundError("missing").reason == "identity_not_found"
     assert ValidationError("bad").reason == "input_invalid"
     assert ModelOutputTruncatedError("cut off").reason == "output_truncated"
     assert ModelOutputTruncatedError("cut off").retryable is False

@@ -285,7 +285,7 @@ def create_app(  # noqa: C901 - Add and Search share authorization and per-user 
                 return {"data": []}
             memory = await asyncio.to_thread(memory_factory, directory)
             async with memory:
-                hits = await memory.search(_input(request.query), limit=request.top_k)
+                hits = (await memory.search(_input(request.query), limit=request.top_k)).hits
                 rows: list[dict[str, object]] = []
                 image_bytes = 0
                 for hit in hits:

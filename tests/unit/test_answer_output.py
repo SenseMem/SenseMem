@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 from mindbridge.exceptions import ModelError
-from mindbridge.kernel.answer_output import (
+from mindbridge.models._answer_output import (
     evidence_aliases,
     parse_answer_draft,
     render_answer_draft,
@@ -126,6 +126,7 @@ def test_date_precision_is_explicit_and_preserves_requested_time(
 ) -> None:
     answer = _render(
         {
+            "format": "iso8601",
             "kind": "date",
             "source_value": NOW.isoformat(),
             "granularity": granularity,
@@ -139,6 +140,7 @@ def test_date_precision_is_explicit_and_preserves_requested_time(
 def test_date_requires_a_visible_quote_or_displayed_timestamp() -> None:
     hit = _hit("event", "The inspection is on 2026-03-02.", occurred_at=NOW)
     draft: dict[str, object] = {
+        "format": "iso8601",
         "kind": "date",
         "source_value": "2026-03-02",
         "granularity": "day",
@@ -164,6 +166,7 @@ def test_date_does_not_invent_finer_precision(value: str) -> None:
     with pytest.raises(ModelError):
         _render(
             {
+                "format": "iso8601",
                 "kind": "date",
                 "source_value": value,
                 "granularity": "second",
@@ -298,12 +301,26 @@ def test_decimal_sum_and_difference_use_exact_supported_money_and_units() -> Non
         _operand("E2", hits[1].content, "0.20"),
     ]
     assert (
-        _render({"kind": "calculation", "operation": "sum", "operands": operands}, hits).answer
+        _render(
+            {
+                "format": "with_unit",
+                "kind": "calculation",
+                "operation": "sum",
+                "operands": operands,
+            },
+            hits,
+        ).answer
         == "1200.3 GBP"
     )
     assert (
         _render(
-            {"kind": "calculation", "operation": "difference", "operands": operands}, hits
+            {
+                "format": "with_unit",
+                "kind": "calculation",
+                "operation": "difference",
+                "operands": operands,
+            },
+            hits,
         ).answer
         == "1199.9 GBP"
     )
@@ -324,6 +341,7 @@ def test_numeric_units_can_touch_the_complete_literal_value(
 ) -> None:
     result = _render(
         {
+            "format": "with_unit",
             "kind": "calculation",
             "operation": "scalar",
             "operands": [_operand("E1", quote, value, unit)],
@@ -359,6 +377,7 @@ def test_numeric_values_need_actual_quote_support_and_their_own_unit(
     with pytest.raises(ModelError):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "scalar",
                 "operands": [_operand("E1", quote, value, unit)],
@@ -386,6 +405,7 @@ def test_shortened_numeric_quotes_cannot_hide_original_token_boundaries(
     with pytest.raises(ModelError):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "scalar",
                 "operands": [_operand("E1", quote, value, unit)],
@@ -397,6 +417,7 @@ def test_shortened_numeric_quotes_cannot_hide_original_token_boundaries(
 def test_shortened_quote_of_a_complete_numeric_token_remains_valid() -> None:
     result = _render(
         {
+            "format": "with_unit",
             "kind": "calculation",
             "operation": "scalar",
             "operands": [_operand("E1", "GBP-20.50", "-20.50")],
@@ -410,6 +431,7 @@ def test_known_id_is_not_sufficient_proof_and_invalid_results_have_no_fallback()
     with pytest.raises(ModelError, match="visible evidence quote"):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "scalar",
                 "operands": [_operand("E1", "The total is 999 GBP.", "999")],
@@ -423,6 +445,7 @@ def test_requoting_the_same_value_cannot_double_count_it() -> None:
     with pytest.raises(ModelError, match="repeats one evidence value"):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "sum",
                 "operands": [_operand("E1", quote, "25"), _operand("E1", "25 GBP", "25")],
@@ -436,6 +459,7 @@ def test_mixed_units_and_ambiguous_quote_occurrences_fail() -> None:
     with pytest.raises(ModelError, match="equal units"):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "sum",
                 "operands": [
@@ -448,6 +472,7 @@ def test_mixed_units_and_ambiguous_quote_occurrences_fail() -> None:
     with pytest.raises(ModelError, match="uniquely located"):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "scalar",
                 "operands": [_operand("E1", "25 GBP", "25")],
@@ -494,6 +519,7 @@ def test_shortened_date_quote_cannot_hide_an_adjacent_source_digit(source: str) 
     with pytest.raises(ModelError, match="not present"):
         _render(
             {
+                "format": "iso8601",
                 "kind": "date",
                 "source_value": "2026-03-01",
                 "granularity": "day",
@@ -515,6 +541,7 @@ def test_shortened_interval_quote_cannot_hide_an_adjacent_source_digit(source: s
     with pytest.raises(ModelError, match="literal visible evidence"):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "duration_days",
                 "interval_semantics": "half_open",
@@ -543,6 +570,7 @@ def test_interval_union_uses_explicit_endpoint_semantics(semantics: str, expecte
     assert (
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "duration_days",
                 "interval_semantics": semantics,
@@ -582,6 +610,7 @@ def test_interval_rejects_reversed_or_unwitnessed_dates(semantics: str) -> None:
     with pytest.raises(ModelError, match="reversed"):
         _render(
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "duration_days",
                 "interval_semantics": semantics,
@@ -601,6 +630,9 @@ def test_interval_rejects_reversed_or_unwitnessed_dates(semantics: str) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
+        '{"draft":{"kind":"date","source_value":"2026-03-01","granularity":"day","evidence":{"evidence_label":"E1","quote":"2026-03-01","timestamp_field":null}}}',
+        '{"draft":{"kind":"calculation","operation":"scalar","operands":[{"evidence_label":"E1","quote":"12 GBP","value":"12","unit":"GBP"}]}}',
+        '{"draft":{"kind":"calculation","operation":"duration_days","interval_semantics":"closed","intervals":[{"evidence_label":"E1","quote":"2026-03-01 to 2026-03-02","start_date":"2026-03-01","end_date":"2026-03-02"}]}}',
         '{"draft":{"kind":"source_ids","evidence_labels":["E1"],"answer":"invented"}}',
         '{"draft":{"kind":"text","answer":"x","evidence_labels":[],"abstained":"false"}}',
         '{"draft":{"kind":"calculation","operation":"sum","operands":[]}}',

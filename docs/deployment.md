@@ -163,7 +163,7 @@ host-selected server in this example. The adapter adds no authentication,
 authorization, TLS, rate limiting, quota, or access audit log. Bind to a trusted interface or put the app
 behind the deployment's existing gateway or middleware. Keep `/healthz` protected consistently; it
 reports liveness and the live composition's capability declaration, not model or retrieval
-readiness. The app publishes thirteen product routes under `/v1`, or twenty-three when the host enables
+readiness. The app publishes thirteen product routes under `/v1`, or twenty-two when the host enables
 `identity_operations` and `embodied_operations`.
 
 Do not retry a timed-out request blindly. Adds are content-idempotent, but the SQLite commit can
@@ -198,7 +198,7 @@ with Memory.from_config(
 the server and publishes it as the server instructions, so build the server after the composition
 is final. A stdio server inherits the host user's filesystem, environment, and model credentials.
 If the host chooses SSE or streamable HTTP, it must add authentication, authorization, TLS, request
-limits, and rate limiting. The server publishes fifteen tools; MCP error subjects may contain
+limits, and rate limiting. The server publishes thirteen tools; MCP error subjects may contain
 owner-local paths.
 
 ## Media and model placement

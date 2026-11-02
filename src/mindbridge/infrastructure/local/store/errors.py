@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
+class StoredDataError(RuntimeError):
+    """Raised when decoding persisted data detects an invalid representation."""
+
+
 class LocalStoreClosedError(RuntimeError):
     """Raised when a closed local store is used."""
 

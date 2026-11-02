@@ -5,12 +5,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from typing import cast
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from mindbridge import MindBridgeConfig, OfflineGazetteer, OpenAIModels, ValidationError
+from mindbridge import MindBridgeConfig, OpenAIModels
 
 
 def test_default_config_and_package_import_do_not_enable_or_load_geospatial_dependencies() -> None:
@@ -27,8 +26,8 @@ def test_default_config_and_package_import_do_not_enable_or_load_geospatial_depe
         timeout=30,
     )
     assert json.loads(result.stdout) == []
-    with pytest.raises(ValidationError, match="generation_gazetteer"):
-        OpenAIModels(generation_gazetteer=cast(OfflineGazetteer, object()))
+    with pytest.raises(TypeError, match="generation_gazetteer"):
+        OpenAIModels(generation_gazetteer=object())  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("slot", ["embedding", "formation", "vision", "consolidation"])

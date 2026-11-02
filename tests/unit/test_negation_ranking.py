@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import EmbedTask, Memory, Modality, ModelInput
+from mindbridge import EmbedTask, Memory, MemoryConfig, Modality, ModelInput
 from mindbridge.infrastructure.local.store import StoredMemory
 from mindbridge.kernel.ranking import lexical_query_terms, lexical_relevance
 
@@ -138,7 +138,8 @@ def test_literal_chinese_negation_keeps_complete_evidence_first(
         contradiction = memory.add(f"{subject}{positive}\uff0c周二早餐喝豆浆")
         misplaced = memory.add(f"{subject}{positive}\uff0c周二早餐不喝豆浆")
 
-        result = memory.search_with_trace(f"{subject}{negated}", limit=3)
+        result = memory.search(f"{subject}{negated}", limit=3, explain=True)
+        assert result.trace is not None
 
         assert result.hits[0].id == answer.id
         assert {hit.id for hit in result.hits} == {answer.id, contradiction.id, misplaced.id}
@@ -164,7 +165,8 @@ def test_surface_fragments_do_not_gain_polarity_privilege(
         desired = memory.add(answer)
         other = memory.add(distractor)
 
-        result = memory.search_with_trace(query, limit=2)
+        result = memory.search(query, limit=2, explain=True)
+        assert result.trace is not None
 
         assert [hit.id for hit in result.hits] == [desired.id, other.id]
         assert all(0.0 < hit.score < 1.0 for hit in result.hits)
@@ -172,13 +174,16 @@ def test_surface_fragments_do_not_gain_polarity_privilege(
 
 def test_an_incidental_surface_fragment_cannot_gain_relevance_admission(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=_NegationEmbedder(cosine=0.45), minimum_relevance=0.55
+        tmp_path,
+        embedder=_NegationEmbedder(cosine=0.45),
+        config=MemoryConfig(minimum_relevance=0.55),
     ) as memory:
         memory.add("安静的酒店\uff0c适合休息")
         memory.add("非常热闹的酒店\uff0c适合聚会")
 
-        result = memory.search_with_trace("非常安静的酒店", limit=2)
+        result = memory.search("非常安静的酒店", limit=2, explain=True)
 
+        assert result.trace is not None
         assert result.hits == ()
         assert len(result.trace.candidates) == 2
 
@@ -198,4 +203,4 @@ def test_literal_english_negation_remains_evidence(
         desired = memory.add(query)
         other = memory.add(opposite)
 
-        assert [hit.id for hit in memory.search(query, limit=2)] == [desired.id, other.id]
+        assert [hit.id for hit in memory.search(query, limit=2).hits] == [desired.id, other.id]

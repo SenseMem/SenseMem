@@ -49,7 +49,7 @@ reproduced.
 - **Memory semantics above vector search.** Semantic, episodic, and procedural roles combine with
   event time, bitemporal validity, spatial scope, optional decay, and explicit reinforcement.
 - **Evidence-grounded answers.** `ask()` returns the exact hits used by the answer backend and can
-  abstain when evidence is absent or insufficient. `search_with_trace()` explains ranking and
+  abstain when evidence is absent or insufficient. `search(..., explain=True)` explains ranking and
   rejection without copying private content into the trace.
 - **Compiled context, not a hit list.** `compile()` returns a budgeted `ContextBundle` — actors,
   episodes, facts, procedures, affect, and traits, with the lineage conflicts it reports and does
@@ -69,7 +69,7 @@ reproduced.
   validation, evidence, and durability.
 - **A lifecycle for continuous perception.** Lazy ingestion, speculative omni-modal prefetch, and
   audio/vision reducers distinguish partial updates, final observations, and cancellation.
-- **Developer- and agent-friendly APIs.** A concise SDK, REST, fifteen self-described MCP tools,
+- **Developer- and agent-friendly APIs.** A concise SDK, REST, self-described MCP tools,
   and a machine-readable CLI dispatch to the same kernel and preserve the same contracts.
 
 ### Where it fits
@@ -185,7 +185,7 @@ with Memory.from_config(config) as memory:
         "The spare key is in the blue toolbox.",
         metadata={"source": "workshop-note"},
     )
-    hits = memory.search("Where is the spare key?", limit=1)
+    hits = memory.search("Where is the spare key?", limit=1).hits
 
     assert duplicate.id == stored.id
     assert hits and hits[0].id == stored.id
@@ -225,7 +225,7 @@ Continue with the [Quick start](docs/quickstart.md) and
 | Identity | Speech and face analysis, naming, corroborated linking, unlinking, and erasure | [Python SDK](docs/api/python-sdk.md#cross-modal-identity-binding) |
 | Context compilation | Budgeted, partitioned context bundles with conflicts and declared capabilities | [Context compilation](docs/context-compilation.md) |
 | Memory control plane | Deferred capture settlement, model-proposed consolidation, reversible forgetting, and the operation log | [Memory types, time, and decay](docs/memory-types-time-and-decay.md) |
-| Interfaces | Complete SDK; twelve REST operations; fifteen MCP tools; thirty-five CLI operations plus `doctor` | [Python](docs/api/python-sdk.md) · [REST](docs/api/rest.md) · [MCP](docs/api/mcp.md) · [CLI](docs/api/cli.md) |
+| Interfaces | Complete SDK; SDK-aligned REST, MCP, and CLI operations | [Python](docs/api/python-sdk.md) · [REST](docs/api/rest.md) · [MCP](docs/api/mcp.md) · [CLI](docs/api/cli.md) |
 | Deployment and recovery | Ownership, backup, restore, reindex, telemetry, and security boundaries | [Deployment](docs/deployment.md) · [Operations](docs/operations.md) |
 | Extensibility | Narrow typed model protocols with no global plugin registry | [Plugin architecture](docs/plugin-architecture.md) |
 

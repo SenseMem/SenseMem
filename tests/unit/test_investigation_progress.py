@@ -15,6 +15,7 @@ from mindbridge import (
     AnswerPolicy,
     AnswerResult,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -103,14 +104,16 @@ def test_predicate_reveals_a_bridge_already_in_the_unshown_candidate_pool(tmp_pa
         tmp_path,
         embedder=models,
         answerer=models,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=3,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.5,
-        ambiguity_margin=0,
-        evidence_budget_chars=4_000,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=3,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            ambiguity_margin=0,
+            evidence_budget_chars=4_000,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         for index in range(30):
             memory.add(f"decoy {index}: " + "irrelevant. " * 100)
@@ -136,14 +139,16 @@ def test_repeating_a_predicate_uses_remaining_abstention_rounds_without_new_sear
         tmp_path,
         embedder=models,
         answerer=models,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=4,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.5,
-        ambiguity_margin=0,
-        evidence_budget_chars=4_000,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=4,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            ambiguity_margin=0,
+            evidence_budget_chars=4_000,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         for index in range(30):
             memory.add(f"decoy {index}: " + "irrelevant. " * 100)
@@ -167,11 +172,13 @@ def test_confident_answer_does_not_trigger_another_plan(tmp_path: Path) -> None:
         tmp_path,
         embedder=models,
         answerer=models,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=3,
-        ambiguity_margin=0,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=3,
+            ambiguity_margin=0,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         memory.add("bridge-ledger: event dispatch is ORBIT-53.")
         result = memory.ask("Which crate?", limit=1, reference_at=_CLOCK)
@@ -209,12 +216,14 @@ def test_shared_query_budget_matches_the_planner_capability_and_runtime(
         tmp_path,
         embedder=models,
         answerer=models,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=limit // 6 + 1,
-        ambiguity_margin=0,
-        reinforce_on_answer=False,
-        **controls,
+        config=MemoryConfig(
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=limit // 6 + 1,
+            ambiguity_margin=0,
+            reinforce_on_answer=False,
+            **controls,
+        ),
     ) as memory:
         memory.add("A grounded record without the missing answer.")
         result = memory.ask("Which crate?", limit=1, reference_at=_CLOCK)

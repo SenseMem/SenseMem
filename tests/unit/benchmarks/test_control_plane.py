@@ -19,6 +19,7 @@ from mindbridge import (
     EvidenceBasis,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryOperation,
@@ -171,7 +172,7 @@ def test_the_scenario_is_deterministic_and_declares_its_ground_truth(tmp_path: P
         tmp_path,
         embedder=_TinyEmbedder(),
         former=control_plane._PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         scenario = control_plane.build_scenario(memory, persons=3, seed=7)
 
@@ -282,7 +283,9 @@ def test_the_outcome_verdict_is_recorded_on_every_applied_operation(tmp_path: Pa
         seed=7,
     )
 
-    with Memory(tmp_path, embedder=_TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=_TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         logged = memory.operations()
 
     # The deterministic former creates scenario ground truth without management operations, so

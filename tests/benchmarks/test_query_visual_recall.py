@@ -20,6 +20,7 @@ from mindbridge import (
     EmbedTask,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -89,12 +90,14 @@ def test_query_vision_delivers_support_beyond_native_candidates(
             embedder=models,
             answerer=models,
             vision_describer=models,
-            query_vision=enabled,
-            retrieval_mode=RetrievalMode.DENSE,
-            index_quantization=quantization,
-            evidence_budget_chars=None,
-            ambiguity_margin=0,
-            reinforce_on_answer=False,
+            config=MemoryConfig(
+                query_vision=enabled,
+                retrieval_mode=RetrievalMode.DENSE,
+                index_quantization=quantization,
+                evidence_budget_chars=None,
+                ambiguity_margin=0,
+                reinforce_on_answer=False,
+            ),
         ) as memory:
             texts = [f"unrelated corridor {index}" for index in range(230)]
             texts.append("ZX93 is the registration desk in Orion Hall")
@@ -102,7 +105,8 @@ def test_query_vision_delivers_support_beyond_native_candidates(
             records = memory.add_many(texts)
             support = next(record for record in records if "ZX93" in record.content)
             question = ("What is its name?", Blob(b"query-vision-v1", "image/png"))
-            discovered = memory.search_with_trace(question, limit=100)
+            discovered = memory.search(question, limit=100, explain=True)
+            assert discovered.trace is not None
             candidates = {row.memory_id for row in discovered.trace.candidates}
             assert (support.id in candidates) is enabled
             result = memory.ask(

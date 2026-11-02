@@ -34,17 +34,6 @@ def positive_int(value: object, name: str) -> int:
     return value
 
 
-def unit_interval(value: object, name: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(float(value))
-        or not 0.0 <= value <= 1.0
-    ):
-        raise ValidationError(f"{name} must be between zero and one")
-    return float(value)
-
-
 def validated_text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValidationError(f"{name} must be non-empty text")

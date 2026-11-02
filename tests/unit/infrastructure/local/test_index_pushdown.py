@@ -19,6 +19,7 @@ from pathlib import Path
 from mindbridge import (
     EmbedTask,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     ObservationContext,
@@ -118,12 +119,14 @@ def test_a_place_label_with_an_apostrophe_indexes_and_scopes(tmp_path: Path) -> 
     outbox row. The row could then never be acknowledged, so every later add, search or settle
     on that directory re-raised the same rejection.
     """
-    with Memory(tmp_path, embedder=_CountingEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=_CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         record = memory.add(
             "a kettle on a worktop",
             context=ObservationContext(place_id="Ana's room"),
         )
-        scoped = memory.search("kettle", scope=RetrievalScope(place_id="Ana's room"))
+        scoped = memory.search("kettle", scope=RetrievalScope(place_id="Ana's room")).hits
         assert [hit.id for hit in scoped] == [record.id]
         # The outbox is not poisoned: the next write drains it and commits.
         assert memory.add("a second kettle").id != record.id
@@ -136,13 +139,15 @@ def test_a_place_label_the_grammar_cannot_spell_still_scopes(tmp_path: Path) -> 
     turned a legal stored value into `IndexUnavailableError` -- a 503 over REST. The predicate
     is dropped from the pushdown instead, and SQLite hydration still enforces the scope.
     """
-    with Memory(tmp_path, embedder=_CountingEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=_CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         for place in ("attic\\", "Ana\tRoom"):
             record = memory.add(
                 "a kettle on a worktop",
                 context=ObservationContext(place_id=place),
             )
-            scoped = memory.search("kettle", limit=10, scope=RetrievalScope(place_id=place))
+            scoped = memory.search("kettle", limit=10, scope=RetrievalScope(place_id=place)).hits
             assert [hit.id for hit in scoped] == [record.id]
 
 
@@ -171,7 +176,9 @@ class _CountingEmbedder:
 def test_missing_index_rebuild_preserves_scope_fields_without_reembedding(
     tmp_path: Path,
 ) -> None:
-    with Memory(tmp_path, embedder=_CountingEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=_CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         record = memory.add(
             "a kettle on a worktop",
             context=ObservationContext(place_id="kitchen"),
@@ -179,8 +186,8 @@ def test_missing_index_rebuild_preserves_scope_fields_without_reembedding(
     shutil.rmtree(tmp_path / "zvec")
 
     reopened = _CountingEmbedder()
-    with Memory(tmp_path, embedder=reopened, minimum_relevance=0) as memory:
+    with Memory(tmp_path, embedder=reopened, config=MemoryConfig(minimum_relevance=0)) as memory:
         # The scope fields are reconstructed from authoritative rows alongside stored vectors.
         assert reopened.calls == 0
-        scoped = memory.search("kettle", scope=RetrievalScope(place_id="kitchen"))
+        scoped = memory.search("kettle", scope=RetrievalScope(place_id="kitchen")).hits
     assert [hit.id for hit in scoped] == [record.id]

@@ -11,6 +11,24 @@ The semantic-equivalence prompt in `icm_prompt.py` is copied from
 ICM-Bench authors' modification notice. MindBridge adapts transport and result serialization.
 The repository is MIT; the separately downloaded dataset is CC BY-NC-SA 4.0.
 
+## VideoZeroBench
+
+`videozerobench.py` adapts the question prompts, bilingual answer matching, temporal union IoU,
+spatial union-box IoU and five-level aggregation from
+[`marinero4972/VideoZeroBench@21a46d686302825e85e330c3fa4b64f01df3c9da`](https://github.com/marinero4972/VideoZeroBench/tree/21a46d686302825e85e330c3fa4b64f01df3c9da),
+`eval/VLMEvalKit-lite/vlmeval/dataset/VideoBench/videozerobench.py`.
+The containing VLMEvalKit-lite distribution is Apache-2.0, copyright 2023 VLMEvalKit Authors.
+MindBridge changes type validation, transport, memory isolation and result serialization; it
+does not copy the upstream vLLM runtime or fixed-frame sampler. Spatial request coordinates use
+the upstream normalized 0–1000 mode.
+
+The separately downloaded dataset is
+[`marinero4972/VideoZeroBench@aef3b0613ad2909a1355a99201b4a0c48e073836`](https://huggingface.co/datasets/marinero4972/VideoZeroBench/tree/aef3b0613ad2909a1355a99201b4a0c48e073836),
+by Jiahao Meng and the VideoZeroBench authors. It is licensed under
+[CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/): attribution,
+non-commercial use, and no distribution of modified versions. Original video content retains its
+own rights. No annotations or videos are redistributed in this package.
+
 ## Upstream repository without a declared license
 
 The pinned `slptongji/ES-MemEval@692624208acc077b8867698c1d6fcd998dee641a` repository contains

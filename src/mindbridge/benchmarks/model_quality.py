@@ -30,6 +30,7 @@ from mindbridge import (
     EmbedTask,
     GenerationBackend,
     Memory,
+    MemoryConfig,
     MindBridgeError,
     Modality,
     ModelInput,
@@ -204,8 +205,7 @@ def _run_case(
                 embedder=_FixtureEmbedder(),
                 answerer=answerer,
                 tracer=tracer,
-                evidence_budget_chars=None,
-                reinforce_on_answer=False,
+                config=MemoryConfig(evidence_budget_chars=None, reinforce_on_answer=False),
             ) as memory,
         ):
             memory.add(case.memory, occurred_at=_REFERENCE_AT)

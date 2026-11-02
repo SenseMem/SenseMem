@@ -290,7 +290,7 @@ def test_video_limit_prevents_decoding_unselected_large_sources(
     monkeypatch.setattr(backend, "_video_frame_urls", decoded)
     with httpx.Client(transport=httpx.MockTransport(lambda _request: _reply())) as transport:
         result = _model(_client(transport), generation_video_limit=1).answer(
-            "What?", (_hit(first), replace(_hit(second), id="second-memory"))
+            ModelInput(text="What?"), (_hit(first), replace(_hit(second), id="second-memory"))
         )
     assert seen == [first.id]
     assert result.hits[0].assets == (first,)
@@ -311,7 +311,7 @@ def test_undecodable_large_video_keeps_the_existing_text_only_omission(
         return _reply()
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        result = _model(_client(transport)).answer("What?", (_hit(clip),))
+        result = _model(_client(transport)).answer(ModelInput(text="What?"), (_hit(clip),))
     assert result.hits[0].assets == ()
 
 
@@ -357,7 +357,7 @@ def test_large_video_source_integrity_is_checked_before_sampling(
         ) as transport,
         pytest.raises(ModelError) as failure,
     ):
-        _model(_client(transport)).answer("What?", (_hit(clip),))
+        _model(_client(transport)).answer(ModelInput(text="What?"), (_hit(clip),))
     assert failure.value.reason == "asset_changed"
 
 

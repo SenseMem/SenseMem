@@ -27,9 +27,8 @@ from mindbridge.kernel.content import (
     text_content,
     text_selector_map,
 )
-from mindbridge.kernel.contracts import Backends, fallback_unsupported, require_audio_transcription
+from mindbridge.kernel.contracts import Backends
 from mindbridge.kernel.derived import (
-    derived_text,
     has_indexed_speech,
     has_stream_description,
     has_stream_transcript,
@@ -41,6 +40,7 @@ from mindbridge.kernel.derived import (
 )
 from mindbridge.kernel.hydration import Hydrator
 from mindbridge.kernel.lifecycle import OperationAssets
+from mindbridge.kernel.routing import route_input
 from mindbridge.kernel.runtime import Storage, translate_storage_errors
 from mindbridge.kernel.settings import Settings
 from mindbridge.kernel.speech import Speech
@@ -75,7 +75,9 @@ def _normalized_vector(values: Sequence[float], dimension: int) -> tuple[float, 
     if len(values) != dimension or any(
         isinstance(value, bool) or not isinstance(value, int | float) for value in values
     ):
-        raise ModelError(f"embedding model must return {dimension} numeric values")
+        raise ModelError(
+            f"embedding model must return {dimension} numeric values", reason="response_invalid"
+        )
     vector = tuple(float(value) for value in values)
     norm = math.hypot(*vector)
     if not math.isfinite(norm) or norm == 0.0:
@@ -195,77 +197,20 @@ class Embedding(Traced):
         return tuple(vectors), tuple(kept)
 
     def route(self, prepared: PreparedContent) -> ModelInput:
-        value = self._hydrator.model_input(prepared)
-        missing = value.modalities - self._backends.embedding_capabilities
-        if not missing:
-            return value
-        if (
-            missing == {Modality.TEXT}
-            and (prepared.audio_transcript or prepared.visual_description)
-            and value.modalities - {Modality.TEXT} <= self._backends.embedding_capabilities
-        ):
-            return ModelInput(assets=value.assets)
-        fallback = {Modality.AUDIO}
-        if prepared.visual_description:
-            fallback.update((Modality.IMAGE, Modality.VIDEO))
-        if any(asset.transcript for asset in prepared.assets):
-            # By here the transcript is attached to the asset, so the speech can stand in for a
-            # video the embedder refuses. `fallback_unsupported` already agreed a route exists on
-            # the strength of it being derivable; this is the same decision once the text is in
-            # hand, and without it the write raises after paying for the transcription. Read from
-            # the assets rather than `prepared.audio_transcript`, which the transcript-derivation
-            # path does not set -- the audio route never needed it, since AUDIO is unconditionally
-            # in the fallback set above, and `derived_text` reads the assets too.
-            fallback.add(Modality.VIDEO)
-        if missing <= fallback:
-            text = derived_text(value.text, prepared.assets)
-            assets = tuple(asset for asset in value.assets if asset.modality not in missing)
-            if text or assets:
-                routed = ModelInput(text=text, assets=assets)
-                missing = routed.modalities - self._backends.embedding_capabilities
-                if not missing:
-                    return routed
-        names = ", ".join(sorted(modality.value for modality in missing))
-        raise ModelError(
-            f"configured embedding model does not support: {names}",
-            reason="unsupported_modality",
-        )
-
-    def content(
-        self,
-        prepared: PreparedContent,
-        operation: OperationAssets,
-    ) -> PreparedContent:
-        media = prepared_modalities(prepared) - {Modality.TEXT}
-        if (
-            (prepared.audio_transcript or prepared.visual_description)
-            and Modality.TEXT not in self._backends.embedding_capabilities
-            and media
-            and media <= self._backends.embedding_capabilities
-        ):
-            return prepared
-        rescues = self._speech.transcript_fallback(prepared.assets)
-        unsupported = fallback_unsupported(
+        return route_input(
             prepared,
+            self._hydrator.model_input(prepared),
             self._backends.embedding_capabilities,
             "embedding",
-            rescuable=rescues,
         )
-        if Modality.AUDIO in unsupported:
-            if prepared.audio_transcript:
-                return prepared
-            require_audio_transcription(self._backends.transcription_capabilities)
-        elif Modality.VIDEO in unsupported and Modality.VIDEO in rescues:
-            # The embedder cannot take the video but the transcriber can read it, so the speech
-            # becomes the embedding key. The frames are not embedded in this composition -- the
-            # honest cost of the route -- while the asset stays stored and on the record.
-            if prepared.audio_transcript:
-                return prepared
-        elif unsupported & {Modality.IMAGE, Modality.VIDEO} or not self._speech.derives_transcripts(
+
+    def content(self, prepared: PreparedContent, operation: OperationAssets) -> PreparedContent:
+        missing = prepared_modalities(prepared) - self._backends.embedding_capabilities
+        if missing & {Modality.AUDIO, Modality.VIDEO} or self._speech.derives_transcripts(
             prepared.assets
         ):
-            return prepared
-        return self._speech.with_audio_transcripts(prepared, operation)
+            return self._speech.with_audio_transcripts(prepared, operation)
+        return prepared
 
     def inputs(
         self,
@@ -292,19 +237,8 @@ class Embedding(Traced):
             *(
                 self.route(asset_content(asset))
                 for asset in prepared.assets
-                if not (
-                    (
-                        prepared.audio_transcript
-                        and asset.modality == Modality.AUDIO.value
-                        and Modality.AUDIO not in self._backends.embedding_capabilities
-                        and asset.transcript is None
-                    )
-                    or (
-                        prepared.visual_description
-                        and asset.modality in {Modality.IMAGE.value, Modality.VIDEO.value}
-                        and Modality(asset.modality) not in self._backends.embedding_capabilities
-                    )
-                )
+                if Modality(asset.modality) in self._backends.embedding_capabilities
+                or bool(asset.transcript and asset.transcript.strip())
             ),
         ]
         unique = tuple(dict.fromkeys(value for value in atomic if value != aggregate))
@@ -312,6 +246,16 @@ class Embedding(Traced):
             unique = tuple(
                 unique[round(index * (len(unique) - 1) / (maximum_keys - 1))]
                 for index in range(maximum_keys)
+            )
+        modalities, asset_count = aggregate.modalities, aggregate.assets_per_modality
+        if not any(
+            route.supports(modalities, assets_per_modality=asset_count)
+            for route in self._backends.capabilities.embedding_routes
+        ):
+            if unique:
+                return unique
+            raise ModelError(
+                "embedding model cannot combine these input parts", reason="unsupported_modality"
             )
         return (aggregate, *unique)
 
@@ -364,7 +308,11 @@ class Embedding(Traced):
             memories,
             speakers={
                 speaker_id: (speaker_id, speaker_name),
-                previous_speaker_id: (speaker_id, speaker_name),
+                **(
+                    {previous_speaker_id: (speaker_id, speaker_name)}
+                    if previous_speaker_id is not None
+                    else {}
+                ),
             },
             operation=operation,
             update_operation=update_operation,

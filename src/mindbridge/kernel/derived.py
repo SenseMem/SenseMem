@@ -13,31 +13,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import cast
 
+from pydantic import TypeAdapter
+from pydantic import ValidationError as SchemaError
+
 from mindbridge.exceptions import ModelError, ValidationError
 from mindbridge.infrastructure.local.store import IndexDocument, StoredAsset, StoredMemory
 from mindbridge.kernel.content import PreparedContent, PreparedMemory
 from mindbridge.kernel.validation import MAX_TEXT_CHARACTERS, validated_text
 from mindbridge.models.base import ModelInput
+from mindbridge.perception import VisualDescription
 from mindbridge.types import FaceObservation, MemoryType, Modality, SpeakerSegment
-
-# The one line prefix the describer's durable statements arrive under, inside the same string as
-# the visible description. See `split_description`.
-_FACT_LINE_PREFIX = "Fact:"
-
-
-# The one fact shape that is not just indexed text but an assertion about a person: it binds a
-# diarised speaker label to a name the dialogue itself stated. Tolerant of how the label is
-# spelled, because the label is the model's echo of a prompt, and strict about the sentence,
-# because anything looser would rename people out of ordinary description. The name itself is
-# bounded to a handful of words rather than "everything up to a period": an unbounded run
-# swallows whatever clause follows ("speaker_1 is called Lily and works in marketing" named the
-# whole clause), and a name that long fails to match at all rather than binding the wrong text.
-NAME_BINDING = re.compile(
-    r"speakers?[ _-]?(?P<index>\d{1,3})\s+is\s+called\s+"
-    r"(?P<name>[^\s.;,]+(?: [^\s.;,]+){0,3})\s*[.;]?",
-    re.IGNORECASE,
-)
-
 
 # A describer is shown this write's own transcript as context, under the same labels the index
 # prints (`speaker_prose`), so a fact naming a speaker resolves to the same person. Uncapped,
@@ -183,7 +168,7 @@ _NO_NAMES: Mapping[str, str] = {}
 
 
 def description_sections(
-    asset_id: str, description: str, names: Mapping[str, str] = _NO_NAMES
+    asset_id: str, description: VisualDescription, names: Mapping[str, str] = _NO_NAMES
 ) -> tuple[str, ...]:
     """Render one caption as the document sections it becomes, what-is-shown first.
 
@@ -194,7 +179,7 @@ def description_sections(
     already knows, the same way transcript prose is projected (`speech_retrieval_text`) -- see
     `project_fact_labels` for why this projection runs once, here, and never again.
     """
-    visible, facts = split_description(description)
+    visible, facts = description.text, "\n".join(description.facts)
     if facts and names:
         facts = project_fact_labels(facts, names)
     return (
@@ -218,24 +203,20 @@ def project_fact_labels(facts: str, names: Mapping[str, str]) -> str:
     return facts
 
 
-def split_description(description: str) -> tuple[str, str]:
-    """Separate a caption's visible description from its `Fact:` lines.
+_VISUAL_DESCRIPTION = TypeAdapter(VisualDescription)
 
-    The describer answers with one string per visual because that is the contract that survives
-    a video arriving as several stills -- asked for a per-still or per-section reply, a measured
-    endpoint returned one item per still and the whole batch was rejected. So the two halves
-    travel as labelled lines in one string and are cut apart here, on the write path, which is
-    also where the cache stores them as one row per asset.
-    """
-    lines = description.splitlines()
-    facts = "\n".join(
-        stripped
-        for line in lines
-        if line.startswith(_FACT_LINE_PREFIX)
-        and (stripped := line[len(_FACT_LINE_PREFIX) :].strip())
-    )
-    visible = "\n".join(line for line in lines if not line.startswith(_FACT_LINE_PREFIX))
-    return visible.strip(), facts
+
+def encode_description(value: VisualDescription) -> str:
+    return _VISUAL_DESCRIPTION.dump_json(value).decode("utf-8")
+
+
+def decode_description(value: str) -> VisualDescription:
+    try:
+        return _VISUAL_DESCRIPTION.validate_json(value, strict=True)
+    except (SchemaError, ValidationError) as error:
+        raise ModelError(
+            "cached visual description is invalid", reason="response_invalid"
+        ) from error
 
 
 def derived_text(text: str, assets: Sequence[StoredAsset]) -> str:
@@ -486,20 +467,15 @@ def speech_retrieval_text(payload: str, asset_id: str) -> str | None:
 
 
 def validated_descriptions(
-    descriptions: object,
-    inputs: Sequence[ModelInput],
-) -> tuple[str, ...]:
-    """Accept one non-empty, storable caption per input, in order, and nothing else."""
-    if not isinstance(descriptions, tuple | list):
+    descriptions: object, inputs: Sequence[ModelInput]
+) -> tuple[VisualDescription, ...]:
+    if not isinstance(descriptions, (tuple, list)) or len(descriptions) != len(inputs):
         raise ModelError("vision model returned invalid output", reason="response_invalid")
-    values = tuple(descriptions)
-    if len(values) != len(inputs) or any(
-        not isinstance(description, str) or not description.strip() for description in values
-    ):
+    if any(not isinstance(description, VisualDescription) for description in descriptions):
         raise ModelError("vision model returned invalid output", reason="response_invalid")
-    normalized = tuple(cast(str, description).strip() for description in values)
-    if any(len(description) > MAX_TEXT_CHARACTERS for description in normalized):
+    values = tuple(cast(VisualDescription, value) for value in descriptions)
+    if any(len(description.content) > MAX_TEXT_CHARACTERS for description in values):
         raise ModelError(
             "vision description exceeded the supported text length", reason="payload_too_large"
         )
-    return normalized
+    return values

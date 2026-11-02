@@ -50,7 +50,7 @@ episodes = memory.search(
     "What failed last week?",
     memory_type=MemoryType.EPISODIC,
     reference_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
-)
+).hits
 ```
 
 Use types to keep cognitive roles distinct, not to enforce access control. Metadata and types are
@@ -234,7 +234,7 @@ points at the observation that holds the media.
 
 ### Naming a person is a typed assertion
 
-`register_speaker` and `register_identity` write an `ENTITY` assertion whose
+`register_identity` write an `ENTITY` assertion whose
 `MemoryContext.identity_id` binds it to the recognized person, whose `subject` is the name, and
 whose `value` is the recorded relationship. Its basis is `USER_STATEMENT`, so it is visible at
 once, and it needs no former: naming rests on the host's authority, not on a model. It inherits
@@ -344,7 +344,7 @@ from mindbridge import RetrievalScope
 what_we_believed_then = memory.search(
     "What drink did Alex prefer?",
     scope=RetrievalScope(valid_at=event_time, known_at=audit_time),
-)
+).hits
 ```
 
 Overlapping state assertions share a deterministic lineage keyed by kind, normalized subject,
@@ -393,7 +393,7 @@ scope = RetrievalScope(
     ),
     radius_m=0.75,
 )
-hits = memory.search("Where was the red toolbox?", scope=scope)
+hits = memory.search("Where was the red toolbox?", scope=scope).hits
 ```
 
 `near` and `radius_m` must be supplied together. Spatial search compares only matching coordinate
@@ -530,10 +530,10 @@ the replacement is built from.
 ### What needs deliberation
 
 `consolidation_candidates()` derives due work from committed state rather than from a clock, so
-the loop has a durable trigger instead of a timer, and `deliberate()` is that loop:
+the loop has a durable trigger instead of a timer, and `consolidate_pending()` is that loop:
 
 ```python
-report = memory.deliberate(idle=is_charging_and_idle)
+report = memory.consolidate_pending(idle=is_charging_and_idle)
 ```
 
 One round asks what is due, consolidates each row under the row's own trigger, and repeats
@@ -605,7 +605,7 @@ evaluation, or when only confirmed application feedback should count. Record tha
 explicitly:
 
 ```python
-used = memory.search("How should I recover the deployment?", limit=1)
+used = memory.search("How should I recover the deployment?", limit=1).hits
 if used and user_confirmed_helpful:
     memory.reinforce((used[0].id,))
 ```
@@ -614,6 +614,6 @@ if used and user_confirmed_helpful:
 at 20. Confirmations after the query's ranking reference are ignored so evaluation cannot leak
 future feedback into the past.
 
-Reinforce only observed positive use or feedback. Use `search_with_trace()` when one query needs
+Reinforce only observed positive use or feedback. Use `search(..., explain=True)` when one query needs
 its temporal, reinforcement, retention, or rejection factors explained; normal telemetry omits
 per-memory candidate identifiers.

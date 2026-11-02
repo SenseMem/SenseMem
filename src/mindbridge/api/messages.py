@@ -14,7 +14,6 @@ from mindbridge.exceptions import MindBridgeError
 MESSAGE_BY_CODE: Mapping[str, str] = {
     "validation_error": "input is invalid",
     "memory_not_found": "memory does not exist",
-    "speaker_not_found": "speaker does not exist",
     "identity_not_found": "identity does not exist",
     "model_error": "model operation failed",
     "model_output_truncated": "model operation failed",

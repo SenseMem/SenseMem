@@ -189,7 +189,10 @@ def test_original_metadata_survives_resized_transport_without_mutating_source(
         if operation == "describe":
             assert model.describe((ModelInput(assets=(asset,)),)) == ("Shown: blue surface",)
         else:
-            assert model.answer("Where was this captured?", (_hit(asset),)).answer == "observed"
+            assert (
+                model.answer(ModelInput(text="Where was this captured?"), (_hit(asset),)).answer
+                == "observed"
+            )
     blocks = [
         json.loads(p["text"])
         for p in seen[0]["messages"][1]["content"]

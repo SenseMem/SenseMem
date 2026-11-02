@@ -22,6 +22,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryNotFoundError,
@@ -116,8 +117,7 @@ def test_history_named_events_require_a_standing_cited_name(
         tmp_path,
         embedder=TinyEmbedder(),
         former=NamedEventFormer(),
-        minimum_relevance=0,
-        formation_history_max_rows=8,
+        config=MemoryConfig(minimum_relevance=0, formation_history_max_rows=8),
     ) as memory:
         memory.add("A person is introduced as Ana")
         name = next(
@@ -148,11 +148,11 @@ def test_new_observation_forms_typed_memories_once_without_changing_source_ident
         tmp_path / "formed",
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea", occurred_at=occurred, context=context)
         duplicate = memory.add("I prefer tea", occurred_at=occurred, context=context)
-        hits = memory.search("preferred drink", limit=10)
+        hits = memory.search("preferred drink", limit=10).hits
 
         assert source == duplicate
         assert former.calls == 1
@@ -168,7 +168,9 @@ def test_new_observation_forms_typed_memories_once_without_changing_source_ident
         assert state.evidence_ids == (source.id,)
         assert state.model_id == "preference-test"
 
-    with Memory(tmp_path / "plain", embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path / "plain", embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         plain = memory.add("I prefer tea", occurred_at=occurred, context=context)
 
     assert plain.id == source.id
@@ -200,7 +202,7 @@ def test_concurrent_duplicate_source_runs_formation_once(tmp_path: Path) -> None
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         with ThreadPoolExecutor(max_workers=2) as executor:
             records = tuple(
@@ -224,7 +226,7 @@ def test_implicit_and_explicit_default_context_have_one_identity(tmp_path: Path)
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         implicit = memory.add("I prefer tea")
         explicit = memory.add("I prefer tea", context=ObservationContext())
@@ -246,7 +248,7 @@ def test_known_at_only_exposes_evidence_known_at_that_time(tmp_path: Path) -> No
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(
             "first entity witness",
@@ -264,12 +266,12 @@ def test_known_at_only_exposes_evidence_known_at_that_time(tmp_path: Path) -> No
                 "user entity",
                 limit=10,
                 scope=RetrievalScope(known_at=known_after_first),
-            )
+            ).hits
             if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
         )
         current = next(
             hit.context
-            for hit in memory.search("user entity", limit=10)
+            for hit in memory.search("user entity", limit=10).hits
             if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
         )
 
@@ -282,14 +284,16 @@ def test_deleting_a_source_removes_unsupported_derived_records(tmp_path: Path) -
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea")
-        assert any(hit.context is not None for hit in memory.search("preferred drink", limit=10))
+        assert any(
+            hit.context is not None for hit in memory.search("preferred drink", limit=10).hits
+        )
 
         assert memory.delete(source.id) is True
         assert memory.delete(source.id) is False
-        assert memory.search("preferred drink", limit=10) == ()
+        assert memory.search("preferred drink", limit=10).hits == ()
         assert memory.compile("preferred drink").hits == ()
 
 
@@ -300,7 +304,7 @@ def test_unsupported_source_modality_is_kept_without_calling_the_former(tmp_path
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"audio", "audio/wav"))
         duplicate = memory.add(Blob(b"audio", "audio/wav"))
@@ -315,7 +319,7 @@ def test_unsupported_source_modality_is_kept_without_calling_the_former(tmp_path
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         upgraded = memory.add(Blob(b"audio", "audio/wav"))
         assert upgraded == first
@@ -368,7 +372,7 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
         tmp_path,
         embedder=TinyEmbedder(),
         former=MisgroundedAffectFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         source = memory.add("I prefer tea, and I shared a photo described as a smile")
@@ -376,7 +380,7 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
         assert [item.id for item in memory.list().items] != []
         kinds = {
             hit.context.kind
-            for hit in memory.search("preferred drink happy", limit=10)
+            for hit in memory.search("preferred drink happy", limit=10).hits
             if hit.context is not None
         }
         assert MemoryKind.STATE in kinds
@@ -404,7 +408,7 @@ def test_a_damaged_formation_envelope_still_fails_the_write(tmp_path: Path) -> N
         tmp_path,
         embedder=TinyEmbedder(),
         former=ShortBatchFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         with pytest.raises(ModelError) as failure:
             memory.add("I prefer tea")
@@ -447,7 +451,7 @@ def test_a_trait_formed_from_two_observations_in_one_batch_is_one_assessment(
         tmp_path,
         embedder=TinyEmbedder(),
         former=JointTraitFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first, second = memory.add_many(("Lin Yue waited calmly.", "Lin Yue waited again."))
         with closing(sqlite3.connect(memory._store.database_path)) as connection:
@@ -469,7 +473,7 @@ def test_a_trait_formed_from_two_observations_in_one_batch_is_one_assessment(
 
         assert clauses == [(2,)]
         assert visible == 0
-        assert not [hit for hit in memory.search("patient", limit=10) if hit.id == trait_id]
+        assert not [hit for hit in memory.search("patient", limit=10).hits if hit.id == trait_id]
         hidden = memory.get(trait_id)
         assert hidden.context is not None
         assert hidden.context.evidence_ids == (first.id, second.id)
@@ -510,12 +514,12 @@ def test_batch_witnesses_are_persisted_and_compiled_as_one_evidence_closure(
         tmp_path / str(deleted_source),
         embedder=TinyEmbedder(),
         former=CrossWitnessFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first, second = memory.add_many(("My sister is named Lin Yue.", "She lives in Suzhou."))
         formed = next(
             hit
-            for hit in memory.search("Lin Yue lives Suzhou", limit=10)
+            for hit in memory.search("Lin Yue lives Suzhou", limit=10).hits
             if hit.context is not None and hit.context.kind is MemoryKind.STATE
         )
 
@@ -574,12 +578,12 @@ def test_singleton_alternative_survives_withdrawal_of_joint_witness(
         tmp_path,
         embedder=TinyEmbedder(),
         former=AlternativeWitnessFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first, _second, third = memory.add_many(("A", "B", "C"))
         entity = next(
             hit
-            for hit in memory.search("Lin Yue person", limit=10)
+            for hit in memory.search("Lin Yue person", limit=10).hits
             if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
         )
 
@@ -629,12 +633,12 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
         data_dir,
         embedder=CountingEmbedder(),
         former=CrossWitnessFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first, _second = memory.add_many(("My sister is Lin Yue", "She lives in Suzhou"))
         derived_id = next(
             hit.id
-            for hit in memory.search("Lin Yue Suzhou", limit=10)
+            for hit in memory.search("Lin Yue Suzhou", limit=10).hits
             if hit.context is not None and hit.context.kind is MemoryKind.STATE
         )
 
@@ -644,9 +648,9 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
         data_dir,
         embedder=rebuilt,
         former=CrossWitnessFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
-        assert derived_id in {hit.id for hit in memory.search("Lin Yue Suzhou", limit=10)}
+        assert derived_id in {hit.id for hit in memory.search("Lin Yue Suzhou", limit=10).hits}
         assert rebuilt.document_inputs == 0
         assert memory.delete(first.id) is True
 
@@ -656,9 +660,9 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
         data_dir,
         embedder=rebuilt_after_withdrawal,
         former=CrossWitnessFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
-        assert derived_id not in {hit.id for hit in memory.search("Lin Yue Suzhou", limit=10)}
+        assert derived_id not in {hit.id for hit in memory.search("Lin Yue Suzhou", limit=10).hits}
         assert rebuilt_after_withdrawal.document_inputs == 0
 
 
@@ -699,7 +703,7 @@ def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, m
         tmp_path,
         embedder=TinyEmbedder(),
         former=InvalidWitnessFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         with pytest.raises(ModelError) as failure:
             memory.add_many(("first source", "second source"))
@@ -713,12 +717,12 @@ def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, m
 def _formed(
     memory: Memory, source_id: str, *, scope: RetrievalScope | None = None
 ) -> list[SearchHit]:
-    hits = memory.search("preferred drink user", limit=10, scope=scope)
+    hits = memory.search("preferred drink user", limit=10, scope=scope).hits
     return [hit for hit in hits if hit.id != source_id]
 
 
 def _entities(memory: Memory, *, scope: RetrievalScope | None = None) -> list[SearchHit]:
-    hits = memory.search("entity user", limit=10, scope=scope)
+    hits = memory.search("entity user", limit=10, scope=scope).hits
     return [
         hit for hit in hits if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
     ]
@@ -735,7 +739,7 @@ def test_formed_records_inherit_the_place_they_were_observed_in(tmp_path: Path) 
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea", context=ObservationContext(place_id="kitchen"))
 
@@ -757,7 +761,7 @@ def test_formed_records_inherit_the_metadata_of_their_source(tmp_path: Path) -> 
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea", metadata={"household": "flat-2"})
 
@@ -773,7 +777,7 @@ def test_a_formed_record_from_a_placeless_source_has_no_place(tmp_path: Path) ->
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea")
 
@@ -796,7 +800,7 @@ def test_a_shared_formed_record_keeps_only_what_its_sources_agree_on(tmp_path: P
         tmp_path / "disagree",
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -819,7 +823,7 @@ def test_a_shared_formed_record_keeps_only_what_its_sources_agree_on(tmp_path: P
         tmp_path / "agree",
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -850,7 +854,7 @@ def test_deleting_the_disagreeing_source_gives_a_shared_record_its_place_back(
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -910,7 +914,7 @@ def test_two_contradictory_states_from_one_source_cost_only_the_later_one(
         tmp_path,
         embedder=TinyEmbedder(),
         former=ContradictingFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         source = memory.add("I prefer tea")
@@ -965,7 +969,7 @@ def test_refused_proposals_are_totalled_over_the_whole_settle(tmp_path: Path) ->
         tmp_path,
         embedder=TinyEmbedder(),
         former=PhotoAffectFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         memory.capture("I shared a photo described as a smile")
@@ -1018,7 +1022,7 @@ def test_a_pose_in_another_frame_is_refused_on_the_formation_path(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=MisplacedPoseFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         source = memory.add(

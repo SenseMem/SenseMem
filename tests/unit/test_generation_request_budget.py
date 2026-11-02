@@ -88,7 +88,7 @@ def test_budget_matches_real_sdk_wire_bytes_including_extra_body_and_stream(stre
         return _reply()
 
     model = OpenAIModels(generation_request_max_bytes=100_000, generation_extra_body=extra)
-    prepared = model._answer_request("箱子是什么颜色?", (hit,), stream=stream)
+    prepared = model._answer_request(ModelInput(text="箱子是什么颜色?"), (hit,), stream=stream)
     assert isinstance(prepared, tuple)
     exact = adapter._answer_wire_size(prepared[0], stream=stream)
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
@@ -97,9 +97,11 @@ def test_budget_matches_real_sdk_wire_bytes_including_extra_body_and_stream(stre
         )
         model = OpenAIModels(sdk, generation_request_max_bytes=exact, generation_extra_body=extra)
         if stream:
-            assert tuple(model.stream_answer("箱子是什么颜色?", (hit,))) == ("蓝色。",)
+            assert tuple(model.stream_answer(ModelInput(text="箱子是什么颜色?"), (hit,))) == (
+                "蓝色。",
+            )
         else:
-            assert model.answer("箱子是什么颜色?", (hit,)).answer == "蓝色。"
+            assert model.answer(ModelInput(text="箱子是什么颜色?"), (hit,)).answer == "蓝色。"
         assert len(captured[0]) == exact
         payload = json.loads(captured[0])
         assert payload["reasoning"] == {"effort": "low"}
@@ -109,9 +111,9 @@ def test_budget_matches_real_sdk_wire_bytes_including_extra_body_and_stream(stre
         )
         with pytest.raises(ModelError) as failure:
             if stream:
-                tuple(model.stream_answer("箱子是什么颜色?", (hit,)))
+                tuple(model.stream_answer(ModelInput(text="箱子是什么颜色?"), (hit,)))
             else:
-                model.answer("箱子是什么颜色?", (hit,))
+                model.answer(ModelInput(text="箱子是什么颜色?"), (hit,))
         assert failure.value.reason == "payload_too_large"
         assert len(captured) == 1
 
@@ -214,7 +216,7 @@ def test_ranked_omission_keeps_gps_and_map_metadata_without_absent_attachment(
             generation_capabilities=ATOMIC_MODALITIES,
             generation_request_max_bytes=maximum,
         )
-        result = model.answer("What is here?", hits)
+        result = model.answer(ModelInput(text="What is here?"), hits)
     provider.shutdown()
     assert len(captured[0]) <= maximum
     assert result.hits[0].assets == (audio,)
@@ -279,7 +281,7 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
     model = OpenAIModels(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=25_000
     )
-    prepared = model._answer_request("What happens?", (hit,))
+    prepared = model._answer_request(ModelInput(text="What happens?"), (hit,))
     assert isinstance(prepared, tuple)
     assert adapter._answer_wire_size(prepared[0], stream=False) <= 25_000
     content = cast(
@@ -296,7 +298,7 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
     model = OpenAIModels(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=100_000
     )
-    prepared = model._answer_request("What happens?", (hit,))
+    prepared = model._answer_request(ModelInput(text="What happens?"), (hit,))
     assert isinstance(prepared, tuple)
     assert not counts
     # Native video fits by itself, but earlier ranked audio leaves too little room. Keep
@@ -305,7 +307,9 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
     model = OpenAIModels(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=80_000
     )
-    prepared = model._answer_request("What happens?", (_hit("earlier", (audio,)), hit))
+    prepared = model._answer_request(
+        ModelInput(text="What happens?"), (_hit("earlier", (audio,)), hit)
+    )
     assert isinstance(prepared, tuple)
     assert prepared[1][0].assets == (audio,)
     assert prepared[1][1].assets == ()
@@ -329,7 +333,9 @@ def test_none_keeps_existing_body_and_all_nonanswer_recipe_identities() -> None:
     explicit = OpenAIModels(generation_request_max_bytes=None)
     bounded = OpenAIModels(generation_request_max_bytes=100_000)
     hit = _hit("one")
-    assert default._answer_request("What?", (hit,)) == explicit._answer_request("What?", (hit,))
+    assert default._answer_request(ModelInput(text="What?"), (hit,)) == explicit._answer_request(
+        ModelInput(text="What?"), (hit,)
+    )
     assert default.embedding_space == bounded.embedding_space
     assert default.vision_space == bounded.vision_space
     assert default.formation_space == bounded.formation_space
@@ -350,11 +356,13 @@ def test_fitting_request_keeps_exact_old_body_without_reading_previously_omitted
 
     monkeypatch.setattr(adapter, "image_capture_metadata", metadata)
     unbounded = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)
-    old = unbounded._answer_request("Where?", fitted, omission_source_hits=original)
+    old = unbounded._answer_request(
+        ModelInput(text="Where?"), fitted, omission_source_hits=original
+    )
     bounded = OpenAIModels(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=1_000_000
     )
-    new = bounded._answer_request("Where?", fitted, omission_source_hits=original)
+    new = bounded._answer_request(ModelInput(text="Where?"), fitted, omission_source_hits=original)
     assert isinstance(old, tuple) and isinstance(new, tuple)
     assert json.dumps(old[0], ensure_ascii=False) == json.dumps(new[0], ensure_ascii=False)
     assert not read
@@ -363,7 +371,7 @@ def test_fitting_request_keeps_exact_old_body_without_reading_previously_omitted
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=1
     )
     with pytest.raises(ModelError):
-        too_small._answer_request("Where?", fitted, omission_source_hits=original)
+        too_small._answer_request(ModelInput(text="Where?"), fitted, omission_source_hits=original)
     assert not read
 
 
@@ -384,7 +392,7 @@ def test_multiple_mandatory_images_fit_when_full_text_uses_most_of_the_budget(
     text = ("The complete original question. " * 250).strip()
     hit = _hit("one")
     baseline = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)
-    text_only = baseline._answer_request(text, (hit,))
+    text_only = baseline._answer_request(ModelInput(text=text), (hit,))
     minimum = baseline._answer_request(ModelInput(text=text, assets=tiny), (hit,))
     assert isinstance(text_only, tuple) and isinstance(minimum, tuple)
     fixed = adapter._answer_wire_size(text_only[0], stream=False)

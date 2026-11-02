@@ -24,6 +24,7 @@ from mindbridge import (
     EmbedTask,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     ObservationContext,
@@ -257,10 +258,12 @@ def observe(case: Case, path: Path, *, reverse: bool = False) -> Observation:
     with Memory(
         path,
         embedder=FixtureEmbedder(case.documents),
-        minimum_relevance=MINIMUM_RELEVANCE,
-        ambiguity_margin=AMBIGUITY_MARGIN,
-        retrieval_mode=RetrievalMode.HYBRID,
-        index_quantization=IndexQuantization.NONE,
+        config=MemoryConfig(
+            minimum_relevance=MINIMUM_RELEVANCE,
+            ambiguity_margin=AMBIGUITY_MARGIN,
+            retrieval_mode=RetrievalMode.HYBRID,
+            index_quantization=IndexQuantization.NONE,
+        ),
     ) as memory:
         positions: dict[str, int] = {}
         order = range(len(case.documents))
@@ -275,9 +278,14 @@ def observe(case: Case, path: Path, *, reverse: bool = False) -> Observation:
             )
             positions[record.id] = index
         scope = RetrievalScope(valid_at=case.valid_at) if case.valid_at is not None else None
-        multiple = memory.search_with_trace(
-            case.query, limit=max(2, len(case.documents)), reference_at=REFERENCE, scope=scope
+        multiple = memory.search(
+            case.query,
+            limit=max(2, len(case.documents)),
+            reference_at=REFERENCE,
+            scope=scope,
+            explain=True,
         )
+        assert multiple.trace is not None
         traces = {candidate.memory_id: candidate for candidate in multiple.trace.candidates}
         ranked = tuple(
             Candidate(
@@ -288,7 +296,10 @@ def observe(case: Case, path: Path, *, reverse: bool = False) -> Observation:
             )
             for hit in multiple.hits
         )
-        single = memory.search_with_trace(case.query, limit=1, reference_at=REFERENCE, scope=scope)
+        single = memory.search(
+            case.query, limit=1, reference_at=REFERENCE, scope=scope, explain=True
+        )
+        assert single.trace is not None
     return Observation(
         case.name, frozenset(case.query.casefold().split()), case.gold, ranked, bool(single.hits)
     )

@@ -18,8 +18,8 @@ evidence_labels may be empty. Aliases start at E1 in first-record order. This
 boundary establishes literal support and performs arithmetic; fact relevance,
 answer-set completeness and requested date granularity remain explicit model
 decisions, never inferred from a question's wording or a benchmark label.
-Omitted parser formats retain ISO dates and unit-bearing numbers; the wire schema
-requires an explicit format. UTC presentation requires an explicitly zoned source timestamp.
+Parser and wire schema both require an explicit format. UTC presentation requires an explicitly
+zoned source timestamp.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class DateDraft(_DraftValue):
     kind: Literal["date"]
     source_value: _Text
     granularity: DateGranularity
-    format: Literal["iso8601", "utc_datetime"] = "iso8601"
+    format: Literal["iso8601", "utc_datetime"]
     evidence: DateEvidence
 
 
@@ -96,7 +96,7 @@ class NumericOperand(_DraftValue):
 class NumericDraft(_DraftValue):
     kind: Literal["calculation"]
     operation: Literal["scalar", "sum", "difference"]
-    format: Literal["with_unit", "number"] = "with_unit"
+    format: Literal["with_unit", "number"]
     operands: Annotated[tuple[NumericOperand, ...], Field(min_length=1, max_length=128)]
 
 
@@ -122,7 +122,7 @@ class DateInterval(_DraftValue):
 class DurationDraft(_DraftValue):
     kind: Literal["calculation"]
     operation: Literal["duration_days"]
-    format: Literal["with_unit", "number"] = "with_unit"
+    format: Literal["with_unit", "number"]
     interval_semantics: Literal["half_open", "closed"]
     intervals: Annotated[tuple[DateInterval, ...], Field(min_length=1, max_length=128)]
 

@@ -90,7 +90,9 @@ def test_two_disjoint_joint_assessments_and_withdrawal(tmp_path: Path, independe
         context = memory.get(target).context
         assert context is not None
         assert context.confidence == pytest.approx(0.84 if independent else 0.6)
-        assert (target in {hit.id for hit in memory.search("patient", limit=20)}) is independent
+        assert (
+            target in {hit.id for hit in memory.search("patient", limit=20).hits}
+        ) is independent
         bundle = memory.compile("patient", budget=ContextBudget(max_chars=20_000))
         assert (target in {hit.id for hit in bundle.hits}) is independent
         assert memory.rollback(second.operation_id)
@@ -204,7 +206,9 @@ def test_reopen_preserves_live_joint_support(tmp_path: Path, independent: bool) 
         _derive(memory, roots[2:], "patient", trait=True)
     with _open(tmp_path, independent) as memory:
         assert _visible(memory, target) is independent
-        assert (target in {hit.id for hit in memory.search("patient", limit=20)}) is independent
+        assert (
+            target in {hit.id for hit in memory.search("patient", limit=20).hits}
+        ) is independent
 
 
 @pytest.mark.parametrize("invalid", [0, 1, "true", None])

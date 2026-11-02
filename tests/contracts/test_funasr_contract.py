@@ -11,7 +11,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from mindbridge import FunASRTranscriber, Memory, MindBridgeConfig, StorageError
+from mindbridge import (
+    AssetRef,
+    Blob,
+    FunASRTranscriber,
+    Memory,
+    MindBridgeConfig,
+    SpeechAnalysis,
+    SpeechTurn,
+    StorageError,
+)
 from mindbridge.configuration import FunASRSpeechConfig, _build_speech
 
 
@@ -91,7 +100,10 @@ def test_funasr_old_analysis_space_cannot_be_reopened(tmp_path: Path) -> None:
         def transcription_space(self) -> str:
             return "FunAudioLLM/Fun-ASR-Nano-2512:speech:b47a175e755dea61"
 
-    with Memory(tmp_path, embedder=Embedder(), transcriber=OldTranscriber()):
-        pass
+        def analyze(self, assets: Sequence[AssetRef]) -> tuple[SpeechAnalysis, ...]:
+            return (SpeechAnalysis((SpeechTurn(0, 100, "source speech"),), ()),) * len(assets)
+
+    with Memory(tmp_path, embedder=Embedder(), transcriber=OldTranscriber()) as memory:
+        memory.add(Blob(b"speech", "audio/wav"))
     with pytest.raises(StorageError, match=r"transcription\.space_id"):
         Memory(tmp_path, embedder=Embedder(), transcriber=FunASRTranscriber())

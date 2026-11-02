@@ -84,12 +84,13 @@ from mindbridge.types import (
     ObservationContext,
     Page,
     PendingCapture,
+    PerceptionKind,
+    PerceptionResult,
     RetentionReport,
     RetrievalScope,
     RetrievalTrace,
-    SearchHit,
+    SearchResult,
     SpeakerSegment,
-    TracedSearchResult,
 )
 
 _MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
@@ -185,8 +186,9 @@ class SettleRequest(StrictModel):
     memory_ids: Annotated[list[_BodyMemoryId], Field(min_length=1, max_length=100)] | None = None
 
 
-class AnalyzeRequest(StrictModel):
+class PerceptionRequest(StrictModel):
     memory_id: _BodyMemoryId
+    kinds: Annotated[frozenset[PerceptionKind], Field(min_length=1)] | None = None
 
 
 class IdentityRegisterRequest(StrictModel):
@@ -288,12 +290,9 @@ class PendingCapturesResponse(_ResponseModel):
     items: tuple[PendingCaptureResponse, ...]
 
 
-class SpeechResponse(_ResponseModel):
-    segments: tuple[SpeakerSegment, ...]
-
-
-class FacesResponse(_ResponseModel):
-    observations: tuple[FaceObservation, ...]
+class PerceptionResponse(_ResponseModel):
+    speech: tuple[SpeakerSegment, ...]
+    faces: tuple[FaceObservation, ...]
 
 
 class IdentityResponse(_ResponseModel):
@@ -539,6 +538,11 @@ class PageResponse(_ResponseModel):
     next_cursor: str | None = None
 
 
+class EmbeddingRouteResponse(_ResponseModel):
+    modalities: tuple[Modality, ...]
+    max_assets_per_modality: int | None
+
+
 class CapabilitiesResponse(_ResponseModel):
     """What the composition behind this process can actually do."""
 
@@ -546,11 +550,15 @@ class CapabilitiesResponse(_ResponseModel):
     embedding_model: str
     embedding_space: str
     embedding_dimension: int
+    embedding_routes: tuple[EmbeddingRouteResponse, ...]
     generation: tuple[Modality, ...]
+    generation_routes: tuple[tuple[Modality, ...], ...]
     transcription: tuple[Modality, ...]
     vision: tuple[Modality, ...]
     face: tuple[Modality, ...]
     formation: tuple[Modality, ...]
+    reranking: tuple[Modality, ...]
+    reranking_model: str | None
     generation_model: str | None
     transcription_space: str | None
     vision_model: str | None
@@ -558,7 +566,6 @@ class CapabilitiesResponse(_ResponseModel):
     formation_model: str | None
     consolidation_model: str | None
     speaker_recognition: bool
-    streaming_generation: bool
     # Derived from the backends above, not declared: which optional operations this composition
     # can serve *and this app routes to*. `MemoryCapabilities.document()` is the one place that
     # derivation happens; `_ROUTED_OPERATIONS` is what `/healthz` may promise of it.
@@ -606,19 +613,8 @@ class _Memory(Protocol):
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         scope: RetrievalScope | None = None,
-    ) -> tuple[SearchHit, ...]: ...
-
-    def search_with_trace(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-    ) -> TracedSearchResult: ...
+        explain: bool = False,
+    ) -> SearchResult: ...
 
     def ask(
         self,
@@ -688,9 +684,9 @@ class _Memory(Protocol):
         memory_ids: Sequence[str] | None = None,
     ) -> tuple[PendingCapture, ...]: ...
 
-    def speech(self, memory_id: str) -> tuple[SpeakerSegment, ...]: ...
-
-    def faces(self, memory_id: str) -> tuple[FaceObservation, ...]: ...
+    def perceive(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult: ...
 
     def register_identity(
         self,
@@ -887,11 +883,10 @@ class _RequestTelemetry:
 
 # Which of `MemoryCapabilities.operations` a `/v1` route can actually reach. Consolidation --
 # like cognitive forgetting and operation rollback, which are not derived capabilities at all --
-# has no route by design (`docs/context-os.md`), so `/healthz` must not advertise it; `speech`
-# and `faces` reach `analyzeSpeech` and `analyzeFaces` only when the host opts in. An operation
+# has no route by design (`docs/context-os.md`), so `/healthz` must not advertise it; `perceive` reaches `perceiveMemory` only when the host opts in. An operation
 # added to the derivation stays unadvertised here until it is given a route.
 _ROUTED_OPERATIONS = frozenset({"ask", "transcribe", "describe_vision", "formation"})
-_EMBODIED_ROUTED_OPERATIONS = frozenset({"speech", "faces"})
+_EMBODIED_ROUTED_OPERATIONS = frozenset({"perceive"})
 
 
 def create_app(
@@ -910,7 +905,7 @@ def create_app(
     switch is off the routes it gates are never registered, so a caller gets 404 rather than 403 --
     it cannot discover through the error what an enabled deployment would offer.
 
-    ``deliberate_every`` is a number of seconds after which this process runs ``deliberate()``
+    ``deliberate_every`` is a number of seconds after which this process runs ``consolidate()``
     on the memory it serves, off by default. The control plane stays SDK-only -- no route and no
     tool exposes it -- but the signals the routes write, above all the ``QUERY_FAILURE`` rows a
     failed ``search``, ``ask``, or ``compile`` records, can only be consumed by the process that
@@ -1283,25 +1278,17 @@ def _add_embodied_routes(
     *,
     responses: dict[int | str, dict[str, object]],
 ) -> None:
-    """Register `analyze_speech` and `analyze_faces`, gated by the host's `embodied_operations`."""
+    """Register source-local multimodal perception, gated by `embodied_operations`."""
 
     @router.post(
-        "/speech",
-        response_model=SpeechResponse,
-        operation_id="analyzeSpeech",
+        "/perception",
+        response_model=PerceptionResponse,
+        operation_id="perceiveMemory",
         responses=responses,
     )
-    def analyze_speech(request: AnalyzeRequest) -> SpeechResponse:
-        return SpeechResponse(segments=current_service().speech(request.memory_id))
-
-    @router.post(
-        "/faces",
-        response_model=FacesResponse,
-        operation_id="analyzeFaces",
-        responses=responses,
-    )
-    def analyze_faces(request: AnalyzeRequest) -> FacesResponse:
-        return FacesResponse(observations=current_service().faces(request.memory_id))
+    def perceive_memory(request: PerceptionRequest) -> PerceptionResponse:
+        result = current_service().perceive(request.memory_id, kinds=request.kinds)
+        return PerceptionResponse.model_validate(result)
 
 
 def _add_identity_routes(
@@ -1599,29 +1586,17 @@ def _bundle_response(bundle: ContextBundle) -> ContextBundleResponse:
 
 
 def _search(service: _Memory, request: QueryRequest) -> SearchResponse:
-    """Route one search to the traced SDK operation only when the caller asked to see the trace."""
-    content = content_input(request.query)
-    if not request.explain:
-        hits = service.search(
-            content,
-            limit=request.limit,
-            memory_type=request.memory_type,
-            reference_at=request.reference_at,
-            occurred_from=request.occurred_from,
-            occurred_until=request.occurred_until,
-            scope=request.scope,
-        )
-        return SearchResponse.model_validate({"hits": hits})
-    traced = service.search_with_trace(
-        content,
+    result = service.search(
+        content_input(request.query),
         limit=request.limit,
         memory_type=request.memory_type,
         reference_at=request.reference_at,
         occurred_from=request.occurred_from,
         occurred_until=request.occurred_until,
         scope=request.scope,
+        explain=request.explain,
     )
-    return SearchResponse.model_validate({"hits": traced.hits, "trace": traced.trace})
+    return SearchResponse.model_validate(result)
 
 
 def _capabilities_response(

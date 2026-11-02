@@ -63,13 +63,6 @@ class MemoryNotFoundError(MindBridgeError, LookupError):
     default_reason = "memory_not_found"
 
 
-class SpeakerNotFoundError(MindBridgeError, LookupError):
-    """Raised when a local speaker identity does not exist."""
-
-    code = "speaker_not_found"
-    default_reason = "speaker_not_found"
-
-
 class IdentityNotFoundError(MindBridgeError, LookupError):
     """Raised when a local face or voice identity does not exist."""
 

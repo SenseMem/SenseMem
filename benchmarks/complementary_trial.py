@@ -25,6 +25,7 @@ from mindbridge import (
     AnswerPolicy,
     AnswerResult,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     OpenAIModels,
@@ -330,13 +331,15 @@ def open_memory(
         embedder=embedder,
         answerer=reader,
         vision_describer=vision,
-        retrieval_mode=RetrievalMode.HYBRID,
-        recall_planning=False,
-        evidence_expansion=False,
-        reinforce_on_answer=False,
-        minimum_relevance=0,
-        ambiguity_margin=0,
-        evidence_budget_chars=None,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.HYBRID,
+            recall_planning=False,
+            evidence_expansion=False,
+            reinforce_on_answer=False,
+            minimum_relevance=0,
+            ambiguity_margin=0,
+            evidence_budget_chars=None,
+        ),
     )
 
 

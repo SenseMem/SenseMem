@@ -15,7 +15,15 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import Blob, Memory, Modality, ObservationContext, RetrievalMode, RetrievalScope
+from mindbridge import (
+    Blob,
+    Memory,
+    MemoryConfig,
+    Modality,
+    ObservationContext,
+    RetrievalMode,
+    RetrievalScope,
+)
 from mindbridge._telemetry import MODEL_REQUEST_COUNT
 from mindbridge.exceptions import ModelError, ValidationError
 from mindbridge.models.base import EmbedTask, ModelInput
@@ -88,13 +96,14 @@ def test_complete_eligible_pool_is_reranked_before_limit_without_rewriting_score
         embedder=Embedder(),
         reranker=reranker,
         tracer=provider.get_tracer("test"),
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
+        ),
     ) as memory:
         decoys = [memory.add(f"confirmed reservation {index}") for index in range(12)]
         target = memory.add("cancelled reservation, refunded GBP 55")
-        result = memory.search_with_trace("Which reservation was cancelled?", limit=1)
+        result = memory.search("Which reservation was cancelled?", limit=1, explain=True)
+        assert result.trace is not None
         assert result.hits[0].id == target.id
         assert result.hits[0].content == target.content
         assert result.hits[0].score == pytest.approx(0.6)
@@ -102,7 +111,7 @@ def test_complete_eligible_pool_is_reranked_before_limit_without_rewriting_score
         by_id = {row.memory_id: row for row in result.trace.candidates}
         assert by_id[target.id].reranking_score == 8.0
         assert all(by_id[row.id].reranking_score == -3.0 for row in decoys)
-        complete = memory.search("Which reservation was cancelled?", limit=20)
+        complete = memory.search("Which reservation was cancelled?", limit=20).hits
         assert {row.id for row in complete} == {target.id, *(row.id for row in decoys)}
         spans = [
             span
@@ -126,8 +135,7 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
         tmp_path,
         embedder=embedder,
         reranker=reranker,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         live = memory.add(
             "cancelled live",
@@ -162,9 +170,15 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
         with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection, connection:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("DELETE FROM memory_records WHERE memory_id=?", (stale.id,))
-        result = memory.search_with_trace(
-            "live", memory_type=MemoryType.EPISODIC, occurred_from=now, scope=scope, limit=5
+        result = memory.search(
+            "live",
+            memory_type=MemoryType.EPISODIC,
+            occurred_from=now,
+            scope=scope,
+            limit=5,
+            explain=True,
         )
+        assert result.trace is not None
         assert [row.id for row in result.hits] == [live.id]
         assert {
             row.memory_id for row in result.trace.candidates if row.reranking_score is not None
@@ -177,14 +191,13 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
         tmp_path,
         embedder=embedder,
         reranker=Reranker(),
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
     ) as rebuilt:
         assert embedder.document_calls == document_calls
         assert (
-            rebuilt.search("live", memory_type=MemoryType.EPISODIC, occurred_from=now, scope=scope)[
-                0
-            ].id
+            rebuilt.search("live", memory_type=MemoryType.EPISODIC, occurred_from=now, scope=scope)
+            .hits[0]
+            .id
             == live.id
         )
         assert embedder.document_calls == document_calls
@@ -198,18 +211,18 @@ def test_empty_text_media_keep_positions_and_media_only_queries_skip_text_rerank
         tmp_path,
         embedder=Embedder(),
         reranker=reranker,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
+        ),
     ) as memory:
         media = memory.add(Blob(b"original", "image/png"))
         confirmed = memory.add("confirmed reservation")
         cancelled = memory.add("cancelled reservation")
-        hits = memory.search("cancelled reservation", limit=3)
+        hits = memory.search("cancelled reservation", limit=3).hits
         assert [row.id for row in hits] == [media.id, cancelled.id, confirmed.id]
         assert len(reranker.calls[-1][1]) == 2
         captioned = memory.add(("cancelled photo caption", Blob(b"captioned", "image/png")))
-        mixed = memory.search("cancelled reservation", limit=4)
+        mixed = memory.search("cancelled reservation", limit=4).hits
         assert mixed[0].id == media.id
         assert captioned.id in {row.id for row in mixed}
         assert any("cancelled photo caption" in document.text for document in reranker.calls[-1][1])
@@ -227,8 +240,7 @@ def test_invalid_reranking_output_is_explicit_instead_of_silent_fallback(
         tmp_path,
         embedder=Embedder(),
         reranker=Reranker(scores=scores),
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("first")
         memory.add("second")
@@ -246,12 +258,11 @@ def test_reranker_failure_is_sanitized_and_existing_ambiguity_policy_still_appli
         tmp_path,
         embedder=Embedder(),
         reranker=reranker,
-        minimum_relevance=0,
-        ambiguity_margin=0.1,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0.1),
     ) as memory:
         memory.add("first")
         memory.add("second")
-        assert memory.search("query", limit=1) == ()
+        assert memory.search("query", limit=1).hits == ()
         assert reranker.calls == []
         with pytest.raises(ModelError) as raised:
             memory.search("query", limit=2)
@@ -300,14 +311,15 @@ def test_native_reranking_automatically_includes_original_query_and_candidate_me
         tmp_path,
         embedder=Embedder(),
         reranker=reranker,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
+        ),
     ) as memory:
         text = memory.add("A text candidate")
         captioned = memory.add(("A caption", Blob(b"original-image", "image/png")))
         video = memory.add(Blob(b"original-video", "video/mp4"))
-        outcome = memory.search_with_trace(queries[query_kind], limit=3)
+        outcome = memory.search(queries[query_kind], limit=3, explain=True)
+        assert outcome.trace is not None
         assert {hit.id for hit in outcome.hits[:2]} == {captioned.id, video.id}
         assert outcome.hits[-1].id == text.id
         query, documents = reranker.calls[-1]
@@ -353,12 +365,12 @@ def test_candidate_media_stay_readable_during_reranking_and_are_released_on_fail
         tmp_path,
         embedder=Embedder(),
         reranker=DeletingReranker(),
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
+        ),
     ) as memory:
         record = memory.add(Blob(b"original-image", "image/png"))
         with pytest.raises(ModelError, match="reranking model failed"):
             memory.search("find image")
         assert len(paths) == 1 and not paths[0].exists()
-        assert memory.search("find image") == ()
+        assert memory.search("find image").hits == ()

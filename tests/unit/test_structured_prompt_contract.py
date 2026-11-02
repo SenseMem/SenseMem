@@ -3,7 +3,7 @@
 import json
 import re
 
-from mindbridge.kernel.answer_output import parse_answer_draft
+from mindbridge.models._answer_output import parse_answer_draft
 from mindbridge.models.openai_sdk import _STRUCTURED_ANSWER_PROMPT
 
 

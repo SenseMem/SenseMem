@@ -49,7 +49,6 @@ from mindbridge.exceptions import (
     MemoryNotFoundError,
     ModelError,
     ModelOutputTruncatedError,
-    SpeakerNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -65,7 +64,6 @@ from mindbridge.types import (
     ContextBudget,
     ContextBundle,
     ExportBundle,
-    FaceObservation,
     IdentityErasure,
     IdentityProfile,
     MemoryCapabilities,
@@ -79,17 +77,16 @@ from mindbridge.types import (
     ObservationContext,
     Page,
     PendingCapture,
+    PerceptionKind,
+    PerceptionResult,
     RetentionReport,
     RetrievalScope,
-    SearchHit,
-    SpeakerSegment,
-    TracedSearchResult,
+    SearchResult,
 )
 
-# Every modality, because `frozenset` iterates in hash order and enum members hash by identity:
-# with five values an unsorted serializer produces the documented order once in 120 runs.
+# Atomic modalities and native combinations must serialize deterministically.
 CAPABILITIES = MemoryCapabilities(
-    embedding=frozenset(Modality),
+    embedding=frozenset(Modality) - {Modality.OMNI},
     embedding_model="test-omni",
     embedding_space="space_1",
     embedding_dimension=1024,
@@ -207,7 +204,8 @@ class FakeMemory:
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         scope: RetrievalScope | None = None,
-    ) -> tuple[SearchHit, ...]:
+        explain: bool = False,
+    ) -> SearchResult:
         self._fail()
         self.calls.append(
             (
@@ -220,32 +218,7 @@ class FakeMemory:
                 occurred_until,
             )
         )
-        return (_hit(),)
-
-    def search_with_trace(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-    ) -> TracedSearchResult:
-        self._fail()
-        self.calls.append(
-            (
-                "search_with_trace",
-                query,
-                limit,
-                memory_type,
-                reference_at,
-                occurred_from,
-                occurred_until,
-            )
-        )
-        return TracedSearchResult(hits=(), trace=_trace())
+        return SearchResult(hits=() if explain else (_hit(),), trace=_trace() if explain else None)
 
     def compile(
         self,
@@ -373,15 +346,12 @@ class FakeMemory:
         self.calls.append(("pending_captures", limit, tuple(memory_ids) if memory_ids else None))
         return (PENDING,)
 
-    def speech(self, memory_id: str) -> tuple[SpeakerSegment, ...]:
+    def perceive(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult:
         self._fail()
-        self.calls.append(("speech", memory_id))
-        return (SEGMENT,)
-
-    def faces(self, memory_id: str) -> tuple[FaceObservation, ...]:
-        self._fail()
-        self.calls.append(("faces", memory_id))
-        return (FACE,)
+        self.calls.append(("perceive", memory_id, kinds))
+        return PerceptionResult(speech=(SEGMENT,), faces=(FACE,))
 
     def register_identity(
         self,
@@ -979,7 +949,7 @@ def test_the_documented_v1_route_counts_are_the_real_ones() -> None:
     stands in for `test_surface_parity._COUNT_WORDS`: that module has no `__init__.py`, so
     importing it by dotted path here collides with mypy's own file-based module discovery.
     """
-    count_words = {13: "thirteen", 23: "twenty-three"}
+    count_words = {13: "thirteen", 22: "twenty-two"}
 
     def v1_route_count(
         *, identity_operations: bool = False, embodied_operations: bool = False
@@ -1071,7 +1041,7 @@ def test_search_rejects_a_reversed_occurrence_range_before_memory() -> None:
     [
         (ValidationError("content is invalid"), 422, "validation_error"),
         (MemoryNotFoundError("memory is missing"), 404, "memory_not_found"),
-        (SpeakerNotFoundError("speaker is missing"), 404, "speaker_not_found"),
+        (IdentityNotFoundError("speaker is missing"), 404, "identity_not_found"),
         (ModelError("routing failed"), 502, "model_error"),
         (ModelOutputTruncatedError("answer was cut off"), 502, "model_output_truncated"),
         (StorageError("durable write failed"), 503, "storage_error"),
@@ -1167,15 +1137,19 @@ def test_health_reports_the_live_composition() -> None:
 
     assert body["status"] == "ok"
     assert body["capabilities"] == {
-        "embedding": ["audio", "image", "omni", "text", "video"],
+        "embedding": ["audio", "image", "text", "video"],
         "embedding_model": "test-omni",
         "embedding_space": "space_1",
         "embedding_dimension": 1024,
+        "embedding_routes": CAPABILITIES.document()["embedding_routes"],
         "generation": ["text"],
+        "generation_routes": [["text"]],
         "transcription": [],
         "vision": [],
         "face": [],
         "formation": [],
+        "reranking": [],
+        "reranking_model": None,
         "generation_model": "qwen3-omni",
         "transcription_space": None,
         "vision_model": None,
@@ -1183,7 +1157,6 @@ def test_health_reports_the_live_composition() -> None:
         "formation_model": None,
         "consolidation_model": None,
         "speaker_recognition": True,
-        "streaming_generation": False,
         # Derived from the backends above: an agent reads which operations it may call instead
         # of inferring the mapping from a modality set.
         "operations": ["ask"],
@@ -1551,7 +1524,7 @@ def test_search_keeps_its_default_shape_and_explains_an_empty_result() -> None:
     ]
     assert memory.calls == [
         ("search", "toolbox", 10, None, None, None, None),
-        ("search_with_trace", "toolbox", 10, None, None, None, None),
+        ("search", "toolbox", 10, None, None, None, None),
     ]
 
 
@@ -1625,8 +1598,8 @@ def test_identity_and_embodied_routes_are_off_by_default_and_404_not_403() -> No
     memory = FakeMemory()
 
     with TestClient(create_app(memory=memory)) as client:
-        speech = client.post("/v1/speech", json={"memory_id": "memory_1"})
-        faces = client.post("/v1/faces", json={"memory_id": "memory_1"})
+        speech = client.post("/v1/perception", json={"memory_id": "memory_1"})
+        faces = client.post("/v1/perception", json={"memory_id": "memory_1"})
         registered = client.post(
             "/v1/identities", json={"identity_id": "identity_1", "name": "Ann"}
         )
@@ -1652,7 +1625,7 @@ def test_identity_and_embodied_routes_are_off_by_default_and_404_not_403() -> No
         retained,
     ):
         assert response.status_code == 404
-    assert "/v1/speech" not in openapi["paths"]
+    assert "/v1/perception" not in openapi["paths"]
     assert "/v1/identities" not in openapi["paths"]
     assert "/v1/export" not in openapi["paths"]
     assert "/v1/retention" not in openapi["paths"]
@@ -1661,28 +1634,25 @@ def test_identity_and_embodied_routes_are_off_by_default_and_404_not_403() -> No
 
 def test_embodied_routes_dispatch_to_the_sdk_when_enabled() -> None:
     memory = FakeMemory()
-
     with TestClient(create_app(memory=memory, embodied_operations=True)) as client:
-        speech = client.post("/v1/speech", json={"memory_id": "memory_1"})
-        faces = client.post("/v1/faces", json={"memory_id": "memory_1"})
-
-    assert speech.status_code == 200
-    assert speech.json() == {
-        "segments": [
-            {
-                "asset_id": "b" * 64,
-                "start_ms": 0,
-                "end_ms": 1500,
-                "text": "Where is the toolbox?",
-                "speaker_id": "speaker_1",
-                "speaker_name": "Ann",
-                "identity_score": 0.82,
-            }
-        ]
-    }
-    assert faces.status_code == 200
-    assert faces.json()["observations"][0]["identity_id"] == "identity_1"
-    assert memory.calls == [("speech", "memory_1"), ("faces", "memory_1")]
+        response = client.post("/v1/perception", json={"memory_id": "memory_1"})
+        selected = client.post(
+            "/v1/perception", json={"memory_id": "memory_1", "kinds": ["speech"]}
+        )
+        invalid = client.post(
+            "/v1/perception", json={"memory_id": "memory_1", "kinds": ["unknown"]}
+        )
+        empty = client.post("/v1/perception", json={"memory_id": "memory_1", "kinds": []})
+        old = client.post("/v1/faces", json={"memory_id": "memory_1"})
+    assert response.status_code == selected.status_code == 200
+    assert response.json()["speech"][0]["speaker_id"] == "speaker_1"
+    assert response.json()["faces"][0]["identity_id"] == "identity_1"
+    assert invalid.status_code == empty.status_code == 422
+    assert old.status_code == 404
+    assert memory.calls == [
+        ("perceive", "memory_1", None),
+        ("perceive", "memory_1", frozenset({"speech"})),
+    ]
 
 
 def test_answers_only_link_identities_when_embodied_operations_is_enabled() -> None:
@@ -1712,7 +1682,7 @@ def test_embodied_routes_map_memory_not_found() -> None:
     memory = FakeMemory(MemoryNotFoundError("memory is missing"))
 
     with TestClient(create_app(memory=memory, embodied_operations=True)) as client:
-        response = client.post("/v1/speech", json={"memory_id": "memory_1"})
+        response = client.post("/v1/perception", json={"memory_id": "memory_1"})
 
     assert response.status_code == 404
     assert response.json()["code"] == "memory_not_found"
@@ -1722,7 +1692,7 @@ def test_embodied_routes_map_unsupported_modality() -> None:
     memory = FakeMemory(ModelError("no face backend", reason="unsupported_modality"))
 
     with TestClient(create_app(memory=memory, embodied_operations=True)) as client:
-        response = client.post("/v1/faces", json={"memory_id": "memory_1"})
+        response = client.post("/v1/perception", json={"memory_id": "memory_1"})
 
     assert response.status_code == 422
     assert response.json()["reason"] == "unsupported_modality"

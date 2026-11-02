@@ -27,7 +27,7 @@ from pathlib import Path
 from corpora import atm_units, gallery_units, source_id, write_unit
 from support_coverage import _embedder, _env
 
-from mindbridge import Memory
+from mindbridge import Memory, MemoryConfig
 from mindbridge.kernel.answering import expansion_ceiling
 from mindbridge.models.openai_sdk import OpenAIModels
 from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
@@ -98,12 +98,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     store,
                     embedder=embedder,
                     face_analyzer=face,
-                    minimum_relevance=0.0,
-                    ambiguity_margin=0.0,
+                    config=MemoryConfig(minimum_relevance=0.0, ambiguity_margin=0.0),
                 ) as memory:
                     media = write_unit(memory, unit)
                     for memory_id in media:
-                        memory.faces(memory_id)
+                        memory.perceive(memory_id)
                     with memory._store.recall._connections.connection() as connection:
                         totals["identities"] += connection.execute(
                             "SELECT COUNT(*) FROM identities"
@@ -125,7 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     totals["media_records"] += len(media)
                     for question, gold, _reference in unit.questions:
                         totals["questions"] += 1
-                        hits = memory.search(question, limit=LIMIT)
+                        hits = memory.search(question, limit=LIMIT).hits
                         window_ids = tuple(hit.id for hit in hits)
                         window = {str(hit.metadata.get("source_id")) for hit in hits}
                         missing = gold - window

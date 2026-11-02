@@ -21,6 +21,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryOperation,
@@ -126,7 +127,7 @@ def _memory(path: Path) -> tuple[Memory, _RankedEmbedder, _ClaimFormer]:
     embedder = _RankedEmbedder()
     former = _ClaimFormer()
     return (
-        Memory(path, embedder=embedder, former=former, minimum_relevance=0),
+        Memory(path, embedder=embedder, former=former, config=MemoryConfig(minimum_relevance=0)),
         embedder,
         former,
     )

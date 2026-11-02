@@ -17,7 +17,7 @@ from mindbridge.infrastructure.local.store._codec import (
 )
 from mindbridge.infrastructure.local.store._identity import resolve_identity_id
 from mindbridge.infrastructure.local.store._membership import IDENTITY_SCOPE_CLAUSE
-from mindbridge.infrastructure.local.store.rows import require_aware
+from mindbridge.infrastructure.local.store.errors import StoredDataError
 from mindbridge.types import (
     EvidenceBasis,
     MemoryContext,
@@ -26,31 +26,6 @@ from mindbridge.types import (
     SpatialAnchor,
     SpatialContext,
 )
-
-
-def require_scope_axes(
-    *,
-    valid_at: datetime | None,
-    known_at: datetime | None,
-    near: SpatialContext | None,
-    radius_m: float | None,
-) -> None:
-    """Validate the scope axes a hydration reads under, for callers that may not reach one."""
-    if (near is None) != (radius_m is None):
-        raise ValueError("near and radius_m must be supplied together")
-    if near is not None and not isinstance(near, SpatialContext):
-        raise ValueError("near must be a SpatialContext")
-    if radius_m is not None and (
-        isinstance(radius_m, bool)
-        or not isinstance(radius_m, int | float)
-        or not math.isfinite(float(radius_m))
-        or radius_m < 0
-    ):
-        raise ValueError("radius_m must be a non-negative finite number")
-    if valid_at is not None:
-        require_aware(valid_at, "valid_at")
-    if known_at is not None:
-        require_aware(known_at, "known_at")
 
 
 def memory_in_scope(
@@ -148,7 +123,6 @@ def select_memory_contexts(  # noqa: C901 - one authoritative bitemporal selecti
     """
     if not memory_ids:
         return {}, frozenset()
-    require_scope_axes(valid_at=valid_at, known_at=known_at, near=near, radius_m=radius_m)
     version_clause, version_parameters = version_time_clause(
         valid_at=valid_at, known_at=known_at, active_only=active_only, alias="candidate"
     )
@@ -198,27 +172,30 @@ def select_memory_contexts(  # noqa: C901 - one authoritative bitemporal selecti
     for memory_id, row in selected.items():
         spatial: SpatialContext | None = None
         if row["spatial_frame_id"] is not None:
-            orientation = None
-            if row["spatial_qx"] is not None:
-                orientation = (
-                    float(row["spatial_qx"]),
-                    float(row["spatial_qy"]),
-                    float(row["spatial_qz"]),
-                    float(row["spatial_qw"]),
+            try:
+                orientation = None
+                if row["spatial_qx"] is not None:
+                    orientation = (
+                        float(row["spatial_qx"]),
+                        float(row["spatial_qy"]),
+                        float(row["spatial_qz"]),
+                        float(row["spatial_qw"]),
+                    )
+                spatial = SpatialContext(
+                    frame_id=row_text(row, "spatial_frame_id"),
+                    anchor=SpatialAnchor(row_text(row, "spatial_anchor")),
+                    x=float(row["spatial_x"]),
+                    y=float(row["spatial_y"]),
+                    z=float(row["spatial_z"]),
+                    orientation_xyzw=orientation,
+                    position_uncertainty_m=(
+                        None
+                        if row["spatial_uncertainty_m"] is None
+                        else float(row["spatial_uncertainty_m"])
+                    ),
                 )
-            spatial = SpatialContext(
-                frame_id=row_text(row, "spatial_frame_id"),
-                anchor=SpatialAnchor(row_text(row, "spatial_anchor")),
-                x=float(row["spatial_x"]),
-                y=float(row["spatial_y"]),
-                z=float(row["spatial_z"]),
-                orientation_xyzw=orientation,
-                position_uncertainty_m=(
-                    None
-                    if row["spatial_uncertainty_m"] is None
-                    else float(row["spatial_uncertainty_m"])
-                ),
-            )
+            except ValueError as error:
+                raise StoredDataError("stored spatial context is invalid") from error
         if near is not None:
             assert radius_m is not None
             if (
@@ -264,32 +241,35 @@ def read_memory_contexts(
         retired_at = optional_datetime_from_row(row, "retired_at")
         if known_at is not None and retired_at is not None and known_at < retired_at:
             retired_at = None
-        contexts[memory_id] = MemoryContext(
-            kind=MemoryKind(row_text(row, "kind")),
-            basis=EvidenceBasis(row_text(row, "basis")),
-            confidence=float(row["confidence"]),
-            valid_from=optional_datetime_from_row(row, "valid_from"),
-            valid_until=optional_datetime_from_row(row, "valid_until"),
-            recorded_at=parse_datetime(row_text(row, "recorded_at")),
-            visible=bool(int(row["visible"])),
-            retired_at=retired_at,
-            lineage_id=row_text(row, "lineage_id"),
-            source_id=optional_row_text(row, "source_id"),
-            subject=optional_row_text(row, "subject"),
-            predicate=optional_row_text(row, "predicate"),
-            value=optional_row_text(row, "value"),
-            evidence_ids=tuple(evidence.get(memory_id, ())),
-            supersedes_id=optional_row_text(row, "supersedes_id"),
-            model_id=optional_row_text(row, "model_id"),
-            recipe=optional_row_text(row, "recipe"),
-            identity_id=optional_row_text(row, "identity_id"),
-            spatial=spatial,
-            cue_modality=(
-                None if row["cue_modality"] is None else Modality(row_text(row, "cue_modality"))
-            ),
-            valence=None if row["valence"] is None else float(row["valence"]),
-            arousal=None if row["arousal"] is None else float(row["arousal"]),
-        )
+        try:
+            contexts[memory_id] = MemoryContext(
+                kind=MemoryKind(row_text(row, "kind")),
+                basis=EvidenceBasis(row_text(row, "basis")),
+                confidence=float(row["confidence"]),
+                valid_from=optional_datetime_from_row(row, "valid_from"),
+                valid_until=optional_datetime_from_row(row, "valid_until"),
+                recorded_at=parse_datetime(row_text(row, "recorded_at")),
+                visible=bool(int(row["visible"])),
+                retired_at=retired_at,
+                lineage_id=row_text(row, "lineage_id"),
+                source_id=optional_row_text(row, "source_id"),
+                subject=optional_row_text(row, "subject"),
+                predicate=optional_row_text(row, "predicate"),
+                value=optional_row_text(row, "value"),
+                evidence_ids=tuple(evidence.get(memory_id, ())),
+                supersedes_id=optional_row_text(row, "supersedes_id"),
+                model_id=optional_row_text(row, "model_id"),
+                recipe=optional_row_text(row, "recipe"),
+                identity_id=optional_row_text(row, "identity_id"),
+                spatial=spatial,
+                cue_modality=(
+                    None if row["cue_modality"] is None else Modality(row_text(row, "cue_modality"))
+                ),
+                valence=None if row["valence"] is None else float(row["valence"]),
+                arousal=None if row["arousal"] is None else float(row["arousal"]),
+            )
+        except ValueError as error:
+            raise StoredDataError("stored memory context is invalid") from error
     return contexts, semantic_ids
 
 

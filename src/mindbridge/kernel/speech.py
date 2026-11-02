@@ -65,19 +65,10 @@ class Speech(Traced):
         return self._transcribable_assets(assets)
 
     def transcript_fallback(self, assets: Sequence[StoredAsset]) -> frozenset[Modality]:
-        """Modalities a derived transcript can rescue for an embedder that cannot take them.
-
-        Empty when a `SpeechBackend` is configured: that composition indexes the same text through
-        the `index_speech` opt-in instead, so claiming the rescue here would let a write past the
-        guard and then fail later with no transcript in hand.
-        """
-        if not self.derives_transcripts(assets):
-            return frozenset()
-        return self._backends.transcription_capabilities & {Modality.AUDIO, Modality.VIDEO}
+        """Any configured speech analyzer can provide a transcript representation."""
+        return frozenset(Modality(asset.modality) for asset in self._transcribable_assets(assets))
 
     def derives_transcripts(self, assets: Sequence[StoredAsset]) -> bool:
-        # A SpeechBackend indexes the same text through the explicit `index_speech` opt-in, so its
-        # add-time analysis cost stays behind that flag instead of being taken twice.
         return not isinstance(self._backends.transcriber, SpeechBackend) and bool(
             self._transcribable_assets(assets)
         )
@@ -88,7 +79,8 @@ class Speech(Traced):
         operation: OperationAssets,
     ) -> PreparedContent:
         speech_assets = self.answer_speech_assets(prepared.assets)
-        self.recognize(speech_assets, operation, reversible=True)
+        if any(asset.asset_id not in operation.speech_segments for asset in speech_assets):
+            self.recognize(speech_assets, operation)
         base = without_speech_identities(
             prepared.text,
             tuple(asset.asset_id for asset in speech_assets),
@@ -101,12 +93,56 @@ class Speech(Traced):
             )
         return replace(prepared, text=text)
 
+    def prepare_index(self, assets: Sequence[StoredAsset], operation: OperationAssets) -> None:
+        """Infer and preview identities without publishing changes before embedding succeeds."""
+        selected = self.answer_speech_assets(assets)
+        missing = []
+        for asset in selected:
+            cached = self._store.media.read_speech(
+                asset.asset_id, space_id=self._backends.transcription_space
+            )
+            if cached is None:
+                missing.append(asset)
+            else:
+                operation.speech_segments[asset.asset_id] = cached
+        pending = tuple(
+            asset for asset in missing if asset.asset_id not in operation.speech_updates
+        )
+        if pending:
+            analyses = self._analyze_speech(
+                tuple(self._hydrator.asset_ref(asset) for asset in pending)
+            )
+            operation.speech_updates.update(
+                (asset.asset_id, analysis)
+                for asset, analysis in zip(pending, analyses, strict=True)
+            )
+        plans = self._store.media.plan_speech(
+            tuple((asset, operation.speech_updates[asset.asset_id]) for asset in missing),
+            model_id=self._backends.transcriber.transcription_model
+            if self._backends.transcriber is not None
+            else "none",
+            space_id=self._backends.transcription_space,
+            minimum_similarity=self._settings.speaker_similarity,
+            minimum_margin=self._settings.speaker_margin,
+        )
+        operation.speech_plans[:] = plans
+        operation.speech_segments.update((plan.asset.asset_id, plan.segments) for plan in plans)
+        for asset in selected:
+            operation.transcripts[asset.asset_id] = "\n".join(
+                segment.text for segment in operation.speech_segments[asset.asset_id]
+            )
+
+    @staticmethod
+    def complete_index(operation: OperationAssets) -> None:
+        """A committed plan is already durable and must not be enrolled a second time."""
+        for plan in operation.speech_plans:
+            operation.speech_updates.pop(plan.asset.asset_id, None)
+        operation.speech_plans.clear()
+
     def recognize(
         self,
         assets: Sequence[StoredAsset],
         operation: OperationAssets,
-        *,
-        reversible: bool = False,
     ) -> None:
         if not isinstance(self._backends.transcriber, SpeechBackend):
             raise ModelError(
@@ -147,26 +183,14 @@ class Speech(Traced):
                 for asset, analysis in zip(missing, analyses, strict=True):
                     self._store.media.write_asset(asset)
                     operation.persisted.add(asset.asset_id)
-                    if reversible:
-                        segments, rollback = self._store.media.write_speech_reversible(
-                            asset.asset_id,
-                            analysis,
-                            model_id=self._backends.transcriber.transcription_model,
-                            space_id=self._backends.transcription_space,
-                            minimum_similarity=self._settings.speaker_similarity,
-                            minimum_margin=self._settings.speaker_margin,
-                        )
-                        if rollback is not None:
-                            operation.speech_rollbacks.append(rollback)
-                    else:
-                        segments = self._store.media.write_speech(
-                            asset.asset_id,
-                            analysis,
-                            model_id=self._backends.transcriber.transcription_model,
-                            space_id=self._backends.transcription_space,
-                            minimum_similarity=self._settings.speaker_similarity,
-                            minimum_margin=self._settings.speaker_margin,
-                        )
+                    segments = self._store.media.write_speech(
+                        asset.asset_id,
+                        analysis,
+                        model_id=self._backends.transcriber.transcription_model,
+                        space_id=self._backends.transcription_space,
+                        minimum_similarity=self._settings.speaker_similarity,
+                        minimum_margin=self._settings.speaker_margin,
+                    )
                     operation.speech_segments[asset.asset_id] = segments
         analyzed = {asset.asset_id for asset in missing}
         for asset in speech_assets:
@@ -183,17 +207,24 @@ class Speech(Traced):
         prepared: PreparedContent,
         operation: OperationAssets,
     ) -> PreparedContent:
-        self.cache_audio_transcripts(prepared.assets, operation)
+        self.cache_audio_transcripts(
+            tuple(
+                asset
+                for asset in prepared.assets
+                if not any(
+                    f"[{kind}:{asset.asset_id}]\n" in prepared.text
+                    for kind in ("transcript", "speech identities")
+                )
+            ),
+            operation,
+        )
         assets = tuple(
             replace(asset, transcript=operation.transcripts[asset.asset_id])
             if asset.asset_id in operation.transcripts
             else asset
             for asset in prepared.assets
         )
-        text = derived_text(
-            prepared.text,
-            tuple(asset for asset in assets if asset.asset_id not in operation.speech_segments),
-        )
+        text = derived_text(prepared.text, assets)
         if len(text) > MAX_TEXT_CHARACTERS:
             raise ModelError(
                 "audio transcription exceeded the supported text length", reason="payload_too_large"

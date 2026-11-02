@@ -5,7 +5,7 @@ that every behavior below is implemented or public. [Architecture](architecture.
 implementation invariants, and the API references own current contracts.
 
 Scheduling remains host authority: `capture()` does not schedule `settle()`, and configuring a
-consolidator does not start a loop. A host may call `deliberate()` explicitly or enable the
+consolidator does not start a loop. A host may call `consolidate()` explicitly or enable the
 [serving-process timer](configuration.md#running-the-loop-inside-a-server-process). That timer
 does not add a network control-plane route or settle captured records.
 
@@ -80,7 +80,7 @@ their behalf rather than a setting a model can reach:
 | Authority | Call | Reversible by |
 | --- | --- | --- |
 | Consent | `record_consent(identity_id, state, note=None)`, read back by `consent(identity_id)` | `rollback()` of its `CONSENT` row, or a later statement that supersedes it |
-| Identity naming | `register_identity` / `register_speaker` | `rollback()` of its `IDENTIFY` row |
+| Identity naming | `register_identity` | `rollback()` of its `IDENTIFY` row |
 | Correction | `rollback(operation_id)`, and `unlink_identity` for a wrong cross-modal merge | Itself: `rollback()` of the split's `CORRECT` row re-merges |
 | Export | `export(identity_id=...)` or `export(memory_ids=...)` | Nothing to reverse; it reads only |
 | Retention | the declarative `retention` policy, applied by `apply_retention(dry_run=False)` | Nothing: it is physical deletion, and `dry_run=True` is the review step |
@@ -191,7 +191,7 @@ counted itself, with its own reversible log row, and a proposed `MERGE` is rejec
 durable trigger in front of that loop: it derives due work -- new independent evidence, a lineage
 that contradicts itself, a record confirmed since it was last weighed, a question recall answered
 with nothing, a store over its declared budget, an operator-approved idle window -- from committed
-state, so deliberation is scheduled on evidence rather than on a clock. `deliberate()` is the loop
+state, so deliberation is scheduled on evidence rather than on a clock. `consolidate_pending()` is the loop
 itself, running those two halves to a fixed point and reporting what the run cost and yielded, and
 `apply(operation)` is the same kernel validation for an operation a host supplies, which makes
 replay of a logged sequence a public path. Neither a clock nor a candidate that always comes back
@@ -296,7 +296,7 @@ grant the same agent the same authority sets both switches the same way. Neither
 reaches the control plane -- `consolidation_candidates`, `consolidate`, `forget`, `rollback`, and
 `operations` stay SDK-only regardless of any switch. What runs the loop for a deployment that only
 speaks REST or MCP is the serving process itself: the `deliberate_every` both `create_app` and
-`build_mcp_server` take runs `deliberate()` on an interval inside the server lifespan, which is
+`build_mcp_server` take runs `consolidate_pending()` on an interval inside the server lifespan, which is
 the only place that can, because one physical `data_dir` has one live owner and the
 `QUERY_FAILURE` rows those routes and tools write are readable nowhere else. See
 [the configuration reference](configuration.md#running-the-loop-inside-a-server-process).
@@ -390,7 +390,7 @@ defaults or justify superiority claims.
    without a Python app loader, kernel rejection of proposals that name records the backend was
    not shown, of partial multi-target operations, and of proposals whose targets moved before the
    commit, and native media in the bundled consolidation backend's input. The loop is now an
-   entity rather than two primitives a host joins: `deliberate()` and `mindbridge deliberate`
+   entity rather than two primitives a host joins: `consolidate_pending()` and `mindbridge consolidate-pending`
    run candidates through consolidation to a fixed point, all six triggers are produced from
    committed state rather than named in an enum -- `QUERY_FAILURE` from recorded empty recalls,
    `PRESSURE` from a declared record budget, `IDLE` from an operator-declared window -- and every
@@ -425,10 +425,10 @@ defaults or justify superiority claims.
    it serves; and the three switches
    `build_mcp_server(identity_operations=, embodied_operations=, write_operations=)`, which
    withhold naming and erasing a person, the two analysis tools -- and with them the
-   cross-modal identity merge `analyze_faces` commits -- and adding, deleting and reinforcing.
+   cross-modal identity merge `perceive_memory` commits -- and adding, deleting and reinforcing.
    Each withholds by never registering the group, so a withheld tool is unknown rather than
    refused, and the instructions name what is missing. `ask_memory` reaches the same face
-   recognition `analyze_faces` uses to answer a question over a photo or video, so
+   recognition `perceive_memory` uses to answer a question over a photo or video, so
    `embodied_operations=False` also passes `Memory.ask(..., link_identities=False)`: recognition
    may still run, but the corroborated bind never commits. All three False therefore leaves
    exactly the five read tools with no path to merge authority, which is recall and compile

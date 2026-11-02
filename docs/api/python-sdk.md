@@ -24,7 +24,7 @@ with Memory(
     ),
 ) as memory:
     record = memory.add("The spare key is in the blue toolbox.")
-    hits = memory.search("Where is the spare key?")
+    hits = memory.search("Where is the spare key?").hits
 ```
 
 Or let the bundled declarative configuration construct its adapters:
@@ -66,6 +66,12 @@ starts. Configure provider timeouts because a running synchronous call cannot be
 
 ### Construction
 
+Pass computation backends directly and put expert policies in the existing `MemoryConfig`:
+`Memory(path, embedder=model, config=MemoryConfig(query_vision=True))`.
+`Memory.from_plugins` accepts an existing `MemoryPlugins` bundle and passes the same policy
+object to this constructor. It does not flatten policy fields into a second set of keywords.
+The declarative path uses the same configuration and validation boundary.
+
 ```text
 Memory(
     data_dir: str | Path = ".mindbridge",
@@ -78,42 +84,14 @@ Memory(
     face_analyzer: FaceBackend | None = None,
     former: FormationBackend | None = None,
     consolidator: ConsolidationBackend | None = None,
-    independent_evidence: bool = False,
-    index_speech: bool = True,
-    index_quantization: IndexQuantization = IndexQuantization.NONE,
-    retrieval_mode: RetrievalMode = RetrievalMode.HYBRID,
-    minimum_relevance: float = 0.10,
-    ambiguity_margin: float = 0.01,
-    evidence_budget_chars: int | None = 24_000,
-    recall_planning: bool = False,
-    recall_query_expansion: bool = False,
-    recall_max_queries: int = 6,
-    query_vision: bool = False,
-    recall_set_budget_chars: int = 30_000,
-    recall_set_max_rows: int = 60,
-    recall_rounds: int = 2,
-    evidence_expansion: bool = False,
-    evidence_expansion_max_rows: int = 24,
-    decay_half_life_days: float | None = None,
-    reinforce_on_answer: bool = True,
-    formation_history_max_rows: int = 0,
-    formation_history_budget_chars: int = 6000,
-    speaker_similarity: float = 0.78,
-    speaker_margin: float = 0.05,
-    face_similarity: float = 0.363,
-    face_margin: float = 0.05,
-    identity_link_min_assets: int = 2,
-    memory_budget_records: int | None = None,
-    query_failure_window_seconds: float = 3600.0,
-    query_failure_history: int = 512,
-    retention: RetentionPolicy = RetentionPolicy(),
+    config: MemoryConfig | None = None,
     tracer: opentelemetry.trace.Tracer | None = None,
 ) -> None
 ```
 
 `embedder` is required. With a speech-capable `SpeechBackend`, the default `index_speech=True`
 stores transcripts and resolved speaker names with new memories; setting it to `False` defers that
-analysis until `speech()` is called. `index_quantization` changes only the rebuildable vector
+analysis until `perceive()` is called. `index_quantization` changes only the rebuildable vector
 index; supported values are `none`, `fp16`, `int8`, and `rabitq`. Zvec 0.8 INT8 uses unrotated
 cosine quantization; recognized 0.7 projections rebuild from stored embeddings on first open.
 `retrieval_mode` selects the
@@ -148,9 +126,16 @@ the backend returns aligned finite raw scores. `SearchHit.score` remains the exi
 score and need not decrease with rank. See [semantic reranking](../configuration.md#semantic-reranking)
 for the bundled adapter and trace behavior.
 `query_vision=True` uses an already-configured image-capable `vision_describer` to add temporary
-query-image description and OCR routes to `search`, `ask`, and `compile`. Native query media stay
+query-image/video description and OCR routes to `search`, `ask`, and `compile`. Native query media stay
 intact; descriptions are cached only inside the operation and create no durable memory, identity,
-or caption rows. A missing backend or a failed description leaves the original routes in place.
+or caption rows. A missing backend or a failed supplemental description leaves the original
+routes in place. Required caption or transcript fallback for a model that cannot accept original
+media runs automatically, independently of `query_vision`. The same source-backed conversion is
+used for query embedding, answer questions/evidence, and formation; unsupported content without a
+usable derivation raises `unsupported_modality`.
+If a required conversion fails, its original `ModelError` propagates. Optional description
+failures may be skipped, but the operation retains the error so a later stage requiring that same
+description reports it without another model attempt.
 `memory_budget_records` and the query-failure settings govern control-plane candidates.
 `retention` is inert until `apply_retention()` runs. `independent_evidence` selects an experimental
 store-pinned projection and requires a fresh directory when changing an existing store's policy.
@@ -161,9 +146,11 @@ slot, which stays off unless it is configured, or supplied directly through `Mem
 [configuration](../configuration.md#visual-descriptions). The bundled `OpenAIModels.describe`
 captions one batch per chat completion, sends a video as locally decoded stills rather than
 the file (`vision_video_frames=4`, configurable from 2 to 64), accepts only exactly one non-empty
-caption per input, and retries one malformed reply
-once. A describer failure never fails the write: the memory is stored without a caption and the
-batch is counted on the vision span as `mindbridge.vision.failed_batches`.
+caption per input, and retries one malformed reply once. Transport retries use the SDK client's
+budget; the kernel adds no retry loop. If native media or a transcript supplies a usable
+representation, description failure permits storage without a caption. If caption conversion is
+required, the write raises the original error. Failed batches are counted on the vision span as
+`mindbridge.vision.failed_batches`.
 
 `former` proposes typed memories after a source observation commits; omitting it keeps ordinary
 add behavior and makes no formation model call. The bundled OpenAI former is selected by the
@@ -193,7 +180,7 @@ which with the default budget is usually more than `limit` on a corpus of short 
 Structured output instead reports only the model-declared support subset; `Memory.ask` and
 `ask_stream` retain the kernel's selected-evidence order. Those labels are validated against
 the fitted pool but do not establish semantic support.
-Use `search` or `search_with_trace` to evaluate the retrieval ranking itself.
+Use `search` to evaluate the retrieval ranking itself.
 The per-setting semantics and calibration notes live in
 [configuration](../configuration.md#local-memory-settings).
 
@@ -245,7 +232,9 @@ resolve_memory_config(
 ```
 
 `MemoryPlugins` contains `embedder` plus optional `answerer`, `transcriber`, `vision_describer`,
-`face_analyzer`, `former`, and `consolidator`. `MemoryConfig` contains the value-only constructor
+`face_analyzer`, `former`, `consolidator`, and `reranker`. It is a value-only bundle; all
+construction paths validate plugin protocols and declarations at assembly, before opening storage.
+`MemoryConfig` contains the value-only constructor
 settings. `MemoryComposition` contains `data_dir`, `plugins`, and
 `settings`; call `close()` unless its plugins have been transferred to a `Memory`.
 
@@ -375,8 +364,10 @@ timer, or after a capture burst.
 Pass `memory_ids` to settle only those records. Naming a record is the host asking for it by hand,
 so `max_attempts` is ignored for that call: that is how a record parked at the ceiling is retried,
 how one is quarantined by never naming it, and how one is settled ahead of the queue. IDs that are
-not queued are skipped. One settlement runs at a time per `Memory`; a concurrent `settle` waits
-rather than running the same models twice, and then usually finds the queue already drained.
+not queued are skipped. A record is claimed once while it settles; another caller naming that
+record waits and rechecks its queue entry. Disjoint records progress concurrently with bounded
+workers. Plain text without formation is embedded in a batch. Index failure leaves the queue and
+outbox pending; retry flushes committed vectors without re-embedding.
 
 `pending_captures` returns up to `limit` records whose deferred work is not finished, oldest first,
 as `PendingCapture` values (`memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting`).
@@ -396,18 +387,8 @@ search(
     occurred_from: datetime | None = None,
     occurred_until: datetime | None = None,
     scope: RetrievalScope | None = None,
-) -> tuple[SearchHit, ...]
-
-search_with_trace(
-    query: ContentInput,
-    *,
-    limit: int = 10,
-    memory_type: MemoryType | None = None,
-    reference_at: datetime | None = None,
-    occurred_from: datetime | None = None,
-    occurred_until: datetime | None = None,
-    scope: RetrievalScope | None = None,
-) -> TracedSearchResult
+    explain: bool = False,
+) -> SearchResult
 
 ask(
     question: ContentInput,
@@ -449,7 +430,8 @@ results to one matching coordinate frame and anchor. SQLite reapplies every scop
 candidate retrieval; see
 [valid time and transaction time](../memory-types-time-and-decay.md#valid-time-and-transaction-time).
 
-`search_with_trace(...).hits` equals the corresponding `search(...)` result. Its bounded trace
+`search(...)` always returns `SearchResult`: ranked records are in `result.hits` and
+`result.trace` is `None` unless `explain=True`. Enabling diagnostics preserves the same hits. Its trace
 contains identifiers, score components, ranks, and rejection reasons, but no query, content,
 metadata, media, vectors, paths, or model output. `ask` requires an answerer and returns only the
 retrieved hits the answerer actually used. A candidate's effective dense score can come from an
@@ -495,7 +477,7 @@ rendering complete. See the [recall recipe](../grounded-multimodal-recall.md#bou
 
 `ask` may run face recognition on a retrieved photo or video to identify who appears in it before
 answering. With the default `link_identities=True`, a voice-and-face pair corroborated across
-enough assets is fused into one identity the same way `analyze_faces` fuses it: a `MERGE` row in
+enough assets is fused into one identity the same way `perceive_memory` fuses it: a `MERGE` row in
 the operation log, reversible by `rollback()`. `link_identities=False` still runs face
 recognition to answer the question, but that bind is never committed -- no `MERGE` row, no new
 identity link -- so a caller with recall access alone cannot acquire merge authority through
@@ -522,8 +504,10 @@ the terminal chunk releases everything the answer held, so stopping there needs 
 abandoning the stream mid-answer leaves one operation open until the generator is closed or
 collected, and `close()` waits for open operations.
 
-Streaming is a property of the composed backend, reported by
-`capabilities.streaming_generation`. It changes when the answer becomes visible, not how long it
+`ask_stream` is available whenever an answerer is configured. A backend implementing
+`StreamingGenerationBackend` delivers incremental deltas; other backends deliver one complete
+answer delta. Routers and evidence compositions preserve that behavior.
+Incremental generation changes when the answer becomes visible, not how long it
 takes: a model that reasons before it answers spends most of its generation time before the first
 visible token, and `ask_stream` recovers only what follows it. The
 `mindbridge.model.generation` span records `mindbridge.model.time_to_first_token` either way, so
@@ -609,9 +593,11 @@ budget bought and skipped past the deadline, and no budget, because only the IDs
 ```text
 capabilities -> MemoryCapabilities  # property
 get(memory_id: str) -> MemoryRecord
-speech(memory_id: str) -> tuple[SpeakerSegment, ...]
-faces(memory_id: str) -> tuple[FaceObservation, ...]
-register_speaker(speaker_id: str, name: str, *, relationship: str | None = None) -> None
+perceive(
+    memory_id: str,
+    *,
+    kinds: frozenset[PerceptionKind] | None = None,
+) -> PerceptionResult
 register_identity(identity_id: str, name: str, *, relationship: str | None = None) -> None
 identity(identity_id: str) -> IdentityProfile | None
 record_consent(
@@ -637,12 +623,22 @@ optimize() -> None
 close() -> None
 ```
 
-`get` raises `MemoryNotFoundError` for an unknown ID. `speech` and `faces` return `()` when the
-record has no relevant media and require their respective configured backend otherwise.
+`get` raises `MemoryNotFoundError` for an unknown ID. `perceive` returns a `PerceptionResult`
+with separate `speech: tuple[SpeakerSegment, ...]` and `faces: tuple[FaceObservation, ...]`.
+With `kinds=None`, configured plugins are selected automatically for applicable assets; missing
+plugins contribute an empty collection and an explicit coverage reason. Explicit `kinds=frozenset({"speech"})` or `{"faces"}`
+restricts recognition and reports `ModelError` if a required backend or modality is unavailable.
+`coverage` contains one `PerceptionCoverage(kind, asset_id, reason)` per kind and asset.
+A null reason means successful analysis or reuse of cached analysis, including zero detections;
+`processed` exposes that as a Python property. Skips report `not_requested`,
+`backend_not_configured`, or `unsupported_modality`. Partial coverage therefore remains visible.
+Text-only records have no assets and return empty collections and coverage. Independent speech and face work overlaps before
+corroborated links are applied, so both results refer to the same local identity graph.
+
 Registration assigns or replaces a printable name, and optionally a relationship, for an
-existing local identity; both raise `IdentityNotFoundError` for an unknown ID. There is no
+existing local identity; it raises `IdentityNotFoundError` for an unknown ID. There is no
 enrollment call that creates a person from a photograph or a voice sample. Register an identity
-the recognizers have already observed instead: add the media, read `faces()` or `speech()` for its
+the recognizers have already observed instead: add the media, read `perceive()` for its
 `identity_id`, then name it. Omitting `relationship` on a later call leaves any recorded
 relationship intact, so renaming never silently discards it, and there is deliberately no way to
 clear one. Registration writes a typed naming assertion and projects the profile from it, so it
@@ -651,7 +647,7 @@ also adds a searchable memory record, appears in `operations()`, and is reversib
 [typed assertions](../memory-types-time-and-decay.md#naming-a-person-is-a-typed-assertion).
 `identity` resolves an ID through any merge alias and returns what has been registered,
 so an observation captured before a merge still reaches the surviving person. The merge itself is
-`faces()`'s side effect and is logged: a corroborated cross-modal bind commits a `MERGE` row whose
+`perceive()`'s side effect and is logged: a corroborated cross-modal bind commits a `MERGE` row whose
 `model_id` is the face recognizer and whose `recipe` is the corroboration rule, so `operations()`
 shows what fused two people and `rollback()` splits them apart again. `unlink_identity`
 reverses one face-and-voice merge, returning the restored ID or `None` when the merge is not
@@ -700,7 +696,7 @@ difference between them is audit history, not policy:
 
 | Restrained | Untouched |
 | --- | --- |
-| `faces()`, `speech()`, and `ask(link_identities=True)` stop adding new face and voice exemplars to this person's template | Recognition against the exemplars already held, so an existing memory still answers questions about them |
+| `perceive()` and `ask(link_identities=True)` stop adding new face and voice exemplars to this person's template | Recognition against the exemplars already held, so an existing memory still answers questions about them |
 | The corroborated cross-modal `MERGE` that binds one voice to one face, on either side of the pair | Their memories, media, and transcripts, which record an event rather than a person |
 | `compile()` leaves them out of the bundle's `actors` and reports a `CONSENT_WITHHELD` unknown | Every other bundle section, so evidence they appear in is still selectable |
 
@@ -786,7 +782,12 @@ consolidate(
     trigger: MemoryTrigger = MemoryTrigger.MANUAL,
 ) -> ConsolidationReport
 
-deliberate(*, limit: int = 32, max_rounds: int = 4, idle: bool = False) -> DeliberationReport
+consolidate_pending(
+    *,
+    limit: int = 32,
+    max_rounds: int = 4,
+    idle: bool = False,
+) -> ConsolidationReport
 
 apply(operation: MemoryOperation) -> MemoryOperationRecord
 record_outcome(operation_id: int, outcome: MemoryOutcome, *, note: str | None = None) -> bool
@@ -798,7 +799,7 @@ operations(*, limit: int = 100) -> tuple[MemoryOperationRecord, ...]
 
 `consolidation_candidates` is the durable trigger: it answers "what needs deliberation?" from
 state the store already committed, with no queue, timer, or scheduler behind it. Hand a row's
-`memory_ids` straight to `consolidate(evidence_ids=..., trigger=...)`, or let `deliberate` do it.
+`memory_ids` straight to `consolidate(evidence_ids=..., trigger=...)`, or call `consolidate_pending()` to run the candidate loop.
 Rows are interleaved across triggers to share the output window. If `limit` is smaller than the
 number of active trigger groups, earlier groups can still occupy every slot; this is not a
 scheduler with a bounded waiting-time guarantee. It needs no consolidation backend and holds no
@@ -846,15 +847,14 @@ finds due work or proves none remains. The candidate limit bounds returned work,
 or log size; deleting history would lose audit, rollback, or already-weighed information rather
 than repair candidate selection.
 
-`deliberate` is the memory-management loop itself: one round asks `consolidation_candidates` what
-is due and runs `consolidate` over each row with the row's own trigger, and the loop repeats
-because applying operations can make further work due. It ends when nothing is due or after
-`max_rounds`; `DeliberationReport.rounds` says which, and `weighed`, `skipped`, `applied`,
-`rejected`, and `model_calls` say what the run cost and yielded. A backend that proposes nothing
-terminates the loop rather than spinning, and reports `rounds` and `weighed` non-zero with
-`applied` zero. With work due and no `consolidator` configured it raises the same
-`ModelError(reason="backend_not_configured")` `consolidate` does; with nothing due it is a no-op
-that reaches no backend. `mindbridge deliberate` is the same loop from the CLI.
+`consolidate()` runs one evidence pass selected by IDs, query, or the recent-record window.
+`consolidate_pending()` runs due candidates for up to `max_rounds` (default 4), deriving each
+trigger from the candidate. Its `idle=True` admits the host's approved idle window. Candidate
+scheduling parameters belong only to `consolidate_pending`; explicit triggers belong only to
+`consolidate`. Every mode returns `ConsolidationReport`, containing the applied
+operation records, rejected proposal/reason pairs, total evidence records `weighed`, executed
+`rounds`, inactive candidates `skipped`, and `model_calls`. `applied` is the length of `operations`.
+A zero-yield pass terminates without spinning. With no due candidates the loop calls no backend.
 
 `consolidate` requires a `consolidator` and gathers the evidence set from `evidence_ids`, else the
 active search result for `query`, else the newest `limit` active records. Forgotten and hidden
@@ -864,7 +864,7 @@ concurrent `add()`. Correctness does not rest on that lock: every proposal is re
 its own apply transaction and refused as `"stale"` if a target or cited source became ineligible
 while the backend was thinking. Kernel-committed identity operations -- the corroborated
 cross-modal merge, its
-`unlink_identity` split, `forget_identity`'s erasure, and `register_identity`/`register_speaker`'s
+`unlink_identity` split, `forget_identity`'s erasure, and `register_identity`'s
 naming assertion -- take the same formation lock around their own commit, so none of them lands
 while an apply pass is in progress either. The backend proposes `MemoryOperation` values; the kernel
 validates each one, applies only the effect its intent allows, and commits it in its own
@@ -891,7 +891,7 @@ support. These are model-declared dependencies, not a semantic proof of the summ
 | `CORRECT` | Every target in the window, existing, and derived (`kind != OBSERVATION`) | Retires current versions at transaction time | Carries a new version with the same interval |
 | `FORGET` | Every target in the window, existing, and not already forgotten | Sets `forgotten_at` | Clears `forgotten_at` |
 | `IDENTIFY` | Identity exists; every evidence ID shown and existing, each still standing; at least one cited memory contains that identity through a speech or face observation | Commits the `ENTITY` naming assertion the kernel builds from `claim`, recomputes `identities.name` and the indexed speech text | Retracts the assertion, restores the `superseded` version, and repaints both |
-| `MERGE` | Never accepted from a backend: rejected as `"unauthorized"` | Kernel-initiated only. `faces()` commits one under the corroboration rule below | Splits the absorbed identity back out and repaints both projections |
+| `MERGE` | Never accepted from a backend: rejected as `"unauthorized"` | Kernel-initiated only. `perceive()` commits one under the corroboration rule below | Splits the absorbed identity back out and repaints both projections |
 | `CONSENT` | Never accepted from a backend: rejected as `"unauthorized"` | Host-initiated only. `record_consent()` commits the `STATE` assertion the kernel builds from `consent` | Retracts the assertion and restores the `superseded` statement |
 
 `MERGE` is the one intent the kernel initiates and never accepts: a cross-modal identity merge
@@ -917,8 +917,7 @@ A name is not an inference to be corrected: reverse it with `rollback` of the `I
 asserted it, which is what recomputes the projection. `IDENTIFY` adds `"unknown_identity"` and
 `"identity_not_in_evidence"` to the rejection vocabulary. An `IDENTIFY` proposed by a backend
 carries basis `MODEL_INFERENCE`, so it stays hidden, and out of `identities.name`, until two
-independent evidence groups support it, exactly like an inferred `TRAIT`. `register_identity` and
-`register_speaker` are the host entry points for the same intent: they assert the name on the
+independent evidence groups support it, exactly like an inferred `TRAIT`. `register_identity` is the host entry point for the same intent: it asserts the name on the
 host's authority with basis `USER_STATEMENT`, cite no evidence, and are visible immediately.
 
 `CONSENT` is the mirror of `MERGE`: the one intent only a host initiates, refused as
@@ -1077,16 +1076,38 @@ to everything.
 
 `capabilities` publishes what the composition declared — the modality set each backend accepts,
 the embedding model, space and dimension, the optional model identities, and whether speaker
-recognition and streaming generation are available. It is a field read: it cannot raise or block.
+recognition is available. It also publishes `reranking` and `reranking_model`, including when
+reranking is absent. It is a field read: it cannot raise or block.
+It returns the immutable snapshot assembled when opening `Memory`, also used by internal routing.
+Changing plugin declarations requires closing and reopening the instance.
+`generation` lists atomic modalities; `generation_routes` lists the native coverage of each
+executable route. `supports_generation(frozenset({Modality.TEXT, Modality.IMAGE}))` checks whether
+one route covers that entire combination. Separate T+I and T+V routes do not advertise T+I+V.
+This is native coverage before source-backed caption/transcript conversion, which can fail.
+
+`embedding_routes` contains `EmbeddingRoute(modalities, max_assets_per_modality=None)` values.
+Unlike generation route coverage, each embedding route names one **exact** native combination.
+`None` means no declared per-modality asset count limit; `1` permits one image and one video,
+but not two images. Use `capabilities.supports_embedding(modalities, assets_per_modality=1)`
+to check a native aggregate; the count is the maximum number of assets of any one media kind.
+A text-only input has count zero. This uses the same immutable declaration as the embedding plane.
+An unsupported aggregate may still be indexed and searched through supported atomic keys.
+
+```python
+from mindbridge import Modality
+
+joint = frozenset({Modality.TEXT, Modality.IMAGE})
+native_joint = memory.capabilities.supports_embedding(joint)
+native_two_images = memory.capabilities.supports_embedding(joint, assets_per_modality=2)
+```
 
 ### AsyncMemory
 
 `AsyncMemory(memory: Memory)` wraps one open `Memory`, which it owns and closes;
 `AsyncMemory.from_plugins()` and `AsyncMemory.from_config()` take the same parameters as their
 `Memory` counterparts and open one for you. Its operations have the same keyword parameters,
-defaults, and result values as `Memory`. Finite operations are awaited and `close()` is asynchronous. It mirrors every
-listed operation except `forget_identity`; identity erasure currently requires synchronous
-`Memory`. Its stream boundary is:
+defaults, and result values as `Memory`, including `forget_identity`. Finite operations are awaited
+and `close()` is asynchronous. Its stream boundary is:
 
 ```text
 add_stream(
@@ -1192,13 +1213,13 @@ The supported names exported by `mindbridge` are:
 | --- | --- |
 | Memory | `Memory`, `AsyncMemory`, `AsyncOmniPrefetch`, `AsyncCaptureStream`, `AsyncAudioStream`, `AsyncVisionStream` |
 | Composition | `MindBridgeConfig`, `MemoryComposition`, `MemoryConfig`, `MemoryPlugins`, `resolve_memory_config` |
-| Content and records | `ContentAtom`, `ContentInput`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `MemoryContext`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `StreamCommit`, `TracedSearchResult`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextPresentation`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `DeliberationReport`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
+| Content and records | `ContentAtom`, `ContentInput`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `MemoryContext`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `StreamCommit`, `SearchResult`, `PerceptionResult`, `PerceptionCoverage`, `PerceptionSkipReason`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextPresentation`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
 | Delivery certificates | `ContextProof`, `ContextProofNode` |
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
-| Enums and literal aliases | `AnswerPolicy`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
-| Backend protocols and values | `EmbeddingBackend`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
-| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `OpenAIModels`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
-| Exceptions | `MindBridgeError`, `ValidationError`, `MemoryNotFoundError`, `SpeakerNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
+| Enums and literal aliases | `AnswerPolicy`, `PerceptionKind`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
+| Backend protocols and values | `EmbeddingBackend`, `EmbeddingRoute`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `VisionAnalysisBackend`, `EmbeddingInputSupport`, `MediaSelectionBackend`, `SourceMetadataBackend`, `GenerationMediaBackend`, `GenerationRoutingBackend`, `VisualDescription`, `SpeakerName`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
+| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `OpenAIModels`, `GenerationRouter`, `EmbeddingRouter`, `EvidenceGeneration`, `GazetteerEnricher`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
+| Exceptions | `MindBridgeError`, `ValidationError`, `MemoryNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
 
 ### Public values
 
@@ -1257,8 +1278,7 @@ The principal immutable values are:
 | `IdentityChange` | `identity_id`, `moved_ids` |
 | `MemoryOperationRecord` | `operation_id`, `operation`, `trigger`, `applied_at`, `model_id`, `recipe`, `created_ids`, `changed_ids`, `forgotten_ids`, `superseded`, `rolled_back_at`, `outcome`, `outcome_note` |
 | `ConsolidationCandidate` | `trigger`, `memory_ids`, `evidence_count` |
-| `ConsolidationReport` | `operations`, `rejected` as `(MemoryOperation, reason)` pairs, `weighed` |
-| `DeliberationReport` | `rounds`, `weighed`, `skipped`, `applied`, `rejected`, `model_calls` |
+| `ConsolidationReport` | `operations`, `rejected` as `(MemoryOperation, reason)` pairs, `weighed`, `rounds`, `skipped`, `model_calls`; `applied` property |
 | `StreamEvent` | `phase`, `item`, `stream_id` |
 | `StreamCommit` | `record`, `prefetch`, `retrieval_error`, `stream_id`, `pending_settlement` |
 | `PCMChunk` | `data`, `sample_rate_hz`, `channels`, `sample_width_bytes`, `stream_id`, `occurred_at` |
@@ -1269,10 +1289,13 @@ The principal immutable values are:
 | `VisionPartial` | `text`, `stream_id`, `occurred_at` |
 | `SceneBoundary` | `boundary`, `stream_id`, `occurred_at` |
 | `PrefetchResult` | `hits` |
-| `TracedSearchResult` | `hits`, `trace` |
+| `SearchResult` | `hits`, optional `trace=None` |
+| `PerceptionResult` | typed `speech` segments, `faces` observations and per-asset `coverage` |
+| `PerceptionCoverage` | `kind`, `asset_id`, optional skip `reason`; `processed` property |
 | `RetrievalTrace` | `candidates`, `candidate_limit`, `exhaustive`, `ambiguous` |
 | `RetrievalCandidateTrace` | `memory_id`, `index_ids`, `dense_relevance`, `dense_confidence`, `lexical_relevance`, `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`, `reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score=None`, `rank`, `rejected_by` |
-| `MemoryCapabilities` | `embedding`, `embedding_model`, `embedding_space`, `embedding_dimension`, `generation`, `transcription`, `vision`, `face`, `formation`, `generation_model`, `transcription_space`, `vision_model`, `face_model`, `formation_model`, `consolidation_model`, `speaker_recognition`, `streaming_generation`; `operations` property and `document()` |
+| `EmbeddingRoute` | exact `modalities`, `max_assets_per_modality=None` |
+| `MemoryCapabilities` | `embedding`, `embedding_model`, `embedding_space`, `embedding_dimension`, `embedding_routes`, `generation`, `generation_routes`, `transcription`, `vision`, `face`, `formation`, `reranking`, `reranking_model`, `generation_model`, `transcription_space`, `vision_model`, `face_model`, `formation_model`, `consolidation_model`, `speaker_recognition`; `operations` property, `supports_embedding(modalities, assets_per_modality=1)`, `supports_generation(modalities)` and `document()` |
 
 `abstained` is a protocol signal, not a refusal rate. The bundled grounded prompt asks for the
 opaque token `[insufficient_evidence]`, and the adapter reports `abstained` when that bracketed
@@ -1357,6 +1380,22 @@ VisionDescriptionBackend.describe(
     inputs: Sequence[ModelInput],
 ) -> tuple[str, ...]
 
+VisionAnalysisBackend.describe_analysis(
+    inputs: Sequence[ModelInput],
+) -> tuple[VisualDescription, ...]
+
+EmbeddingInputSupport.embedding_routes: tuple[EmbeddingRoute, ...]
+
+MediaSelectionBackend.select_media(
+    payload: Mapping[str, object], *, count: int, max_items: int,
+) -> tuple[int, ...]
+
+SourceMetadataBackend.enrich(assets: Sequence[AssetRef]) -> Mapping[str, dict[str, object]]
+
+GenerationMediaBackend.grounding_assets(
+    question: ModelInput, hits: Sequence[SearchHit],
+) -> tuple[AssetRef, ...]
+
 FormationBackend.form(
     inputs: Sequence[FormationInput],
 ) -> tuple[tuple[FormationProposal, ...], ...]
@@ -1387,6 +1426,35 @@ Model failures are explicit, with no silent fallback. `RetrievalCandidateTrace.r
 records the backend value separately from the bounded `final_score`, and remains `None` for unscored
 candidates. A reranker has no durable output space because its scores are request-local.
 
+`GenerationRouter(backends)` selects the narrowest backend that covers both the question and
+its evidence, preferring native support and breaking ties in caller order. `EmbeddingRouter(backends)`
+requires equal `embedding_space` and `embedding_dimension`, dispatches supported inputs and
+preserves result order. `EmbeddingInputSupport.embedding_routes` declares exact native combinations
+and per-modality asset count limits. Without this optional protocol, a backend declares that every
+non-empty subset of its atomic capabilities is supported, with no declared asset count limit.
+The kernel and public queries use the same routes, retaining supported atomic keys when an aggregate
+is unsupported. Sentence Transformers snapshots joint and message support during construction.
+`Memory` closes distinct nested resources
+once; these compositions also support direct `close()`.
+
+`GenerationRoutingBackend.select(question, hits, convertible=frozenset())` exposes request-local
+selection through an optional protocol. The answer plane uses it without depending on a concrete
+router class. `EvidenceGeneration` preserves this selection when wrapped around or inside a router.
+
+`EvidenceGeneration(backend, selector=None, enricher=None, media_max_items=2)` adds bounded media
+selection and source enrichment independently of the generator provider. `OpenAIModels` implements
+`MediaSelectionBackend` and optional `GenerationMediaBackend` admission;
+`GazetteerEnricher(OfflineGazetteer(...))` implements `SourceMetadataBackend`. This replaces the
+removed `generation_media_policy`, `generation_media_max_items` and `generation_gazetteer` adapter
+arguments. Existing declarative generation keys construct the composition automatically.
+`ModelInput.source_metadata` and `evidence_sources` are request context and do not affect embedding
+key equality. They contain untrusted metadata and original evidence used for omission accounting.
+
+`VisualDescription(text="", facts=(), speaker_names=())` contains an observation and explicit
+proposals. `SpeakerName(speaker_label, name)` refers only to a local `speaker_N` label. Plain caption
+strings have no naming authority. The kernel validates typed proposals, applies identity rules,
+and records reversible operations. Typed description caches recompute older formats.
+
 The kernel always forwards `answer_policy` and `exhaustive` to generation backends, including
 their default values. Recall planners receive `attempted`, including an empty string. A streaming
 backend yields text deltas and returns an `AnswerResult` as its generator completion value;
@@ -1400,8 +1468,19 @@ Required properties are `embedding_capabilities`, `embedding_model`, `embedding_
 `face_space`, and `face_analysis_space` for faces; `vision_capabilities`, `vision_model`, and
 `vision_space` for visual description; `formation_capabilities`, `formation_model`, and
 `formation_space` for formation; `consolidation_model` and `consolidation_recipe` for
-consolidation; and `generation_capabilities` for generation. Every base protocol except the
-optional streaming extension implements `close()`.
+consolidation; and `generation_capabilities` for generation. Resource-owning protocols implement `close()`; optional joint-input and transport-admission
+extensions add no resource of their own.
+
+`GenerationRoutingBackend` also publishes `generation_routes`, a non-empty tuple of native
+modality sets whose union matches its atomic declaration. Selection and capability inspection
+use these same route combinations; evidence wrappers preserve the declaration.
+
+Embedding adapters return model vectors after decoding their provider representation. The kernel
+validates count, dimension, numeric values and nonzero finite magnitude, then normalizes once for
+retrieval and persistence. Bundled OpenAI and Sentence Transformers adapters do not normalize
+again; direct `embed()` callers receive the model's vector scale. Storage retains its FP32
+representation checks. Sentence Transformers capability probes must return a boolean:
+`False` means unsupported, while probe exceptions remain failures.
 
 A `*_space` value identifies the whole derivation recipe, not the model: `vision_space` must change
 when a describer's prompt changes, because captions are cached per `(asset content, vision_space)`
@@ -1498,7 +1577,7 @@ routed with no text at all looks like.
 
 | Backend value | Fields |
 | --- | --- |
-| `ModelInput` | `text`, `assets`, `image_retrieval_matches=()`; derived `modality` and `modalities` properties |
+| `ModelInput` | `text`, `assets`, `image_retrieval_matches=()`, request-only `source_metadata={}`, `evidence_sources=()`; derived `modality` and `modalities` properties |
 | `VisualRetrievalMatch` | `query_asset_id`, `memory_id`, `source_asset_id`, positive `rank`, `cosine_similarity` in `[-1, 1]` |
 | `SpeechTurn` | `start_ms`, `end_ms`, `text`, `speaker_label` |
 | `SpeakerEmbedding` | `speaker_label`, `values` |
@@ -1708,14 +1787,11 @@ OpenAIModels(
     generation_video_limit: int | None = 8,
     generation_extra_body: Mapping[str, object] | None = None,
     generation_stream: bool = False,
-    generation_media_policy: Literal["all", "on_demand"] = "all",
-    generation_media_max_items: int = 2,
     generation_answer_style: Literal["default", "concise"] = "default",
     generation_answer_format: Literal["text", "structured"] = "text",
     generation_source_metadata_key: str = "source_id",
     vision_video_frames: int = 4,
     image_max_pixels: int | None = None,
-    generation_gazetteer: OfflineGazetteer | None = None,
     generation_request_max_bytes: int | None = None,
 )
 ```
@@ -1775,12 +1851,13 @@ set. Natural-language dates can use the text draft. Structured streaming buffers
 draft and yields only the rendered answer after validation; raw JSON is never a text delta.
 
 Date drafts copy the original `source_value`, then choose `granularity` and `format` separately.
-The default `iso8601` preserves source timezone at the requested precision. `utc_datetime`
+The explicit `iso8601` format preserves source timezone at the requested precision. `utc_datetime`
 requires an explicitly zoned timestamp and minute or second precision; the runtime converts it
 to UTC and emits `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`. Unknown timezones are rejected.
-Numeric and duration drafts default to `format: with_unit`; `format: number` omits the unit from
+Numeric and duration drafts choose `format: with_unit` or `format: number`; the latter omits the unit from
 the answer while preserving all source-unit checks. These controls are model-selected fields
-of the draft, not heuristics over question text or benchmark identifiers.
+of the draft, not heuristics over question text or benchmark identifiers. Dates, numeric calculations
+and durations require `format`; missing fields raise `ModelError(reason="response_invalid")`.
 
 `image_max_pixels` accepts an integer from 1 through 64,000,000, default `None`, and applies to
 embedding, visual description, and answering on this adapter. Oversized images are converted only
@@ -1807,7 +1884,13 @@ recipe identity changes to account for this new input; embedding identity is unc
 ### Offline gazetteer
 
 ```python
-from mindbridge import Modality, OfflineGazetteer, OpenAIModels
+from mindbridge import (
+    EvidenceGeneration,
+    GazetteerEnricher,
+    Modality,
+    OfflineGazetteer,
+    OpenAIModels,
+)
 
 gazetteer = OfflineGazetteer(
     "/absolute/path/named-geometries.sqlite3",
@@ -1816,9 +1899,9 @@ gazetteer = OfflineGazetteer(
     limit=8,
     budget_chars=16000,
 )
-answerer = OpenAIModels(
-    generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
-    generation_gazetteer=gazetteer,
+answerer = EvidenceGeneration(
+    OpenAIModels(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})),
+    enricher=GazetteerEnricher(gazetteer),
 )
 ```
 
@@ -1903,23 +1986,25 @@ tokens; generic compatible models keep `max_tokens`. See the
 it does not change `AnswerResult` or deliver chunks to the caller. Use `Memory.ask_stream()` for
 incremental delivery. Declarative OpenAI completion slots expose the same control as `stream`.
 
-Its operation signatures widen the base protocols only by accepting plain text where useful:
+Its operation signatures use the same `ModelInput` values as the base protocols. Direct adapter
+calls wrap text with `ModelInput(text="...")`; the public `Memory.add/search/ask` methods accept text
+directly.
 
 ```text
 embed(
-    inputs: Sequence[ModelInput | str],
+    inputs: Sequence[ModelInput],
     task: EmbedTask = EmbedTask.DOCUMENT,
 ) -> tuple[tuple[float, ...], ...]
 form(inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]
 answer(
-    question: ModelInput | str,
+    question: ModelInput,
     hits: Sequence[SearchHit],
     *,
     answer_policy: AnswerPolicy = "strict",
     exhaustive: bool = False,
 ) -> AnswerResult
 stream_answer(
-    question: ModelInput | str,
+    question: ModelInput,
     hits: Sequence[SearchHit],
     *,
     answer_policy: AnswerPolicy = "strict",
@@ -1975,7 +2060,6 @@ All stable exceptions derive from `MindBridgeError`:
 | `MindBridgeError` | `mindbridge_error` | `None` |
 | `ValidationError` | `validation_error` | `input_invalid` |
 | `MemoryNotFoundError` | `memory_not_found` | `memory_not_found` |
-| `SpeakerNotFoundError` | `speaker_not_found` | `speaker_not_found` |
 | `IdentityNotFoundError` | `identity_not_found` | `identity_not_found` |
 | `ModelError` | `model_error` | `None` |
 | `ModelOutputTruncatedError` | `model_output_truncated` | `output_truncated` |

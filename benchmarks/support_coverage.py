@@ -59,6 +59,7 @@ from mindbridge import (
     AnswerResult,
     GenerationBackend,
     Memory,
+    MemoryConfig,
     MemoryType,
     Modality,
     ModelInput,
@@ -388,12 +389,14 @@ def _open(
         data_dir,
         embedder=embedder,
         answerer=answerer,
-        minimum_relevance=0.0,
-        ambiguity_margin=0.0,
-        reinforce_on_answer=False,
-        recall_planning=False,
-        evidence_budget_chars=arm.budget,
-        evidence_expansion=arm.expansion,
+        config=MemoryConfig(
+            minimum_relevance=0.0,
+            ambiguity_margin=0.0,
+            reinforce_on_answer=False,
+            recall_planning=False,
+            evidence_budget_chars=arm.budget,
+            evidence_expansion=arm.expansion,
+        ),
     )
 
 
@@ -476,7 +479,7 @@ def _question_outcomes(
                     limit=RECALL_LIMIT,
                 )
                 billed = _billed_tokens()
-                pool = _turn_ids(memory.search(question.question, limit=100))  # type: ignore[attr-defined]
+                pool = _turn_ids(memory.search(question.question, limit=100).hits)  # type: ignore[attr-defined]
             window = _turn_ids(recorder.grounded)
             outcomes.append(
                 Outcome(
@@ -638,7 +641,7 @@ def _atm_outcomes(
                     result = memory.ask(prompt, limit=RECALL_LIMIT)
                     billed = _billed_tokens()
                     window = _turn_ids(recorder.grounded)
-                    pool = _turn_ids(memory.search(question.question, limit=100))  # type: ignore[attr-defined]
+                    pool = _turn_ids(memory.search(question.question, limit=100).hits)  # type: ignore[attr-defined]
                     outcome = Outcome(
                         question_id=str(question.question_id),  # type: ignore[attr-defined]
                         arm=arm.name,
@@ -766,7 +769,7 @@ def _gallery_sample(
     for index, (question, gold, _reference) in enumerate(unit.questions):
         window = {
             str(hit.metadata.get("source_id"))
-            for hit in memory.search(question, limit=RECALL_LIMIT)
+            for hit in memory.search(question, limit=RECALL_LIMIT).hits
         }
         (incomplete if gold - window else complete).append(index)
     rng = random.Random(f"{GALLERY_SAMPLE_SEED}:{unit.unit_id}")
@@ -830,7 +833,7 @@ def _gallery_outcome(
     result = memory.ask(question, limit=RECALL_LIMIT)
     billed = _billed_tokens()
     window = _turn_ids(recorder.grounded)
-    pool = _turn_ids(memory.search(question, limit=100))
+    pool = _turn_ids(memory.search(question, limit=100).hits)
     f1, judged = _gallery_score(question, reference, result.answer, client, model)
     outcome = Outcome(
         question_id=f"{unit.unit_id}:{index}",
@@ -883,14 +886,14 @@ def _gallery_outcomes(
                 store,
                 embedder=embedder,
                 face_analyzer=face,  # type: ignore[arg-type]
-                minimum_relevance=0.0,
-                ambiguity_margin=0.0,
-                reinforce_on_answer=False,
+                config=MemoryConfig(
+                    minimum_relevance=0.0, ambiguity_margin=0.0, reinforce_on_answer=False
+                ),
             ) as memory:
                 media = write_unit(memory, unit)
                 if face is not None:
                     for memory_id in media:
-                        memory.faces(memory_id)
+                        memory.perceive(memory_id)
                 sample = _gallery_sample(memory, unit)
             for arm in arms:
                 recorder = _Recorder(_reader(settings, client))

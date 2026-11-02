@@ -172,7 +172,7 @@ or unchecked calculation text.
 
 With structured output, `AnswerResult.hits` contains only the model-declared support subset;
 the public SDK retains the kernel's selected-evidence order. It is not the full grounding pool
-or the original search ranking. Measure retrieval with `search`/`search_with_trace` when that
+or the original search ranking. Measure retrieval with `search` when that
 ranking is the intended quantity.
 
 Structured date and calculation drafts require visible timestamp or exact quote witnesses.
@@ -269,6 +269,33 @@ known reasoning models. `extra_body` cannot
 override the model, messages, response format, streaming controls, or storage policy; configure
 their named options.
 
+`generation.routes` adds explicitly configured specialized models beside the base generation
+model. Each route accepts the normal generation fields, including its own endpoint, credentials,
+modalities and request limits:
+
+```yaml
+generation:
+  provider: openai
+  model: text-model
+  modalities: [text]
+  routes:
+    - provider: openai
+      model: image-model
+      modalities: [text, image]
+    - provider: openai
+      model: video-model
+      modalities: [text, video]
+```
+
+The router considers the question and grounded evidence together. It prefers native support,
+then the narrowest declared set, and uses declaration order for ties. Nested routes are flattened
+in order. A failed model call does not change models. Object injection also supports
+`GenerationRouter` and `EmbeddingRouter`; the latter requires a shared space and dimension.
+
+`Memory.capabilities.generation_routes` publishes the native coverage of each executable route.
+The atomic union is only an inventory: T+I and T+V routes do not imply a T+I+V route.
+Source-backed conversion remains an explicit additional path and can fail independently.
+
 Atomic capability declarations contain only `text`, `image`, `video`, and `audio`. OpenAI
 embedding requires at least one modality. Positive fields must be greater than zero; retry counts are non-negative; temperature is
 from 0 through 2; seed is from 0 through `2**63 - 1`; face thresholds are from 0 through 1.
@@ -302,8 +329,9 @@ provenance remain available. Invalid or failed diagnosis adds no media; omission
 in the answer request. A provider media rejection does not trigger another diagnosis. The default
 `media_policy="all"` sends eligible retrieved media within the existing byte and video limits;
 `media_max_items` limits only `on_demand` diagnosis. Diagnosis has its own model span and request
-and token costs. SDK construction uses `generation_media_policy` and `generation_media_max_items`
-on `OpenAIModels`. This mechanism has local tests, not benchmark evidence of accuracy or cost gains.
+and token costs. SDK construction uses
+`EvidenceGeneration(model, selector=model, media_max_items=2)` around `OpenAIModels`; geography uses
+an independent `GazetteerEnricher`. The declarative keys stay on `generation`. This mechanism has local tests, not benchmark evidence of accuracy or cost gains.
 
 `generation.request_max_bytes` optionally bounds the complete final answer request JSON body in
 bytes, including inline base64 media, UTF-8 text, merged `extra_body`, and streaming fields. It
@@ -412,10 +440,10 @@ from mindbridge import Memory
 def main() -> None:
     config = json.loads(Path("mindbridge.json").read_text(encoding="utf-8"))
     with Memory.from_config(config) as memory:
-        print(memory.search("Which reservation was cancelled?", limit=5))
+        print(memory.search("Which reservation was cancelled?", limit=5).hits)
         # Each call automatically uses the modalities present in its input and candidates.
-        print(memory.search(Path("query.png"), limit=5))
-        print(memory.search(("Find this scene", Path("query.mp4")), limit=5))
+        print(memory.search(Path("query.png"), limit=5).hits)
+        print(memory.search(("Find this scene", Path("query.mp4")), limit=5).hits)
 
 
 if __name__ == "__main__":
@@ -447,7 +475,7 @@ their positions, and a query without supported content skips scoring.
 
 The model returns aligned finite relevance scores rather than source identifiers. These scores determine
 candidate ordering, with the original ranking as the tie-breaker. They do not change bounded
-`SearchHit.score`, the relevance gate or stored embeddings. `search_with_trace()` reports the
+`SearchHit.score`, the relevance gate or stored embeddings. `search(..., explain=True)` reports the
 independent `reranking_score`. Qwen applies sigmoid to its yes/no logit difference, producing a
 relevance value in `[0, 1]`; this is not an answer-confidence estimate. Sentence Transformers
 returns raw logits, which may be negative. Reranker failures
@@ -469,8 +497,18 @@ The embedding model defines durable vector identity, so every memory requires on
   `request_format=messages` for chat-style media parts. The request format is part of the embedding
   space.
 
-Audio has one fallback: a configured speech backend can transcribe it for a text-only embedder.
-Unsupported image or video input fails instead of being stored without visual evidence.
+Native modalities are used directly. A configured speech backend can supply source-labelled
+transcripts for unsupported audio or video, and a matching vision backend can supply captions for
+unsupported images or video. The same conversion rules serve writes, queries, answer evidence and
+formation. Missing or empty derivations fail with `unsupported_modality`; a transcript alone does
+not establish visual understanding. Original assets remain stored. Atomic-only encoders omit an
+unsupported joint aggregate and keep supported atomic keys.
+
+A speech plugin can be enabled or replaced on reopening a directory that has no persisted speech
+or transcript derivations, including empty and text-only stores. Once derivations exist, the
+transcription recipe must still match when a producer is configured. Omitting the producer
+preserves cached transcripts, speech identities and the recorded recipe; it does not prevent
+opening the directory for other capabilities.
 
 **Contract:** Changing a model, revision, dimension, or input recipe changes the vector space.
 MindBridge refuses store metadata mismatches instead of mixing spaces.
@@ -635,7 +673,10 @@ support `minItems`, `maxItems`, and string enums; select `json_object` explicitl
 
 Formation stays off when the slot is omitted. Configuring `generation` does not enable it, and the
 two slots use separate clients so they may select different models, endpoints, and credentials.
-`modalities` controls which observations reach the former; unsupported observations are skipped.
+`modalities` controls the former's native inputs. Source-labelled captions or transcripts can
+supply text for unsupported media; observations with neither a native nor a derived representation
+are skipped with a diagnostic. A former must distinguish an observation from a verified fact and
+retain its source provenance.
 Formation is one completion per `add`, or one batched completion per `add_many`, on the write path.
 A failed call leaves the source observation committed, and retry tracking prevents duplicate
 proposals for sources already formed by the same recipe.
@@ -717,8 +758,8 @@ match it, the lexical re-ranking bonus scores it zero, and the only route that r
 dense one -- however capable the embedder is. Speech-bearing video escapes this through
 `index_speech`; nothing covers a silent image. The caption is unioned into that document beside
 whatever the caller wrote, each section carrying a `[visual description:<asset_id>]` marker so
-`get` shows which assets were described, and the asset is still embedded natively: the derived
-text is added to the record, never substituted for it.
+`get` shows which assets were described, and the asset is embedded natively when the encoder accepts it. A text-only encoder uses the
+caption; the original asset remains stored and available to other capable plugins.
 
 A caption is labelled lines rather than prose -- what is shown, readable text transcribed exactly,
 counts, place cues, visible dates or clocks, ordered video events, and index tags. Categories can
@@ -726,12 +767,15 @@ span several labelled lines so readable names, numbers, and smaller details surv
 the main subject. Video descriptions preserve changes and event order across sampled stills,
 without inventing what happened between them. Visible instructions are recorded as untrusted
 content. A visual described while a speech backend is configured is also shown that clip's diarised
-transcript, and answers with `Fact:` lines: short declarative statements that stay true after the
+transcript. The bundled adapter converts its provider's `Fact:` lines into typed facts: short declarative statements that stay true after the
 clip ends ("Lily is allergic to peanuts", "the yoga mat lives in the storage room"). Those land in
 their own `[facts:<asset_id>]` section, so the distillation is correctable separately from the
 observation, and where the dialogue itself states a diarised speaker's name that fact also
 registers the name against the recognized identity, so every later clip resolving to the same
-person is indexed under it.
+person is indexed under it. Custom plain `describe()` strings are observation data, including
+any `Fact:` text. Identity proposals require the optional `describe_analysis()` protocol returning
+`VisualDescription` and explicit `SpeakerName` values; the identity plane owns the resulting
+validated writes. Description caches use the typed-v1 format and recompute older entries.
 
 These controls bound what it costs and what it can do:
 
@@ -758,34 +802,20 @@ These controls bound what it costs and what it can do:
   endpoint -- because an endpoint can answer `200 OK` with invalid JSON and an SDK retry policy
   never sees that. For visual descriptions, the retry adds a short correction that reports only
   the rejected reply's JSON shape and the required caption count; it never sends the rejected
-  caption text back or accepts a wrong-length list. A second failure, or any other failure, leaves
-  the memory
-  stored **without** a caption rather than failing the write. Losing derived text must never lose
-  an observation the caller handed over. The batch that finally gives up -- the one that actually
-  cost a memory its caption -- is counted on the vision span as `mindbridge.vision.failed_batches`,
-  so the loss is measurable rather than silent. The failure is
-  not negatively cached, but re-adding the same already-embedded memory is idempotent and does not
-  revisit its caption. Repairing an existing captionless record therefore requires rebuilding it;
-  the retry improves new writes and does not backfill old ones.
-- A throttled or overloaded endpoint is waited out before that fail-open, not straight through it.
-  A batch refused as `rate_limited`, with a timeout, on a dropped connection, or with a 5xx is
-  described again after 1 s, 4 s, and 16 s; a refusal that an identical request cannot clear --
-  `quota_exhausted`, `auth_failed`, `model_refused`, `request_rejected` -- is not retried at all, with one narrow
-  exception: a `request_rejected` whose provider message says generation itself was aborted
-  while producing the JSON reply ("Model output became abnormal ... generation was aborted ...
-  Please retry") is retried the same way, because an identical request there routinely succeeds
-  seconds later; every other `request_rejected` -- a rejected image, an unsupported request --
-  still fails open on the first attempt. A connection the peer drops while a response body or
-  stream is being read is classified `connection_failed` like one dropped during the request,
-  whichever HTTP transport the installed SDK runs on. The SDK client's
-  own `max_retries` budget is spent inside each of those attempts, so `max_retries` on this slot
-  raises the per-attempt budget and is worth setting above the SDK default for a long ingest. A
-  provider that throttles a corpus throttles it for minutes, which is long enough for a
-  fail-open to store an entire ingest with no captions behind one log line. An attempt that fails
-  but still has a wait left is not a lost caption, only a paid retry, so it is counted apart on
-  `mindbridge.vision.retried_batches` rather than summed into `failed_batches` -- the two answer
-  different questions, "how many memories lost their caption" against "what did a long ingest pay
-  waiting one out".
+  caption text back or accepts a wrong-length list. This bounded response correction belongs to
+  the adapter and does not retry transport failures.
+- The SDK client owns transport retries through its `max_retries` setting. The kernel calls the
+  describer once per batch and adds no waits or transport attempts. The adapter classifies
+  provider failures, including compatible gateways that abort their own JSON generation as
+  `provider_unavailable`; the kernel does not inspect provider status codes or messages.
+- Description failure is optional when the embedder accepts the original media or a successful
+  transcript already supplies usable text. Those observations are stored without a caption.
+  When a text-only backend requires a caption to handle the input, the original `ModelError`
+  propagates with its classification intact. `capture()` can durably retain the raw observation;
+  a failed `settle()` leaves it pending for the host to retry explicitly. Failed batches are
+  counted as `mindbridge.vision.failed_batches`.
+  Write-path failures are not cached, but re-adding an already-embedded record remains idempotent
+  and does not backfill its caption.
 - Captions are not reproducible. Models supporting sampling controls receive `temperature` 0 and
   a fixed `seed` unless the slot sets its own; known reasoning models receive neither automatic
   control. A measured compatible endpoint returned four different completions for four identical
@@ -801,8 +831,9 @@ can separate what captioning costs from what answering costs.
 search routes for the full description and its exact `Text:` OCR line, alongside the original
 question and native media routes. Dense/hybrid modes additionally embed these descriptions when
 the embedder supports text; lexical mode uses them only for full-text retrieval. It does not
-replace the original query media or add support for a modality the normal route cannot accept.
-The switch defaults to `False` and has no effect without an applicable vision backend. Query
+replace native query media. Required caption fallback for an unsupported image or video runs
+automatically even when this switch is `False`; the switch controls additional retrieval routes.
+It has no effect without an applicable vision backend. Query
 descriptions, including failed attempts, are cached only inside that operation. They create no
 durable description, identity, or memory, and a description failure keeps the original search.
 
@@ -829,15 +860,15 @@ with Memory.from_config(
         },
     }
 ) as memory:
-    report = memory.deliberate()
+    report = memory.consolidate_pending()
 ```
 
-`deliberate()` is that loop: it asks `consolidation_candidates()` what the store's own state says
+`consolidate_pending()` is that loop: it asks `consolidation_candidates()` what the store's own state says
 is due, consolidates each row under the row's trigger, and repeats until nothing is due. The
 primitives stay available for a host that wants to schedule the two halves itself.
 
-Consolidation stays off when the slot is omitted, and `consolidate()` then raises
-`ModelError(reason="backend_not_configured")` while every other operation is unchanged. Declaring
+Consolidation stays off when the slot is omitted. An explicit evidence pass or due candidate
+raises `ModelError(reason="backend_not_configured")`; an empty candidate loop does no model work. Declaring
 it flips `consolidate` on in the capability document `mindbridge doctor` prints. `/healthz` and the
 MCP server instructions never list it, whatever is declared: neither surface has a route or a tool
 for consolidation, because the control plane stays with the process that owns the memory, and each
@@ -846,7 +877,7 @@ it runs only when a host calls `consolidate()`.
 
 ### Running the loop inside a server process
 
-A REST or MCP deployment cannot call `deliberate()` over the wire — no route and no tool reaches
+A REST or MCP deployment cannot call `consolidate()` over the wire — no route and no tool reaches
 the control plane — and one physical `data_dir` has one live owner, so nothing else can call it
 either. The signals the served routes and tools record, above all the `QUERY_FAILURE` rows a
 failed `search`, `ask`, or `compile` writes, would then be collected and never read. Pass
@@ -872,7 +903,8 @@ the loop rather than an empty `content` string it can only propose forgetting; a
 undeclared modality are left out instead of failing the pass.
 
 When `consolidation` declares exactly the same values as `generation` or `formation`, the
-composition reuses that adapter rather than opening a second client against the same endpoint.
+composition reuses that adapter when it implements `ConsolidationBackend`. A routed or
+evidence-wrapped answerer does not expose consolidation; that slot builds its own adapter.
 Any difference — a different model, endpoint, or credential — builds its own. See
 [the memory management loop](memory-types-time-and-decay.md#memory-management-loop) for what a
 consolidator may propose and what the kernel refuses.
@@ -897,7 +929,7 @@ The `settings` mapping is the value-only `MemoryConfig` policy:
 | `recall_planning` | `False` | Ask the answerer for a recall plan during `ask`, and ground on the set, sequence or entity it names; off means `ask` runs the one search it always has. An answerer without `plan_recall` cannot plan: the store logs one warning when it opens and every question runs that same search |
 | `recall_query_expansion` | `False` | Execute planner `similar.query` through bounded semantic searches. Routes share the per-ask query cache, character/media budgets and `recall_max_queries` ceiling; also permits replanning after a strict-policy abstention |
 | `recall_max_queries` | `6` | Maximum additional semantic searches across every step and planning round of one `ask`; integer from `1` through `32`. Failed searches and original-query deepening consume slots; cached reads do not |
-| `query_vision` | `False` | Describe query images through the configured image-capable vision backend and add transient description/OCR search routes. Retains native routes, caches only inside the operation, and writes no memory or description rows |
+| `query_vision` | `False` | Describe query images/videos through the matching vision backend and add transient description/OCR search routes. Retains native routes, caches only inside the operation, and writes no memory or description rows |
 | `recall_set_budget_chars` | `30000` | Soft character allowance used to pack a plan's additions after charging its mandatory window, narrowed by `evidence_budget_chars` when set. Also bounds experimental semantic additions; a point plan without query expansion keeps its normal ranked window. Read only when `recall_planning` is on |
 | `recall_set_max_rows` | `60` | Matched rows a set, sequence or entity plan may add at all, whatever the character budget leaves room for; the rows past it are reported as not shown, so the set is declared incomplete. Bounds the matched set only. Read only when `recall_planning` is on |
 | `recall_rounds` | `2` | Ceiling on answer attempts with recall planning. Only an abstained answer can trigger another plan, under best-effort or with query expansion enabled; `1` disables follow-up rounds |
@@ -921,7 +953,8 @@ The `settings` mapping is the value-only `MemoryConfig` policy:
 Changing `retrieval_mode` does not change stored embeddings or full-text data, so after closing an
 instance you may reopen the same `data_dir` under another mode without reindexing. Separate local
 stores are required for simultaneous or isolated comparisons because one `data_dir` has one live
-owner. `lexical` skips only query embedding; ingestion still requires and writes the configured
+owner. `lexical` skips only query embedding; configured speech and visual plugins can still prepare
+query text, including native media accepted by the embedder. Ingestion still requires and writes the configured
 embedder for durable index consistency.
 
 `recall_query_expansion` requires `recall_planning=True` and is disabled by default. Without it,
@@ -994,7 +1027,7 @@ window also missed it — under the `0.10` default. A floor that included retent
 "prefer recent" into "hide old" for precisely the deployment that enabled decay and then asked
 about last year. Ranking an old event last is fine; ceasing to return it is not.
 
-Use `search_with_trace` to read the gated quantity as `gate_relevance`, beside the
+Use `search(..., explain=True)` to read the gated quantity as `gate_relevance`, beside the
 `retention_factor` and `temporal_factor` that moved `score` away from it. `decay_half_life_days` must be
 positive when set. `evidence_budget_chars` keeps the `limit` hits unconditionally and then admits
 further ranked memories while the evidence fits, charging each media asset its modality's text

@@ -16,6 +16,7 @@ from mindbridge import (
     AsyncMemory,
     EmbedTask,
     Memory,
+    MemoryConfig,
     Modality,
     ModelError,
     ModelInput,
@@ -86,7 +87,12 @@ async def test_streaming_evaluation_queues_excess_requests_per_store(
         answerer = Answerer()
         answerers.append(answerer)
         return AsyncMemory(
-            Memory(data_dir, embedder=TinyEmbedder(), answerer=answerer, minimum_relevance=0)
+            Memory(
+                data_dir,
+                embedder=TinyEmbedder(),
+                answerer=answerer,
+                config=MemoryConfig(minimum_relevance=0),
+            )
         )
 
     task = LoadedTask(
@@ -183,7 +189,12 @@ async def test_ingest_and_answers_share_the_process_model_budget(tmp_path: Path)
 
     def factory(path: Path) -> AsyncMemory:
         return AsyncMemory(
-            Memory(path, embedder=Embedder(), answerer=Answerer(), minimum_relevance=0)
+            Memory(
+                path,
+                embedder=Embedder(),
+                answerer=Answerer(),
+                config=MemoryConfig(minimum_relevance=0),
+            )
         )
 
     task = LoadedTask(
@@ -402,7 +413,7 @@ class _ConcurrentQueries(TinyEmbedder):
 @pytest.mark.asyncio
 async def test_non_streaming_evaluation_queues_excess_requests_per_store(tmp_path: Path) -> None:
     embedder = _ConcurrentQueries()
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0) as memory:
+    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
         memory.add("The answer is A.")
         try:
             outcomes = await _answer_many(
@@ -459,7 +470,7 @@ async def test_search_replay_queues_excess_requests_per_store(tmp_path: Path) ->
         "1" * 64,
         (EvalUnit("unit", (), questions),),
     )
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0) as memory:
+    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
         memory.add("The answer is A.")
         telemetry = EvaluationTelemetry()
         try:

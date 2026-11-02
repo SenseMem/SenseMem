@@ -435,7 +435,8 @@ def test_add_search_get_list_and_delete_round_trip(
         "--app",
         app,
         "-q",
-        "search-with-trace",
+        "search",
+        "--explain",
         "red wrench",
     )
     assert status == 0
@@ -547,7 +548,7 @@ def test_scope_carries_the_place_and_identity_axes(
         json.dumps({"identity_id": "nobody"}),
     )
     assert status == 0
-    assert nobody == {"hits": []}
+    assert nobody == {"hits": [], "trace": None}
 
 
 def test_quiet_suppresses_only_the_banner(app: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -985,6 +986,7 @@ def test_remote_mode_posts_to_v1_and_echoes_the_body(
             "http://owner:8000/v1/memories/search",
             {
                 "query": "red wrench",
+                "explain": False,
                 "limit": 3,
                 "occurred_from": "2026-08-27T00:00:00Z",
                 "occurred_until": "2026-08-28T00:00:00Z",
@@ -1107,10 +1109,8 @@ def test_remote_mode_passes_the_cursor_through_unparsed(
     ("command", "operands"),
     (
         ("add-stream", ("[]",)),
-        ("register-speaker", ("speaker-1", "Ana")),
         ("consolidation-candidates", ()),
         ("consolidate", ("why",)),
-        ("deliberate", ()),
         ("apply", ("--operation", '{"intent": "forget", "target_ids": ["memory-1"]}')),
         ("record-outcome", ("1", "confirmed")),
         ("forget", ("memory-1",)),
@@ -1366,14 +1366,15 @@ def test_the_control_plane_loop_commands_only_translate(
     memory_id = cast(str, cast(dict[str, object], added)["id"])
 
     # No consolidator is composed here, so nothing is ever due and the loop is a no-op.
-    status, report, _ = _run(capsys, "--app", app, "-q", "deliberate", "--max-rounds", "2")
+    status, report, _ = _run(capsys, "--app", app, "-q", "consolidate-pending", "--max-rounds", "2")
     assert status == 0
     assert report == {
         "rounds": 0,
         "weighed": 0,
         "skipped": 0,
         "applied": 0,
-        "rejected": 0,
+        "rejected": [],
+        "operations": [],
         "model_calls": 0,
     }
 

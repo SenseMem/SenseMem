@@ -173,7 +173,7 @@ def _prepared_manifest(
             ),
             **({"unavailable_units": dict(unavailable_units)} if unavailable_units else {}),
         }
-    if spec.name in {"video-mme-v2", "egotempo"}:
+    if spec.name in {"video-mme-v2", "videozerobench", "egotempo"}:
         return {
             "units": _video_manifest(
                 spec.name,
@@ -368,7 +368,17 @@ def _video_manifest(
 ) -> dict[str, list[dict[str, object]]]:
     find_media = _MediaFinder(media_root)
     sources: tuple[tuple[str, Path], ...]
-    if task_name == "video-mme-v2":
+    if task_name == "videozerobench":
+        from mindbridge.benchmarks.videozerobench import load_videozerobench
+
+        sources = tuple(
+            (video_id, find_media(f"{video_id}.mp4"))
+            for video_id in dict.fromkeys(
+                question.video_id
+                for question in _selected(load_videozerobench(dataset), limit, offset)
+            )
+        )
+    elif task_name == "video-mme-v2":
         from mindbridge.benchmarks.video_mme_v2 import load_video_mme_v2
 
         sources = tuple(

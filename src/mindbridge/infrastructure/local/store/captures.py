@@ -14,8 +14,10 @@ from mindbridge.infrastructure.local.store._codec import (
 )
 from mindbridge.infrastructure.local.store._connections import Connections
 from mindbridge.infrastructure.local.store._outbox import enqueue_capture
+from mindbridge.infrastructure.local.store.media import commit_speech_plans
 from mindbridge.infrastructure.local.store.records import write_embeddings, write_memory
 from mindbridge.infrastructure.local.store.rows import (
+    SpeechPlan,
     StoredEmbedding,
     StoredMemory,
     require_aware,
@@ -77,6 +79,8 @@ class CaptureQueue:
         self,
         memory: StoredMemory,
         embeddings: Iterable[StoredEmbedding] = (),
+        *,
+        speech_plans: Sequence[SpeechPlan] = (),
     ) -> bool:
         """Store one captured record's derived content and vectors while it stays queued.
 
@@ -101,6 +105,7 @@ class CaptureQueue:
                 supplied_memories[0],
                 supplied_embedding_ids=supplied_by_memory[memory.memory_id],
             )
+            commit_speech_plans(connection, speech_plans)
             write_embeddings(connection, supplied_embeddings)
         return True
 

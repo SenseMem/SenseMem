@@ -12,6 +12,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryKind,
     ObservationContext,
     RetrievalScope,
@@ -59,7 +60,9 @@ def test_spatial_search_is_exact_within_one_coordinate_frame(tmp_path: Path) -> 
         y=2,
     )
 
-    with Memory(tmp_path, embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         nearby = memory.add(
             "red toolbox",
             occurred_at=now,
@@ -83,7 +86,7 @@ def test_spatial_search_is_exact_within_one_coordinate_frame(tmp_path: Path) -> 
                 ),
                 radius_m=0.7,
             ),
-        )
+        ).hits
 
         assert [hit.id for hit in hits] == [nearby.id]
         assert hits[0].context is not None
@@ -154,14 +157,14 @@ def test_formed_semantics_do_not_merge_across_spatial_frames(tmp_path: Path) -> 
         tmp_path,
         embedder=TinyEmbedder(),
         former=EntityFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add("red toolbox in map", context=ObservationContext(spatial=map_pose))
         memory.add("red toolbox in camera", context=ObservationContext(spatial=camera_pose))
 
         entities = [
             hit.context
-            for hit in memory.search("observed red toolbox", limit=10)
+            for hit in memory.search("observed red toolbox", limit=10).hits
             if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
         ]
 
@@ -181,7 +184,9 @@ def test_a_symbolic_place_scopes_retrieval_and_needs_no_former(tmp_path: Path) -
     row: that row only exists when a former is configured, so a place scope built on it would have
     silently skipped the default composition entirely.
     """
-    with Memory(tmp_path, embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         kitchen = memory.add(
             "the kettle boiled dry again",
             context=ObservationContext(place_id="kitchen"),
@@ -194,7 +199,9 @@ def test_a_symbolic_place_scopes_retrieval_and_needs_no_former(tmp_path: Path) -
 
         scoped = {
             hit.id
-            for hit in memory.search("kettle", limit=10, scope=RetrievalScope(place_id="kitchen"))
+            for hit in memory.search(
+                "kettle", limit=10, scope=RetrievalScope(place_id="kitchen")
+            ).hits
         }
         assert scoped == {kitchen.id}
         # Read-back: the label is equality-matched, so an application that cannot see what was
@@ -210,7 +217,7 @@ def test_a_symbolic_place_scopes_retrieval_and_needs_no_former(tmp_path: Path) -
         # An unlabelled memory is not "everywhere": a place scope excludes it.
         assert unlabelled.id not in scoped
         # No scope means no place filter, not "memories with no place".
-        assert len(memory.search("kettle", limit=10)) == 3
+        assert len(memory.search("kettle", limit=10).hits) == 3
 
     # The label is equality-matched, so the contract rejects what would silently partition a store.
     for bad in ("", " kitchen", "kitchen "):
@@ -228,7 +235,9 @@ def test_a_sparse_place_keeps_widening_instead_of_stopping_early(tmp_path: Path)
     loop counts memories from other rooms as satisfied, stops at the first window, and returns
     nothing from the room that was asked about -- the under-return this axis exists to avoid.
     """
-    with Memory(tmp_path, embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         # Ranked above the target simply by being added first; the embedder is uninformative.
         for index in range(30):
             memory.add(
@@ -246,6 +255,6 @@ def test_a_sparse_place_keeps_widening_instead_of_stopping_early(tmp_path: Path)
 
         hits = memory.search(
             "entry cupboard fuses towels", limit=3, scope=RetrievalScope(place_id="kitchen")
-        )
+        ).hits
 
         assert {hit.id for hit in hits} == {first.id, second.id}

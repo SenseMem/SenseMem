@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import IndexQuantization, Memory, Modality, RetrievalMode
+from mindbridge import IndexQuantization, Memory, MemoryConfig, Modality, RetrievalMode
 from mindbridge.infrastructure.local.zvec_index import IndexHit
 from mindbridge.models.base import EmbedTask, ModelInput
 from mindbridge.types import RetrievalRejection
@@ -54,10 +54,12 @@ def test_quantized_candidates_use_fp32_before_relevance_gating(
     with Memory(
         tmp_path,
         embedder=embedder,
-        index_quantization=quantization,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.85,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            index_quantization=quantization,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.85,
+            ambiguity_margin=0,
+        ),
     ) as memory:
         target = memory.add("precise target")
         decoy = memory.add("approximate neighbor")
@@ -69,7 +71,8 @@ def test_quantized_candidates_use_fp32_before_relevance_gating(
                 IndexHit(id=target.id, relevance=0.2, confidence=0.6),
             ),
         )
-        result = memory.search_with_trace("query", limit=2)
+        result = memory.search("query", limit=2, explain=True)
+        assert result.trace is not None
 
     assert [hit.id for hit in result.hits] == [target.id]
     by_id = {candidate.memory_id: candidate for candidate in result.trace.candidates}
@@ -85,10 +88,12 @@ def test_quantized_retrieval_can_recover_a_parent_beyond_the_approximate_top_hun
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        index_quantization=IndexQuantization.INT8,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            index_quantization=IndexQuantization.INT8,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0,
+            ambiguity_margin=0,
+        ),
     ) as memory:
         decoys = tuple(memory.add(f"approximate neighbor {number}") for number in range(100))
         target = memory.add("precise target")
@@ -103,21 +108,22 @@ def test_quantized_retrieval_can_recover_a_parent_beyond_the_approximate_top_hun
             )
 
         monkeypatch.setattr(memory._index, "search", search)
-        assert memory.search("query", limit=1)[0].id == target.id
-        assert memory.search("query", limit=10)[0].id == target.id
+        assert memory.search("query", limit=1).hits[0].id == target.id
+        assert memory.search("query", limit=10).hits[0].id == target.id
 
 
 def test_traced_candidates_report_final_rank_and_rejection(tmp_path: Path) -> None:
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.85,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0.85, ambiguity_margin=0
+        ),
     ) as memory:
         target = memory.add("precise target")
         decoy = memory.add("approximate neighbor")
-        result = memory.search_with_trace("query", limit=1)
+        result = memory.search("query", limit=1, explain=True)
+        assert result.trace is not None
 
     assert [hit.id for hit in result.hits] == [target.id]
     assert len(result.trace.candidates) == 2

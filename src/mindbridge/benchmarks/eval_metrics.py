@@ -51,6 +51,7 @@ from mindbridge.benchmarks.official_scorers import (
     task_primary_metric,
 )
 from mindbridge.benchmarks.prompts import task_answer_policy
+from mindbridge.benchmarks.videozerobench import VIDEOZERO_METRICS
 
 # Measured on this harness: a per-benchmark difference under three points is inside the run to
 # run noise band, whose per-question standard deviation is about seventeen points.
@@ -76,6 +77,7 @@ _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
     "locomo-refined": ("category",),
     "m3-bench": ("question_types",),
     "video-mme-v2": ("group_type", "level", "second_head", "third_head"),
+    "videozerobench": ("category", "language", "evidence_span", "annotation_capabilities"),
     "worldmemarena": ("question_type", "question_type_abbrev", "difficulty"),
     "egotempo": ("question_type",),
     "memlens": ("question_type", "question_subtype"),
@@ -123,9 +125,14 @@ def _metrics(
         )
 
     primary_name = task_primary_metric(task.spec.name)
+    primary_samples = tuple(
+        sample
+        for sample in samples
+        if task.spec.name != "videozerobench" or sample.metadata["level"] == 3
+    )
     scored = tuple(
         ScoredValue(sample.sample_id, sample.unit_id, sample.score)
-        for sample in samples
+        for sample in primary_samples
         if sample.score is not None
     )
     primary = summarize(
@@ -142,7 +149,7 @@ def _metrics(
     for metric_name in metric_names:
         metric_values = tuple(
             ScoredValue(sample.sample_id, sample.unit_id, sample.metrics[metric_name])
-            for sample in samples
+            for sample in (primary_samples if metric_name == primary_name else samples)
             if metric_name in sample.metrics
         )
         uses_judge = any(
@@ -255,7 +262,7 @@ def _metrics(
             "version, dataset revision, and scorer protocol. LoCoMo has ranged from 28.0 to "
             "92.5 across harnesses on identical data"
         ),
-        "breakdowns": _metric_breakdowns(task, samples, arguments),
+        "breakdowns": _metric_breakdowns(task, primary_samples, arguments),
     }
     if task.spec.name == "video-mme-v2" and scored:
         rating = _video_mme_v2_rating(
@@ -359,6 +366,25 @@ def _metrics(
                 "from MindBridge source IDs"
             ),
         }
+    if (
+        task.spec.name == "videozerobench"
+        and any(sample.metrics for sample in samples)
+        and _Arm(arm).generates
+    ):
+        result["protocol_notes"] = (
+            "Five-level queries and upstream scoring through the public memory SDK. "
+            "accuracy is Level-3 accuracy on 0-1; named Level-* metrics use 0-100. "
+            "Media uses the configured memory transport, not the upstream fixed-frame vLLM "
+            "sampler or Level-5 priority keyframe injection; cross-harness scores are not comparable."
+        )
+        metric_rows.update(
+            {
+                name: {"official_metric": official(name), **summary}
+                for name, summary in _videozerobench_metrics(
+                    task, samples, seed=seed, bootstrap_samples=arguments.bootstrap_samples
+                ).items()
+            }
+        )
     reference_scores = tuple(
         ScoredValue(sample.sample_id, sample.unit_id, sample.ref_at_300)
         for sample in samples
@@ -377,6 +403,67 @@ def _metrics(
         result["ref_at_300"] = ref_summary
         metric_rows["ref_at_300"] = ref_summary
     return result
+
+
+def _videozerobench_metrics(
+    task: LoadedTask,
+    samples: Sequence[SampleResult],
+    *,
+    seed: int,
+    bootstrap_samples: int,
+) -> dict[str, dict[str, object]]:
+    predictions = {(sample.unit_id, sample.question_id): sample.metrics for sample in samples}
+    return {
+        name: {
+            **summarize(
+                rows,
+                seed=_task_seed(seed, name),
+                bootstrap_samples=bootstrap_samples,
+                clamp=(0, 100),
+            ),
+            **({"mean": 0.0} if not rows else {}),
+        }
+        for name, rows in _videozerobench_values(task, predictions).items()
+    }
+
+
+def _videozerobench_values(
+    task: LoadedTask,
+    predictions: Mapping[tuple[str, str], Mapping[str, float]],
+) -> dict[str, list[ScoredValue]]:
+    """Join requests by original question for both reporting and paired comparisons."""
+    values: dict[str, list[ScoredValue]] = {name: [] for name in VIDEOZERO_METRICS}
+    for unit in task.units:
+        for question in unit.questions:
+            if question.metadata["level"] != 3:
+                continue
+            source_id = str(question.metadata["source_question_id"])
+            answers = {
+                level: predictions.get((unit.unit_id, f"{source_id}/level-{level}"), {})
+                for level in range(1, 6)
+            }
+            accuracy = answers[3].get("accuracy", 0.0)
+            temporal = answers[4].get("temporal_iou", 0.0)
+            spatial = answers[5].get("spatial_iou", 0.0)
+            scores = {
+                **{
+                    f"Level-{level}_acc": answers[level].get("accuracy", 0.0) for level in (1, 2, 3)
+                },
+                "Level-4_score": float(accuracy > 0 and temporal > 0.3),
+                "Level-5_score": float(accuracy > 0 and temporal > 0.3 and spatial > 0.3),
+            }
+            # Zero-length windows do not establish temporal evidence. Joint scores divide by
+            # all original questions, while mean tIoU uses only questions with valid intervals.
+            windows = cast(Sequence[Mapping[str, float]], question.metadata["evidence_windows"])
+            if any(window["end"] > window["start"] for window in windows):
+                scores["Level-4_mean_tIoU"] = temporal
+            if question.metadata["evidence_boxes"]:
+                scores["Level-5_mean_vIoU"] = spatial
+            for name, score in scores.items():
+                values[name].append(
+                    ScoredValue(f"{unit.unit_id}/{source_id}", unit.unit_id, score * 100)
+                )
+    return values
 
 
 def _metadata_ids(metadata: Mapping[str, object], key: str) -> tuple[str, ...]:
@@ -953,6 +1040,9 @@ def _comparisons(
         }
         if current_judges and previous_judges and current_judges != previous_judges:
             raise ValueError(f"baseline judge model differs for {task.spec.name}")
+        if task.spec.name == "videozerobench":
+            rows.extend(_videozerobench_comparisons(arguments, task, task_samples, previous_rows))
+            continue
         current_scored = tuple(sample for sample in task_samples if sample.score is not None)
         previous_scored = tuple(row for row in previous_rows if _has_score(row))
         if task.spec.name == "video-mme-v2":
@@ -987,31 +1077,114 @@ def _comparisons(
             previous = tuple(_baseline_value(row) for row in previous_scored)
         if not current:
             continue
-        if not previous:
-            raise ValueError(f"baseline has no scored samples for {task.spec.name}")
-        comparison = paired_comparison(
-            current,
-            previous,
-            seed=_task_seed(arguments.seed, task.spec.name),
-            bootstrap_samples=arguments.bootstrap_samples,
-        )
-        delta = comparison.get("mean")
         rows.append(
-            {
-                "task": task.spec.name,
-                "metric": _comparison_metric(task),
-                "noise_floor": NOISE_FLOOR,
-                "below_noise_floor": (
-                    None if not isinstance(delta, float) else abs(delta) < NOISE_FLOOR
-                ),
-                **comparison,
-            }
+            _comparison_row(
+                arguments,
+                task.spec.name,
+                task_primary_metric(task.spec.name),
+                current,
+                previous,
+                score_scale=100.0 if task.spec.name == "video-mme-v2" else 1.0,
+            )
         )
     return rows
 
 
-def _comparison_metric(task: LoadedTask) -> str:
-    return task_primary_metric(task.spec.name)
+def _videozerobench_comparisons(
+    arguments: _Arguments,
+    task: LoadedTask,
+    samples: Sequence[SampleResult],
+    baseline: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    current = {(sample.unit_id, sample.question_id): sample.metrics for sample in samples}
+    if not any(current.values()):
+        return []
+    previous: dict[tuple[str, str], dict[str, float]] = {}
+    for row in baseline:
+        unit_id, question_id, metrics = (
+            row.get("unit_id"),
+            row.get("question_id"),
+            row.get("metrics"),
+        )
+        if (
+            not isinstance(unit_id, str)
+            or not isinstance(question_id, str)
+            or not isinstance(metrics, Mapping)
+        ):
+            raise ValueError("VideoZeroBench baseline requests need IDs and metric objects")
+        if (unit_id, question_id) in previous:
+            raise ValueError("VideoZeroBench baseline requests must be unique")
+        values: dict[str, float] = {}
+        for name, value in metrics.items():
+            if (
+                not isinstance(name, str)
+                or isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+            ):
+                raise ValueError("VideoZeroBench baseline metrics must be finite numbers")
+            values[name] = float(value)
+        previous[(unit_id, question_id)] = values
+    expected = {
+        (unit.unit_id, question.question_id) for unit in task.units for question in unit.questions
+    }
+    if current.keys() != expected or previous.keys() != expected:
+        raise ValueError("VideoZeroBench comparisons require identical complete level requests")
+    if not any(previous.values()):
+        raise ValueError(f"baseline has no scored samples for {task.spec.name}")
+    candidate_values = _videozerobench_values(task, current)
+    baseline_values = _videozerobench_values(task, previous)
+    return [
+        _comparison_row(
+            arguments,
+            task.spec.name,
+            name,
+            candidate_values[name],
+            baseline_values[name],
+            score_scale=100.0,
+        )
+        for name in VIDEOZERO_METRICS
+    ]
+
+
+def _comparison_row(
+    arguments: _Arguments,
+    task_name: str,
+    metric: str,
+    current: Sequence[ScoredValue],
+    previous: Sequence[ScoredValue],
+    *,
+    score_scale: float,
+) -> dict[str, object]:
+    noise_floor = NOISE_FLOOR * score_scale
+    row: dict[str, object] = {
+        "task": task_name,
+        "metric": metric,
+        "score_scale": score_scale,
+        "noise_floor": noise_floor,
+    }
+    if not current:
+        return {
+            **row,
+            "mean": None,
+            "paired_sample_count": 0,
+            "confidence_interval_95": None,
+            "below_noise_floor": None,
+            "unavailable_reason": "no questions have applicable evidence",
+        }
+    if not previous:
+        raise ValueError(f"baseline has no scored samples for {task_name}")
+    comparison = paired_comparison(
+        current,
+        previous,
+        seed=_task_seed(arguments.seed, task_name),
+        bootstrap_samples=arguments.bootstrap_samples,
+    )
+    return {
+        **row,
+        **comparison,
+        "below_noise_floor": abs(cast(float, comparison["mean"])) < noise_floor,
+    }
 
 
 def _has_score(row: Mapping[str, object]) -> bool:

@@ -42,12 +42,14 @@ from mindbridge.kernel.content import (
     prepare_memory,
 )
 from mindbridge.kernel.contracts import Backends
+from mindbridge.kernel.derived import prepared_from_stored
 from mindbridge.kernel.embedding import DOCUMENT_TASK, Embedding
 from mindbridge.kernel.hydration import Hydrator
 from mindbridge.kernel.lifecycle import OperationAssets
 from mindbridge.kernel.materialization import Materializer
 from mindbridge.kernel.predicates import claim_lineage_id, resolve_predicate
 from mindbridge.kernel.projection import Projection
+from mindbridge.kernel.routing import route_input
 from mindbridge.kernel.runtime import Storage, translate_storage_errors
 from mindbridge.kernel.settings import Settings
 from mindbridge.kernel.temporal import intervals_overlap
@@ -614,10 +616,26 @@ class Formation(Traced):
         result = []
         for source in sources:
             history, truncated = self._history_for(source, excluded)
+            content = ModelInput(text=source.content, assets=source.assets)
+            if content.modalities - self._backends.formation_capabilities:
+                with translate_storage_errors("read formation representation"):
+                    stored = self._store.records.read_memory(source.id)
+                if stored is not None:
+                    try:
+                        content = route_input(
+                            prepared_from_stored(stored).content,
+                            content,
+                            self._backends.formation_capabilities,
+                            "formation",
+                        )
+                    except ModelError as error:
+                        if error.reason != "unsupported_modality":
+                            raise
+                        _LOGGER.info("formation skipped an unsupported source modality")
             result.append(
                 FormationInput(
                     memory_id=source.id,
-                    content=ModelInput(text=source.content, assets=source.assets),
+                    content=content,
                     context=observation_from_record(source),
                     history=history,
                     history_truncated=truncated,
@@ -874,6 +892,7 @@ class Formation(Traced):
             [], tuple[tuple[StoredMemory, ...], tuple[StoredEmbedding, ...]]
         ]
         | None = None,
+        projection_sources: Sequence[StoredMemory] | None = None,
     ) -> StoredOperation | None:
         """Embed and commit derived records; return the log row when one was requested.
 
@@ -963,10 +982,15 @@ class Formation(Traced):
             )
         projection_memories: tuple[StoredMemory, ...] = ()
         projection_embeddings: tuple[StoredEmbedding, ...] = ()
-        if projection_factory is not None and not self._settings.independent_evidence:
+        projector = projection_factory
+        if self._settings.independent_evidence and projection_sources is None:
+            # Evidence-driven names depend on candidate proof activation. An authoritative
+            # naming update supplies its checked source snapshot and can prepare outside SQL.
+            projector = None
+        if projector is not None:
             # Derived assertion vectors are prepared first, then every speech document the new
             # projection affects. Neither reaches SQLite until both model calls have succeeded.
-            projection_memories, projection_embeddings = projection_factory()
+            projection_memories, projection_embeddings = projector()
         with self._write_lock:
             with translate_storage_errors("commit automatic memory formation"):
                 applied = self._store.semantics.apply_formation(
@@ -1012,7 +1036,10 @@ class Formation(Traced):
                     projection_identity_id=projection_identity_id,
                     projection_memories=projection_memories,
                     projection_embeddings=projection_embeddings,
-                    naming_projection_factory=self.naming_projection_factory(assets),
+                    projection_sources=projection_sources,
+                    naming_projection_factory=(
+                        self.naming_projection_factory(assets) if projector is None else None
+                    ),
                 )
             self._projection.drain()
         if operation is None:

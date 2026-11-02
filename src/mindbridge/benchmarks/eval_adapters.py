@@ -671,6 +671,46 @@ def _video_mme_v2(
     )
 
 
+def _videozerobench(
+    _spec: TaskSpec,
+    dataset: Path,
+    media: MediaResolver,
+    _root: Path,
+    limit: Limit,
+    offset: int,
+) -> tuple[EvalUnit, ...]:
+    from mindbridge.benchmarks.videozerobench import level_queries, load_videozerobench
+
+    grouped: dict[str, list[EvalQuestion]] = {}
+    for question in _selected(load_videozerobench(dataset), limit, offset):
+        questions = grouped.setdefault(question.video_id, [])
+        for level, query in level_queries(question):
+            questions.append(
+                EvalQuestion(
+                    f"{question.question_id}/level-{level}",
+                    (query,),
+                    (question.answer,),
+                    source_question=question.question,
+                    metadata={
+                        "source_question_id": str(question.question_id),
+                        "level": level,
+                        "category": question.category,
+                        "language": question.language,
+                        "evidence_span": question.evidence_span,
+                        "annotation_capabilities": question.annotation_capabilities,
+                        "evidence_windows": [
+                            item.model_dump() for item in question.evidence_windows
+                        ],
+                        "evidence_boxes": [item.model_dump() for item in question.evidence_boxes],
+                    },
+                )
+            )
+    return tuple(
+        EvalUnit(video_id, media.parts(video_id, (video_id,)), tuple(questions))
+        for video_id, questions in grouped.items()
+    )
+
+
 def _icm_bench(
     _spec: TaskSpec,
     dataset: Path,
@@ -1699,6 +1739,7 @@ _LOADERS = {
     "m3-bench-robot": _m3,
     "m3-bench-web": _m3,
     "video-mme-v2": _video_mme_v2,
+    "videozerobench": _videozerobench,
     "worldmemarena": _worldmemarena,
     "egotempo": _egotempo,
     "openeqa-hm3d": _openeqa,

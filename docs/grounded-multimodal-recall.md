@@ -106,7 +106,7 @@ deterministic parsing and arithmetic checks.
 Structured `AnswerResult.hits` reports only the model-declared support subset; the public SDK
 retains the kernel's selected-evidence order. These hits come from the fitted grounding pool and
 need not include everything the reader saw. Labels validate identity rather than semantic support.
-Evaluate the original retrieval ranking through `search`/`search_with_trace`; do not treat this
+Evaluate the original retrieval ranking through `search`; do not treat this
 selected support list as the full reader context.
 
 ## Optional query vision and answer style

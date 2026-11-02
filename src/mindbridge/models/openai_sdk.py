@@ -14,6 +14,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import partial
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
@@ -45,15 +46,22 @@ from mindbridge._telemetry import (
     record_model_request_id,
     record_model_usage,
 )
+from mindbridge._validation import nonempty_text
 from mindbridge.evidence import answer_constraint_payloads, answer_evidence_payloads
 from mindbridge.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
-from mindbridge.infrastructure.local.gazetteer import OfflineGazetteer
-from mindbridge.kernel.answer_output import (
+from mindbridge.models._answer_output import (
     evidence_aliases,
     parse_answer_draft,
     render_answer_draft,
 )
-from mindbridge.models._media import container_duration_seconds, image_capture_metadata
+from mindbridge.models._concurrency import ordered_calls
+from mindbridge.models._media import (
+    asset_data,
+    asset_url_part,
+    container_duration_seconds,
+    image_capture_metadata,
+    resolved_asset,
+)
 from mindbridge.models._openai_protocol import (
     output_limit_parameter,
     reasoning_model,
@@ -62,6 +70,7 @@ from mindbridge.models._openai_protocol import (
 )
 from mindbridge.models._openai_schemas import SchemaName, response_schema
 from mindbridge.models.base import EmbedTask, FormationInput, ModelInput, _modalities
+from mindbridge.perception import SpeakerName, VisualDescription
 from mindbridge.recall import SEMANTIC_QUERY_CAPABILITY
 from mindbridge.types import (
     AbstentionReason,
@@ -85,6 +94,30 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_GENERATION_MODEL = "gpt-5-mini-2025-08-07"
 DEFAULT_TRANSCRIPTION_MODEL = "whisper-1"
 DEFAULT_EMBEDDING_DIMENSION = 1_536
+
+
+def _visual_description(value: str) -> VisualDescription:
+    """Decode this provider recipe's labelled wire output into explicit proposals."""
+    visible, facts, names = [], [], []
+    for line in value.splitlines():
+        if not line.startswith("Fact:"):
+            visible.append(line)
+            continue
+        fact = line.removeprefix("Fact:").strip()
+        if not fact:
+            continue
+        facts.append(fact)
+        match = re.fullmatch(
+            r"speakers?[ _-]?(?P<index>\d{1,3})\s+is\s+called\s+"
+            r"(?P<name>[^\s.;,]+(?: [^\s.;,]+){0,3})\s*[.;]?",
+            fact,
+            re.IGNORECASE,
+        )
+        if match is not None and int(match["index"]) > 0:
+            names.append(SpeakerName(f"speaker_{int(match['index'])}", match["name"]))
+    return VisualDescription("\n".join(visible), tuple(facts), tuple(names))
+
+
 _STRICT_JSON_INSTRUCTION = (
     " When the JSON schema requires an optional field, use null "
     "for an absent value instead of omitting that field."
@@ -558,10 +591,7 @@ class OpenAIModels:
         "_generation_answer_style",
         "_generation_capabilities",
         "_generation_extra_body",
-        "_generation_gazetteer",
         "_generation_max_tokens",
-        "_generation_media_max_items",
-        "_generation_media_policy",
         "_generation_min_video_seconds",
         "_generation_model",
         "_generation_request_max_bytes",
@@ -617,14 +647,11 @@ class OpenAIModels:
         generation_video_limit: int | None = 8,
         generation_extra_body: Mapping[str, object] | None = None,
         generation_stream: bool = False,
-        generation_media_policy: Literal["all", "on_demand"] = "all",
-        generation_media_max_items: int = 2,
         generation_answer_style: Literal["default", "concise"] = "default",
         generation_answer_format: Literal["text", "structured"] = "text",
         generation_source_metadata_key: str = "source_id",
         vision_video_frames: int = 4,
         image_max_pixels: int | None = None,
-        generation_gazetteer: OfflineGazetteer | None = None,
         generation_request_max_bytes: int | None = None,
     ) -> None:
         if generation_request_max_bytes is not None and (
@@ -634,18 +661,13 @@ class OpenAIModels:
         ):
             raise ValidationError("generation_request_max_bytes must be a positive integer")
         self._generation_request_max_bytes = generation_request_max_bytes
-        if generation_gazetteer is not None and not isinstance(
-            generation_gazetteer, OfflineGazetteer
-        ):
-            raise ValidationError("generation_gazetteer must be an OfflineGazetteer")
-        self._generation_gazetteer = generation_gazetteer
         if not isinstance(generation_answer_format, str) or generation_answer_format not in {
             "text",
             "structured",
         }:
             raise ValidationError("generation_answer_format must be text or structured")
         self._generation_answer_format = generation_answer_format
-        self._generation_source_metadata_key = _text(
+        self._generation_source_metadata_key = nonempty_text(
             generation_source_metadata_key, "generation_source_metadata_key"
         )
         if not isinstance(generation_answer_style, str) or generation_answer_style not in {
@@ -668,19 +690,11 @@ class OpenAIModels:
         ):
             raise ValidationError("vision_video_frames must be between 2 and 64")
         self._vision_video_frames = vision_video_frames
-        embedding_model = _text(embedding_model, "embedding_model")
-        if generation_media_policy not in {"all", "on_demand"}:
-            raise ValidationError("generation_media_policy must be all or on_demand")
-        if (
-            isinstance(generation_media_max_items, bool)
-            or not isinstance(generation_media_max_items, int)
-            or not 1 <= generation_media_max_items <= 8
-        ):
-            raise ValidationError("generation_media_max_items must be an integer between 1 and 8")
-        generation_model = _text(generation_model, "generation_model")
+        embedding_model = nonempty_text(embedding_model, "embedding_model")
+        generation_model = nonempty_text(generation_model, "generation_model")
         if generation_response_format not in {"json_object", "json_schema"}:
             raise ValidationError("generation_response_format must be json_object or json_schema")
-        transcription_model = _text(transcription_model, "transcription_model")
+        transcription_model = nonempty_text(transcription_model, "transcription_model")
         transcription_prompt, transcription_keywords, transcription_languages = (
             _transcription_context(
                 transcription_prompt,
@@ -768,7 +782,7 @@ class OpenAIModels:
         self._embedding_space = (
             f"{embedding_model}:{embedding_dimension}:{recipe}l2-v1"
             if embedding_space is None
-            else _text(embedding_space, "embedding_space")
+            else nonempty_text(embedding_space, "embedding_space")
         )
         if image_max_pixels is not None:
             self._embedding_space += _image_transport_recipe(image_max_pixels)
@@ -786,7 +800,7 @@ class OpenAIModels:
                 languages=transcription_languages,
             )
             if transcription_space is None
-            else _text(transcription_space, "transcription_space")
+            else nonempty_text(transcription_space, "transcription_space")
         )
         self._embedding_capabilities = _modalities(embedding_capabilities, "embedding")
         self._generation_capabilities = _modalities(generation_capabilities, "generation")
@@ -800,8 +814,6 @@ class OpenAIModels:
             None if generation_min_video_seconds is None else float(generation_min_video_seconds)
         )
         self._generation_video_limit = generation_video_limit
-        self._generation_media_policy = generation_media_policy
-        self._generation_media_max_items = generation_media_max_items
         self._generation_extra_body = (
             None if generation_extra_body is None else dict(generation_extra_body)
         )
@@ -933,7 +945,7 @@ class OpenAIModels:
 
     def embed(
         self,
-        inputs: Sequence[ModelInput | str],
+        inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
         """Encode one batch with the configured OpenAI-compatible API shape.
@@ -948,9 +960,7 @@ class OpenAIModels:
             selected_task = EmbedTask(task)
         except ValueError:
             raise ValidationError("embedding task is invalid") from None
-        batch = tuple(
-            ModelInput(text=value) if isinstance(value, str) else value for value in inputs
-        )
+        batch = tuple(inputs)
         if any(not isinstance(value, ModelInput) for value in batch):
             raise ValidationError("inputs must be a sequence of ModelInput values")
         if not batch:
@@ -1215,6 +1225,9 @@ class OpenAIModels:
             retry_instruction=lambda content: _vision_retry_instruction(content, len(batch)),
         )
 
+    def describe_analysis(self, inputs: Sequence[ModelInput]) -> tuple[VisualDescription, ...]:
+        return tuple(_visual_description(value) for value in self.describe(inputs))
+
     def _json_completion(
         self,
         request: dict[str, object],
@@ -1447,7 +1460,7 @@ class OpenAIModels:
 
     def answer(
         self,
-        question: ModelInput | str,
+        question: ModelInput,
         hits: Sequence[SearchHit],
         *,
         answer_policy: AnswerPolicy = "strict",
@@ -1484,7 +1497,7 @@ class OpenAIModels:
         answer = _answer_text(response)
         return self._finish_answer(
             answer,
-            hits,
+            question.evidence_sources or hits,
             grounded,
             answer_policy=answer_policy,
         )
@@ -1523,7 +1536,7 @@ class OpenAIModels:
 
     def stream_answer(  # noqa: C901 - stream validation and usage share one response lifecycle
         self,
-        question: ModelInput | str,
+        question: ModelInput,
         hits: Sequence[SearchHit],
         *,
         answer_policy: AnswerPolicy = "strict",
@@ -1624,7 +1637,7 @@ class OpenAIModels:
                 )
             result = self._finish_answer(
                 streamed,
-                hits,
+                question.evidence_sources or hits,
                 grounded,
                 answer_policy=answer_policy,
             )
@@ -1666,7 +1679,7 @@ class OpenAIModels:
 
     def _create_answer(
         self,
-        question: ModelInput | str,
+        question: ModelInput,
         hits: Sequence[SearchHit],
         prepared: tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]],
         *,
@@ -1724,7 +1737,7 @@ class OpenAIModels:
 
     def _media_rejection_fallback(
         self,
-        question: ModelInput | str,
+        question: ModelInput,
         retrieved: Sequence[SearchHit],
         grounded: Sequence[SearchHit],
         error: Exception,
@@ -1753,9 +1766,8 @@ class OpenAIModels:
         fallback = self._answer_request(
             question,
             reduced,
-            omission_source_hits=retrieved,
+            omission_source_hits=question.evidence_sources or retrieved,
             answer_policy=answer_policy,
-            diagnose_media=False,
             exhaustive=exhaustive,
             stream=stream,
         )
@@ -1767,31 +1779,27 @@ class OpenAIModels:
             span.set_attribute(GROUNDING_MEDIA_FALLBACK, True)
         return fallback
 
-    def _answer_request(  # noqa: C901 - validate and price one prepared answer request
+    def _answer_request(
         self,
-        question: ModelInput | str,
+        question: ModelInput,
         hits: Sequence[SearchHit],
         *,
         omission_source_hits: Sequence[SearchHit] | None = None,
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
-        diagnose_media: bool = True,
         stream: bool = False,
     ) -> tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]] | AbstentionReason:
-        question_input = ModelInput(text=question) if isinstance(question, str) else question
-        if not isinstance(question_input, ModelInput):
+        if not isinstance(question, ModelInput):
             raise ValidationError("question must be a ModelInput value")
         if isinstance(hits, (str, bytes)):
             raise ValidationError("hits must contain SearchHit values")
         retrieved = tuple(hits)
         if any(not isinstance(hit, SearchHit) for hit in retrieved):
             raise ValidationError("hits must contain SearchHit values")
-        if diagnose_media and self._generation_media_policy == "on_demand":
-            hits = self._on_demand_media(question_input, retrieved)
         sampled_parts: dict[str, tuple[dict[str, object], ...]] = {}
         capture_metadata: dict[str, dict[str, object]] = {}
         grounded = _fit_grounding_media(
-            question_input,
+            question,
             hits,
             video_limit=self._generation_video_limit,
             sampled_parts=sampled_parts,
@@ -1806,15 +1814,19 @@ class OpenAIModels:
         if not grounded and answer_policy == "strict":
             return (
                 AbstentionReason.NO_EVIDENCE
-                if not retrieved
+                if not (question.evidence_sources or retrieved)
                 else AbstentionReason.INSUFFICIENT_EVIDENCE
             )
 
-        source_hits = retrieved if omission_source_hits is None else omission_source_hits
+        source_hits = (
+            (question.evidence_sources or retrieved)
+            if omission_source_hits is None
+            else omission_source_hits
+        )
         original_assets = {asset.id for hit in grounded for asset in hit.assets}
         original_parts = dict(sampled_parts)
         rendered = self._render_answer_request(
-            question_input,
+            question,
             grounded,
             source_hits,
             sampled_parts,
@@ -1827,16 +1839,12 @@ class OpenAIModels:
             and _answer_wire_size(rendered[0], stream=stream) > self._generation_request_max_bytes
         ):
             metadata_source_hits = grounded
-            source_assets = question_input.assets + tuple(
+            source_assets = question.assets + tuple(
                 asset for hit in metadata_source_hits for asset in hit.assets
             )
             capture_metadata = _source_capture_metadata(source_assets, cached=capture_metadata)
-            if self._generation_gazetteer is not None:
-                capture_metadata = _gazetteer_capture_metadata(
-                    capture_metadata, source_assets, self._generation_gazetteer
-                )
             grounded = self._bound_answer_media(
-                question_input,
+                question,
                 grounded,
                 source_hits,
                 sampled_parts,
@@ -1847,7 +1855,7 @@ class OpenAIModels:
             )
             _record_grounding_fit(retrieved, grounded)
             rendered = self._render_answer_request(
-                question_input,
+                question,
                 grounded,
                 source_hits,
                 sampled_parts,
@@ -2077,7 +2085,6 @@ class OpenAIModels:
                 grounded,
                 evidence_payloads,
                 capture_metadata=capture_metadata,
-                gazetteer=self._generation_gazetteer,
                 source_hits=metadata_source_hits,
             )
             if assets or metadata_only
@@ -2173,110 +2180,74 @@ class OpenAIModels:
             request["extra_body"] = dict(self._generation_extra_body)
         return request, modalities, assets, text_parts
 
-    def _on_demand_media(
-        self, question: ModelInput, hits: tuple[SearchHit, ...]
-    ) -> tuple[SearchHit, ...]:
-        """One text-only diagnosis; invalid selection never opens additional media.
+    def grounding_assets(
+        self, question: ModelInput, hits: Sequence[SearchHit]
+    ) -> tuple[AssetRef, ...]:
+        fitted = _fit_grounding_media(
+            question,
+            hits,
+            video_limit=self._generation_video_limit,
+            sampled_parts={},
+            sample_videos=Modality.IMAGE in self.generation_capabilities,
+            image_max_pixels=self._image_max_pixels,
+            capture_metadata={},
+        )
+        return (*question.assets, *(asset for hit in fitted for asset in hit.assets))
 
-        Question assets and memory text stay intact. The final request reports original media
-        omissions. The existing byte and video limits still apply after this selection.
-        """
-        question_ids = {asset.id for asset in question.assets}
-        available: dict[str, AssetRef] = {}
-        for hit in hits:
-            for asset in hit.assets:
-                if asset.modality in self.generation_capabilities and asset.id not in question_ids:
-                    available.setdefault(asset.id, asset)
-        indexed = tuple(available.values())[:64]
-        chosen: set[str] = set()
-        if indexed:
-            payload = {
-                "question": question.text,
-                "question_media_count": len(question.assets),
-                "hits": answer_evidence_payloads(hits),
-                "available_media": [
-                    {
-                        "media_index": index,
-                        "modality": asset.modality.value if asset.modality else None,
-                        "evidence_indices": [
-                            position
-                            for position, hit in enumerate(hits)
-                            if any(item.id == asset.id for item in hit.assets)
-                        ],
-                    }
-                    for index, asset in enumerate(indexed)
-                ],
-                "max_items": self._generation_media_max_items,
-            }
-            text = _json_text(payload)
-            if (
-                len(_MEDIA_DIAGNOSTIC_PROMPT.encode("utf-8")) + len(text.encode("utf-8"))
-                > _MAX_GROUNDED_TEXT_BYTES
-            ):
-                raise ModelError(
-                    "media diagnosis exceeds 4 MiB; lower the answer limit",
-                    reason="payload_too_large",
-                    stage="generate",
-                )
-            with nested_model_span(
-                "mindbridge.model.media_diagnosis",
-                attributes={
-                    "mindbridge.span.kind": "model",
-                    "mindbridge.model.module": "generation",
-                    "mindbridge.stage": "generate",
-                    "gen_ai.operation.name": "diagnose_media",
-                    "gen_ai.request.model": self._generation_model,
-                    "mindbridge.input.modalities": ("text",),
-                },
-            ) as span:
-                request = self._json_request(
-                    _MEDIA_DIAGNOSTIC_PROMPT, text, schema="media_selection"
-                )
-                request[output_limit_parameter(self._generation_model)] = min(
-                    self._generation_max_tokens or 512, 512
-                )
-                response = None
-                mark_model_requests(1)
-                try:
-                    response = cast(
-                        Callable[..., object], self._client("generation").chat.completions.create
-                    )(**request)
-                    content = _json_completion_text(
-                        response, subject="media diagnosis", stage="generate"
-                    )
-                    selected = _parse_media_requests(
-                        content, len(indexed), self._generation_media_max_items
-                    )
-                    chosen = {indexed[index].id for index in selected}
-                    span.set_attribute("mindbridge.grounding.media_diagnosis.valid", True)
-                except Exception:
-                    # A failed diagnostic adds no media; the text-only answer can still proceed.
-                    span.set_attribute("mindbridge.grounding.media_diagnosis.valid", False)
-                finally:
-                    if response is not None:
-                        _record_openai_usage(
-                            response,
-                            input_modalities=frozenset({Modality.TEXT}),
-                            output_modalities=frozenset({Modality.TEXT}),
-                        )
-                span.set_attribute("mindbridge.grounding.media_diagnosis.selected", len(chosen))
-                span.set_attribute(
-                    "mindbridge.grounding.media_diagnosis.truncated", len(available) > len(indexed)
-                )
-        selected_hits = []
-        for hit in hits:
-            assets = tuple(
-                asset for asset in hit.assets if asset.id in chosen or asset.id in question_ids
+    def select_media(
+        self, payload: Mapping[str, object], *, count: int, max_items: int
+    ) -> tuple[int, ...]:
+        chosen: tuple[int, ...] = ()
+        text = _json_text(payload)
+        if (
+            len(_MEDIA_DIAGNOSTIC_PROMPT.encode("utf-8")) + len(text.encode("utf-8"))
+            > _MAX_GROUNDED_TEXT_BYTES
+        ):
+            raise ModelError(
+                "media diagnosis exceeds 4 MiB; lower the answer limit",
+                reason="payload_too_large",
+                stage="generate",
             )
-            if assets or hit.content.strip():
-                selected_hits.append(
-                    replace(
-                        hit,
-                        assets=assets,
-                        modality=ModelInput(text=hit.content, assets=assets).modality,
-                    )
+        with nested_model_span(
+            "mindbridge.model.media_diagnosis",
+            attributes={
+                "mindbridge.span.kind": "model",
+                "mindbridge.model.module": "generation",
+                "mindbridge.stage": "generate",
+                "gen_ai.operation.name": "diagnose_media",
+                "gen_ai.request.model": self._generation_model,
+                "mindbridge.input.modalities": ("text",),
+            },
+        ) as span:
+            request = self._json_request(_MEDIA_DIAGNOSTIC_PROMPT, text, schema="media_selection")
+            request[output_limit_parameter(self._generation_model)] = min(
+                self._generation_max_tokens or 512, 512
+            )
+            response = None
+            mark_model_requests(1)
+            try:
+                response = cast(
+                    Callable[..., object], self._client("generation").chat.completions.create
+                )(**request)
+                content = _json_completion_text(
+                    response, subject="media diagnosis", stage="generate"
                 )
-        return tuple(selected_hits)
+                selected = _parse_media_requests(content, count, max_items)
+                chosen = selected
+                span.set_attribute("mindbridge.grounding.media_diagnosis.valid", True)
+            except Exception:
+                # A failed diagnostic adds no media; the text-only answer can still proceed.
+                span.set_attribute("mindbridge.grounding.media_diagnosis.valid", False)
+            finally:
+                if response is not None:
+                    _record_openai_usage(
+                        response,
+                        input_modalities=frozenset({Modality.TEXT}),
+                        output_modalities=frozenset({Modality.TEXT}),
+                    )
+            span.set_attribute("mindbridge.grounding.media_diagnosis.selected", len(chosen))
+            span.set_attribute("mindbridge.grounding.media_diagnosis.truncated", False)
+        return chosen
 
     def transcribe(self, assets: Sequence[AssetRef]) -> tuple[str, ...]:
         """Transcribe resolved audio/video assets in input order."""
@@ -2289,65 +2260,63 @@ class OpenAIModels:
         if not batch:
             mark_model_requests(0, token_usage_expected=0)
             return ()
-        results = []
         usages: list[_ModelUsage | None] = []
-        attempted = 0
-        mark_model_requests(0)
-        try:
-            for asset in batch:
-                modality, media_type, path = _resolved_asset(asset)
-                _require_capabilities(
-                    "transcription", frozenset({modality}), self.transcription_capabilities
-                )
-                create_transcription = cast(
-                    Callable[..., object],
-                    self._client("transcription").audio.transcriptions.create,
-                )
-                try:
-                    with _transcription_file(asset, modality, media_type, path) as file:
-                        if file is None:
-                            # A video with no audio stream carries no speech to preserve, so it
-                            # costs neither a request nor a usage slot.
-                            results.append("")
-                            continue
-                        attempted += 1
-                        mark_model_requests(attempted)
-                        response = create_transcription(
-                            **_transcription_request(
-                                self.transcription_model,
-                                file,
-                                prompt=self._transcription_prompt,
-                                keywords=self._transcription_keywords,
-                                languages=self._transcription_languages,
-                            )
+        attempted: list[None] = []
+
+        def transcribe_one(asset: AssetRef) -> str:
+            modality, media_type, path = resolved_asset(asset)
+            _require_capabilities(
+                "transcription", frozenset({modality}), self.transcription_capabilities
+            )
+            create_transcription = cast(
+                Callable[..., object],
+                self._client("transcription").audio.transcriptions.create,
+            )
+            try:
+                with _transcription_file(asset, modality, media_type, path) as file:
+                    if file is None:
+                        # A video with no audio stream carries no speech to preserve, so it
+                        # costs neither a request nor a usage slot.
+                        return ""
+                    attempted.append(None)
+                    response = create_transcription(
+                        **_transcription_request(
+                            self.transcription_model,
+                            file,
+                            prompt=self._transcription_prompt,
+                            keywords=self._transcription_keywords,
+                            languages=self._transcription_languages,
                         )
-                except ModelError:
-                    raise
-                except Exception as error:
-                    raise ModelError(
-                        "transcription request failed",
-                        reason=_provider_reason(error),
-                        stage="transcribe",
-                    ) from error
-                usages.append(
-                    _model_usage(
-                        response,
-                        input_modalities=frozenset({modality}),
-                        output_modalities=frozenset({Modality.TEXT}),
                     )
+            except ModelError:
+                raise
+            except Exception as error:
+                raise ModelError(
+                    "transcription request failed",
+                    reason=_provider_reason(error),
+                    stage="transcribe",
+                ) from error
+            usages.append(
+                _model_usage(
+                    response,
+                    input_modalities=frozenset({modality}),
+                    output_modalities=frozenset({Modality.TEXT}),
                 )
-                _record_openai_provenance(response)
-                text = getattr(response, "text", None)
-                if not isinstance(text, str):
-                    raise ModelError(
-                        "transcription response was invalid",
-                        reason="response_invalid",
-                        stage="transcribe",
-                    ) from None
-                results.append(text.strip())
+            )
+            _record_openai_provenance(response)
+            text = getattr(response, "text", None)
+            if not isinstance(text, str):
+                raise ModelError(
+                    "transcription response was invalid",
+                    reason="response_invalid",
+                    stage="transcribe",
+                ) from None
+            return text.strip()
+
+        try:
+            return ordered_calls(tuple(partial(transcribe_one, asset) for asset in batch))
         finally:
-            _record_usage_batch(usages, request_count=attempted)
-        return tuple(results)
+            _record_usage_batch(usages, request_count=len(attempted))
 
     def close(self) -> None:
         """Leave caller-owned SDK clients open."""
@@ -2626,12 +2595,6 @@ def _number(value: object, *names: str) -> float | None:
     return float(candidate)
 
 
-def _text(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValidationError(f"{name} must be non-empty text")
-    return value.strip()
-
-
 def _text_sequence(value: object, name: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -2648,7 +2611,7 @@ def _transcription_context(
     keywords: object,
     languages: object,
 ) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]:
-    normalized_prompt = None if prompt is None else _text(prompt, "transcription_prompt")
+    normalized_prompt = None if prompt is None else nonempty_text(prompt, "transcription_prompt")
     normalized_keywords = _text_sequence(keywords, "transcription_keywords")
     normalized_languages = _text_sequence(languages, "transcription_languages")
     if any(any(character in keyword for character in "<>\r\n") for keyword in normalized_keywords):
@@ -2897,6 +2860,8 @@ def _provider_reason(error: Exception) -> str | None:
         return "model_refused"
     if _is_context_length_rejection(error):
         return "context_length_exceeded"
+    if _is_generation_abort_rejection(error):
+        return "provider_unavailable"
     # Proxies can reject before returning a JSON error body. The SDK represents HTTP 413
     # as APIStatusError rather than BadRequestError; status is authoritative in either form.
     if isinstance(error, openai.APIStatusError) and error.status_code == 413:
@@ -2919,6 +2884,19 @@ def _provider_reason(error: Exception) -> str | None:
         if isinstance(error, provider_error):
             return reason
     return None
+
+
+def _is_generation_abort_rejection(error: Exception) -> bool:
+    """Classify this compatible gateway failure within the OpenAI adapter only."""
+    import openai
+
+    if not isinstance(error, openai.BadRequestError):
+        return False
+    message = _member(error.body, "message")
+    return isinstance(message, str) and (
+        "model output became abnormal" in message.casefold()
+        and "generation was aborted" in message.casefold()
+    )
 
 
 def _is_safety_rejection(error: Exception) -> bool:
@@ -3026,7 +3004,7 @@ def _embedding_vectors(
             raise ModelError(
                 "embedding response was invalid", reason="response_invalid", stage="embed"
             )
-        ordered[index] = _normalized(values, dimension)
+        ordered[index] = _embedding_vector(values, dimension)
     return tuple(vector for vector in ordered if vector is not None)
 
 
@@ -4053,7 +4031,6 @@ def _answer_text_parts(
     evidence_payloads: Sequence[Mapping[str, object]],
     *,
     capture_metadata: Mapping[str, dict[str, object]] | None = None,
-    gazetteer: OfflineGazetteer | None = None,
     source_hits: Sequence[SearchHit] | None = None,
 ) -> tuple[str, ...]:
     if len(evidence_payloads) != len(hits):
@@ -4065,8 +4042,7 @@ def _answer_text_parts(
         if source_hits is None
         else dict(capture_metadata or {})
     )
-    if gazetteer is not None and source_hits is None:
-        capture = _gazetteer_capture_metadata(capture, assets, gazetteer)
+    capture.update(question.source_metadata)
     original_assets = {} if source_hits is None else {hit.id: hit.assets for hit in source_hits}
 
     def source_metadata(assets: Sequence[AssetRef]) -> dict[str, object]:
@@ -4141,87 +4117,6 @@ def _answer_text_parts(
     )
 
 
-def _gazetteer_capture_metadata(
-    capture: Mapping[str, dict[str, object]],
-    assets: Sequence[AssetRef],
-    gazetteer: OfflineGazetteer,
-) -> dict[str, dict[str, object]]:
-    """Append whole untrusted candidates, charging every actual metadata occurrence."""
-    result = {identifier: dict(fields) for identifier, fields in capture.items()}
-    occurrences = Counter(asset.id for asset in assets)
-    spent = available = admitted = 0
-    for identifier, fields in capture.items():
-        gps = fields.get("gps")
-        if not isinstance(gps, Mapping):
-            continue
-        response = gazetteer.nearby(gps["latitude"], gps["longitude"])
-        candidates = cast(list[dict[str, object]], response["candidates"])
-        available += len(candidates)
-        if not candidates:
-            continue
-        sources = cast(list[Mapping[str, object]] | None, response.get("sources"))
-        if sources is None:
-            source = cast(Mapping[str, object], response["source"])
-            header = cast(Mapping[str, object], source.get("header", {}))
-            source_fields: dict[str, object] = {
-                "map_snapshot_date": source["snapshot_date"],
-                "map_data_timestamp": header.get("osmosis_replication_timestamp"),
-            }
-        else:
-            source_fields = {"map_sources": []}
-        enrichment = {
-            "untrusted": True,
-            **source_fields,
-            "index_sha256": gazetteer.index_sha256,
-            "attribution": response["attribution"],
-            "license_url": response["license_url"],
-            "geometry_recipe": response["geometry_recipe"],
-            "radius_m": response["radius_m"],
-            "candidate_limit": response["limit"],
-            "interpretation": "Nearby or covering map geometry is not the photographed object's identity or a mentioned place. GPS error and map changes since capture remain possible; explicit address tags describe the map feature only.",
-            "photo_identity_confidence": "unknown",
-            "global_complete": False,
-        }
-        chosen: list[dict[str, object]] = []
-        chosen_payload: dict[str, object] | None = None
-        cost = 0
-        for candidate in candidates:
-            trial = {**enrichment, "candidates": [*chosen, candidate]}
-            if sources is not None:
-                trial["map_sources"] = [
-                    {
-                        "source_index": index,
-                        "url": sources[index]["url"],
-                        "sha256": sources[index]["sha256"],
-                        "snapshot_date": sources[index]["snapshot_date"],
-                        "osmosis_replication_timestamp": cast(
-                            Mapping[str, object], sources[index].get("header", {})
-                        ).get("osmosis_replication_timestamp"),
-                    }
-                    for index in sorted(
-                        {cast(int, value["source_index"]) for value in [*chosen, candidate]}
-                    )
-                ]
-            added = (len(_json_text({"offline_osm_candidates": trial})) - 1) * occurrences[
-                identifier
-            ]
-            if spent + added > gazetteer.budget_chars:
-                break
-            chosen.append(candidate)
-            chosen_payload = trial
-            cost = added
-        if chosen_payload is not None:
-            result[identifier]["offline_osm_candidates"] = chosen_payload
-            spent += cost
-            admitted += len(chosen)
-    span = trace.get_current_span()
-    span.set_attribute("mindbridge.grounding.gazetteer.index_sha256", gazetteer.index_sha256)
-    span.set_attribute("mindbridge.grounding.gazetteer.added_chars", spent)
-    span.set_attribute("mindbridge.grounding.gazetteer.available_candidates", available)
-    span.set_attribute("mindbridge.grounding.gazetteer.omitted_candidates", available - admitted)
-    return result
-
-
 def _source_capture_metadata(
     assets: Sequence[AssetRef], *, cached: Mapping[str, dict[str, object]] | None = None
 ) -> dict[str, dict[str, object]]:
@@ -4230,7 +4125,7 @@ def _source_capture_metadata(
     for asset in _require_consistent_assets(assets):
         if asset.modality is not Modality.IMAGE:
             continue
-        _modality, _media_type, path = _resolved_asset(asset)
+        _modality, _media_type, path = resolved_asset(asset)
         fields = (
             cached[asset.id]
             if cached is not None and asset.id in cached
@@ -4298,7 +4193,7 @@ def _require_asset_integrity(
 ) -> tuple[tuple[AssetRef, int], ...]:
     verified = []
     for asset in assets:
-        _modality, _media_type, path = _resolved_asset(asset)
+        _modality, _media_type, path = resolved_asset(asset)
         try:
             actual_size = path.resolve(strict=True).stat().st_size
         except OSError:
@@ -4349,7 +4244,7 @@ def _bounded_image_url(  # noqa: C901 - reuse source headers while bounding imag
 ) -> str | None:
     """Inspect headers before decoding, and transform only when a source needs transport bounds."""
     _require_asset_integrity((asset,))
-    _modality, _media_type, path = _resolved_asset(asset)
+    _modality, _media_type, path = resolved_asset(asset)
     try:
         from PIL import Image, ImageOps
     except ImportError as error:
@@ -4872,36 +4767,23 @@ def _input_parts(
                     subject=asset.id,
                     stage="embed",
                 )
-            parts.append(_embedding_asset_part(asset, cache))
+            parts.append(asset_url_part(asset, cache))
             continue
         sampled = True
         parts.extend({"type": "image_url", "image_url": {"url": frame}} for frame in frames)
     return parts, sampled
 
 
-def _embedding_asset_part(
-    asset: AssetRef,
-    cache: dict[str, str],
-) -> dict[str, object]:
-    modality, _media_type, _path = _resolved_asset(asset)
-    kind = f"{modality.value}_url"
-    url = cache.get(asset.id)
-    if url is None:
-        url = _asset_url(asset)
-        cache[asset.id] = url
-    return {"type": kind, kind: {"url": url}}
-
-
 def _generation_asset_part(
     asset: AssetRef,
     cache: dict[str, str],
 ) -> dict[str, object]:
-    modality, media_type, path = _resolved_asset(asset)
+    modality, media_type, path = resolved_asset(asset)
     if modality is not Modality.AUDIO:
-        return _embedding_asset_part(asset, cache)
+        return asset_url_part(asset, cache)
     encoded = cache.get(asset.id)
     if encoded is None:
-        encoded = _asset_data(asset)
+        encoded = asset_data(asset)
         cache[asset.id] = encoded
     return {
         "type": "input_audio",
@@ -4949,7 +4831,7 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
     try:
         import av
 
-        _modality, _media_type, path = _resolved_asset(asset)
+        _modality, _media_type, path = resolved_asset(asset)
         with av.open(str(path)) as container:
             stream = container.streams.video[0]
             duration = container_duration_seconds(container, stream)
@@ -5037,30 +4919,6 @@ def _jpeg_frame_url(frame: VideoFrame, *, max_encoded_bytes: int | None = None) 
     return f"data:image/jpeg;base64,{base64.b64encode(encoded.getvalue()).decode('ascii')}"
 
 
-def _asset_url(asset: AssetRef) -> str:
-    _modality, media_type, _path = _resolved_asset(asset)
-    return f"data:{media_type};base64,{_asset_data(asset)}"
-
-
-def _asset_data(asset: AssetRef) -> str:
-    _modality, _media_type, path = _resolved_asset(asset)
-    try:
-        data = path.resolve(strict=True).read_bytes()
-    except OSError:
-        raise ModelError(
-            "local media asset is unavailable",
-            reason="asset_unavailable",
-            subject=asset.id,
-        ) from None
-    if asset.size_bytes is not None and len(data) != asset.size_bytes:
-        raise ModelError(
-            "local media asset changed after ingestion",
-            reason="asset_changed",
-            subject=asset.id,
-        )
-    return base64.b64encode(data).decode("ascii")
-
-
 def _audio_format(name: str, media_type: str) -> str:
     suffix = Path(name).suffix.removeprefix(".").lower()
     if suffix:
@@ -5069,18 +4927,7 @@ def _audio_format(name: str, media_type: str) -> str:
     return "mp3" if subtype == "mpeg" else subtype
 
 
-def _resolved_asset(asset: AssetRef) -> tuple[Modality, str, Path]:
-    if not asset.is_resolved:
-        raise ValidationError("asset reference must be resolved before model use")
-    modality = asset.modality
-    media_type = asset.media_type
-    path = asset.path
-    if modality is None or media_type is None or path is None:
-        raise ValidationError("asset reference must be resolved before model use")
-    return modality, media_type, path
-
-
-def _normalized(values: Sequence[float], dimension: int) -> tuple[float, ...]:
+def _embedding_vector(values: Sequence[float], dimension: int) -> tuple[float, ...]:
     if len(values) != dimension:
         # Name both widths: a declared dimension copied from another model's configuration fails
         # every write, and "invalid" alone sent an operator hunting through the server instead.
@@ -5091,7 +4938,6 @@ def _normalized(values: Sequence[float], dimension: int) -> tuple[float, ...]:
             stage="embed",
         )
     vector = tuple(values)
-    norm = math.hypot(*vector)
-    if not math.isfinite(norm) or norm == 0.0:
+    if any(not math.isfinite(value) for value in vector):
         raise ModelError("embedding response was invalid", reason="response_invalid", stage="embed")
-    return tuple(value / norm for value in vector)
+    return vector

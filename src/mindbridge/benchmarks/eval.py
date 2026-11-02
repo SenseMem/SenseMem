@@ -25,7 +25,7 @@ from collections.abc import (
 )
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext, suppress
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
@@ -49,7 +49,6 @@ from mindbridge import (
     FaceAnalysis,
     IndexUnavailableError,
     Memory,
-    MemoryConfig,
     MemoryType,
     MindBridgeConfig,
     Modality,
@@ -217,10 +216,12 @@ from mindbridge.benchmarks.task_catalog import (
     listing,
 )
 from mindbridge.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
+from mindbridge.kernel.derived import decode_description, encode_description
 from mindbridge.models._openai_protocol import reasoning_model
 from mindbridge.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
+    EmbeddingInputSupport,
     EmbedTask,
     FaceBackend,
     FormationBackend,
@@ -230,9 +231,11 @@ from mindbridge.models.base import (
     SpeechAnalysis,
     SpeechBackend,
     TranscriptionBackend,
+    VisionAnalysisBackend,
     VisionDescriptionBackend,
 )
 from mindbridge.models.openai_sdk import _answer_result
+from mindbridge.perception import VisualDescription
 
 EVAL_RUNNER_VERSION = "mindbridge_eval_official_v23"
 _BENCHMARK_SEARCH_REPLAY_SETUP_SPAN = "mindbridge.benchmark.search_replay_setup"
@@ -265,7 +268,15 @@ _TaskCompletion = Callable[
 # ones the pool really has onto the proxy instance declares exactly its own capabilities. Every
 # required protocol member stays an explicit declaration below, because a property cannot be
 # forwarded this way -- reading it here would snapshot its value.
-_OPTIONAL_CAPABILITY_METHODS = ("plan_recall", "stream_answer")
+_OPTIONAL_CAPABILITY_METHODS = (
+    "select",
+    "plan_recall",
+    "stream_answer",
+    "describe_analysis",
+    "grounding_assets",
+    "select_media",
+    "enrich",
+)
 
 
 class _BorrowedBackend:
@@ -273,6 +284,8 @@ class _BorrowedBackend:
 
     def __init__(self, backend: object) -> None:
         self._backend = backend
+        if isinstance(backend, EmbeddingInputSupport):
+            self.embedding_routes = backend.embedding_routes
         for name in _OPTIONAL_CAPABILITY_METHODS:
             # A subclass that wraps the call itself owns the name; anything else binds the
             # pooled backend's own method, which also keeps its real signature.
@@ -332,8 +345,14 @@ class _CachedVisionDescriber:
         return self._backend.vision_space
 
     def describe(self, inputs: Sequence[ModelInput]) -> tuple[str, ...]:
+        return tuple(value.content for value in self.describe_analysis(inputs))
+
+    def describe_analysis(self, inputs: Sequence[ModelInput]) -> tuple[VisualDescription, ...]:
         batch = tuple(inputs)
-        keys = tuple(_description_digest(value) for value in batch)
+        keys = tuple(
+            None if (key := _description_digest(value)) is None else "typed-v1:" + key
+            for value in batch
+        )
         with self._registry_lock:
             locks = [
                 self._key_locks.setdefault(key, Lock())
@@ -347,7 +366,7 @@ class _CachedVisionDescriber:
 
     def _describe_batch(
         self, batch: tuple[ModelInput, ...], keys: tuple[str | None, ...]
-    ) -> tuple[str, ...]:
+    ) -> tuple[VisualDescription, ...]:
         known = tuple(None if key is None else self._cache.get(key) for key in keys)
         pending = tuple(value for value, found in zip(batch, known, strict=True) if found is None)
         span = trace.get_current_span()
@@ -362,16 +381,22 @@ class _CachedVisionDescriber:
         if not pending:
             mark_model_requests(0, token_usage_expected=0)
         # One call for the whole miss set, so a partially cached batch still costs one request.
-        fresh = iter(() if not pending else self._backend.describe(pending))
-        described: list[str] = []
+        fresh: Iterator[VisualDescription]
+        if not pending:
+            fresh = iter(())
+        elif isinstance(self._backend, VisionAnalysisBackend):
+            fresh = iter(self._backend.describe_analysis(pending))
+        else:
+            fresh = iter(VisualDescription(value) for value in self._backend.describe(pending))
+        described: list[VisualDescription] = []
         written: list[tuple[str, str]] = []
         for key, found in zip(keys, known, strict=True):
             if found is not None:
-                described.append(found)
+                described.append(decode_description(found))
                 continue
             value = next(fresh)
             if key is not None:
-                written.append((key, value))
+                written.append((key, encode_description(value)))
             described.append(value)
         # One commit for the batch: the cache is `synchronous=FULL`, so a per-caption write cost
         # an fsync each.
@@ -641,14 +666,7 @@ class _BackendPool:
             self._transcriber.prefetch(items)
 
     def memory(self, data_dir: Path) -> AsyncMemory:
-        # Forwarded from the dataclass rather than field by field. The hand-written list silently
-        # dropped every setting added after it was written, which does not fail anything: the
-        # evaluation simply measures the default policy while reporting the configured one.
-        # `MemoryPlugins` cannot be used here because the shared-backend proxies are structural
-        # and its runtime protocol check reads attributes statically. The capability keywords below
-        # stay explicit for the same reason, so a test derives the expected set from
-        # `fields(MemoryPlugins)` instead.
-        policy = {entry.name: getattr(self._settings, entry.name) for entry in fields(MemoryConfig)}
+        # Keep the validated policy object intact across the public SDK boundary.
         return AsyncMemory(
             Memory(
                 data_dir,
@@ -661,7 +679,7 @@ class _BackendPool:
                 consolidator=self._consolidator,
                 vision_describer=self._vision_describer,
                 tracer=self._tracer,
-                **policy,
+                config=self._settings,
             )
         )
 
@@ -2451,7 +2469,7 @@ async def _deliberate_after_ingest(memory: AsyncMemory) -> None:
     change an answer it was meant to improve.
     """
     global _deliberation_applied
-    report = await memory.deliberate()
+    report = await memory.consolidate_pending()
     _deliberation_applied += report.applied
 
 
@@ -2978,17 +2996,19 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
 
     try:
         if arm.name == "random":
-            ranked = await attempt(
-                lambda: memory.search(
-                    content,
-                    limit=(
-                        RETRIEVAL_CANDIDATE_LIMIT
-                        if retrieval_gold_ids(task_name, question.metadata)
-                        else recall_limit
-                    ),
-                    reference_at=question.reference_at,
+            ranked = (
+                await attempt(
+                    lambda: memory.search(
+                        content,
+                        limit=(
+                            RETRIEVAL_CANDIDATE_LIMIT
+                            if retrieval_gold_ids(task_name, question.metadata)
+                            else recall_limit
+                        ),
+                        reference_at=question.reference_at,
+                    )
                 )
-            )
+            ).hits
             order = list(ranked)
             random.Random(f"{arm.seed}:{sample_id}").shuffle(order)
             return _AnswerOutcome(
@@ -4300,7 +4320,12 @@ def _version(distribution: str) -> str:
 def _regressed(comparisons: Sequence[Mapping[str, object]], *, threshold: float) -> bool:
     for comparison in comparisons:
         interval = comparison.get("confidence_interval_95")
-        if isinstance(interval, list) and len(interval) == 2 and float(interval[1]) < -threshold:
+        score_scale = cast(float, comparison["score_scale"])
+        if (
+            isinstance(interval, list)
+            and len(interval) == 2
+            and float(interval[1]) < -threshold * score_scale
+        ):
             return True
     return False
 

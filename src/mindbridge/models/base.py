@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Generator, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from mindbridge.exceptions import ValidationError
+from mindbridge.perception import VisualDescription
 from mindbridge.types import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
+    EmbeddingRoute,
     FormationProposal,
     MemoryOperation,
     MemoryRecord,
@@ -41,6 +44,8 @@ class ModelInput:
     text: str = ""
     assets: tuple[AssetRef, ...] = ()
     image_retrieval_matches: tuple[VisualRetrievalMatch, ...] = ()
+    source_metadata: Mapping[str, dict[str, object]] = field(default_factory=dict, compare=False)
+    evidence_sources: tuple[SearchHit, ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str):
@@ -61,6 +66,15 @@ class ModelInput:
         object.__setattr__(self, "text", self.text.strip())
         object.__setattr__(self, "assets", assets)
         object.__setattr__(self, "image_retrieval_matches", matches)
+        if not isinstance(self.source_metadata, Mapping) or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in self.source_metadata.items()
+        ):
+            raise ValidationError("source metadata must map asset IDs to metadata objects")
+        sources = tuple(self.evidence_sources)
+        if any(not isinstance(hit, SearchHit) for hit in sources):
+            raise ValidationError("evidence sources must contain SearchHit values")
+        object.__setattr__(self, "evidence_sources", sources)
 
     @property
     def modality(self) -> Modality:
@@ -81,6 +95,11 @@ class ModelInput:
         if self.text:
             values.add(Modality.TEXT)
         return frozenset(value for value in values if value is not None)
+
+    @property
+    def assets_per_modality(self) -> int:
+        """Maximum number of assets of any one media kind in this input."""
+        return max(Counter(asset.modality for asset in self.assets).values(), default=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +185,72 @@ class EmbeddingBackend(Protocol):
     ) -> tuple[tuple[float, ...], ...]: ...
 
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class GenerationMediaBackend(Protocol):
+    """Optional provider transport admission before source enrichment spends local work."""
+
+    def grounding_assets(
+        self, question: ModelInput, hits: Sequence[SearchHit]
+    ) -> tuple[AssetRef, ...]: ...
+
+
+@runtime_checkable
+class GenerationRoutingBackend(Protocol):
+    """Request-local selection and its native combination coverage."""
+
+    @property
+    def generation_routes(self) -> tuple[frozenset[Modality], ...]:
+        """Native modality combinations covered by individual executable routes."""
+        ...
+
+    def select(
+        self,
+        question: ModelInput,
+        hits: Sequence[SearchHit],
+        *,
+        convertible: frozenset[Modality] = frozenset(),
+    ) -> GenerationBackend: ...
+
+
+@runtime_checkable
+class MediaSelectionBackend(Protocol):
+    """Infer requested media indices from a kernel-built, untrusted evidence payload."""
+
+    def select_media(
+        self, payload: Mapping[str, object], *, count: int, max_items: int
+    ) -> tuple[int, ...]: ...
+
+    def close(self) -> None: ...
+
+
+@runtime_checkable
+class SourceMetadataBackend(Protocol):
+    """Enrich integrity-checked source assets without rewriting their stored records."""
+
+    def enrich(self, assets: Sequence[AssetRef]) -> Mapping[str, dict[str, object]]: ...
+
+    def close(self) -> None: ...
+
+
+@runtime_checkable
+class EmbeddingInputSupport(Protocol):
+    """Optional exact native combinations, including repeated-media constraints."""
+
+    @property
+    def embedding_routes(self) -> tuple[EmbeddingRoute, ...]: ...
+
+
+def embedding_routes(
+    backend: EmbeddingBackend, modalities: frozenset[Modality]
+) -> tuple[EmbeddingRoute, ...]:
+    """Read a backend's native input declaration; unrestricted backends accept every subset."""
+    return (
+        backend.embedding_routes
+        if isinstance(backend, EmbeddingInputSupport)
+        else EmbeddingRoute.combinations(modalities)
+    )
 
 
 @runtime_checkable
@@ -464,6 +549,13 @@ class TranscriptionBackend(Protocol):
 
 
 @runtime_checkable
+class VisionAnalysisBackend(Protocol):
+    """Optional structured visual facts and explicit source-local name proposals."""
+
+    def describe_analysis(self, inputs: Sequence[ModelInput]) -> tuple[VisualDescription, ...]: ...
+
+
+@runtime_checkable
 class VisionDescriptionBackend(Protocol):
     """One thread-safe visual-description adapter for text embedding fallback.
 
@@ -492,36 +584,10 @@ class VisionDescriptionBackend(Protocol):
         verbatim in the caption duplicates text the document already carries under its own
         section.
 
-        A line starting with the literal prefix ``Fact:`` is reserved syntax, not prose. The
-        kernel splits it out of the visible caption into its own indexed `[facts:<asset>]`
-        section (`_split_description`), so a fact must never depend on surrounding sentences to
-        be read correctly. One fact shape is more than indexed text: a line reading exactly
-        ``speaker_N is called <name>`` (case-insensitive, tolerant of `speaker N`/`speaker-N`)
-        binds the diarised label `speaker_N` to a stated name and performs an automatic
-        `IDENTIFY` write the caller can see through `operations()` and reverse through
-        `rollback()` -- never a label this clip's own recognizer did not produce, and never over
-        a name the identity already carries.
+        Captions are plain untrusted text. Structured facts and naming proposals require
+        the optional ``VisionAnalysisBackend`` and its typed ``VisualDescription`` result;
+        prose prefixes never authorize identity writes.
         """
         ...
 
     def close(self) -> None: ...
-
-
-def _is_generation_abort_rejection(error: object) -> bool:
-    """Recognize a gateway that aborted its own generation and reported it as a 400.
-
-    Measured live on one inner-prism gateway: 'Model output became abnormal while generating a
-    JSON response for response_format. The generation was aborted because the partial output may
-    be incomplete or invalid JSON. Please retry the request or adjust your prompt or JSON
-    schema.' An identical request seconds later routinely succeeds, so this is a fact about the
-    provider at that moment, not about the request. Most 400s -- a malformed prompt, an
-    unsupported image -- are permanent, hence a narrow message match rather than a status rule.
-    Duck-typed on the SDK exception's own ``status_code`` and parsed ``body``, so the product
-    needs no import of the optional adapter that raised it.
-    """
-    if getattr(error, "status_code", None) != 400:
-        return False
-    body = getattr(error, "body", None)
-    message = body.get("message") if isinstance(body, Mapping) else getattr(body, "message", None)
-    normalized = message.casefold() if isinstance(message, str) else ""
-    return "model output became abnormal" in normalized and "generation was aborted" in normalized

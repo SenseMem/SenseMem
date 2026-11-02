@@ -41,7 +41,7 @@ contract.
 
 - [Python SDK](api/python-sdk.md) — complete `mindbridge` root-import contract.
 - [REST API](api/rest.md) — `/v1` requests, responses, errors, and limits.
-- [MCP tools](api/mcp.md) — the fifteen tool schemas and transport boundary.
+- [MCP tools](api/mcp.md) — the tool schemas and transport boundary.
 - [Command line](api/cli.md) — commands, input forms, JSON output, and exit codes.
 - [Local WeMM deployment](use-local-wemm.md) — configure a local WeMM embedding service with the
   public SDK.

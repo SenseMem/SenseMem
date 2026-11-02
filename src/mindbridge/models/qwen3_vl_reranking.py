@@ -12,15 +12,10 @@ from pathlib import Path
 from typing import Protocol, TypedDict, cast
 
 from mindbridge._telemetry import mark_model_requests, record_unmetered_model_usage
+from mindbridge._validation import commit_revision, nonempty_text, optional_text, positive_int
 from mindbridge.exceptions import ModelError, ValidationError
 from mindbridge.models.base import ModelInput
-from mindbridge.models.reranking import _reranking_inputs, reranking_scores
-from mindbridge.models.sentence_transformers import (
-    _optional_text,
-    _positive_integer,
-    _revision,
-    _text,
-)
+from mindbridge.models.reranking import reranking_inputs, reranking_scores
 from mindbridge.types import AssetRef, Modality
 
 _INSTRUCTION = "Given a search query, retrieve relevant candidates that answer the query."
@@ -240,18 +235,18 @@ class Qwen3VLReranker:
         image_max_pixels: int = 262144,
         video_frames: int = 8,
     ) -> None:
-        self._model_id = _text(model_id, "model_id")
-        device = _optional_text(device, "device")
+        self._model_id = nonempty_text(model_id, "model_id")
+        device = optional_text(device, "device")
         if device not in (None, "cuda"):
             raise ValidationError(
                 "device must be cuda or None; select GPUs with CUDA_VISIBLE_DEVICES"
             )
-        batch_size = _positive_integer(batch_size, "batch_size")
-        self._max_length = _positive_integer(max_length, "max_length")
-        image_limit = _positive_integer(image_limit, "image_limit")
-        video_limit = _positive_integer(video_limit, "video_limit")
-        self._image_max_pixels = _positive_integer(image_max_pixels, "image_max_pixels")
-        self._video_frames = _positive_integer(video_frames, "video_frames")
+        batch_size = positive_int(batch_size, "batch_size")
+        self._max_length = positive_int(max_length, "max_length")
+        image_limit = positive_int(image_limit, "image_limit")
+        video_limit = positive_int(video_limit, "video_limit")
+        self._image_max_pixels = positive_int(image_max_pixels, "image_max_pixels")
+        self._video_frames = positive_int(video_frames, "video_frames")
         if not 2 <= self._video_frames <= 64:
             raise ValidationError("video_frames must be between 2 and 64")
         if (
@@ -267,7 +262,7 @@ class Qwen3VLReranker:
                 raise ModelError(
                     "failed to resolve an immutable reranking model revision", stage="reranking"
                 ) from None
-        self._revision = _revision(revision)
+        self._revision = commit_revision(revision)
         if engine is None:
             try:
                 engine = _VLLMScoringEngine(
@@ -328,7 +323,7 @@ class Qwen3VLReranker:
         return f"{self._model_id}@{self._revision}:{recipe}:max_length={self._max_length}"
 
     def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
-        batch = _reranking_inputs(query, documents, self.reranking_capabilities)
+        batch = reranking_inputs(query, documents, self.reranking_capabilities)
         with self._lock:
             if self._engine is None:
                 raise ModelError("reranking backend is closed", stage="reranking")

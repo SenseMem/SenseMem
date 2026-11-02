@@ -56,6 +56,10 @@ def plan_metadata(
             continue
         elif previous is None:
             updates[key] = value
+        elif key == STORE_METADATA_KEYS["model"]:
+            # The declared space and dimension determine vector compatibility. Model names
+            # are diagnostics and may change when compatible encoders are composed or reordered.
+            updates[key] = value
         elif key == STORE_METADATA_KEYS["index"] and previous in {
             index_recipe_for(mode) for mode in IndexQuantization
         }:

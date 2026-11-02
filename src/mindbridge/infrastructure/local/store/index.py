@@ -19,6 +19,7 @@ from mindbridge.infrastructure.local.store._codec import (
 )
 from mindbridge.infrastructure.local.store._connections import Connections
 from mindbridge.infrastructure.local.store._membership import identity_projections
+from mindbridge.infrastructure.local.store.errors import StoredDataError
 from mindbridge.infrastructure.local.store.records import write_embedding
 from mindbridge.infrastructure.local.store.rows import (
     IndexCandidate,
@@ -301,10 +302,10 @@ class IndexOutbox:
                 for row in rows:
                     vector = row["vector"]
                     if not isinstance(vector, bytes):
-                        raise RuntimeError("stored embedding vector is not a BLOB")
+                        raise StoredDataError("stored embedding vector is not a BLOB")
                     dimension = int(row["dimension"])
                     if dimension <= 0 or len(vector) != dimension * 4:
-                        raise RuntimeError(
+                        raise StoredDataError(
                             "stored embedding dimension does not match its FP32 BLOB"
                         )
                     yield (

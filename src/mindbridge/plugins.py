@@ -7,7 +7,6 @@ from typing import Annotated
 
 from pydantic import Field
 
-from mindbridge.exceptions import ValidationError
 from mindbridge.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
@@ -32,7 +31,7 @@ _NO_RETENTION = RetentionPolicy()
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MemoryPlugins:
-    """Already-constructed capability adapters owned and closed by ``Memory``."""
+    """Capability objects, validated at assembly and owned and closed by ``Memory``."""
 
     embedder: EmbeddingBackend
     answerer: GenerationBackend | None = None
@@ -42,37 +41,6 @@ class MemoryPlugins:
     former: FormationBackend | None = None
     consolidator: ConsolidationBackend | None = None
     reranker: RerankingBackend | None = None
-
-    def __post_init__(self) -> None:
-        if self.reranker is not None and not isinstance(self.reranker, RerankingBackend):
-            raise ValidationError("plugins.reranker must implement RerankingBackend")
-        if not isinstance(self.embedder, EmbeddingBackend):
-            raise ValidationError("plugins.embedder must implement EmbeddingBackend")
-        if self.answerer is not None and not isinstance(self.answerer, GenerationBackend):
-            raise ValidationError("plugins.answerer must implement GenerationBackend")
-        if self.transcriber is not None and not isinstance(
-            self.transcriber,
-            (SpeechBackend, TranscriptionBackend),
-        ):
-            raise ValidationError(
-                "plugins.transcriber must implement SpeechBackend or TranscriptionBackend"
-            )
-        if self.vision_describer is not None and not isinstance(
-            self.vision_describer,
-            VisionDescriptionBackend,
-        ):
-            raise ValidationError(
-                "plugins.vision_describer must implement VisionDescriptionBackend"
-            )
-        if self.face_analyzer is not None and not isinstance(self.face_analyzer, FaceBackend):
-            raise ValidationError("plugins.face_analyzer must implement FaceBackend")
-        if self.former is not None and not isinstance(self.former, FormationBackend):
-            raise ValidationError("plugins.former must implement FormationBackend")
-        if self.consolidator is not None and not isinstance(
-            self.consolidator,
-            ConsolidationBackend,
-        ):
-            raise ValidationError("plugins.consolidator must implement ConsolidationBackend")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

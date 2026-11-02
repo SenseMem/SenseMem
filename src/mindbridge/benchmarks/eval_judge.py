@@ -28,7 +28,7 @@ from mindbridge._telemetry import (
     mark_model_requests,
     model_span,
 )
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, LoadedTask
+from mindbridge.benchmarks.eval_adapters import LoadedTask
 from mindbridge.benchmarks.eval_arms import _Arm
 from mindbridge.benchmarks.eval_artifacts import _json_bytes
 from mindbridge.benchmarks.eval_cache import (
@@ -64,7 +64,6 @@ from mindbridge.benchmarks.official_scorers import (
     judge_failure_scores,
     judge_model_is_official,
     judge_plan,
-    local_scores,
     parse_judge_response,
     sample_primary_metric,
 )
@@ -136,7 +135,6 @@ async def _apply_judges(
         for question in unit.questions
     }
     planned: dict[str, JudgePlan] = {}
-    prepared_samples: dict[str, SampleResult] = {}
     for sample in samples:
         if (
             sample.error_code not in (None, "JudgeError")
@@ -148,8 +146,6 @@ async def _apply_judges(
         ):
             continue
         question = questions[(sample.task, sample.unit_id, sample.question_id)]
-        sample = _restore_local_scores(sample, question)
-        prepared_samples[sample.sample_id] = sample
         plan = judge_plan(
             sample.task,
             question=question.source_question,
@@ -188,7 +184,7 @@ async def _apply_judges(
         nonlocal completed
         plan = planned.get(sample.sample_id)
         result = await _judge_sample(
-            prepared_samples.get(sample.sample_id, sample),
+            sample,
             plan,
             client=client,
             cache=cache,
@@ -215,39 +211,6 @@ async def _apply_judges(
         if cache is not None:
             cache.close()
     return tuple(judged)
-
-
-def _restore_local_scores(sample: SampleResult, question: EvalQuestion) -> SampleResult:
-    if sample.error_code != "JudgeError":
-        return sample
-    # Older artifacts could have overwritten a deterministic headline on judge failure.
-    # Recompute it from the saved prediction; retain the original retrieval diagnostics.
-    local = local_scores(
-        sample.task,
-        score_kind=question.score_kind,
-        prediction=sample.prediction,
-        parsed_choice=sample.parsed_choice,
-        expected_choice=question.expected_choice,
-        references=question.references,
-        question=question.source_question,
-        metadata=question.metadata,
-        evidence_source_ids=sample.ranked_source_ids,
-    )
-    metrics = finalize_scores(
-        sample.task,
-        {
-            **sample.metrics,
-            **{name: value for name, value in local.items() if not name.startswith("retrieval_")},
-        },
-    )
-    return replace(
-        sample,
-        metrics=metrics,
-        score=metrics.get(sample_primary_metric(sample.task)),
-        exact_match=metrics.get("exact_match"),
-        error_code=None,
-        scorer_error=None,
-    )
 
 
 async def _judge_sample(

@@ -69,7 +69,7 @@ class RecordingEncoder:
         prompt: str | None = None,
     ) -> Matrix:
         assert convert_to_numpy is True
-        assert normalize_embeddings is True
+        assert normalize_embeddings is False
         self.batch_sizes.append(batch_size)
         self.calls.append(("query", sentences, truncate_dim))
         self.passed_prompts.append(prompt)
@@ -86,7 +86,7 @@ class RecordingEncoder:
         prompt: str | None = None,
     ) -> Matrix:
         assert convert_to_numpy is True
-        assert normalize_embeddings is True
+        assert normalize_embeddings is False
         self.batch_sizes.append(batch_size)
         self.calls.append(("document", sentences, truncate_dim))
         self.passed_prompts.append(prompt)
@@ -123,8 +123,8 @@ def test_standard_dict_and_message_inputs_are_batched(tmp_path: Path) -> None:
         Modality.IMAGE,
         Modality.VIDEO,
     }
-    assert vectors[0] == pytest.approx((0.6, 0.8))
-    assert vectors[1] == pytest.approx((0.0, 1.0))
+    assert vectors[0] == (3.0, 4.0)
+    assert vectors[1] == (0.0, 2.0)
     assert vectors[2] == pytest.approx((1.0, 0.0))
     assert encoder.calls == [
         (
@@ -315,7 +315,7 @@ def test_native_or_advertised_matryoshka_dimensions_define_the_space() -> None:
     assert short.embedding_space == same.embedding_space
     assert native.embedding_space != short.embedding_space
     assert short.embedding_space != other_revision.embedding_space
-    assert short.embed((ModelInput(text="document"),))[0] == pytest.approx((0.6, 0.8))
+    assert short.embed((ModelInput(text="document"),))[0] == pytest.approx((3.0, 4.0))
     assert short_encoder.calls[0][2] == 2
     with pytest.raises(ModelError, match="advertised Matryoshka"):
         SentenceTransformersEmbedder(
@@ -371,7 +371,7 @@ def test_embeddinggemma2_dimensions_without_optional_mrl_metadata(dimension: int
         "sentence-transformers-standard-input-v1", "google/embeddinggemma-2", REVISION, dimension
     )
     assert len(vector) == dimension
-    assert vector[:2] == pytest.approx((0.6, 0.8))
+    assert vector[:2] == pytest.approx((3.0, 4.0))
     assert encoder.calls[0][2] == (None if dimension == 768 else dimension)
     with pytest.raises(ModelError, match="advertised Matryoshka"):
         SentenceTransformersEmbedder(
@@ -708,7 +708,6 @@ def test_one_lock_serializes_query_and_document_calls() -> None:
     "values",
     (
         [[1.0]],
-        [[0.0, 0.0]],
         [[float("nan"), 1.0]],
         [[1.0, 0.0], [0.0, 1.0]],
     ),

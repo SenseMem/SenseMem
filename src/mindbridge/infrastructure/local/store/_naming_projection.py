@@ -14,9 +14,11 @@ from mindbridge.infrastructure.local.store._codec import (
 )
 from mindbridge.infrastructure.local.store._corroboration import independent_evidence_enabled
 from mindbridge.infrastructure.local.store._identity import dependent_naming_identities
+from mindbridge.infrastructure.local.store.errors import StaleOperationError
 from mindbridge.infrastructure.local.store.media import _read_speech
 from mindbridge.infrastructure.local.store.records import (
     _read_memory_assets,
+    read_memories,
     replace_memory_embeddings,
 )
 from mindbridge.infrastructure.local.store.rows import StoredEmbedding, StoredMemory
@@ -26,6 +28,39 @@ NamingProjectionFactory = Callable[
     [Mapping[str, str | None], Sequence[StoredMemory], Mapping[str, tuple[SpeakerSegment, ...]]],
     tuple[tuple[StoredMemory, ...], tuple[StoredEmbedding, ...]],
 ]
+
+
+def validate_speech_projection(
+    connection: sqlite3.Connection, identity_id: str, expected: Sequence[StoredMemory]
+) -> None:
+    """Reject a prepared reindex if an affected speech record arrived, changed, or disappeared."""
+    identifiers = tuple(
+        row_text(row, "memory_id")
+        for row in connection.execute(
+            """
+        SELECT DISTINCT m.memory_id FROM speech_segments AS s
+        JOIN memory_assets AS ma ON ma.asset_id = s.asset_id
+        JOIN memory_records AS m ON m.memory_id = ma.memory_id
+        WHERE s.speaker_id = ? AND instr(m.content, '[speech identities:') > 0
+        """,
+            (identity_id,),
+        ).fetchall()
+    )
+    previous = {memory.memory_id: memory for memory in expected}
+    if set(identifiers) != previous.keys():
+        raise StaleOperationError("speech projection sources changed during preparation")
+    for memory in read_memories(connection, identifiers):
+        before = previous[memory.memory_id]
+        if (
+            replace(
+                memory,
+                access_count=before.access_count,
+                last_accessed_at=before.last_accessed_at,
+                updated_at=before.updated_at,
+            )
+            != before
+        ):
+            raise StaleOperationError("speech projection content changed during preparation")
 
 
 def naming_snapshot(

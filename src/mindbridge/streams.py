@@ -23,7 +23,6 @@ from mindbridge.types import (
     Blob,
     ContentAtom,
     ContentInput,
-    MemoryRecord,
     MemoryType,
     Modality,
     ObservationContext,
@@ -151,7 +150,7 @@ class AsyncOmniPrefetch:
                 revision, query = self._pending
                 self._pending = None
                 try:
-                    hits = await self._memory.search(
+                    result = await self._memory.search(
                         query,
                         limit=self._limit,
                         memory_type=self._memory_type,
@@ -162,7 +161,7 @@ class AsyncOmniPrefetch:
                 except Exception as error:
                     self._failure = (revision, error)
                     continue
-                self._latest = PrefetchResult(hits=hits)
+                self._latest = PrefetchResult(hits=result.hits)
                 self._latest_revision = revision
         finally:
             self._worker = None
@@ -239,7 +238,9 @@ class AsyncCaptureStream:
                 prefetches.pop(stream_id, None)
                 # ponytail: FINAL is the commit point; a cancellable storage transaction would
                 # be needed to revoke it safely once the worker thread has started.
-                commit = asyncio.create_task(self._add_final(item))
+                commit = asyncio.create_task(
+                    self._memory._write_stream_item(item, capture=self._capture)
+                )
                 cancelled = False
                 while not commit.done():
                     try:
@@ -330,15 +331,6 @@ class AsyncCaptureStream:
             memory_type=self._memory_type,
             reference_at=self._reference_at,
         )
-
-    async def _add_final(self, item: ContentInput | StreamInput) -> MemoryRecord:
-        if isinstance(item, StreamInput):
-            if self._capture:
-                return await self._memory._capture_stream_input(item)
-            return await self._memory._add_stream_input(item)
-        if self._capture:
-            return await self._memory.capture(item)
-        return await self._memory.add(item)
 
 
 StreamContext = ObservationContext | Callable[[], ObservationContext | None] | None

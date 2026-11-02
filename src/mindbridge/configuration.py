@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -22,9 +22,11 @@ from pydantic import (
 )
 
 import mindbridge.recipes as recipes
+from mindbridge._resources import close_quietly
 from mindbridge.exceptions import ValidationError
 from mindbridge.infrastructure.local.gazetteer import OfflineGazetteer
-from mindbridge.kernel.contracts import close_quietly
+from mindbridge.infrastructure.local.source_metadata import GazetteerEnricher
+from mindbridge.kernel.answer_evidence import EvidenceGeneration
 from mindbridge.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
@@ -46,8 +48,11 @@ from mindbridge.models.openai_sdk import (
 )
 from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
 from mindbridge.models.qwen3_vl_reranking import Qwen3VLReranker
-from mindbridge.models.reranking import SentenceTransformersReranker
-from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
+from mindbridge.models.routing import GenerationRouter
+from mindbridge.models.sentence_transformers import (
+    SentenceTransformersEmbedder,
+    SentenceTransformersReranker,
+)
 from mindbridge.plugins import MemoryConfig, MemoryPlugins
 from mindbridge.types import Modality, RetentionPolicy
 
@@ -181,6 +186,7 @@ class OfflineGazetteerConfig(_ConfigModel):
 
 
 class OpenAIGenerationConfig(_OpenAICompletionConfig):
+    routes: tuple[OpenAIGenerationConfig, ...] = ()
     request_max_bytes: _PositiveInt | None = None
     answer_style: Literal["default", "concise"] = "default"
     answer_format: Literal["text", "structured"] = "text"
@@ -512,7 +518,25 @@ def _completion_values(config: _OpenAICompletionConfig) -> dict[str, object]:
     return values
 
 
-def _build_generation(config: OpenAIGenerationConfig) -> GenerationBackend:
+def _build_generation(
+    config: OpenAIGenerationConfig,
+) -> GenerationBackend:
+    if config.routes:
+        with ExitStack() as cleanup:
+            base = _build_native_generation(config)
+            cleanup.callback(base.close)
+            backends = [base]
+            for route in config.routes:
+                backend = _build_generation(route)
+                cleanup.callback(backend.close)
+                backends.append(backend)
+            router = GenerationRouter(backends)
+            cleanup.pop_all()
+            return router
+    return _build_native_generation(config)
+
+
+def _build_native_generation(config: OpenAIGenerationConfig) -> GenerationBackend:
     values = _completion_values(config)
     for name, value, default in (
         ("generation_request_max_bytes", config.request_max_bytes, None),
@@ -528,13 +552,21 @@ def _build_generation(config: OpenAIGenerationConfig) -> GenerationBackend:
         values["generation_video_limit"] = config.video_limit
     if config.min_video_seconds is not None:
         values["generation_min_video_seconds"] = config.min_video_seconds
-    if config.media_policy != "all":
-        values["generation_media_policy"] = config.media_policy
-    if config.media_max_items != 2:
-        values["generation_media_max_items"] = config.media_max_items
-    if config.offline_gazetteer is not None:
-        values["generation_gazetteer"] = OfflineGazetteer(**config.offline_gazetteer.model_dump())
-    return _openai_factory(values)
+    backend = _openai_factory(values)
+    if config.media_policy == "all" and config.offline_gazetteer is None:
+        return backend
+    with ExitStack() as cleanup:
+        cleanup.callback(backend.close)
+        answerer = EvidenceGeneration(
+            backend,
+            selector=backend if config.media_policy == "on_demand" else None,
+            enricher=GazetteerEnricher(OfflineGazetteer(**config.offline_gazetteer.model_dump()))
+            if config.offline_gazetteer is not None
+            else None,
+            media_max_items=config.media_max_items,
+        )
+        cleanup.pop_all()
+        return answerer
 
 
 def _build_formation(config: OpenAIFormationConfig) -> FormationBackend:
@@ -571,11 +603,12 @@ def _build_consolidation(
         return None
     values = _completion_values(config.consolidation)
     for built, declared in ((answerer, config.generation), (former, config.formation)):
-        if built is not None and declared is not None and _completion_values(declared) == values:
-            # The one cast the protocols cannot express: the reused object is known to be
-            # `OpenAIModels`, which implements every reasoning protocol, but it is typed here
-            # as the slot it was built for.
-            return cast(ConsolidationBackend, built)
+        if (
+            isinstance(built, ConsolidationBackend)
+            and isinstance(declared, _OpenAICompletionConfig)
+            and _completion_values(declared) == values
+        ):
+            return built
     return _openai_factory(values)
 
 

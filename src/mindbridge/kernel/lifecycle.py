@@ -10,15 +10,16 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Condition, Thread
 
-from mindbridge.exceptions import StorageError, ValidationError
+from mindbridge.exceptions import ModelError, StorageError, ValidationError
 from mindbridge.infrastructure.local._capacity import Capacity
 from mindbridge.infrastructure.local.assets import AssetStoreError
-from mindbridge.infrastructure.local.store import SpeechRollback, StoredAsset
+from mindbridge.infrastructure.local.store import SpeechPlan, StoredAsset
 from mindbridge.kernel.runtime import Storage, translate_storage_errors
 from mindbridge.models.base import SpeechAnalysis
+from mindbridge.perception import VisualDescription
 from mindbridge.types import FaceObservation, SpeakerSegment
 
 _PROCESS_OPERATIONS = Capacity(128)
@@ -35,14 +36,14 @@ class OperationAssets:
     transcript_updates: dict[str, str]
     speech_updates: dict[str, SpeechAnalysis]
     speech_segments: dict[str, tuple[SpeakerSegment, ...]]
-    speech_rollbacks: builtins.list[SpeechRollback]
     face_observations: dict[str, tuple[FaceObservation, ...]]
-    descriptions: dict[str, str]
-    query_descriptions: dict[str, str]
+    descriptions: dict[str, VisualDescription]
+    query_descriptions: dict[str, VisualDescription | ModelError]
     # Identity ID -> the name a caption's facts stated for that diarised speaker. Staged rather
     # than applied on the spot: the naming assertion reindexes every memory that mentions the
     # person, and this write's own memory does not exist until it commits.
     speaker_names: dict[str, str]
+    speech_plans: list[SpeechPlan] = field(default_factory=list)
     payload_bytes: int = 0
     # A naming fact that named nobody: a label no recognizer in this clip produced, an identity
     # that no longer exists by binding time, or a name that failed validation. Counted rather
@@ -208,7 +209,6 @@ class Lifecycle:
             transcript_updates={},
             speech_updates={},
             speech_segments={},
-            speech_rollbacks=[],
             face_observations={},
             descriptions={},
             query_descriptions={},

@@ -770,13 +770,13 @@ def test_speech_identity_is_stable_across_assets(tmp_path: Path) -> None:
         assert first_segments[0].identity_score is None
         assert second_segments[0].identity_score is not None
         assert second_segments[0].identity_score > 0.99
-        assert store.identities.register_speaker(speaker_id, "Alice") is True
+        assert store.identities.register_identity(speaker_id, "Alice") is True
         renamed = store.media.read_speech(first.asset_id, space_id="cam++:test")
         assert renamed is not None and renamed[0].speaker_name == "Alice"
-        assert store.identities.register_speaker(speaker_id, "Alicia") is True
+        assert store.identities.register_identity(speaker_id, "Alicia") is True
         renamed = store.media.read_speech(second.asset_id, space_id="cam++:test")
         assert renamed is not None and renamed[0].speaker_name == "Alicia"
-        assert store.identities.register_speaker("speaker_missing", "Nobody") is False
+        assert store.identities.register_identity("speaker_missing", "Nobody") is False
         assert store.media.read_asset(second.asset_id) == replace(second, transcript="hello again")
 
 
@@ -1063,7 +1063,7 @@ def test_linked_identity_keeps_the_source_id_as_an_alias(tmp_path: Path) -> None
 
         assert store.identities.link_identities(face_id, voice_id) == face_id
         assert store.identities.resolve_identity_id(voice_id) == face_id
-        assert store.identities.register_speaker(voice_id, "Alicia") is True
+        assert store.identities.register_identity(voice_id, "Alicia") is True
         speech = store.media.read_speech(audio.asset_id, space_id="cam++:test")
 
     assert speech is not None

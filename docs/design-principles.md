@@ -42,6 +42,30 @@ MindBridge pursues four product outcomes:
 
 ## Design goals
 
+### Readable behavior and predictable contracts
+
+The [Transformers tenets](https://huggingface.co/spaces/transformers-community/Transformers-tenets)
+inform how we keep implementations understandable. Model-specific request construction, prompts
+and response semantics stay beside their adapter; memory evidence policy stays in its kernel
+owner. Generic resource ownership may be shared independently of either. We do not introduce a
+base-class hierarchy or duplicate durable writes to satisfy a slogan about file count.
+
+Strategic local repetition is acceptable when it makes buffered, streamed or provider-specific
+behavior easier to read. Share pure infrastructure and authoritative persistence; do not hide
+business decisions behind generic dispatch or merge operations solely to reduce method count.
+
+The common constructor accepts backends and one `MemoryConfig`, following the ecosystem's
+configuration-object convention, exemplified by Transformers'
+[GenerationConfig](https://huggingface.co/docs/transformers/main_classes/text_generation#transformers.GenerationConfig).
+Capability documents expose executable native combinations, and perception results preserve
+execution coverage even when detections are empty. Contract tests enforce the same Python and
+transport values. This follows consistent interfaces without pretending all backends accept
+every combination in the union of their modalities.
+
+MindBridge retains the repository's current policy allowing breaking API changes and removal of
+obsolete interfaces. Adopting these design tenets does not silently adopt Transformers' separate
+backwards-compatibility promise.
+
 ### One memory surface for every supported modality
 
 Applications should use the same memory operations regardless of which modalities are present.
@@ -143,9 +167,9 @@ For developers:
   `delete` — and a caller who needs nothing else should never have to learn anything else. That is
   a property of the *default* path, not the size of the surface: the full inventory is larger and
   lives in [the Python SDK reference](api/python-sdk.md#memory-operations). Growth beyond the common
-  path is justified per operation, not by convenience. `speech` and `faces` read a stored record but
-  invoke a model and persist identity state, so they are separate operations rather than variants of
-  `get`; batching (`add_many`), diagnostics (`search_with_trace`), identity naming, explicit
+  path is justified per operation, not by convenience. `perceive` reads stored media, invokes configured recognizers, and persists identity evidence.
+  It returns distinct typed speech and face observations through one entry point. Batching
+  (`add_many`), identity naming, explicit
   feedback (`reinforce`), and index maintenance (`reindex`, `optimize`) are each their own verb for
   the same reason. So are the three operations that split acknowledgement from enrichment
   (`capture`, `settle`, `pending_captures`) and the four that manage stored memory rather than add
@@ -324,7 +348,7 @@ an owning reference for detail. A cell that stops being true is a defect in this
 | Hardware | Runs where Python, dependencies, and the selected models are supported | Verified device-class matrix with published quality, latency, and resource evidence |
 | Developer interfaces | Typed Python API, OpenAPI-documented REST adapter, and a JSON-only product CLI over the same composition | Same small vocabulary and time-to-first-success across supported transports |
 | Execution plane | Python SDK, REST, MCP, and the `mindbridge` CLI all dispatch to one `Memory`; none of them implements its own routing, persistence, or defaults | Every surface reaches the operations the SDK publishes, with no transport gap left undocumented |
-| Agent interfaces | Fifteen typed MCP tools and a `mindbridge` CLI whose commands are the SDK operations kebab-cased plus `doctor`. The common path — `add_memory`, `search_memories`, `ask_memory`, `compile_context`, `get_memory`, `list_memories`, `delete_memory` — plus the embodied and identity operations an agent driving a robot needs: `analyze_speech`, `analyze_faces`, `register_speaker`, `register_identity`, `get_identity`, `unlink_identity`, `forget_identity`, `reinforce_memories`. Erasure is exposed, so a privacy request reaches an agent surface, and the composition's capability view is the server instructions rather than a tool. What MCP still does not expose is batching, streaming, diagnostics, index maintenance, deferred capture, and the memory control plane; each is listed with its reason in [the MCP reference](api/mcp.md#operations-without-a-tool) | SDK-derived MCP and CLI capability parity, machine-readable schemas, and lifecycle integrations |
+| Agent interfaces | Typed MCP tools and a `mindbridge` CLI whose commands are the SDK operations kebab-cased plus `doctor`. The common path — `add_memory`, `search_memories`, `ask_memory`, `compile_context`, `get_memory`, `list_memories`, `delete_memory` — plus the embodied and identity operations an agent driving a robot needs: `perceive_memory`, `register_identity`, `get_identity`, `unlink_identity`, `forget_identity`, `reinforce_memories`. Erasure is exposed, so a privacy request reaches an agent surface, and the composition's capability view is the server instructions rather than a tool. What MCP still does not expose is batching, streaming, index maintenance, deferred capture, and the memory control plane; each is listed with its reason in [the MCP reference](api/mcp.md#operations-without-a-tool) | SDK-derived MCP and CLI capability parity, machine-readable schemas, and lifecycle integrations |
 
 This distinction is deliberate: goals guide what to build next, while current API and deployment
 documentation remain the source of truth for what users can run now.

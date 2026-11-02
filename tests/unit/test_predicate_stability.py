@@ -15,6 +15,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryKind,
     Modality,
     ModelInput,
@@ -178,10 +179,12 @@ def test_alias_index_rebuild_reuses_authoritative_vectors(tmp_path: Path) -> Non
             assert task is EmbedTask.QUERY, "rebuild must reuse authoritative vectors"
             return super().embed(inputs, task=task)
 
-    with Memory(tmp_path, embedder=StoredVectorsOnly(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=StoredVectorsOnly(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
         left, right = memory.get(first).context, memory.get(second).context
         assert left is not None and right is not None and left.lineage_id == right.lineage_id
-        assert {first, second}.issubset({hit.id for hit in memory.search("drink", limit=20)})
+        assert {first, second}.issubset({hit.id for hit in memory.search("drink", limit=20).hits})
 
 
 def test_user_stated_alias_overrides_an_inferred_trait(tmp_path: Path) -> None:

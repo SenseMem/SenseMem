@@ -508,11 +508,11 @@ with Memory.from_config(config) as memory:
 A caller does not have to compile a bundle to learn what a composition supports. The
 `Memory.capabilities` property returns a frozen `MemoryCapabilities` describing the declarations
 routing reads: the embedding modalities, model, space and dimension, the modality sets for
-generation, transcription, vision, face, and formation with their model identities,
-`consolidation_model` when a `ConsolidationBackend` is injected, the `speaker_recognition` and
-`streaming_generation` flags, and the derived `operations` set naming which optional operations
-those backends can serve (`ask`, `speech`, `transcribe`, `faces`, `describe_vision`, `formation`,
-`consolidate`). Its fields are listed in
+generation, transcription, vision, face, formation and reranking with their model identities,
+exact `embedding_routes` and native `generation_routes`, `consolidation_model` when a
+`ConsolidationBackend` is injected, the `speaker_recognition` flag, and the derived `operations`
+set naming which optional operations those backends can serve (`ask`, `perceive`, `transcribe`,
+`describe_vision`, `formation`, `consolidate`, `consolidate_pending`). Its fields are listed in
 [the Python SDK reference](api/python-sdk.md#public-values).
 
 `MemoryCapabilities.document()` renders that value as one JSON-ready document, and it is the only

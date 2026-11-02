@@ -23,6 +23,7 @@ from mindbridge import (
     FormationProposal,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     MemoryKind,
     MemoryType,
     Modality,
@@ -165,7 +166,7 @@ def _memory(data_dir: Path, *, former: _DerivedFormer | None = None) -> Memory:
         data_dir,
         embedder=_PartEmbedder(),
         former=former,
-        minimum_relevance=0.0,
+        config=MemoryConfig(minimum_relevance=0.0),
     )
 
 
@@ -184,9 +185,11 @@ def test_quantized_excerpt_follows_the_exact_winning_part(
     with Memory(
         tmp_path,
         embedder=QuantizedEmbedder(),
-        index_quantization=IndexQuantization.INT8,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.85,
+        config=MemoryConfig(
+            index_quantization=IndexQuantization.INT8,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.85,
+        ),
     ) as memory:
         record = memory.add(_long_source(), occurred_at=REFERENCE)
         documents = memory._store.index.read_memory_index_documents((record.id,))
@@ -239,9 +242,11 @@ def test_index_rebuild_preserves_exact_excerpts_without_reembedding(
     with Memory(
         tmp_path,
         embedder=embedder,
-        minimum_relevance=0.0,
-        index_quantization=(
-            IndexQuantization.INT8 if rebuild == "quantization" else IndexQuantization.NONE
+        config=MemoryConfig(
+            minimum_relevance=0.0,
+            index_quantization=(
+                IndexQuantization.INT8 if rebuild == "quantization" else IndexQuantization.NONE
+            ),
         ),
     ) as memory:
         after = memory.compile(
@@ -452,7 +457,7 @@ def test_an_excerpt_cannot_satisfy_a_derived_full_record_closure(tmp_path: Path)
         )
         derived = next(
             hit
-            for hit in memory.search("TARGET CLAIM", limit=10, reference_at=REFERENCE)
+            for hit in memory.search("TARGET CLAIM", limit=10, reference_at=REFERENCE).hits
             if hit.context is not None and hit.context.kind is MemoryKind.STATE
         )
         compact = memory.compile(

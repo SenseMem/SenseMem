@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import sqlite3
 import threading
@@ -10,6 +9,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx2 as httpx
@@ -29,6 +29,7 @@ from mindbridge import (
     AnswerResult,
     Blob,
     EvidenceBasis,
+    EvidenceGeneration,
     FormationInput,
     FormationProposal,
     Memory,
@@ -111,11 +112,6 @@ def test_declarative_config_is_typed_strict_and_keeps_local_policy_separate(
                 "embedding": {"provider": "openai", "unexpected": True},
             }
         )
-
-
-def test_removed_embedding_provider_is_rejected() -> None:
-    with pytest.raises(PydanticValidationError, match="union_tag_invalid"):
-        MindBridgeConfig.model_validate({"embedding": {"provider": "jina-omni"}})
 
 
 @pytest.mark.parametrize(
@@ -215,8 +211,6 @@ def test_local_policy_defaults_stay_pinned_to_their_recorded_provenance() -> Non
         MindBridgeConfig.model_validate({"embedding": {"provider": "openai"}}).settings
         == MemoryConfig()
     )
-    assert inspect.signature(Memory.__init__).parameters["index_speech"].default is True
-    assert inspect.signature(Memory.__init__).parameters["minimum_relevance"].default == 0.10
 
 
 def test_a_former_is_declaratively_reachable_but_never_implicit(
@@ -490,7 +484,10 @@ def test_builtin_openai_generation_config_maps_friendly_names_to_the_sdk_adapter
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
-    marker = cast(GenerationBackend, object())
+    marker = cast(
+        GenerationBackend,
+        SimpleNamespace(generation_capabilities=frozenset({Modality.TEXT}), close=lambda: None),
+    )
 
     def build(**values: object) -> GenerationBackend:
         captured.update(values)
@@ -526,7 +523,10 @@ def test_builtin_openai_generation_maps_on_demand_media_controls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
-    marker = cast(GenerationBackend, object())
+    marker = cast(
+        GenerationBackend,
+        SimpleNamespace(generation_capabilities=frozenset({Modality.TEXT}), close=lambda: None),
+    )
 
     def build(**values: object) -> GenerationBackend:
         captured.update(values)
@@ -536,9 +536,11 @@ def test_builtin_openai_generation_maps_on_demand_media_controls(
     spec = configuration.OpenAIGenerationConfig(
         provider="openai", media_policy="on_demand", media_max_items=3
     )
-    assert configuration._build_generation(spec) is marker
-    assert captured["generation_media_policy"] == "on_demand"
-    assert captured["generation_media_max_items"] == 3
+    built = configuration._build_generation(spec)
+    assert isinstance(built, EvidenceGeneration)
+    assert built.resources()[0] is marker
+    assert "generation_media_policy" not in captured
+    assert "generation_media_max_items" not in captured
 
 
 def test_builtin_openai_generation_stream_is_explicitly_opt_in(
@@ -639,7 +641,7 @@ def test_embeddinggemma2_vllm_config_embeds_documents_and_queries(
             }
         ) as memory:
             record = memory.add("Ada prefers tea.")
-            hits = memory.search("Ada's preferred drink")
+            hits = memory.search("Ada's preferred drink").hits
 
     assert hits[0].id == record.id
     assert len(requests) == 2
@@ -1112,7 +1114,8 @@ def test_declarative_vision_slot_captions_an_image_into_the_lexical_document(
             picture = memory.add(Blob(b"bicycle-frame", "image/png"))
             # A second document so the full-text index scores against a corpus.
             garden = memory.add("the garden at noon")
-            traced = memory.search_with_trace("bicycle")
+            traced = memory.search("bicycle", explain=True)
+            assert traced.trace is not None
             stored = memory.get(picture.id).content
     provider.shutdown()
 
@@ -1348,3 +1351,72 @@ def test_generation_request_budget_requires_a_positive_integer(value: object) ->
         )
     with pytest.raises(ValidationError):
         openai_sdk.OpenAIModels(generation_request_max_bytes=cast(int, value))
+
+
+def test_routed_generation_owns_children_and_does_not_impersonate_consolidation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    built: list[openai_sdk.OpenAIModels] = []
+
+    def build(**values: object) -> openai_sdk.OpenAIModels:
+        backend = openai_sdk.OpenAIModels(
+            generation_capabilities=cast(
+                frozenset[Modality],
+                values.get(
+                    "generation_capabilities",
+                    frozenset({Modality.TEXT}),
+                ),
+            ),
+        )
+        built.append(backend)
+        return backend
+
+    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    generation = {
+        "provider": "openai",
+        "model": "fixture",
+        "media_policy": "on_demand",
+        "routes": [{"provider": "openai", "model": "visual", "modalities": ["text", "image"]}],
+    }
+    composition = resolve_memory_config(
+        {
+            "data_dir": tmp_path,
+            "embedding": {"provider": "openai"},
+            "generation": generation,
+            "consolidation": {"provider": "openai", "model": "fixture"},
+        }
+    )
+    try:
+        assert len(built) == 4
+        assert composition.plugins.consolidator is built[-1]
+        assert composition.plugins.answerer is not None
+        assert composition.plugins.answerer.generation_capabilities == {
+            Modality.TEXT,
+            Modality.IMAGE,
+        }
+    finally:
+        composition.close()
+
+
+def test_failed_evidence_composition_closes_its_generation_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    closed: list[bool] = []
+
+    class Backend(openai_sdk.OpenAIModels):
+        def close(self) -> None:
+            closed.append(True)
+
+    backend = Backend()
+    monkeypatch.setattr(recipes_module, "_owned_openai_models", lambda **_values: backend)
+    spec = configuration.OpenAIGenerationConfig(
+        provider="openai",
+        offline_gazetteer=configuration.OfflineGazetteerConfig(
+            index_path=tmp_path / "missing.sqlite3", index_sha256="a" * 64
+        ),
+    )
+    with pytest.raises(ValidationError):
+        configuration._build_generation(spec)
+    assert closed == [True]

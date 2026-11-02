@@ -16,7 +16,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppres
 from typing import Protocol, runtime_checkable
 
 from mindbridge.exceptions import MindBridgeError, ValidationError
-from mindbridge.types import DeliberationReport, MemoryCapabilities
+from mindbridge.types import ConsolidationReport, MemoryCapabilities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,20 +33,20 @@ class _Deliberating(Protocol):
     @property
     def capabilities(self) -> MemoryCapabilities: ...
 
-    def deliberate(
+    def consolidate_pending(
         self,
         *,
         limit: int = 32,
         max_rounds: int = 4,
         idle: bool = False,
-    ) -> DeliberationReport: ...
+    ) -> ConsolidationReport: ...
 
 
 def deliberation_lifespan(
     memory: object,
     every_seconds: float,
 ) -> Callable[[object], AbstractAsyncContextManager[None]]:
-    """Run `deliberate()` on an interval for as long as the surface is serving.
+    """Run `consolidate_pending()` on an interval for as long as the surface is serving.
 
     The returned value is a lifespan: FastAPI and MCP both take one, and both ignore what it is
     handed, so the same factory serves either.
@@ -95,9 +95,9 @@ async def _deliberate_periodically(
         if stop.is_set():
             return
         try:
-            # Off the event loop: `deliberate()` is a synchronous model round trip, and the
+            # Off the event loop: `consolidate_pending()` makes synchronous model calls, and the
             # requests this process also serves run in the same loop.
-            report = await asyncio.to_thread(memory.deliberate)
+            report = await asyncio.to_thread(memory.consolidate_pending)
         except Exception as error:
             # Exception chains can contain provider bodies even when the outer error is safe.
             # Keep them out of every log level; model spans carry safe request identifiers.
@@ -113,5 +113,5 @@ async def _deliberate_periodically(
             report.rounds,
             report.weighed,
             report.applied,
-            report.rejected,
+            len(report.rejected),
         )

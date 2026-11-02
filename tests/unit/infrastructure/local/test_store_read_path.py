@@ -252,7 +252,7 @@ def test_a_missing_index_rebuilds_from_stored_vectors_without_re_embedding(
     embedder.refuse_documents = True
 
     with Memory(tmp_path, embedder=embedder) as memory:
-        results = memory.search("the kitchen at dusk", limit=2)
+        results = memory.search("the kitchen at dusk", limit=2).hits
         assert kitchen.id in {result.id for result in results}
 
     assert embedder.document_calls == ingest_calls
@@ -280,7 +280,7 @@ def test_a_search_that_cannot_widen_does_not_count_survivors(
         kitchen = memory.add("the kitchen at dusk")
         memory.add("the garden at noon")
         monkeypatch.setattr(MemoryRecords, "count_memories", counting)
-        results = memory.search("the kitchen at dusk", limit=2)
+        results = memory.search("the kitchen at dusk", limit=2).hits
 
     assert kitchen.id in {result.id for result in results}
     assert counted == []
@@ -295,6 +295,6 @@ def test_reindex_rebuilds_from_stored_vectors_without_re_embedding(tmp_path: Pat
         embedder.refuse_documents = True
 
         assert memory.reindex() == 1
-        results = memory.search("the kitchen at dusk", limit=2)
+        results = memory.search("the kitchen at dusk", limit=2).hits
         assert kitchen.id in {result.id for result in results}
         assert embedder.document_calls == ingest_calls

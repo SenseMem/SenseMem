@@ -32,7 +32,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from mindbridge import recipes
+from mindbridge import MemoryConfig, recipes
 from mindbridge.control import dump_operation, load_operation
 from mindbridge.exceptions import (
     IdentityNotFoundError,
@@ -41,7 +41,6 @@ from mindbridge.exceptions import (
     MindBridgeError,
     ModelError,
     ModelOutputTruncatedError,
-    SpeakerNotFoundError,
     StorageError,
     ValidationError,
 )
@@ -53,6 +52,7 @@ from mindbridge.models.base import (
     EmbeddingBackend,
     FormationBackend,
     GenerationBackend,
+    RerankingBackend,
     SpeechBackend,
     TranscriptionBackend,
     VisionDescriptionBackend,
@@ -103,7 +103,6 @@ INTERRUPT_EXIT_CODE = 130
 EXIT_CODES: Mapping[str, int] = {
     ValidationError.code: 3,
     MemoryNotFoundError.code: 4,
-    SpeakerNotFoundError.code: 5,
     ModelError.code: 6,
     StorageError.code: 7,
     IndexUnavailableError.code: 8,
@@ -123,13 +122,10 @@ OPERATIONS: tuple[str, ...] = (
     "settle",
     "pending_captures",
     "search",
-    "search_with_trace",
     "ask",
     "compile",
     "get",
-    "speech",
-    "faces",
-    "register_speaker",
+    "perceive",
     "register_identity",
     "identity",
     "record_consent",
@@ -139,7 +135,7 @@ OPERATIONS: tuple[str, ...] = (
     "reinforce",
     "consolidation_candidates",
     "consolidate",
-    "deliberate",
+    "consolidate_pending",
     "apply",
     "record_outcome",
     "forget",
@@ -158,7 +154,6 @@ _QUERY_METAVAR: Mapping[str, str] = {
     "add": "TEXT",
     "capture": "TEXT",
     "search": "QUERY",
-    "search-with-trace": "QUERY",
     "ask": "QUESTION",
     "compile": "GOAL",
     "consolidate": "GOAL",
@@ -246,7 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _dispatch(arguments: argparse.Namespace) -> _Document:
     _reject_duplicate_content(arguments)
     composition = _resolve(arguments)
-    if arguments.explain:
+    if arguments.explain_composition:
         return composition
     if not arguments.quiet:
         print(json.dumps(composition, ensure_ascii=False), file=sys.stderr)
@@ -355,10 +350,12 @@ def _open_memory(arguments: argparse.Namespace) -> Memory:
             consolidator=backends.get("consolidator"),  # type: ignore[arg-type]
             transcriber=backends.get("transcriber"),  # type: ignore[arg-type]
             vision_describer=backends.get("vision"),  # type: ignore[arg-type]
-            index_speech=arguments.index_speech,
-            minimum_relevance=arguments.minimum_relevance,
-            ambiguity_margin=arguments.ambiguity_margin,
-            decay_half_life_days=arguments.decay_half_life_days,
+            config=MemoryConfig(
+                index_speech=arguments.index_speech,
+                minimum_relevance=arguments.minimum_relevance,
+                ambiguity_margin=arguments.ambiguity_margin,
+                decay_half_life_days=arguments.decay_half_life_days,
+            ),
         )
     except BaseException:
         for backend in backends.values():
@@ -494,6 +491,7 @@ def _doctor_capabilities(loaded: Mapping[str, object]) -> _Document | None:
             vision_describer=cast(VisionDescriptionBackend | None, loaded.get("vision")),
             former=cast(FormationBackend | None, loaded.get("former")),
             consolidator=cast(ConsolidationBackend | None, loaded.get("consolidator")),
+            reranker=cast(RerankingBackend | None, loaded.get("reranker")),
         )
     except MindBridgeError:
         # A backend that declares an invalid contract is already reported per slot above; the
@@ -647,7 +645,7 @@ def _add_stream(memory: Memory, arguments: argparse.Namespace) -> _Document:
 
 
 def _search(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    hits = memory.search(
+    result = memory.search(
         _content_input(arguments),
         limit=arguments.limit,
         memory_type=_optional_memory_type(arguments),
@@ -655,23 +653,11 @@ def _search(memory: Memory, arguments: argparse.Namespace) -> _Document:
         occurred_from=_optional_time(arguments.occurred_from, "occurred_from"),
         occurred_until=_optional_time(arguments.occurred_until, "occurred_until"),
         scope=_retrieval_scope(_json_source(arguments.scope)),
-    )
-    return {"hits": [_memory_document(hit) for hit in hits]}
-
-
-def _search_with_trace(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    result = memory.search_with_trace(
-        _content_input(arguments),
-        limit=arguments.limit,
-        memory_type=_optional_memory_type(arguments),
-        reference_at=_optional_time(arguments.reference_at, "reference_at"),
-        occurred_from=_optional_time(arguments.occurred_from, "occurred_from"),
-        occurred_until=_optional_time(arguments.occurred_until, "occurred_until"),
-        scope=_retrieval_scope(_json_source(arguments.scope)),
+        explain=arguments.explain,
     )
     return {
         "hits": [_memory_document(hit) for hit in result.hits],
-        "trace": asdict(result.trace),
+        "trace": None if result.trace is None else asdict(result.trace),
     }
 
 
@@ -766,21 +752,9 @@ def _get(memory: Memory, arguments: argparse.Namespace) -> _Document:
     return _memory_document(memory.get(arguments.memory_id))
 
 
-def _speech(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    return {"segments": [_document(item) for item in memory.speech(arguments.memory_id)]}
-
-
-def _faces(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    return {"observations": [_document(item) for item in memory.faces(arguments.memory_id)]}
-
-
-def _register_speaker(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    memory.register_speaker(
-        arguments.speaker_id,
-        arguments.name,
-        relationship=arguments.relationship,
-    )
-    return {}
+def _perceive(memory: Memory, arguments: argparse.Namespace) -> _Document:
+    kinds = None if arguments.kind is None else frozenset(arguments.kind)
+    return _document(memory.perceive(arguments.memory_id, kinds=kinds))
 
 
 def _register_identity(memory: Memory, arguments: argparse.Namespace) -> _Document:
@@ -913,16 +887,21 @@ def _consolidation_candidates(memory: Memory, arguments: argparse.Namespace) -> 
 
 
 def _consolidate(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    report = memory.consolidate(
-        evidence_ids=arguments.evidence_ids or None,
-        query=(
-            _content_input(arguments)
-            if arguments.content or arguments.content_json is not None
-            else None
-        ),
-        limit=arguments.limit,
-        trigger=MemoryTrigger(arguments.trigger),
-    )
+    if arguments.command == "consolidate-pending":
+        report = memory.consolidate_pending(
+            limit=arguments.limit, max_rounds=arguments.max_rounds, idle=arguments.idle
+        )
+    else:
+        report = memory.consolidate(
+            evidence_ids=arguments.evidence_ids or None,
+            query=(
+                _content_input(arguments)
+                if arguments.content or arguments.content_json is not None
+                else None
+            ),
+            limit=arguments.limit,
+            trigger=MemoryTrigger(arguments.trigger),
+        )
     return {
         "operations": [_operation_document(record) for record in report.operations],
         "rejected": [
@@ -930,21 +909,9 @@ def _consolidate(memory: Memory, arguments: argparse.Namespace) -> _Document:
             for operation, reason in report.rejected
         ],
         "weighed": report.weighed,
-    }
-
-
-def _deliberate(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    report = memory.deliberate(
-        limit=arguments.limit,
-        max_rounds=arguments.max_rounds,
-        idle=arguments.idle,
-    )
-    return {
         "rounds": report.rounds,
-        "weighed": report.weighed,
         "skipped": report.skipped,
         "applied": report.applied,
-        "rejected": report.rejected,
         "model_calls": report.model_calls,
     }
 
@@ -1050,13 +1017,10 @@ _LOCAL: Mapping[str, Callable[[Memory, argparse.Namespace], _Document]] = {
     "settle": _settle,
     "pending-captures": _pending_captures,
     "search": _search,
-    "search-with-trace": _search_with_trace,
     "ask": _ask,
     "compile": _compile,
     "get": _get,
-    "speech": _speech,
-    "faces": _faces,
-    "register-speaker": _register_speaker,
+    "perceive": _perceive,
     "register-identity": _register_identity,
     "identity": _identity_profile,
     "record-consent": _record_consent,
@@ -1066,7 +1030,7 @@ _LOCAL: Mapping[str, Callable[[Memory, argparse.Namespace], _Document]] = {
     "reinforce": _reinforce,
     "consolidation-candidates": _consolidation_candidates,
     "consolidate": _consolidate,
-    "deliberate": _deliberate,
+    "consolidate-pending": _consolidate,
     "apply": _apply,
     "record-outcome": _record_outcome,
     "forget": _forget,
@@ -1247,9 +1211,9 @@ def _remote_list(arguments: argparse.Namespace) -> tuple[str, str, _Document | N
 
 # Every command a running owner serves over `/v1`, and the only place that set is written down:
 # `_run_remote` refuses anything absent here. A command missing from it has no route at all, not
-# a route the CLI forgot -- `consolidate`, `deliberate`, `apply`, `rollback`, `operations`, and
+# a route the CLI forgot -- `consolidate`, `apply`, `rollback`, `operations`, and
 # the rest of the control plane are SDK-only by design, and so are `add-stream`,
-# `register-speaker`, `reindex`, and `optimize`.
+# `reindex`, and `optimize`.
 _REMOTE: Mapping[str, Callable[[argparse.Namespace], tuple[str, str, _Document | None]]] = {
     "add": _remote_add,
     "add-many": _remote_add_many,
@@ -1257,18 +1221,15 @@ _REMOTE: Mapping[str, Callable[[argparse.Namespace], tuple[str, str, _Document |
     "capture": lambda a: ("POST", "/v1/capture", _remote_add(a)[2]),
     "settle": _remote_settle,
     "pending-captures": _remote_pending_captures,
-    "search": lambda a: ("POST", "/v1/memories/search", _remote_query("query", a)),
-    # One route serves both searches; `explain` is what selects the traced SDK operation.
-    "search-with-trace": lambda a: (
+    "search": lambda a: (
         "POST",
         "/v1/memories/search",
-        {**_remote_query("query", a), "explain": True},
+        {**_remote_query("query", a), "explain": a.explain},
     ),
     "ask": lambda a: ("POST", "/v1/answers", _remote_query("question", a)),
     "compile": _remote_compile,
     "get": lambda a: ("GET", f"/v1/memories/{_segment(a.memory_id)}", None),
-    "speech": lambda a: ("POST", "/v1/speech", {"memory_id": a.memory_id}),
-    "faces": lambda a: ("POST", "/v1/faces", {"memory_id": a.memory_id}),
+    "perceive": lambda a: ("POST", "/v1/perception", {"memory_id": a.memory_id, "kinds": a.kind}),
     "register-identity": _remote_register_identity,
     "identity": lambda a: ("GET", f"/v1/identities/{_segment(a.identity_id)}", None),
     "record-consent": _remote_record_consent,
@@ -1284,8 +1245,7 @@ _REMOTE: Mapping[str, Callable[[argparse.Namespace], tuple[str, str, _Document |
 # Which `create_app` switch registers each gated route, so a 404 from an owner that never opted
 # in names the switch instead of reaching the caller as an unexplained exit 1.
 _REMOTE_SWITCH: Mapping[str, str] = {
-    "speech": "embodied_operations",
-    "faces": "embodied_operations",
+    "perceive": "embodied_operations",
     "register-identity": "identity_operations",
     "identity": "identity_operations",
     "record-consent": "identity_operations",
@@ -1873,7 +1833,11 @@ def _default(operation: str, parameter: str) -> object:
 
 
 _MEMORY_DEFAULTS: Mapping[str, object] = {
-    name: _default("__init__", _MEMORY_KEYWORDS.get(name, name))
+    name: (
+        getattr(MemoryConfig(), _MEMORY_KEYWORDS.get(name, name))
+        if name in _TUNING
+        else _default("__init__", _MEMORY_KEYWORDS.get(name, name))
+    )
     for name in ("data_dir", *_OPTIONAL_SLOTS, *_TUNING)
 }
 
@@ -1942,7 +1906,12 @@ def _parser() -> argparse.ArgumentParser:
         default=_MEMORY_DEFAULTS["decay_half_life_days"],
         help="opt-in recency decay (default: %(default)s)",
     )
-    parser.add_argument("--explain", action="store_true", help="print the composition and exit")
+    parser.add_argument(
+        "--explain",
+        dest="explain_composition",
+        action="store_true",
+        help="print the composition and exit",
+    )
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress the stderr banner")
     _commands(parser.add_subparsers(dest="command", required=True, metavar="COMMAND"))
     return parser
@@ -1988,7 +1957,7 @@ def _commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
         help="commit each item through capture; settle makes them searchable",
     )
     _memory_type_option(stream, "add")
-    for operation in ("search", "search_with_trace", "ask"):
+    for operation in ("search", "ask"):
         name = operation.replace("_", "-")
         command = _content_command(commands, name, f"{name} memories")
         command.add_argument(
@@ -2001,6 +1970,9 @@ def _commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
         command.add_argument("--reference-at", metavar="TIME", help="retrieval reference clock")
         command.add_argument("--scope", metavar="JSON", help="temporal/spatial scope, @PATH, or -")
         if operation != "ask":
+            command.add_argument(
+                "--explain", action="store_true", help="include retrieval diagnostics"
+            )
             command.add_argument("--occurred-from", metavar="TIME", help="event overlap start")
             command.add_argument("--occurred-until", metavar="TIME", help="event overlap end")
         else:
@@ -2016,15 +1988,12 @@ def _commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
     _compile_command(commands)
     for name, help_text in (
         ("get", "read one memory"),
-        ("speech", "transcribe and identify speakers"),
-        ("faces", "detect faces and resolve identities"),
+        ("perceive", "recognize speech and faces with configured plugins"),
         ("delete", "delete one memory"),
     ):
         commands.add_parser(name, help=help_text).add_argument("memory_id", metavar="MEMORY_ID")
-    speaker = commands.add_parser("register-speaker", help="name one recognized speaker")
-    speaker.add_argument("speaker_id", metavar="SPEAKER_ID")
-    speaker.add_argument("name", metavar="NAME")
-    speaker.add_argument("--relationship", help="how this person relates to the owner")
+    perception = commands.choices["perceive"]
+    perception.add_argument("--kind", action="append", choices=("speech", "faces"))
     identity = commands.add_parser("register-identity", help="name one face/voice identity")
     identity.add_argument("identity_id", metavar="IDENTITY_ID")
     identity.add_argument("name", metavar="NAME")
@@ -2103,27 +2072,14 @@ def _commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
         choices=[item.value for item in MemoryTrigger],
         default=MemoryTrigger(_default("consolidate", "trigger")).value,
     )
-    deliberate = commands.add_parser(
-        "deliberate",
-        help="run the memory-management loop over due candidates until nothing is due",
+    pending = commands.add_parser(
+        "consolidate-pending", help="process due consolidation candidates"
     )
-    deliberate.add_argument(
-        "--limit",
-        type=int,
-        default=_default("deliberate", "limit"),
-        help="candidate rows and evidence set size per round (default: %(default)s)",
+    pending.add_argument("--limit", type=int, default=_default("consolidate_pending", "limit"))
+    pending.add_argument(
+        "--max-rounds", type=int, default=_default("consolidate_pending", "max_rounds")
     )
-    deliberate.add_argument(
-        "--max-rounds",
-        type=int,
-        default=_default("deliberate", "max_rounds"),
-        help="candidate passes ceiling (default: %(default)s)",
-    )
-    deliberate.add_argument(
-        "--idle",
-        action="store_true",
-        help="declare an approved idle window, admitting never-weighed lineages",
-    )
+    pending.add_argument("--idle", action="store_true", help="declare an approved idle window")
     applying = commands.add_parser(
         "apply",
         help="apply one host-supplied memory operation through the kernel, as replay does",

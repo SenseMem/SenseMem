@@ -30,6 +30,7 @@ from mindbridge import (
     FormationProposal,
     Memory,
     MemoryCapabilities,
+    MemoryConfig,
     MemoryContext,
     MemoryKind,
     MemoryType,
@@ -938,7 +939,7 @@ def test_goal_media_the_embedder_cannot_take_natively_is_reported(tmp_path: Path
         relative_path=f"assets/aa/{digest}",
         created_at=REFERENCE,
     )
-    with Memory(tmp_path, embedder=TextOnly(), minimum_relevance=0) as memory:
+    with Memory(tmp_path, embedder=TextOnly(), config=MemoryConfig(minimum_relevance=0)) as memory:
         unknowns = memory._compilation._request_unknowns(
             PreparedContent(
                 text="what do you know",
@@ -1178,7 +1179,7 @@ def _memory(data_dir: Path) -> Memory:
         data_dir,
         embedder=TinyEmbedder(),
         former=_Former(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     )
 
 
@@ -1208,10 +1209,10 @@ def test_compile_hydrates_a_formed_source_and_admits_it_atomically(tmp_path: Pat
         tmp_path,
         embedder=TinyEmbedder(),
         former=_ClosureFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("opaque source material")
-        ranked = memory.search("amber answer", limit=40)
+        ranked = memory.search("amber answer", limit=40).hits
         derived = next(
             hit
             for hit in ranked
@@ -1234,7 +1235,7 @@ def test_compile_completes_a_low_ranked_competing_state_before_delivery(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(("berlin source", "paris source"))
         states = tuple(
@@ -1277,7 +1278,7 @@ def test_compile_does_not_invent_a_conflict_for_the_same_functional_value(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(("berlin source one", "berlin source two"))
         berlin = next(
@@ -1311,7 +1312,7 @@ def test_competing_lineage_uses_a_confident_copy_of_a_ranked_value(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_AlternativeStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(("berlin source", "weak paris source", "healthy paris source"))
         states = tuple(
@@ -1377,7 +1378,9 @@ def test_competing_lineage_uses_a_supported_copy_of_a_ranked_value(
         lineage_id="location",
         value="paris",
     )
-    with Memory(tmp_path, embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
 
         def ranked_unsupported_copy(*args: object, **kwargs: object) -> SimpleNamespace:
             del args, kwargs
@@ -1417,7 +1420,9 @@ def test_competing_lineage_uses_a_consented_copy_of_a_ranked_value(
         value="paris",
     )
     permitted_paris = replace(withheld_paris, id="permitted-paris", score=0.0)
-    with Memory(tmp_path, embedder=TinyEmbedder(), minimum_relevance=0) as memory:
+    with Memory(
+        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+    ) as memory:
 
         def ranked_withheld_copy(*args: object, **kwargs: object) -> SimpleNamespace:
             del args, kwargs
@@ -1458,7 +1463,7 @@ def test_competing_lineage_completion_obeys_the_requested_valid_time(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(
             ("berlin source", "paris source"),
@@ -1504,7 +1509,7 @@ def test_competing_lineage_completion_ignores_repeated_same_value_rows(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many((*tuple(f"berlin source {index}" for index in range(8)), "paris source"))
         berlin = next(
@@ -1540,7 +1545,7 @@ def test_competing_lineage_completion_keeps_more_than_256_same_value_rows(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(tuple(f"berlin source {index}" for index in range(257)))
         berlin = next(
@@ -1580,7 +1585,7 @@ def test_competing_lineage_completion_ignores_superseded_history(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         for index in range(9):
             memory.add(f"berlin source revision {index}")
@@ -1616,7 +1621,7 @@ def test_competing_lineage_completion_refuses_more_than_its_bounded_values(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(tuple(f"value:city-{index}" for index in range(9)))
         first = next(
@@ -1657,7 +1662,7 @@ def test_competing_lineage_refusal_does_not_leak_through_a_derived_closure(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(tuple(f"value:city-{index}" for index in range(9)))
         first = next(
@@ -1710,7 +1715,7 @@ def test_competing_lineage_completion_rechecks_after_consent_filtering(
         tmp_path,
         embedder=TinyEmbedder(),
         former=_CompetingStateFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add_many(("berlin source", "paris source"))
         berlin = next(
@@ -1764,8 +1769,7 @@ def test_compile_does_not_atomically_group_multivalued_relationships(tmp_path: P
         tmp_path,
         embedder=TinyEmbedder(),
         former=_RelationshipFormer(),
-        minimum_relevance=0,
-        retrieval_mode=RetrievalMode.LEXICAL,
+        config=MemoryConfig(minimum_relevance=0, retrieval_mode=RetrievalMode.LEXICAL),
     ) as memory:
         memory.add("opaque alpha evidence")
         memory.add("opaque beta evidence")
@@ -1793,7 +1797,7 @@ def test_compile_refuses_a_derived_hit_when_its_stored_source_is_outside_memory_
         tmp_path,
         embedder=TinyEmbedder(),
         former=_ClosureFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("opaque source material", memory_type=MemoryType.PROCEDURAL)
         bundle = memory.compile(
@@ -1898,7 +1902,7 @@ def test_a_type_only_budget_reaches_past_the_window_the_common_types_fill(
         )
 
         # The record is nowhere near the top of the unfiltered ranking for this goal.
-        ranked = memory.search("we walked to the harbour", limit=4)
+        ranked = memory.search("we walked to the harbour", limit=4).hits
         assert recipe.id not in {hit.id for hit in ranked}
 
         bundle = memory.compile(
@@ -1960,7 +1964,7 @@ def test_capabilities_reflect_the_injected_backends(tmp_path: Path) -> None:
         embedder=TinyEmbedder(),
         answerer=_Answerer(),
         consolidator=ScriptedConsolidator(),
-        decay_half_life_days=30.0,
+        config=MemoryConfig(decay_half_life_days=30.0),
     ) as memory:
         full = memory.capabilities
     assert full.generation_model == "compiler-test-answerer"
@@ -1994,7 +1998,7 @@ def test_async_compile_and_capabilities_mirror_the_sync_surface(tmp_path: Path) 
                 embedder=TinyEmbedder(),
                 former=_Former(),
                 consolidator=ScriptedConsolidator(),
-                minimum_relevance=0,
+                config=MemoryConfig(minimum_relevance=0),
             )
         ) as memory:
             await memory.add("the spare key is in the blue toolbox")
@@ -2491,7 +2495,7 @@ def _affect_memory(data_dir: Path) -> Memory:
         data_dir,
         embedder=TinyEmbedder(),
         former=_AffectFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     )
 
 

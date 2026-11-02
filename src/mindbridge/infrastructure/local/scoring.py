@@ -18,6 +18,10 @@ _BATCH_MIN_QUERIES = 4
 _BATCH_MIN_COMPONENTS = 8192
 
 
+class InvalidVectorError(ValueError):
+    """A vector's dimension or numeric representation cannot be scored."""
+
+
 def _fallback_dot_product(left: Sequence[float], right: Sequence[float]) -> float:
     return cast(float, sum(map(mul, left, right)))
 
@@ -131,7 +135,7 @@ def _max_similarity(
 ) -> float:
     if isinstance(values, bytes):
         if len(values) != dimension * 4:
-            raise ValueError("Cosine scoring requires nonempty vectors of equal dimension")
+            raise InvalidVectorError("Cosine scoring requires nonempty vectors of equal dimension")
         values = struct.unpack(f"<{dimension}f", values)
     norm = _vector_norm(values, dimension)
     if norm < float_info.min or not math.isfinite(norm):
@@ -147,7 +151,7 @@ def _normalized_matrix(
         len(values) != dimension * 4 if isinstance(values, bytes) else len(values) != dimension
         for values in vectors
     ):
-        raise ValueError("Cosine scoring requires nonempty vectors of equal dimension")
+        raise InvalidVectorError("Cosine scoring requires nonempty vectors of equal dimension")
     # SQLite's little-endian FP32 bytes can feed the batch directly. Float64 promotion and
     # normalization stay identical to decoded tuples, without allocating a float per component.
     matrix = np.asarray(
@@ -159,7 +163,7 @@ def _normalized_matrix(
     )
     scales = np.max(np.abs(matrix), axis=1)
     if not np.isfinite(matrix).all() or (scales == 0).any():
-        raise ValueError("Cosine scoring requires finite, nonzero vectors")
+        raise InvalidVectorError("Cosine scoring requires finite, nonzero vectors")
     matrix = matrix / scales[:, None]
     norms = np.sqrt(np.einsum("ij,ij->i", matrix, matrix, optimize=False))
     return np.asarray(matrix / norms[:, None], dtype=np.float64)
@@ -167,10 +171,10 @@ def _normalized_matrix(
 
 def _vector_norm(values: Sequence[float], dimension: int) -> float:
     if not dimension or len(values) != dimension:
-        raise ValueError("Cosine scoring requires nonempty vectors of equal dimension")
+        raise InvalidVectorError("Cosine scoring requires nonempty vectors of equal dimension")
     norm = math.hypot(*values)
     if norm == 0.0 or (
         not math.isfinite(norm) and any(not math.isfinite(value) for value in values)
     ):
-        raise ValueError("Cosine scoring requires finite, nonzero vectors")
+        raise InvalidVectorError("Cosine scoring requires finite, nonzero vectors")
     return norm

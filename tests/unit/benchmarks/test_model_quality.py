@@ -37,7 +37,7 @@ class _GroundedAnswerer:
 
     def answer(
         self,
-        question: ModelInput | str,
+        question: ModelInput,
         hits: Sequence[SearchHit],
         *,
         answer_policy: AnswerPolicy = "strict",
@@ -48,7 +48,7 @@ class _GroundedAnswerer:
         if self.fail:
             raise ModelError("sensitive-provider-body", reason="response_invalid")
         trace.get_current_span().set_attribute("gen_ai.response.model", "returned-reader-snapshot")
-        text = question if isinstance(question, str) else question.text
+        text = question.text
         if "launch code" in text:
             return AnswerResult(
                 "Unknown.",

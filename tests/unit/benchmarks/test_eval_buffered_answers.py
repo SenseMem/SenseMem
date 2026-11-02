@@ -12,6 +12,7 @@ from mindbridge import (
     AsyncMemory,
     EmbedTask,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     SearchHit,
@@ -85,7 +86,12 @@ async def test_buffered_runner_reaches_sixteen_real_sdk_answers(tmp_path: Path) 
 
     def factory(directory: Path) -> AsyncMemory:
         return AsyncMemory(
-            Memory(directory, embedder=models, answerer=models, reinforce_on_answer=False)
+            Memory(
+                directory,
+                embedder=models,
+                answerer=models,
+                config=MemoryConfig(reinforce_on_answer=False),
+            )
         )
 
     task = LoadedTask(

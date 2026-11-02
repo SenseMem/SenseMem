@@ -22,8 +22,9 @@ from fastapi.testclient import TestClient
 from mcp import Client
 
 from mindbridge import (
-    DeliberationReport,
+    ConsolidationReport,
     Memory,
+    MemoryConfig,
     MemoryOperation,
     MemoryRecord,
     MemoryTrigger,
@@ -65,7 +66,7 @@ def _memory(tmp_path: Path, consolidator: object | None) -> Memory:
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=consolidator,  # type: ignore[arg-type]
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     )
 
 
@@ -181,7 +182,7 @@ async def test_a_failed_round_names_its_failure_without_quoting_the_model(
     quoted = f"consolidation response was invalid (model returned: {_ANSWER})"
 
     class _Failing:
-        def deliberate(self) -> DeliberationReport:
+        def consolidate_pending(self) -> ConsolidationReport:
             try:
                 raise RuntimeError("private provider response body")
             except RuntimeError as error:

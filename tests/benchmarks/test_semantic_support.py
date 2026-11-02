@@ -13,6 +13,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryKind,
     MemoryNotFoundError,
     Modality,
@@ -269,7 +270,10 @@ def test_formation_provenance_does_not_establish_semantic_entailment(tmp_path: P
             pass
 
     with Memory(
-        tmp_path, embedder=_FixtureEmbedder(), former=Former(), minimum_relevance=0
+        tmp_path,
+        embedder=_FixtureEmbedder(),
+        former=Former(),
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         source = memory.add("Lin drank tea and did not drink coffee.")
         derived = [record for record in memory.list().items if record.id != source.id]

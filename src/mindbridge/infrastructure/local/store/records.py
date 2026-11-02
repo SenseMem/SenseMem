@@ -45,8 +45,13 @@ from mindbridge.infrastructure.local.store._selection import (
     read_memory_contexts,
     select_memory_contexts,
 )
-from mindbridge.infrastructure.local.store.media import read_unreferenced_assets, write_asset
+from mindbridge.infrastructure.local.store.media import (
+    commit_speech_plans,
+    read_unreferenced_assets,
+    write_asset,
+)
 from mindbridge.infrastructure.local.store.rows import (
+    SpeechPlan,
     StoredAsset,
     StoredEmbedding,
     StoredMemory,
@@ -586,6 +591,7 @@ class MemoryRecords:
         embeddings: Iterable[StoredEmbedding] = (),
         *,
         formation_pending_at: datetime | None = None,
+        speech_plans: Sequence[SpeechPlan] = (),
     ) -> tuple[bool, ...]:
         """Create or update a batch with one commit and one durability sync.
 
@@ -619,6 +625,7 @@ class MemoryRecords:
                 transaction_memory_ids.add(memory.memory_id)
                 if formation_pending_at is not None:
                     enqueue_capture(connection, memory.memory_id, formation_pending_at)
+            commit_speech_plans(connection, speech_plans)
             write_embeddings(connection, supplied_embeddings)
             reproject_named_identities(
                 connection,

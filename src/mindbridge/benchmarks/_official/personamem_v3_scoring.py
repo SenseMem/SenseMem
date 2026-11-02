@@ -821,12 +821,6 @@ def dcg(relevances: Sequence[float]) -> float:
     return sum(value / log2(index + 2) for index, value in enumerate(relevances))
 
 
-def ndcg_at_k(relevances: Sequence[float], k: int) -> float:
-    ideal = sorted(relevances, reverse=True)[:k]
-    denominator = dcg(ideal)
-    return dcg(relevances[:k]) / denominator if denominator else 0.0
-
-
 def recall_at_k(ranked: Sequence[int], targets: frozenset[int] | set[int], k: int) -> float:
     if not targets:
         return 0.0

@@ -23,23 +23,22 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import ClassVar, cast
+from typing import cast
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import Memory, RetrievalScope
+from mindbridge import Memory, MemoryConfig, RetrievalScope
 from mindbridge._telemetry import (
     IDENTITY_NAMES_BOUND,
     IDENTITY_NAMES_REFUSED,
     VISION_BATCHES_FAILED,
-    VISION_BATCHES_RETRIED,
 )
 from mindbridge.exceptions import IndexUnavailableError, ModelError
 from mindbridge.infrastructure.local.store.index import IndexOutbox
@@ -64,6 +63,8 @@ from mindbridge.models.base import (
     SpeechAnalysis,
     SpeechTurn,
 )
+from mindbridge.models.openai_sdk import _visual_description
+from mindbridge.perception import VisualDescription
 from mindbridge.types import (
     AnswerPolicy,
     AnswerResult,
@@ -215,7 +216,8 @@ class _DirectionalEmbedder:
 
 def _lexical_matches(memory: Memory, query: str) -> set[str]:
     """Memory ids the full-text route matched, ignoring stale-index candidates with no parent."""
-    traced = memory.search_with_trace(query)
+    traced = memory.search(query, explain=True)
+    assert traced.trace is not None
     return {
         candidate.memory_id
         for candidate in traced.trace.candidates
@@ -331,13 +333,13 @@ def test_the_relevance_floor_rejects_the_similarity_it_reports(tmp_path: Path) -
         with Memory(
             directory,
             embedder=_DirectionalEmbedder(cosines),
-            minimum_relevance=floor,
+            config=MemoryConfig(minimum_relevance=floor),
         ) as memory:
             middling = memory.add("kepler transit candidate list")
             memory.add("orbital resonance survey notes")
 
             # The query must contain no marker of its own, so that it stays the reference vector.
-            hits = memory.search("resonance survey window")
+            hits = memory.search("resonance survey window").hits
             found = {hit.id for hit in hits}
             # A floor of 0.55 used to admit cosine 0.15, because the gate read (1 + cos) / 2 while
             # the caller read cosine back on `SearchHit.score`.
@@ -359,12 +361,13 @@ def test_a_weak_lexical_match_cannot_smuggle_an_anticorrelated_memory_past_the_f
         with Memory(
             directory,
             embedder=_DirectionalEmbedder(cosines),
-            minimum_relevance=floor,
+            config=MemoryConfig(minimum_relevance=floor),
         ) as memory:
             opposite = memory.add("anticorrelated zibaldone drift")
             memory.add("ordinary weather notes")
 
-            traced = memory.search_with_trace(query)
+            traced = memory.search(query, explain=True)
+            assert traced.trace is not None
             by_id = {hit.id: hit for hit in traced.hits}
             # One shared rare term used to earn a flat 0.6 gate confidence regardless of how weak
             # the match was, so a document pointing the other way cleared the default floor. It is
@@ -389,12 +392,12 @@ def test_the_lexical_route_survives_a_floor_above_the_old_flat_constant(tmp_path
     with Memory(
         tmp_path,
         embedder=_DirectionalEmbedder({"anticorrelated": -1.0, "ordinary": 0.2}),
-        minimum_relevance=0.7,
+        config=MemoryConfig(minimum_relevance=0.7),
     ) as memory:
         covering = memory.add("anticorrelated zibaldone quokka")
         memory.add("ordinary weather notes")
 
-        hits = memory.search("zibaldone quokka")
+        hits = memory.search("zibaldone quokka").hits
 
         assert [hit.id for hit in hits] == [covering.id]
         assert hits[0].score >= 0.7
@@ -419,7 +422,7 @@ def test_partial_lexical_candidate_outside_the_ann_window_gets_its_persisted_sco
         return original_read(store, memory_ids, space_id=space_id, task=task)
 
     monkeypatch.setattr(IndexOutbox, "iter_memory_embedding_vectors", observed_read)
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0.1) as memory:
+    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0.1)) as memory:
         memory.add_many([f"distractor ordinary weather note {index}" for index in range(100)])
         known_before_target = datetime.now(timezone.utc)
         target = memory.add("rescue-target zibaldone drift")
@@ -439,11 +442,12 @@ def test_partial_lexical_candidate_outside_the_ann_window_gets_its_persisted_sco
         scoped = memory.search(
             "zibaldone quokka nephoscope",
             scope=RetrievalScope(known_at=known_before_target),
-        )
+        ).hits
         assert target.id not in {hit.id for hit in scoped}
         assert requested == [], "historically invisible parents must not be score-completed"
 
-        traced = memory.search_with_trace("zibaldone quokka nephoscope")
+        traced = memory.search("zibaldone quokka nephoscope", explain=True)
+        assert traced.trace is not None
 
         assert traced.hits[0].id == target.id
         candidate = next(item for item in traced.trace.candidates if item.memory_id == target.id)
@@ -459,7 +463,9 @@ def test_partial_lexical_candidate_outside_the_ann_window_gets_its_persisted_sco
 
         memory.forget((target.id,))
         requested.clear()
-        assert target.id not in {hit.id for hit in memory.search("zibaldone quokka nephoscope")}
+        assert target.id not in {
+            hit.id for hit in memory.search("zibaldone quokka nephoscope").hits
+        }
         assert requested == [], "forgotten parents must not be score-completed"
 
 
@@ -475,11 +481,12 @@ def test_dense_candidates_keep_the_index_score_without_completion(
         raise AssertionError("a parent already scored by the dense route was completed again")
 
     monkeypatch.setattr(IndexOutbox, "iter_memory_embedding_vectors", unexpected_read)
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0.1) as memory:
+    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0.1)) as memory:
         target = memory.add("target zibaldone drift")
         memory.add("other weather note")
 
-        traced = memory.search_with_trace("zibaldone quokka nephoscope")
+        traced = memory.search("zibaldone quokka nephoscope", explain=True)
+        assert traced.trace is not None
 
         candidate = next(item for item in traced.trace.candidates if item.memory_id == target.id)
         assert candidate.dense_relevance == pytest.approx(0.6)
@@ -607,7 +614,7 @@ def test_only_a_store_with_embeddings_announces_a_rebuild(
         caplog.at_level(logging.INFO, logger="mindbridge.kernel.recovery"),
         Memory(tmp_path, embedder=_Embedder()) as memory,
     ):
-        assert [hit.id for hit in memory.search("kite over the harbour")] == [record.id]
+        assert [hit.id for hit in memory.search("kite over the harbour").hits] == [record.id]
     assert "rebuilding the search index for" in caplog.text
 
 
@@ -710,7 +717,7 @@ def test_a_session_that_only_reads_leaves_a_segmented_store_untouched(
     optimizations = _counted_optimizations(monkeypatch)
 
     with Memory(tmp_path, embedder=_Embedder()) as memory:
-        assert memory.search("dawn", limit=10)
+        assert memory.search("dawn", limit=10).hits
 
     assert optimizations == []
     assert _segment_files(tmp_path) == before
@@ -769,7 +776,7 @@ def test_close_reports_a_failed_merge_and_still_releases_the_store(
 
     monkeypatch.undo()
     with Memory(tmp_path, embedder=_Embedder()) as reopened:
-        assert {hit.id for hit in reopened.search("dawn", limit=10)}
+        assert {hit.id for hit in reopened.search("dawn", limit=10).hits}
 
 
 def test_reindexing_leaves_the_index_merged(tmp_path: Path) -> None:
@@ -803,21 +810,18 @@ def test_decay_demotes_an_old_memory_without_evicting_it(tmp_path: Path) -> None
     with Memory(
         tmp_path,
         embedder=_DirectionalEmbedder({"heirloom": 1.0}),
-        minimum_relevance=0.35,
-        decay_half_life_days=30.0,
+        config=MemoryConfig(minimum_relevance=0.35, decay_half_life_days=30.0),
     ) as memory:
         aged = memory.add("heirloom clock wound every sunday", occurred_at=long_ago)
 
-        hits = memory.search("clock wound every sunday")
+        hits = memory.search("clock wound every sunday").hits
 
         assert [hit.id for hit in hits] == [aged.id], "decay must demote, never evict"
         # The reported score carries the decay, so it sits below the evidence floor by design.
         assert hits[0].score < 0.35
-        candidate = next(
-            trace
-            for trace in memory.search_with_trace("clock wound every sunday").trace.candidates
-            if trace.memory_id == aged.id
-        )
+        result = memory.search("clock wound every sunday", explain=True)
+        assert result.trace is not None
+        candidate = next(trace for trace in result.trace.candidates if trace.memory_id == aged.id)
         assert candidate.gate_relevance is not None
         assert candidate.gate_relevance >= 0.35, "the gated quantity is the evidence relevance"
         assert candidate.retention_factor is not None
@@ -1008,7 +1012,8 @@ def test_a_chinese_question_can_reach_full_lexical_coverage(tmp_path: Path) -> N
         decoy = memory.add(_DECOY)
         shuffled = memory.add(_SHUFFLED)
 
-        traced = memory.search_with_trace("用户最喜欢的饮料是什么")
+        traced = memory.search("用户最喜欢的饮料是什么", explain=True)
+        assert traced.trace is not None
         scored = {candidate.memory_id: candidate for candidate in traced.trace.candidates}
 
         # The decoy is the stronger dense candidate and shares only 的 and 是 with the question.
@@ -1131,8 +1136,8 @@ def test_a_narrow_limit_returns_the_prefix_of_a_wide_one_with_the_same_scores(
             )
         )
 
-        narrow = memory.search("lantern harbour ledger", limit=5)
-        wide = memory.search("lantern harbour ledger", limit=100)
+        narrow = memory.search("lantern harbour ledger", limit=5).hits
+        wide = memory.search("lantern harbour ledger", limit=100).hits
 
     assert len(narrow) == 5
     assert len(wide) == 100
@@ -1186,7 +1191,7 @@ with Memory(directory, embedder=_Sha256Embedder()) as memory:
                 for index in range(150)
             ]
         )
-    traced = memory.search_with_trace(query, limit=20)
+    traced = memory.search(query, limit=20, explain=True)
 print(
     json.dumps(
         {
@@ -1201,7 +1206,7 @@ print(
 def test_the_candidate_trace_order_does_not_depend_on_the_process_hash_seed(
     tmp_path: Path,
 ) -> None:
-    """`search_with_trace`'s candidate order must be reproducible across processes.
+    """diagnostic search's candidate order must be reproducible across processes.
 
     A trace is a debugging surface and an arm-comparison input, so two runs of one query on one
     library must print it in one order. Hydration used to be ordered through `lexical_matches`, a
@@ -1359,6 +1364,9 @@ class _StructuredDescriber:
         self.calls += 1
         self.context.extend(value.text for value in batch)
         return tuple("\n".join(self.lines) for _ in batch)
+
+    def describe_analysis(self, inputs: Sequence[ModelInput]) -> tuple[VisualDescription, ...]:
+        return tuple(_visual_description(value) for value in self.describe(inputs))
 
     def close(self) -> None:
         return None
@@ -1586,7 +1594,7 @@ def test_a_speaker_label_shown_to_the_describer_is_the_label_the_index_prints() 
 
 def _speaker_identity(memory: Memory, memory_id: str, label: str) -> str:
     """Resolve the identity behind one `speaker_N` label of a stored memory's own clip."""
-    segments = memory.speech(memory_id)
+    segments = memory.perceive(memory_id, kinds=frozenset({"speech"})).speech
     labels = speaker_labels(segments)
     return next(identity for identity, alias in labels.items() if alias == label)
 
@@ -1812,206 +1820,61 @@ def test_a_stated_name_binds_nothing_without_a_speech_backend(tmp_path: Path) ->
         assert memory.operations() == ()
 
 
-class _ThrottledDescriber:
-    """A describer that refuses a set number of batches the way a loaded endpoint does."""
+class _FailedDescriber:
+    vision_capabilities = frozenset({Modality.IMAGE})
+    vision_model = "failed-describe-fixture"
+    vision_space = "failed-describe-fixture:v1"
 
-    vision_capabilities = frozenset({Modality.IMAGE, Modality.VIDEO})
-    vision_model = "fake-describer"
-    vision_space = "fake-describer:throttled-v2"
-
-    def __init__(self, refusals: int, error: ModelError) -> None:
-        self.refusals = refusals
-        self.error = error
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
         self.calls = 0
 
     def describe(self, inputs: Sequence[ModelInput]) -> tuple[str, ...]:
-        batch = tuple(inputs)
         self.calls += 1
-        if self.calls <= self.refusals:
-            raise self.error
-        return tuple("Shown: a red bicycle" for _ in batch)
+        raise ModelError("private provider body", reason=self.reason)
 
     def close(self) -> None:
-        return None
+        pass
 
 
-def _rate_limited() -> ModelError:
-    return ModelError("slow down", reason="rate_limited", stage="describe")
-
-
-def _out_of_quota() -> ModelError:
-    return ModelError("no quota", reason="quota_exhausted", stage="describe")
-
-
-class _UpstreamFailure(Exception):
-    """Stands in for the provider SDK's own 5xx exception, which carries a status code."""
-
-    status_code = 503
-
-
-def _server_error() -> ModelError:
-    """A 5xx as it really arrives: unclassified, with the status only on the provider's cause."""
-    error = ModelError("upstream", stage="describe")
-    error.__cause__ = _UpstreamFailure()
-    return error
-
-
-class _AbortedJsonGeneration(Exception):
-    """Stands in for the provider SDK's `BadRequestError` when it aborts mid-response.
-
-    The message is the inner-prism gateway's own, verbatim, from a live ATM raw-arm run: a 400
-    that an identical retry 5s later clears, unlike an ordinary rejected request.
-    """
-
-    status_code = 400
-    body: ClassVar[dict[str, object]] = {
-        "message": (
-            "<400> InternalError.Algo.InvalidParameter: Model output became abnormal while "
-            "generating a JSON response for response_format. The generation was aborted because "
-            "the partial output may be incomplete or invalid JSON. Please retry the request or "
-            "adjust your prompt or JSON schema."
-        ),
-        "type": "invalid_request_error",
-        "param": None,
-        "code": "invalid_parameter_error",
-    }
-
-
-def _aborted_json_generation() -> ModelError:
-    error = ModelError(
-        "vision description request failed", reason="request_rejected", stage="describe"
-    )
-    error.__cause__ = _AbortedJsonGeneration()
-    return error
-
-
-class _RejectedImage(Exception):
-    """An ordinary 400: the same status code, a permanent cause, no aborted-generation wording."""
-
-    status_code = 400
-    body: ClassVar[dict[str, object]] = {
-        "message": "invalid image",
-        "type": "invalid_request_error",
-        "param": None,
-        "code": "invalid_parameter_error",
-    }
-
-
-def _rejected_image() -> ModelError:
-    """A 400 that really is permanent, to prove the narrow message match does not over-retry."""
-    error = ModelError(
-        "vision description request failed", reason="request_rejected", stage="describe"
-    )
-    error.__cause__ = _RejectedImage()
-    return error
-
-
-@pytest.mark.parametrize("failure", [_rate_limited, _server_error, _aborted_json_generation])
-def test_a_throttled_describe_is_retried_before_the_caption_is_given_up(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "reason",
+    (
+        "rate_limited",
+        "provider_unavailable",
+        "timeout",
+        "quota_exhausted",
+        "auth_failed",
+        "request_rejected",
+    ),
+)
+def test_description_uses_one_adapter_call_and_optional_failure_is_counted(
     tmp_path: Path,
-    failure: Callable[[], ModelError],
+    caplog: pytest.LogCaptureFixture,
+    reason: str,
 ) -> None:
-    """A provider throttling an ingest throttles it for minutes; fail-open costs the whole arm.
-
-    The SDK client has already spent its own retry budget by the time the failure arrives here,
-    so without a wait every asset in the burst is stored with no caption behind one log line. A
-    5xx is not in the closed retryable vocabulary and has to be recognized by its status code.
-    """
-    monkeypatch.setattr("mindbridge.kernel.vision.VISION_RETRY_BACKOFF", (0.0, 0.0, 0.0))
-    describer = _ThrottledDescriber(2, failure())
-    with Memory(tmp_path, embedder=_Embedder(), vision_describer=describer) as memory:
+    describer = _FailedDescriber(reason)
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with Memory(
+        tmp_path,
+        embedder=_Embedder(),
+        vision_describer=describer,
+        tracer=provider.get_tracer("test"),
+    ) as memory:
         record = memory.add(Blob(b"bicycle-frame", "image/png"))
-
-        assert describer.calls == 3
-        assert _caption(memory.get(record.id).content) == "Shown: a red bicycle"
-
-
-def test_a_permanent_describe_refusal_is_not_retried_and_still_fails_open(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Exhausted billing retried forever is worse than a missing caption, and costs per attempt.
-
-    The memory is the caller's; the caption is derived convenience. So the write still lands with
-    an empty document, uncached, and a later ingest retries the description.
-    """
-    monkeypatch.setattr("mindbridge.kernel.vision.VISION_RETRY_BACKOFF", (0.0, 0.0, 0.0))
-    describer = _ThrottledDescriber(
-        4, ModelError("no quota", reason="quota_exhausted", stage="describe")
-    )
-    with Memory(tmp_path, embedder=_Embedder(), vision_describer=describer) as memory:
-        record = memory.add(Blob(b"bicycle-frame", "image/png"))
-
+        assert memory.get(record.id).content == ""
         assert describer.calls == 1
-        assert memory.get(record.id).content == ""
-
-
-def test_an_ordinary_400_is_still_not_retried(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The narrow message match for the aborted-JSON-generation quirk must not swallow every 400.
-
-    Same status code as the transient case, a permanent cause: an unsupported or rejected image
-    is not going to describe successfully on a second try, so this must still fail open on
-    attempt one, the way it did before the aborted-generation case was recognized.
-    """
-    monkeypatch.setattr("mindbridge.kernel.vision.VISION_RETRY_BACKOFF", (0.0, 0.0, 0.0))
-    describer = _ThrottledDescriber(4, _rejected_image())
-    with Memory(tmp_path, embedder=_Embedder(), vision_describer=describer) as memory:
-        record = memory.add(Blob(b"bicycle-frame", "image/png"))
-
-        assert describer.calls == 1
-        assert memory.get(record.id).content == ""
-
-
-def test_a_sustained_refusal_gives_up_after_a_bounded_number_of_waits(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr("mindbridge.kernel.vision.VISION_RETRY_BACKOFF", (0.0, 0.0))
-    describer = _ThrottledDescriber(99, _rate_limited())
-    with Memory(tmp_path, embedder=_Embedder(), vision_describer=describer) as memory:
-        record = memory.add(Blob(b"bicycle-frame", "image/png"))
-
-        assert describer.calls == 3, "one attempt per wait, plus the last one"
-        assert memory.get(record.id).content == ""
-
-
-def test_waiting_out_a_throttled_describe_is_counted_apart_from_losing_the_caption(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """`failed_batches` answers "how many memories lost their caption", so an attempt is not one.
-
-    Retrying inside the fail-open turned one lost batch into three of them, and a counter that
-    sums attempts cannot tell a provider that throttled an ingest from one that ate it. The
-    attempts are still worth counting -- they are what a long ingest pays -- under their own name.
-    """
-    monkeypatch.setattr("mindbridge.kernel.vision.VISION_RETRY_BACKOFF", (0.0, 0.0))
-    cases = (
-        (_ThrottledDescriber(2, _rate_limited()), 0, 2),
-        (_ThrottledDescriber(99, _rate_limited()), 1, 2),
-        (_ThrottledDescriber(99, _out_of_quota()), 1, 0),
-        (_ThrottledDescriber(1, _aborted_json_generation()), 0, 1),
+    provider.shutdown()
+    assert (
+        sum(
+            cast(int, (span.attributes or {}).get(VISION_BATCHES_FAILED, 0))
+            for span in exporter.get_finished_spans()
+        )
+        == 1
     )
-    for index, (describer, failed, retried) in enumerate(cases):
-        provider = TracerProvider()
-        exporter = InMemorySpanExporter()
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
-        with Memory(
-            tmp_path / f"case-{index}",
-            embedder=_Embedder(),
-            vision_describer=describer,
-            tracer=provider.get_tracer("test"),
-        ) as memory:
-            memory.add(Blob(b"bicycle-frame", "image/png"))
-        provider.shutdown()
-
-        counted = {VISION_BATCHES_FAILED: 0, VISION_BATCHES_RETRIED: 0}
-        for span in exporter.get_finished_spans():
-            for name in counted:
-                counted[name] += cast(int, (span.attributes or {}).get(name, 0))
-
-        assert counted[VISION_BATCHES_FAILED] == failed, describer.error.reason
-        assert counted[VISION_BATCHES_RETRIED] == retried, describer.error.reason
+    assert "private provider body" not in caplog.text
 
 
 def test_a_caption_that_is_only_facts_is_not_described_or_appended_twice(tmp_path: Path) -> None:

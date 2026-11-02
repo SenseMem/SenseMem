@@ -13,6 +13,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryOperation,
@@ -118,7 +119,7 @@ def _cue_memory(root: Path) -> Memory:
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
         consolidator=CueConsolidator(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     )
 
 
@@ -177,12 +178,12 @@ def test_multimodal_affect_keeps_conflicting_cues_separate(tmp_path: Path) -> No
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add(("I am fine", Blob(b"voice", "audio/wav")))
         affect = [
             hit.context
-            for hit in memory.search("affect cue", limit=10)
+            for hit in memory.search("affect cue", limit=10).hits
             if hit.context is not None and hit.context.kind is MemoryKind.AFFECT
         ]
 
@@ -198,18 +199,18 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add("trait evidence one")
         assert not any(
             hit.context and hit.context.kind is MemoryKind.TRAIT
-            for hit in memory.search("concise responses", limit=10)
+            for hit in memory.search("concise responses", limit=10).hits
         )
 
         memory.add("trait evidence two")
         traits = [
             hit.context
-            for hit in memory.search("concise responses", limit=10)
+            for hit in memory.search("concise responses", limit=10).hits
             if hit.context and hit.context.kind is MemoryKind.TRAIT
         ]
         assert len(traits) == 1
@@ -219,7 +220,7 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         tmp_path / "statement",
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add(
             "trait: I prefer concise responses",
@@ -227,7 +228,7 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         )
         assert any(
             hit.context and hit.context.kind is MemoryKind.TRAIT
-            for hit in memory.search("concise responses", limit=10)
+            for hit in memory.search("concise responses", limit=10).hits
         )
 
 
@@ -236,7 +237,7 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(
             "trait evidence one",
@@ -248,7 +249,7 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
         )
         assert not any(
             hit.context and hit.context.kind is MemoryKind.TRAIT
-            for hit in memory.search("concise responses", limit=10)
+            for hit in memory.search("concise responses", limit=10).hits
         )
 
         independent = memory.add(
@@ -257,14 +258,14 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
         )
         assert any(
             hit.context and hit.context.kind is MemoryKind.TRAIT
-            for hit in memory.search("concise responses", limit=10)
+            for hit in memory.search("concise responses", limit=10).hits
         )
         known_before_delete = datetime.now(timezone.utc)
 
         assert memory.delete(independent.id) is True
         assert not any(
             hit.context and hit.context.kind is MemoryKind.TRAIT
-            for hit in memory.search("concise responses", limit=10)
+            for hit in memory.search("concise responses", limit=10).hits
         )
         historical = next(
             hit.context
@@ -272,7 +273,7 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
                 "concise responses",
                 limit=10,
                 scope=RetrievalScope(known_at=known_before_delete),
-            )
+            ).hits
             if hit.context and hit.context.kind is MemoryKind.TRAIT
         )
         assert independent.id in historical.evidence_ids
@@ -284,7 +285,7 @@ def test_explicit_typed_trait_statement_supersedes_inferred_trait(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add("trait evidence one")
         memory.add("trait evidence two")
@@ -295,7 +296,7 @@ def test_explicit_typed_trait_statement_supersedes_inferred_trait(tmp_path: Path
 
         values = {
             hit.context.value
-            for hit in memory.search("responses", limit=10)
+            for hit in memory.search("responses", limit=10).hits
             if hit.context and hit.context.kind is MemoryKind.TRAIT
         }
 
@@ -307,7 +308,7 @@ def test_explicit_trait_precedence_is_insertion_order_independent(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add(
             "trait: I prefer concise responses",
@@ -318,7 +319,7 @@ def test_explicit_trait_precedence_is_insertion_order_independent(tmp_path: Path
 
         traits = {
             (hit.context.value, hit.context.basis)
-            for hit in memory.search("responses", limit=10)
+            for hit in memory.search("responses", limit=10).hits
             if hit.context and hit.context.kind is MemoryKind.TRAIT
         }
 
@@ -336,7 +337,7 @@ def test_explicit_trait_can_evolve_back_to_an_earlier_value(tmp_path: Path) -> N
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         memory.add("trait: concise", occurred_at=january, context=statement)
         memory.add("trait: detailed", occurred_at=february, context=statement)
@@ -348,7 +349,7 @@ def test_explicit_trait_can_evolve_back_to_an_earlier_value(tmp_path: Path) -> N
                 "responses",
                 limit=10,
                 scope=RetrievalScope(valid_at=april),
-            )
+            ).hits
             if hit.context and hit.context.kind is MemoryKind.TRAIT
         }
 
@@ -367,7 +368,7 @@ def test_two_affect_cues_from_one_observation_are_one_independent_source(tmp_pat
         # a single emotional event cannot corroborate itself into a trait.
         assert derived.context.visible is False
         assert derived.context.confidence == pytest.approx(0.6)
-        assert not any(hit.id == derived.id for hit in memory.search("anxious", limit=10))
+        assert not any(hit.id == derived.id for hit in memory.search("anxious", limit=10).hits)
         assert memory.compile("anxious under stress").traits == ()
 
 
@@ -381,7 +382,7 @@ def test_affect_cues_from_two_observations_support_a_trait(tmp_path: Path) -> No
         assert derived.context is not None
         assert derived.context.visible is True
         assert derived.context.confidence == pytest.approx(1 - 0.4 * 0.4)
-        assert any(hit.id == derived.id for hit in memory.search("anxious", limit=10))
+        assert any(hit.id == derived.id for hit in memory.search("anxious", limit=10).hits)
         assert [hit.id for hit in memory.compile("anxious under stress").traits] == [derived.id]
 
 
@@ -398,7 +399,7 @@ def test_a_derived_cue_and_an_unrelated_observation_are_two_sources(tmp_path: Pa
         assert derived.context is not None
         assert derived.context.visible is True
         assert derived.context.confidence == pytest.approx(1 - 0.4 * 0.4)
-        assert any(hit.id == derived.id for hit in memory.search("anxious", limit=10))
+        assert any(hit.id == derived.id for hit in memory.search("anxious", limit=10).hits)
 
 
 def test_cues_from_two_observations_of_one_capture_are_one_independent_source(
@@ -440,7 +441,9 @@ def test_joint_dependent_does_not_count_its_members_as_independent(tmp_path: Pat
         # also hides the cited trait; it cannot authorize the dependent through the remaining cue.
         assert _visible(memory, cited.id) is False
         assert _visible(memory, dependent.id) is False
-        assert not any(hit.id == dependent.id for hit in memory.search("reassurance", limit=10))
+        assert not any(
+            hit.id == dependent.id for hit in memory.search("reassurance", limit=10).hits
+        )
 
 
 def test_reinforcing_one_joint_member_does_not_create_an_alternative(tmp_path: Path) -> None:
@@ -454,7 +457,7 @@ def test_reinforcing_one_joint_member_does_not_create_an_alternative(tmp_path: P
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
         consolidator=CueReinforcer(cues[0]),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         raw = memory.add(
             ("the user paused", Blob(b"pause", "audio/wav")),
@@ -466,7 +469,7 @@ def test_reinforcing_one_joint_member_does_not_create_an_alternative(tmp_path: P
         # Reinforcing one member does not split the earlier operation's joint assertion into two
         # alternative assessments for the trait that cites both cues.
         assert _visible(memory, dependent_id) is False
-        assert not any(hit.id == dependent_id for hit in memory.search("anxious", limit=10))
+        assert not any(hit.id == dependent_id for hit in memory.search("anxious", limit=10).hits)
 
 
 def test_deleting_a_joint_source_cannot_leave_dependent_content_authorized(tmp_path: Path) -> None:
@@ -486,4 +489,6 @@ def test_deleting_a_joint_source_cannot_leave_dependent_content_authorized(tmp_p
 
         assert _visible(memory, cited.id) is False
         assert _visible(memory, dependent.id) is False
-        assert not any(hit.id == dependent.id for hit in memory.search("reassurance", limit=10))
+        assert not any(
+            hit.id == dependent.id for hit in memory.search("reassurance", limit=10).hits
+        )

@@ -20,6 +20,7 @@ from mindbridge import (
     AnswerResult,
     EmbedTask,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -122,14 +123,16 @@ def _memory(path: Path, models: _InvestigatingModels, *, queries: int = 3) -> Me
         path,
         embedder=models,
         answerer=models,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.5,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=4,
-        recall_max_queries=queries,
-        evidence_budget_chars=64000,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=4,
+            recall_max_queries=queries,
+            evidence_budget_chars=64000,
+            reinforce_on_answer=False,
+        ),
     )
     memory.add("anchor: the outing dispatch code is VELA-72.")
     memory.add("terminal: dispatch VELA-72 has the cobalt crate.")

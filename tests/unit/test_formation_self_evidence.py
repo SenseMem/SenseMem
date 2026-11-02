@@ -15,7 +15,14 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import FormationInput, FormationProposal, Memory, MemoryKind, MemoryNotFoundError
+from mindbridge import (
+    FormationInput,
+    FormationProposal,
+    Memory,
+    MemoryConfig,
+    MemoryKind,
+    MemoryNotFoundError,
+)
 
 
 class RestatingFormer:
@@ -71,8 +78,7 @@ def test_automatic_self_evidence_refuses_whole_proposal_without_losing_valid_fac
             tmp_path,
             embedder=TinyEmbedder(),
             former=former,
-            formation_history_max_rows=12,
-            independent_evidence=independent,
+            config=MemoryConfig(formation_history_max_rows=12, independent_evidence=independent),
             tracer=provider.get_tracer("self-evidence-test"),
         ) as memory:
             original = memory.add("Riley owns an atlas.", occurred_at=at)

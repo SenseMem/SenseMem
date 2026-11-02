@@ -92,7 +92,10 @@ def test_default_non_reasoning_models_preserve_explicit_temperature(model: str) 
         adapter = OpenAIModels(
             _sdk_client(transport), generation_model=model, generation_temperature=0.1
         )
-        assert adapter.answer("What color is the toolbox?", (_search_hit(),)).answer == "blue"
+        assert (
+            adapter.answer(ModelInput(text="What color is the toolbox?"), (_search_hit(),)).answer
+            == "blue"
+        )
     with pytest.raises(ValidationError, match="not support"):
         OpenAIModels(
             generation_model=model,
@@ -166,9 +169,11 @@ def test_answer_refusal_cannot_be_a_successful_partial_answer(stream: bool) -> N
         adapter = OpenAIModels(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             if stream:
-                assert list(adapter.stream_answer("question", (_search_hit(),))) == []
+                assert (
+                    list(adapter.stream_answer(ModelInput(text="question"), (_search_hit(),))) == []
+                )
             else:
-                adapter.answer("question", (_search_hit(),))
+                adapter.answer(ModelInput(text="question"), (_search_hit(),))
     assert failure.value.reason == "model_refused"
 
 
@@ -195,7 +200,7 @@ def test_provider_failures_publish_recovery_contract(
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         adapter = OpenAIModels(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
-            adapter.answer("question", (_search_hit(),))
+            adapter.answer(ModelInput(text="question"), (_search_hit(),))
     assert failure.value.reason == reason
     assert failure.value.retryable is retryable
     response = exception_response(failure.value)
@@ -260,9 +265,9 @@ def test_answer_context_rejection_preserves_evidence_and_does_not_retry(
         )
         with pytest.raises(ModelError) as failure:
             if stream:
-                list(adapter.stream_answer("question", (hit,)))
+                list(adapter.stream_answer(ModelInput(text="question"), (hit,)))
             else:
-                adapter.answer("question", (hit,))
+                adapter.answer(ModelInput(text="question"), (hit,))
     assert calls == 1
     assert failure.value.reason == reason
     assert failure.value.stage == "generate"
@@ -290,9 +295,9 @@ def test_provider_payload_rejection_is_permanent_and_private(
         adapter = OpenAIModels(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             if stream:
-                list(adapter.stream_answer("question", (_search_hit(),)))
+                list(adapter.stream_answer(ModelInput(text="question"), (_search_hit(),)))
             else:
-                adapter.answer("question", (_search_hit(),))
+                adapter.answer(ModelInput(text="question"), (_search_hit(),))
     assert calls == 1
     assert failure.value.reason == "payload_too_large"
     assert failure.value.stage == "generate"
@@ -323,7 +328,7 @@ def test_answer_text_ceiling_matches_emitted_utf8_text(
         adapter = OpenAIModels(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
         )
-        assert adapter.answer("什么颜色?", (hit,)).answer == "blue"
+        assert adapter.answer(ModelInput(text="什么颜色?"), (hit,)).answer == "blue"
         text_bytes = sum(
             len(part.encode("utf-8"))
             for message in sent[0]["messages"]
@@ -334,10 +339,10 @@ def test_answer_text_ceiling_matches_emitted_utf8_text(
             )
         )
         monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes)
-        assert adapter.answer("什么颜色?", (hit,)).answer == "blue"
+        assert adapter.answer(ModelInput(text="什么颜色?"), (hit,)).answer == "blue"
         monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes - 1)
         with pytest.raises(ModelError) as failure:
-            adapter.answer("什么颜色?", (hit,))
+            adapter.answer(ModelInput(text="什么颜色?"), (hit,))
     assert len(sent) == 2
     assert failure.value.reason == "payload_too_large"
 
@@ -364,9 +369,9 @@ def test_trace_keeps_request_id_without_provider_bodies(failed: bool) -> None:
         adapter = OpenAIModels(_sdk_client(client))
         if failed:
             with pytest.raises(ModelError):
-                adapter.answer("private question", (_search_hit(),))
+                adapter.answer(ModelInput(text="private question"), (_search_hit(),))
         else:
-            adapter.answer("private question", (_search_hit(),))
+            adapter.answer(ModelInput(text="private question"), (_search_hit(),))
     attrs = dict(exporter.get_finished_spans()[0].attributes or {})
     assert attrs["gen_ai.request.id"] == ("req-failure" if failed else "req-success")
     assert attrs["mindbridge.model.request_ids"] == (
@@ -431,7 +436,7 @@ def test_generation_store_is_explicit_for_answering_and_structural_calls(store: 
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         adapter = OpenAIModels(_sdk_client(client), generation_store=store)
-        adapter.answer("What color?", (_search_hit(),))
+        adapter.answer(ModelInput(text="What color?"), (_search_hit(),))
         adapter.plan_recall("What color?", reference_at=NOW, corpus_digest="1 text record")
     assert len(calls) == 2
     assert cast(dict[str, object], calls[-1]["response_format"])["type"] == "json_schema"
@@ -477,9 +482,9 @@ def test_http_safety_refusal_never_retries_by_removing_media(
         )
         with pytest.raises(ModelError) as failed:
             if stream:
-                list(adapter.stream_answer("What happened?", (hit,)))
+                list(adapter.stream_answer(ModelInput(text="What happened?"), (hit,)))
             else:
-                adapter.answer("What happened?", (hit,))
+                adapter.answer(ModelInput(text="What happened?"), (hit,))
     assert calls == 1
     assert failed.value.reason == "model_refused"
     assert not failed.value.retryable
@@ -503,7 +508,7 @@ def test_explicit_provider_code_prevents_message_based_media_fallback(tmp_path: 
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.VIDEO})
         )
         with pytest.raises(ModelError) as failed:
-            adapter.answer("What happened?", (hit,))
+            adapter.answer(ModelInput(text="What happened?"), (hit,))
     assert calls == 1
     assert failed.value.reason == "request_rejected"
 

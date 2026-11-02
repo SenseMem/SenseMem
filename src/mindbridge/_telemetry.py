@@ -95,7 +95,6 @@ VISION_BATCHES_FAILED = "mindbridge.vision.failed_batches"
 # which answers "how many memories lost their caption" -- an attempt on the way to success
 # is not one, and summing both into one counter could not tell a provider that throttled an
 # ingest from one that ate it.
-VISION_BATCHES_RETRIED = "mindbridge.vision.retried_batches"
 IDENTITY_OBSERVATIONS = "mindbridge.identity.observations"
 IDENTITY_MATCHED = "mindbridge.identity.matched_existing"
 IDENTITY_IDENTITIES = "mindbridge.identity.identities"

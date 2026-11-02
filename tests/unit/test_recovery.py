@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import Memory, StorageError
+from mindbridge import EmbeddingRouter, Memory, StorageError
 from mindbridge.infrastructure.local.store import LocalStore
 from mindbridge.models.base import EmbedTask, ModelInput
 from mindbridge.types import Modality
@@ -45,14 +45,12 @@ def test_rejected_open_does_not_write_missing_or_matching_metadata(tmp_path: Pat
     with Memory(tmp_path, embedder=_Embedder()) as memory:
         memory.add("preserved memory")
     with LocalStore(tmp_path) as store:
-        store.update_metadata(
-            {"embedding.model_id": None, "transcription.space_id": "incompatible"}
-        )
+        store.update_metadata({"embedding.model_id": None, "embedding.space_id": "incompatible"})
     before = _metadata(tmp_path)
     sentinel = tmp_path / "zvec" / "preserved"
     sentinel.write_text("derived index", encoding="utf-8")
 
-    with pytest.raises(StorageError, match=r"transcription\.space_id"):
+    with pytest.raises(StorageError, match=r"embedding\.space_id"):
         Memory(tmp_path, embedder=_Embedder())
 
     assert _metadata(tmp_path) == before
@@ -66,6 +64,30 @@ def test_matching_open_leaves_metadata_timestamps_unchanged(tmp_path: Path) -> N
     with Memory(tmp_path, embedder=_Embedder()):
         pass
     assert _metadata(tmp_path) == before
+
+
+def test_compatible_encoders_can_be_composed_and_reordered_without_reembedding(
+    tmp_path: Path,
+) -> None:
+    class ImageEncoder(_Embedder):
+        embedding_model = "recovery-image-test"
+        embedding_capabilities = frozenset({Modality.IMAGE})
+
+    with Memory(tmp_path, embedder=_Embedder()) as memory:
+        source = memory.add("preserved memory")
+    for image_first in (False, True):
+        text, image = _Embedder(), ImageEncoder()
+        with Memory(
+            tmp_path, embedder=EmbeddingRouter((image, text) if image_first else (text, image))
+        ) as memory:
+            assert text.batches == image.batches == 0
+            assert memory.get(source.id) == source
+            assert memory.search("preserved memory").hits[0].id == source.id
+            assert memory.capabilities.supports_embedding(frozenset({Modality.TEXT}))
+            assert memory.capabilities.supports_embedding(frozenset({Modality.IMAGE}))
+            assert not memory.capabilities.supports_embedding(
+                frozenset({Modality.TEXT, Modality.IMAGE})
+            )
 
 
 def test_metadata_update_rolls_back_marker_changes_and_deletion_together(tmp_path: Path) -> None:
@@ -141,7 +163,6 @@ def test_old_index_recipes_are_rejected_without_rewriting_the_store(
         "embedding.model_id",
         "embedding.space_id",
         "embedding.dimension",
-        "transcription.space_id",
         "index.recipe",
         "evidence.projection_recipe",
     ),

@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx2 as httpx
 import pytest
 from _feature_support import TinyEmbedder
 from _gazetteer_support import index_fixture, multi_index_fixture
+from openai import OpenAI
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 from test_openai_sdk import _sdk_client
@@ -19,7 +23,10 @@ from test_openai_sdk import _sdk_client
 import mindbridge.configuration as configuration
 from mindbridge import (
     AssetRef,
+    EvidenceGeneration,
+    GazetteerEnricher,
     Memory,
+    MemoryConfig,
     Modality,
     ModelError,
     ModelInput,
@@ -30,6 +37,36 @@ from mindbridge import (
 from mindbridge.evidence import answer_evidence_payloads
 from mindbridge.models import openai_sdk as backend
 from mindbridge.models.base import GenerationBackend
+
+
+def _answer_text_parts(
+    question: ModelInput,
+    hits: tuple[SearchHit, ...],
+    payloads: Sequence[Mapping[str, object]],
+    *,
+    gazetteer: OfflineGazetteer | None = None,
+    capture_metadata: Mapping[str, dict[str, object]] | None = None,
+) -> tuple[str, ...]:
+    if gazetteer is not None:
+        question = replace(
+            question,
+            source_metadata=GazetteerEnricher(gazetteer).enrich(
+                (*question.assets, *(asset for hit in hits for asset in hit.assets))
+            ),
+        )
+    return backend._answer_text_parts(question, hits, payloads, capture_metadata=capture_metadata)
+
+
+def _models(
+    client: OpenAI | None = None,
+    *,
+    generation_gazetteer: OfflineGazetteer,
+    generation_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
+) -> EvidenceGeneration:
+    return EvidenceGeneration(
+        OpenAIModels(client, generation_capabilities=generation_capabilities),
+        enricher=GazetteerEnricher(generation_gazetteer),
+    )
 
 
 def photo(tmp_path: Path) -> AssetRef:
@@ -92,7 +129,7 @@ def test_public_memory_answer_uses_external_map_without_changing_source(
         httpx.Client(transport=httpx.MockTransport(respond)) as transport,
         _sdk_client(transport) as client,
     ):
-        answerer = OpenAIModels(
+        answerer = _models(
             client,
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_gazetteer=gazetteer,
@@ -101,8 +138,7 @@ def test_public_memory_answer_uses_external_map_without_changing_source(
             tmp_path / "memory",
             embedder=TinyEmbedder(),
             answerer=answerer,
-            reinforce_on_answer=False,
-            minimum_relevance=0,
+            config=MemoryConfig(reinforce_on_answer=False, minimum_relevance=0),
         ) as memory:
             assert asset.path is not None
             source = memory.add(asset.path, metadata={"source_id": "caller-photo"})
@@ -154,15 +190,15 @@ def test_global_budget_counts_every_duplicate_metadata_occurrence_and_keeps_whol
         (hit(asset), hit(asset, "other")),
     )
     payloads = answer_evidence_payloads(hits)
-    original = backend._answer_text_parts(question, hits, payloads)
+    original = _answer_text_parts(question, hits, payloads)
     roomy = OfflineGazetteer(path, index_sha256=digest, limit=1, budget_chars=100_000)
-    full = backend._answer_text_parts(question, hits, payloads, gazetteer=roomy)
+    full = _answer_text_parts(question, hits, payloads, gazetteer=roomy)
     cost = sum(map(len, full)) - sum(map(len, original))
     assert cost > 0
     exact = OfflineGazetteer(path, index_sha256=digest, limit=1, budget_chars=cost)
-    assert backend._answer_text_parts(question, hits, payloads, gazetteer=exact) == full
+    assert _answer_text_parts(question, hits, payloads, gazetteer=exact) == full
     insufficient = OfflineGazetteer(path, index_sha256=digest, limit=1, budget_chars=cost - 1)
-    assert backend._answer_text_parts(question, hits, payloads, gazetteer=insufficient) == original
+    assert _answer_text_parts(question, hits, payloads, gazetteer=insufficient) == original
     for before, after in zip(original, full, strict=True):
         left, right = json.loads(before), json.loads(after)
         left = left.get("memory", left)
@@ -182,12 +218,14 @@ def test_omitted_pixels_and_changed_original_never_receive_map_candidates(
         raise AssertionError("no map lookup for omitted or unverified input")
 
     monkeypatch.setattr(gazetteer, "nearby", forbidden)
-    adapter = OpenAIModels(
+    adapter = _models(
         generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
         generation_gazetteer=gazetteer,
     )
     monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_BYTES", 1)
-    prepared = adapter._answer_request("What is known?", (hit(asset),))
+    question, filtered = adapter.prepare(ModelInput(text="What is known?"), (hit(asset),))
+    inner = cast(OpenAIModels, adapter.resources()[0])
+    prepared = inner._answer_request(question, filtered)
     assert isinstance(prepared, tuple)
     assert "offline_osm_candidates" not in json.dumps(prepared[0])
     monkeypatch.undo()
@@ -196,7 +234,7 @@ def test_omitted_pixels_and_changed_original_never_receive_map_candidates(
     assert asset.path is not None
     asset.path.write_bytes(b"changed")
     with pytest.raises(ModelError) as failure:
-        backend._answer_text_parts(
+        _answer_text_parts(
             ModelInput(text="Where?"),
             (hit(asset),),
             answer_evidence_payloads((hit(asset),)),
@@ -209,16 +247,15 @@ def test_omitted_pixels_and_changed_original_never_receive_map_candidates(
 def test_disabled_path_and_write_recipes_remain_unchanged(tmp_path: Path) -> None:
     path, digest = index_fixture(tmp_path / "map.sqlite3")
     gazetteer = OfflineGazetteer(path, index_sha256=digest)
-    plain, enabled = OpenAIModels(), OpenAIModels(generation_gazetteer=gazetteer)
-    assert plain.embedding_space == enabled.embedding_space
-    assert plain.vision_space == enabled.vision_space
-    assert plain.formation_space == enabled.formation_space
+    plain = OpenAIModels()
+    enabled = EvidenceGeneration(plain, enricher=GazetteerEnricher(gazetteer))
+    assert enabled.resources()[0] is plain
     asset = photo(tmp_path)
     evidence = (hit(asset),)
-    original = backend._answer_text_parts(
+    original = _answer_text_parts(
         ModelInput(text="Where?"), evidence, answer_evidence_payloads(evidence)
     )
-    explicit = backend._answer_text_parts(
+    explicit = _answer_text_parts(
         ModelInput(text="Where?"), evidence, answer_evidence_payloads(evidence), gazetteer=None
     )
     assert original == explicit
@@ -230,7 +267,10 @@ def test_config_factory_injects_only_the_generation_adapter(
 ) -> None:
     path, digest = index_fixture(tmp_path / "map.sqlite3")
     captured: dict[str, object] = {}
-    marker = cast(GenerationBackend, object())
+    marker = cast(
+        GenerationBackend,
+        SimpleNamespace(generation_capabilities=frozenset({Modality.TEXT}), close=lambda: None),
+    )
 
     def build(values: dict[str, object]) -> GenerationBackend:
         captured.update(values)
@@ -247,9 +287,11 @@ def test_config_factory_injects_only_the_generation_adapter(
             },
         }
     )
-    assert configuration._build_generation(value) is marker
-    adapter = captured["generation_gazetteer"]
-    assert isinstance(adapter, OfflineGazetteer) and adapter.budget_chars == 1234
+    built = configuration._build_generation(value)
+    assert isinstance(built, EvidenceGeneration)
+    assert built.resources()[0] is marker
+    assert isinstance(built.resources()[1], GazetteerEnricher)
+    assert "generation_gazetteer" not in captured
     assert not value.extra_body
 
 
@@ -258,22 +300,22 @@ def test_multiple_source_headers_share_the_actual_repeated_metadata_budget(tmp_p
     asset = photo(tmp_path)
     question, hits = ModelInput(text="Where?", assets=(asset,)), (hit(asset), hit(asset, "another"))
     payloads = answer_evidence_payloads(hits)
-    original = backend._answer_text_parts(question, hits, payloads)
-    full = backend._answer_text_parts(
+    original = _answer_text_parts(question, hits, payloads)
+    full = _answer_text_parts(
         question,
         hits,
         payloads,
         gazetteer=OfflineGazetteer(path, index_sha256=digest, limit=2, budget_chars=100000),
     )
     cost = sum(map(len, full)) - sum(map(len, original))
-    exact = backend._answer_text_parts(
+    exact = _answer_text_parts(
         question,
         hits,
         payloads,
         gazetteer=OfflineGazetteer(path, index_sha256=digest, limit=2, budget_chars=cost),
     )
     assert exact == full
-    reduced = backend._answer_text_parts(
+    reduced = _answer_text_parts(
         question,
         hits,
         payloads,
@@ -290,7 +332,7 @@ def test_multiple_source_headers_share_the_actual_repeated_metadata_budget(tmp_p
         assert (
             enrichment["map_sources"][0]["url"] == "https://example.invalid/second-region.osm.pbf"
         )
-    no_room = backend._answer_text_parts(
+    no_room = _answer_text_parts(
         question,
         hits,
         payloads,
@@ -304,7 +346,7 @@ def test_v1_reader_header_keeps_its_single_source_serialized_contract(tmp_path: 
     gazetteer = OfflineGazetteer(path, index_sha256=digest)
     asset = photo(tmp_path)
     evidence = (hit(asset),)
-    parts = backend._answer_text_parts(
+    parts = _answer_text_parts(
         ModelInput(text="Where?"), evidence, answer_evidence_payloads(evidence), gazetteer=gazetteer
     )
     actual = json.loads(parts[1])["memory"]["untrusted_source_metadata"][0][

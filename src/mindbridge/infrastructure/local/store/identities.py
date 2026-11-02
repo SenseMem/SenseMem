@@ -39,9 +39,9 @@ from mindbridge.infrastructure.local.store._lineage import (
     deletion_cascade,
     semantic_visibility,
 )
+from mindbridge.infrastructure.local.store._naming_projection import validate_speech_projection
 from mindbridge.infrastructure.local.store._operations import active_operation_id, insert_operation
 from mindbridge.infrastructure.local.store._outbox import queue_identity_projection
-from mindbridge.infrastructure.local.store._selection import require_scope_axes
 from mindbridge.infrastructure.local.store.records import (
     MemoryRecords,
     delete_memory,
@@ -446,23 +446,6 @@ class IdentityRegistry:
             ).fetchall()
         return tuple(row_text(row, "memory_id") for row in rows)
 
-    def register_speaker(
-        self,
-        speaker_id: str,
-        name: str,
-        *,
-        memories: Iterable[StoredMemory] = (),
-        embeddings: Iterable[StoredEmbedding] = (),
-    ) -> bool:
-        """Assign a display name and atomically replace affected indexed memories."""
-        require_identifier(speaker_id, "speaker_id")
-        return self.register_identity(
-            speaker_id,
-            name,
-            memories=memories,
-            embeddings=embeddings,
-        )
-
     def register_identity(
         self,
         identity_id: str,
@@ -735,9 +718,6 @@ class IdentityRegistry:
         ids = tuple(dict.fromkeys(memory_ids))
         for memory_id in ids:
             require_identifier(memory_id, "memory_id")
-        # Eagerly, because the hydration that would otherwise validate these is skipped whenever
-        # the join finds nothing.
-        require_scope_axes(valid_at=valid_at, known_at=known_at, near=near, radius_m=radius_m)
         require_optional_identifier(place_id, "place_id")
         require_optional_identifier(identity_id, "identity_id")
         if not ids:
@@ -949,6 +929,7 @@ class IdentityRegistry:
         allow_shared_modality: bool = False,
         memories: Iterable[StoredMemory] = (),
         embeddings: Iterable[StoredEmbedding] = (),
+        projection_sources: Sequence[StoredMemory] | None = None,
         operation: StoredOperation | None = None,
     ) -> str | None:
         """Merge two identities under one stable ID, recording a reversible alias.
@@ -987,6 +968,8 @@ class IdentityRegistry:
                 return first if first is not None and first == second else None
             if expected is not None and plan != expected:
                 return None
+            if projection_sources is not None:
+                validate_speech_projection(connection, plan.source_id, projection_sources)
             moved_claims = merge_identity_rows(connection, plan)
             if operation is not None:
                 insert_operation(connection, replace(operation, changed_ids=moved_claims))

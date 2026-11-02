@@ -8,13 +8,23 @@ runs, and what the run report then says about it.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from mindbridge import AnswerChunk, AnswerPolicy, AnswerResult, AsyncMemory, DeliberationReport
+from mindbridge import (
+    AnswerChunk,
+    AnswerPolicy,
+    AnswerResult,
+    AsyncMemory,
+    ConsolidationReport,
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryTrigger,
+)
 from mindbridge.benchmarks import eval as eval_module
 from mindbridge.benchmarks.eval import (
     MemoryFactory,
@@ -56,9 +66,24 @@ class _Memory:
         self.events.append(f"add:{content}")
         return object()
 
-    async def deliberate(self, **_kwargs: object) -> DeliberationReport:
+    async def consolidate_pending(self, **_kwargs: object) -> ConsolidationReport:
         self.events.append("deliberate")
-        return DeliberationReport(rounds=1, weighed=1, applied=3)
+        return ConsolidationReport(
+            rounds=1,
+            weighed=1,
+            model_calls=1,
+            operations=tuple(
+                MemoryOperationRecord(
+                    operation_id=index + 1,
+                    operation=MemoryOperation(
+                        intent=MemoryIntent.FORGET, target_ids=(f"m{index}",)
+                    ),
+                    trigger=MemoryTrigger.MANUAL,
+                    applied_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+                )
+                for index in range(3)
+            ),
+        )
 
     async def ask(
         self,

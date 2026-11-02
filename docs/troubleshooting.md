@@ -105,7 +105,7 @@ unresolved top-two tie may be withheld when `limit=1`.
 
 `minimum_relevance` is not compared against the `score` on a returned `SearchHit`. That score is
 the final ranking score, while the gate compares the separate `gate_relevance` quantity, so tuning
-the floor against observed scores gives the wrong value. `search_with_trace()` reports both per
+the floor against observed scores gives the wrong value. `search(..., explain=True)` reports both per
 candidate; use it rather than inferring the threshold from hits that were returned.
 
 Before changing thresholds, rule out a record that was captured but never settled:
@@ -122,7 +122,7 @@ Then:
 1. Confirm the record exists with `get()` or `list()`.
 2. Confirm query and stored modalities are supported by the embedder.
 3. Remove unintended memory-type, event-time, bitemporal, or spatial filters.
-4. Run `search_with_trace()` and inspect terminal rejection reasons such as `stale_index`,
+4. Run `search(..., explain=True)` and inspect terminal rejection reasons such as `stale_index`,
    `occurrence_range`, `missing_memory`, `memory_type`, `minimum_relevance`, `ambiguity`, and
    `limit`.
 5. If authoritative records exist but the projection is suspect, run the
@@ -147,10 +147,11 @@ edit the SQLite descriptor.
 
 ### Backend is not configured
 
-Every `Memory` needs an embedder. `ask()` also needs an answerer. `speech()` and `faces()` return
-`()` when a record has no corresponding media; otherwise they need their matching capability. Add
-the missing declarative slot, inject the backend, or use a configured operation. See
-[configuration](configuration.md).
+Every `Memory` needs an embedder. `ask()` also needs an answerer. Automatic `perceive()` uses the
+configured speech and face backends; inspect its `coverage` to distinguish skipped assets from
+completed analysis with no detections. Explicit `kinds` require the matching capability. Add the
+missing declarative slot, inject the backend, or use a configured operation. See
+[configuration](configuration.md) and [memory operations](api/python-sdk.md#memory-operations).
 
 ### Optional dependency is missing
 
@@ -206,8 +207,8 @@ from the client machine.
 
 Separate Python, REST, and MCP processes cannot open the same `data_dir`. Put the required
 adapters around one constructed `Memory`, call the running REST owner, or allocate deliberately
-separate memory domains. REST has thirteen product routes under `/v1`, or twenty-three with both
-opt-in switches enabled; MCP has fifteen tools.
+separate memory domains. REST has thirteen product routes under `/v1`, or twenty-two with both
+opt-in switches enabled; MCP has thirteen tools.
 
 Neither network adapter adds MindBridge authentication, and stdio MCP inherits the host process
 principal. Apply the controls in [deployment](deployment.md#choose-a-topology).

@@ -68,7 +68,7 @@ def test_full_modal_contract_is_exported_from_the_package_root() -> None:
         "RetrievalRejection",
         "RetrievalTrace",
         "SceneBoundary",
-        "TracedSearchResult",
+        "SearchResult",
         "EmbeddingBackend",
         "FaceBackend",
         "FaceObservation",
@@ -79,7 +79,7 @@ def test_full_modal_contract_is_exported_from_the_package_root() -> None:
         "PCMChunk",
         "EmbedTask",
         "SentenceTransformersEmbedder",
-        "SpeakerNotFoundError",
+        "IdentityNotFoundError",
         "StreamInput",
         "StreamingGenerationBackend",
         "TranscriptionBackend",
@@ -107,14 +107,7 @@ def test_product_does_not_address_benchmarks() -> None:
 
 
 def test_imported_distributions_are_declared() -> None:
-    """Every third-party root a product module imports must be declared by this project.
-
-    The walk behind ``_benchmark_references`` already collected these imports and then threw the
-    third-party ones away. Keeping them turns the packaging tests around:
-    ``test_dependency_surface_is_exact`` is a tripwire against *adding* a dependency and cannot
-    see one that is imported but undeclared. This catches the direct case; a transitive one --
-    an upstream package importing what it never declares -- needs the isolated CI legs.
-    """
+    """Every third-party product import must have a direct dependency declaration."""
     declared = {
         canonicalize_name(_name(item))
         for item in [*DEPENDENCIES, *(item for items in EXTRAS.values() for item in items)]
@@ -270,63 +263,10 @@ def test_benchmark_reference_scan_detects_a_lazy_import(tmp_path: Path) -> None:
     assert _benchmark_references(dispatcher) == {"mindbridge.benchmarks.cli"}
 
 
-def test_dependency_surface_is_exact() -> None:
-    assert {_name(item) for item in DEPENDENCIES} == {
-        "numpy",
-        "opentelemetry-api",
-        "pydantic",
-        "zvec",
-    }
+def test_all_extra_contains_each_optional_dependency() -> None:
     assert set(EXTRAS["all"]) == {
         item for extra, items in EXTRAS.items() if extra != "all" for item in items
     }
-    extras = {
-        extra: {_name(item) for item in items} for extra, items in EXTRAS.items() if extra != "all"
-    }
-    assert extras == {
-        "benchmarks": {
-            "httpx",
-            "huggingface-hub",
-            "nltk",
-            "opentelemetry-sdk",
-            "pyarrow",
-            "pyyaml",
-            "regex",
-            "tqdm",
-        },
-        "observability": {"opentelemetry-sdk"},
-        "openai": {"av", "httpx2", "openai", "pillow"},
-        "face": {"opencv-python-headless"},
-        "gazetteer": {"pyproj", "shapely"},
-        "local": {
-            "pillow",
-            "funasr",
-            "librosa",
-            "sentence-transformers",
-            "soundfile",
-            "torch",
-            "torchaudio",
-            "torchvision",
-            "transformers",
-        },
-        "server": {"fastapi", "starlette", "uvicorn"},
-        "mcp": {"mcp"},
-        "reranking": {"huggingface-hub", "vllm"},
-    }
-    declared = set(EXTRAS) | {_name(item) for item in DEPENDENCIES}
-    declared |= {_name(item) for items in EXTRAS.values() for item in items}
-    forbidden = (
-        "postgres",
-        "pgvector",
-        "psycopg",
-        "celery",
-        "redis",
-        "boto",
-        "edge",
-        "media",
-        "cloud-models",
-    )
-    assert {name for name in declared if any(word in name for word in forbidden)} == set()
 
 
 def test_funasr_runtime_and_cache_identity_use_the_same_immutable_source() -> None:

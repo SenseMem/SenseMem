@@ -11,7 +11,7 @@ from typing import cast
 
 import pytest
 
-from mindbridge import Blob, Memory, Modality, RetrievalMode
+from mindbridge import Blob, Memory, MemoryConfig, Modality, RetrievalMode
 from mindbridge.exceptions import ModelError
 from mindbridge.models.base import EmbedTask, ModelInput
 
@@ -74,13 +74,13 @@ def test_query_vision_recovers_ocr_support_through_independent_routes(
         tmp_path,
         embedder=embedder,
         vision_describer=describer,
-        query_vision=True,
-        retrieval_mode=mode,
-        ambiguity_margin=0,
+        config=MemoryConfig(query_vision=True, retrieval_mode=mode, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947 registration desk")
         memory.add("an unrelated blue poster")
-        hits = memory.search(("Where was this photographed?", Blob(b"query", "image/png")), limit=1)
+        hits = memory.search(
+            ("Where was this photographed?", Blob(b"query", "image/png")), limit=1
+        ).hits
 
     assert [hit.id for hit in hits] == [target.id]
     assert len(describer.inputs) == 1
@@ -102,8 +102,7 @@ def test_query_descriptions_never_persist_as_assets_captions_or_memories(tmp_pat
         tmp_path,
         embedder=embedder,
         vision_describer=describer,
-        query_vision=True,
-        ambiguity_margin=0,
+        config=MemoryConfig(query_vision=True, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947 registration desk")
         before = memory.list().items
@@ -129,7 +128,7 @@ def test_query_vision_is_explicit_and_text_queries_cost_no_description(
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        query_vision=enabled,
+        config=MemoryConfig(query_vision=enabled),
     ) as memory:
         memory.add("a blue poster")
         memory.search("a poster")
@@ -139,9 +138,9 @@ def test_query_vision_is_explicit_and_text_queries_cost_no_description(
 
 
 def test_query_vision_without_a_describer_preserves_native_image_search(tmp_path: Path) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), query_vision=True) as memory:
+    with Memory(tmp_path, embedder=_Embedder(), config=MemoryConfig(query_vision=True)) as memory:
         target = memory.add("a blue poster")
-        assert memory.search(Blob(b"query", "image/png"))[0].id == target.id
+        assert memory.search(Blob(b"query", "image/png")).hits[0].id == target.id
 
 
 @pytest.mark.parametrize(
@@ -156,10 +155,10 @@ def test_invalid_query_descriptions_fail_open_and_never_log_provider_content(
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        query_vision=True,
+        config=MemoryConfig(query_vision=True),
     ) as memory:
         target = memory.add("a blue poster")
-        assert memory.search(Blob(b"query", "image/png"))[0].id == target.id
+        assert memory.search(Blob(b"query", "image/png")).hits[0].id == target.id
     assert "private provider body" not in caplog.text
 
 
@@ -170,7 +169,7 @@ def test_query_description_cache_lives_for_one_operation_only(tmp_path: Path, fa
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        query_vision=True,
+        config=MemoryConfig(query_vision=True),
     ) as memory:
         memory.add("a blue poster")
         query = Blob(b"query", "image/png")
@@ -207,15 +206,14 @@ def test_a_long_caption_does_not_dilute_the_original_lexical_query(
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        query_vision=True,
-        ambiguity_margin=0,
+        config=MemoryConfig(query_vision=True, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947")
         memory.add("a silent grey room")
         monkeypatch.setattr(memory._index, "search", lambda *_args, **_kwargs: ())
         # With no dense candidates, the exact original words must retain their full lexical
         # contribution rather than compete with every unrelated caption term.
-        hits = memory.search(("alpha-947", Blob(b"query", "image/png")), limit=1)
+        hits = memory.search(("alpha-947", Blob(b"query", "image/png")), limit=1).hits
         assert hits[0].id == target.id
 
 
@@ -228,13 +226,11 @@ def test_description_embedding_failure_keeps_native_query_and_lexical_anchors(
         tmp_path,
         embedder=embedder,
         vision_describer=_Describer(),
-        query_vision=True,
-        retrieval_mode=mode,
-        ambiguity_margin=0,
+        config=MemoryConfig(query_vision=True, retrieval_mode=mode, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947")
         native = memory.add("an unrelated blue poster")
-        hits = memory.search(Blob(b"query", "image/png"))
+        hits = memory.search(Blob(b"query", "image/png")).hits
         assert hits[0].id == (target.id if mode is RetrievalMode.HYBRID else native.id)
 
 
@@ -247,7 +243,7 @@ def test_visible_text_is_an_independent_query_anchor(tmp_path: Path) -> None:
         tmp_path,
         embedder=embedder,
         vision_describer=_Describer((caption,)),
-        query_vision=True,
+        config=MemoryConfig(query_vision=True),
     ) as memory:
         memory.add("ALPHA-947 registration desk")
         memory.search(Blob(b"query", "image/png"))
@@ -261,8 +257,7 @@ def test_query_description_cannot_change_the_original_occurrence_bounds(tmp_path
         tmp_path,
         embedder=_Embedder(),
         vision_describer=_Describer((caption,)),
-        query_vision=True,
-        ambiguity_margin=0,
+        config=MemoryConfig(query_vision=True, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947 old desk", occurred_at=datetime(2001, 6, 1, tzinfo=timezone.utc))
         target = memory.add(
@@ -272,5 +267,5 @@ def test_query_description_cannot_change_the_original_occurrence_bounds(tmp_path
             ("Find the desk in 2024", Blob(b"query", "image/png")),
             occurred_from=datetime(2024, 1, 1, tzinfo=timezone.utc),
             occurred_until=datetime(2025, 1, 1, tzinfo=timezone.utc),
-        )
+        ).hits
         assert [hit.id for hit in hits] == [target.id]

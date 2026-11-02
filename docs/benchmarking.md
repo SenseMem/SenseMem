@@ -36,7 +36,7 @@ mindbridge-bench eval --list-tasks
 ```
 
 The catalog currently covers LoCoMo-Refined, ES-MemEval, M3-Bench, Video-MME-v2, WorldMemArena,
-EgoTempo, MemLens, MM-Lifelong, SuperMemory-VQA, ATM-Bench, Mem-Gallery, LongMemEval, CL-Bench,
+VideoZeroBench, EgoTempo, MemLens, MM-Lifelong, SuperMemory-VQA, ATM-Bench, Mem-Gallery, LongMemEval, CL-Bench,
 BEAM, PersonaMem-v3, OpenEQA, and ICM-Bench. Use the listing command
 instead of copying task names from this page; it is generated from the catalog used by the
 runner.
@@ -88,6 +88,86 @@ and its extracted clips. Once extracted, the tar archive can be removed for `--n
 the extracted clips and annotation inputs must remain available.
 Data is CC BY-NC-SA 4.0; the upstream code is MIT, and the copied judge
 prompt retains its Apache-2.0 notice. See the [official repository](https://github.com/Shidu-Ren/ICM-Bench).
+
+### VideoZeroBench
+
+The `videozerobench` task pins
+[`marinero4972/VideoZeroBench`](https://huggingface.co/datasets/marinero4972/VideoZeroBench)
+at `aef3b0613ad2909a1355a99201b4a0c48e073836`, with the SHA-256 of
+`VideoZeroBench_500_v0.json`. The
+[upstream evaluator](https://github.com/marinero4972/VideoZeroBench/blob/21a46d686302825e85e330c3fa4b64f01df3c9da/eval/VLMEvalKit-lite/vlmeval/dataset/VideoBench/videozerobench.py)
+is pinned independently at `21a46d686302825e85e330c3fa4b64f01df3c9da`.
+
+```bash
+mindbridge-bench eval \
+  --config eval.yaml \
+  --tasks videozerobench \
+  --download \
+  --output-path .benchmarks/results/videozerobench
+```
+
+The annotation download is small; the published `compressed.zip` video archive is about 9.7 GB.
+The existing downloader extracts it into `videozerobench/compressed/`. Each of the 138 videos
+owns one isolated store and its prepared video segments are reused across questions and levels.
+For already downloaded media, pass `--media-root videozerobench=/path/to/compressed` with
+`--task-data videozerobench=/path/to/VideoZeroBench_500_v0.json` and `--no-download`.
+The configured embedding and answering plugins must support video, or have suitable source-backed
+conversion plugins. Accurate spatial localization requires visual input; transcripts alone cannot
+establish bounding boxes. No additional model or dataset dependency is installed by this adapter.
+
+All five levels run through the public SDK:
+
+| Request | Model input beyond the original question | Scoring |
+| --- | --- | --- |
+| Level-1 | Annotated temporal intervals and spatial boxes | Bilingual exact-answer rules |
+| Level-2 | Annotated temporal intervals | Same answer rules |
+| Level-3 | No evidence hints | Same answer rules; primary `accuracy` |
+| Level-4 | Temporal-localization instruction, without annotated intervals | Union tIoU; joint score also requires a correct Level-3 answer |
+| Level-5 | Annotated key times and spatial-localization instruction, without boxes | Mean union-box vIoU; joint score also requires correct Level-3 and temporal localization |
+
+Answers and evidence annotations stay outside stored memories. Hints enter only the requests
+specified above. Spatial predictions use coordinates normalized to `[0,1000]`; scoring converts
+them to the release's `[0,1]` boxes. The adapter preserves the upstream code-fence, answer-tag,
+English case, Chinese color and vehicle matching rules, rather than replacing them with a generic
+F1 metric or an LLM judge. This task makes no judge calls.
+
+The complete release yields 2,314 requests: 500 for each QA level, 442 temporal requests and
+372 spatial requests. `--limit` and `--offset` select original questions before expansion into
+level requests, keeping every selected question's applicable levels together. Result
+`question_count` counts requests; the primary `accuracy` and its `scored_question_count` use only
+Level-3. Its category breakdowns also use Level-3, so hinted answers cannot inflate that primary
+score. The terminal additionally prints all seven named `Level-*` summaries. Paired baseline
+comparisons cover every named metric separately: all three QA levels, both mean IoUs and both
+joint scores. Each comparison joins the same original questions in candidate and baseline;
+missing level requests are rejected rather than silently treated as failed predictions.
+
+Named `Level-*` summaries in `metrics` use the upstream 0–100 scale; primary `accuracy` uses 0–1.
+`Level-4_score` requires Level-3 correctness and `tIoU > 0.3`; `Level-5_score` additionally requires
+`vIoU > 0.3`. Both joint scores divide by all selected original questions. Mean IoUs divide only
+by questions with applicable evidence; zero-length temporal windows do not contribute interval
+length. Malformed grounding predictions score zero, and failed requests remain in the applicable
+denominator. The per-request `score` is QA correctness for Levels 1–3; grounding requests retain
+their IoU in `metrics` instead.
+
+Level comparisons report deltas in percentage points (`score_scale: 100`), including their
+confidence intervals and `noise_floor`. Regression thresholds keep their configured fractional
+meaning: `regression_threshold: 0.03` means three percentage points. A metric with no applicable
+evidence remains listed with `paired_sample_count: 0` and an `unavailable_reason`; it cannot
+trigger a regression. The generic `accuracy` alias remains the Level-3 convenience headline;
+it does not replace the separate five-level results.
+
+This is a **memory-harness evaluation**. Media reaches the reader through the configured memory
+retrieval and model transport, rather than the upstream fixed-frame vLLM sampler and Level-5
+priority-keyframe injection. `protocol_notes` and `cross_harness_comparable=false` retain that
+distinction in the report. `official_metric` describes the scoring formula, not a claim that the
+entire run reproduces the upstream input protocol or leaderboard.
+
+Validation used the pinned 500-question annotation file: 6,488 answer/temporal/spatial cases matched
+the pinned upstream functions, including overlapping evidence, answer tags, missing predictions
+and fenced answers. Synthetic SDK fixtures also check hint boundaries and joint-score denominators.
+No real model revision was evaluated for this integration; full video download and real-service
+quality checks were not run. Dataset terms are CC BY-NC-ND 4.0; do not redistribute modified data.
+See the [scorer notices](../src/mindbridge/benchmarks/_official/NOTICE.md#videozerobench).
 
 ### Committed research recipes
 
@@ -759,7 +839,7 @@ recorded. Those are the whole of the `QUERY_FAILURE` signal, and they come last 
 candidate is dropped while nothing about it has changed since an operation last weighed it, and
 the claims above are applied operations over the very records that query is nearest to.
 
-It then runs `deliberate()` with the configured consolidator and scores the operation log against
+It then runs `consolidate_pending()` with the configured consolidator and scores the operation log against
 the ground truth it injected:
 
 | Metric | Definition | Undefined when |
@@ -784,7 +864,7 @@ undefined rate is reported as `null`, never as `1.0`.
 
 ### Running the slow loop during an evaluation
 
-`mindbridge-bench eval --deliberate` runs `deliberate()` after each causal cutoff's ingest and
+`mindbridge-bench eval --deliberate` runs `consolidate_pending()` after each causal cutoff's ingest and
 before that cutoff's questions, so "does the loop change QA scores" is measurable on the existing
 tasks. It is off by default and refused when the configuration declares no `consolidation`
 section. The run report carries `deliberation.enabled` and `deliberation.operations_applied`, and
@@ -1521,6 +1601,12 @@ Before reporting a number, check these task fields:
 | `question_count` and `score.cluster_count` | Report both sample size and independent memory units |
 | `score.confidence_interval_95` | Present as `null` with fewer than two independent clusters |
 | `dataset_sha256`, `evaluation_sha256`, `scorer_protocol`, and `judge_model` | Establish whether two runs are comparable |
+
+Each quality comparison records `score_scale`, the scale used by its delta, confidence interval
+and `noise_floor`: `1` for fractional scores and `100` for percentage scores. Regression thresholds
+are configured as fractions and converted using this value. VideoZeroBench emits a separate row
+for each of its seven named level metrics; its single Level-3 headline does not limit comparison
+coverage.
 
 Prompts, references, and raw judge responses are retained only with `--log-samples`. Treat that
 option as sensitive: benchmark artifacts can contain source content, retrieved evidence, and model

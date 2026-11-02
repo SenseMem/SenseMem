@@ -12,6 +12,7 @@ from mindbridge import (
     AnswerPolicy,
     AnswerResult,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -64,14 +65,16 @@ def test_point_plan_does_not_apply_predicate_row_caps_to_ranked_tail(
         tmp_path,
         embedder=models,
         answerer=models,
-        recall_planning=True,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
-        evidence_budget_chars=10_000,
-        recall_set_budget_chars=10_000,
-        recall_set_max_rows=3,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            recall_planning=True,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0,
+            ambiguity_margin=0,
+            evidence_budget_chars=10_000,
+            recall_set_budget_chars=10_000,
+            recall_set_max_rows=3,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         records = [memory.add(f"record {index}") for index in range(8)]
         result = memory.ask("List available records.", limit=1, reference_at=_CLOCK)
@@ -134,14 +137,16 @@ def test_replanning_uses_the_current_predicate_without_accumulating_previous_pre
         tmp_path,
         embedder=models,
         answerer=models,
-        recall_planning=True,
-        recall_query_expansion=True,
-        recall_rounds=2,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.5,
-        ambiguity_margin=0,
-        evidence_budget_chars=10_000,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=2,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            ambiguity_margin=0,
+            evidence_budget_chars=10_000,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         memory.add("anchor", occurred_at=_CLOCK.replace(day=5))
         later = memory.add("later event", occurred_at=_CLOCK.replace(day=9))

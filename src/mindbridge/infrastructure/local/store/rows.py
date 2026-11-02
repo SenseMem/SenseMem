@@ -9,9 +9,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from typing import Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
-from mindbridge.types import MemoryContext
+from mindbridge.types import MemoryContext, SpeakerSegment
+
+if TYPE_CHECKING:
+    from mindbridge.models.base import SpeechAnalysis
 
 MEMORY_MODALITIES = frozenset({"text", "image", "video", "audio", "omni"})
 
@@ -462,37 +465,17 @@ class IdentityLink:
 
 
 @dataclass(frozen=True, slots=True)
-class IdentityExemplarState:
-    modality: Literal["face", "voice"]
-    position: int
+class SpeechPlan:
+    """A reversible preview, committed only together with its indexed observation."""
+
+    asset: StoredAsset
+    analysis: SpeechAnalysis
+    segments: tuple[SpeakerSegment, ...]
+    identities: tuple[tuple[str, str], ...]
     model_id: str
     space_id: str
-    dimension: int
-    vector: bytes
-    created_at: str
-
-
-@dataclass(frozen=True, slots=True)
-class IdentityState:
-    identity_id: str
-    name: str | None
-    created_at: str
-    updated_at: str
-    exemplars: tuple[IdentityExemplarState, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class IdentityChange:
-    identity_id: str
-    previous: IdentityState | None
-
-
-@dataclass(frozen=True, slots=True)
-class SpeechRollback:
-    """Internal undo token for an unreferenced speech analysis."""
-
-    asset_id: str
-    identities: tuple[IdentityChange, ...]
+    minimum_similarity: float
+    minimum_margin: float
 
 
 def _access_count(value: object) -> int:

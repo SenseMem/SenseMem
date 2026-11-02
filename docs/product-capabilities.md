@@ -120,12 +120,14 @@ application JSON and is never an isolation, authorization, or retrieval-filter b
 
 Every backend declares the atomic modalities it accepts. MindBridge builds aggregate and focused
 model inputs from the content actually present, then selects a supported route. Mixed content keeps
-its supported native media. When a text-only route cannot consume audio, a configured transcription
-backend can provide a text fallback without discarding visual evidence. A configured visual
-description backend can add searchable text for visual content while the original image or video
-remains attached to the record.
+its supported native media. Source-labelled captions or transcripts can supply text when a
+consumer lacks native support, consistently across writes, query embedding, answers and formation.
+A transcript establishes speech only; original images and videos remain attached to the record.
+`GenerationRouter` selects specialized models from the question and evidence together.
+`EmbeddingRouter` combines encoders only in one explicitly shared vector space, with optional
+joint-input checks. Selection requires no application-side dispatch.
 
-Unsupported content fails explicitly when no information-preserving route exists. Omitting an
+Unsupported content fails explicitly when no supported native or source-backed derived route exists. Omitting an
 optional backend makes its capability unavailable and adds no hidden model call. The precise
 content and fallback rules live in the [Python SDK content
 contract](api/python-sdk.md#content-contract).
@@ -183,7 +185,7 @@ Lexical route membership does not bypass this check: even complete query-term co
 conflicting records. Multiple-result requests retain alternatives; `ambiguity_margin=0` disables
 the singleton check.
 
-`search_with_trace`, or `explain=true` on REST and MCP search, returns bounded candidate diagnostics
+`search(..., explain=True)`, or `explain=true` on REST and MCP search, returns bounded candidate diagnostics
 and terminal rejection reasons. Traces intentionally exclude memory content and metadata; use the
 returned hits or `get` to inspect evidence.
 
@@ -203,9 +205,10 @@ reinforcement for reproducibility.
 
 ### 7. Speech, faces, and identity
 
-`speech` analyzes stored audio and video into timed speaker segments. A speech-capable backend
+`perceive` returns separate speech and face collections from configured recognition plugins.
+Speech recognition analyzes stored audio and video into timed speaker segments. A speech-capable backend
 matches local voice exemplars to stable speaker IDs; speech indexing is enabled by default when
-that capability is configured. `faces` analyzes stored images and video into normalized bounding
+that capability is configured. Face recognition analyzes stored images and video into normalized bounding
 boxes and local identity IDs. Results are cached under stable model-space recipes.
 
 When one asset contains exactly one eligible voice and one eligible face, MindBridge records
@@ -213,7 +216,7 @@ co-occurrence evidence. A face/voice merge requires corroboration across distinc
 default), preserves the merged-away ID as an alias, and can be reversed with `unlink_identity`.
 Reversing a merge restores the alias as an unnamed identity and repaints the indexed transcript
 projection in the same commit, so no stored text keeps attributing the words to the other person.
-Applications can attach a name and relationship with `register_speaker` or `register_identity` and
+Applications can attach a name and relationship with `register_identity` and
 resolve either current IDs or aliases with `identity`.
 
 Naming a person records an `ENTITY` assertion bound to that identity, and the recorded name and
@@ -274,7 +277,6 @@ arguments, schemas, limits, and errors.
 | Settle captured records | `settle` | `POST /v1/settle` | — | `settle` |
 | Report unfinished captures | `pending_captures` | `GET /v1/pending_captures` | — | `pending-captures` |
 | Search | `search` | `POST /v1/memories/search` | `search_memories` | `search` |
-| Explain search | `search_with_trace` | Search with `explain=true` | Search with `explain=true` | `search-with-trace` |
 | Answer | `ask` | `POST /v1/answers` | `ask_memory` | `ask` |
 | Answer incrementally | `ask_stream` | `POST /v1/answers/stream` | — | — |
 | Compile context | `compile` | `POST /v1/context` | `compile_context` | `compile` |
@@ -284,15 +286,12 @@ arguments, schemas, limits, and errors.
 | Reinforce | `reinforce` | `POST /v1/memories/reinforce` | `reinforce_memories` | `reinforce` |
 | List due deliberation | `consolidation_candidates` | — | — | `consolidation-candidates` |
 | Deliberate over evidence | `consolidate` | — | — | `consolidate` |
-| Run the management loop | `deliberate` | — | — | `deliberate` |
 | Apply one operation | `apply` | — | — | `apply` |
 | Judge one operation | `record_outcome` | — | — | `record-outcome` |
 | Cognitively forget | `forget` | — | — | `forget` |
 | Undo one operation | `rollback` | — | — | `rollback` |
 | Read the operation log | `operations` | — | — | `operations` |
-| Analyze speech | `speech` | `POST /v1/speech`\* | `analyze_speech` | `speech` |
-| Analyze faces | `faces` | `POST /v1/faces`\* | `analyze_faces` | `faces` |
-| Name speaker | `register_speaker` | — | `register_speaker` | `register-speaker` |
+| Perception | `perceive` | `POST /v1/perception` | `perceive_memory` | `perceive` |
 | Name identity | `register_identity` | `POST /v1/identities`† | `register_identity` | `register-identity` |
 | Read identity | `identity` | `GET /v1/identities/{id}`† | `get_identity` | `identity` |
 | Reverse merge | `unlink_identity` | `POST /v1/identities/{id}/unlink`† | `unlink_identity` | `unlink-identity` |
@@ -306,10 +305,10 @@ arguments, schemas, limits, and errors.
 | Declare capabilities | `capabilities` property | `GET /healthz` | — | `--explain` resolves composition |
 | Validate loaders | — | — | — | `doctor` |
 
-The synchronous SDK therefore exposes 36 product operations, plus construction, capability
-inspection, and lifecycle. REST exposes thirteen `/v1` product routes plus `/healthz`, or twenty-three
+The synchronous SDK therefore exposes 33 product operations, plus construction, capability
+inspection, and lifecycle. REST exposes thirteen `/v1` product routes plus `/healthz`, or twenty-two
 when the host also enables `create_app`'s `embodied_operations` (\* above) and `identity_operations`
-(† above) switches; MCP exposes fifteen tools; the product CLI exposes 35 of them plus `doctor`,
+(† above) switches; MCP exposes thirteen tools; the product CLI exposes the SDK operations plus `doctor`,
 every operation except `ask_stream`, which needs a streaming wire format the CLI does not have. `AsyncMemory` mirrors the finite SDK operations except `forget_identity`, which currently
 requires synchronous `Memory`, and adds async stream consumption.
 

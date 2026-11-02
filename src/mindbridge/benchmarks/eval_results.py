@@ -20,7 +20,6 @@ from mindbridge import (
     MindBridgeError,
 )
 from mindbridge.benchmarks.eval_cache import EvidenceInterval
-from mindbridge.models.base import _is_generation_abort_rejection
 
 EVAL_SCHEMA_VERSION = 22
 DEFAULT_ARM = "mindbridge"
@@ -116,7 +115,9 @@ _TRANSIENT_RETRY_SECONDS = 600.0
 _TRANSIENT_RETRY_CAP_SECONDS = 30.0
 
 
-_TRANSIENT_REASONS = frozenset({"connection_failed", "timeout", "rate_limited"})
+_TRANSIENT_REASONS = frozenset(
+    {"connection_failed", "timeout", "rate_limited", "provider_unavailable"}
+)
 
 
 _Retried = TypeVar("_Retried")
@@ -139,11 +140,6 @@ def _transient_provider_failure(error: BaseException) -> bool:
             # Exhausted billing is a 429 too, and waiting never refills it.
             return getattr(current, "code", None) != "insufficient_quota"
         if isinstance(current, transient):
-            return True
-        # A 400 is `request_rejected` and permanent, except the one a gateway sends when it
-        # aborted its own JSON generation: the answer path streams `response_format` replies,
-        # and that rejection is a fact about the provider at that second, not about the prompt.
-        if _is_generation_abort_rejection(current):
             return True
     return False
 

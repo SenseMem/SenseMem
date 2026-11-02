@@ -13,12 +13,14 @@ from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx2 as httpx
 import openai
 import pytest
+from _feature_support import TinyEmbedder
 from openai import OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -26,6 +28,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 import mindbridge.kernel.formation as formation_module
 import mindbridge.models.openai_sdk as openai_backend
+from mindbridge import Blob, Memory
 from mindbridge._telemetry import (
     FORMATION_PROPOSALS_DROPPED,
     GEN_AI_FINISH_REASONS,
@@ -55,6 +58,7 @@ from mindbridge._telemetry import (
 )
 from mindbridge.evidence import answer_evidence_payloads
 from mindbridge.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
+from mindbridge.models import _media as media_backend
 from mindbridge.models._media import media_duration_seconds
 from mindbridge.models.base import (
     ConsolidationBackend,
@@ -129,8 +133,8 @@ def test_text_embedding_keeps_standard_batch_shape_and_restores_order() -> None:
     assert isinstance(model, GenerationBackend)
     assert isinstance(model, TranscriptionBackend)
     assert model.embedding_space == "shared-space-v1"
-    assert first == pytest.approx((0.6, 0.8))
-    assert second == pytest.approx((0.0, 1.0))
+    assert first == pytest.approx((3.0, 4.0))
+    assert second == pytest.approx((0.0, 5.0))
 
 
 def test_multimodal_embedding_preserves_asset_order_and_inlines_media(
@@ -166,7 +170,7 @@ def test_multimodal_embedding_preserves_asset_order_and_inlines_media(
             EmbedTask.DOCUMENT,
         )
 
-    assert result[0] == pytest.approx((0.6, 0.8))
+    assert result[0] == pytest.approx((3.0, 4.0))
 
 
 def test_messages_embedding_uses_vllm_shape_without_dimensions(tmp_path: Path) -> None:
@@ -207,7 +211,7 @@ def test_messages_embedding_uses_vllm_shape_without_dimensions(tmp_path: Path) -
         result = model.embed((ModelInput(text="remember", assets=(image,)),))
 
     assert model.embedding_space == "embed-model:2:messages-v1:l2-v1"
-    assert result[0] == pytest.approx((0.6, 0.8))
+    assert result[0] == pytest.approx((3.0, 4.0))
 
 
 @pytest.mark.parametrize(
@@ -278,9 +282,9 @@ def test_embeddinggemma2_messages_prefix_text_only_in_multimodal_batches(
     assert inputs[0].text == "find this"
     assert inputs[1].text == "remember"
     assert inputs[2].text == ""
-    assert result[0] == pytest.approx((0.6, 0.8))
-    assert result[1] == pytest.approx((1.0, 0.0))
-    assert result[2] == pytest.approx((0.0, 1.0))
+    assert result[0] == pytest.approx((3.0, 4.0))
+    assert result[1] == pytest.approx((5.0, 0.0))
+    assert result[2] == pytest.approx((0.0, 5.0))
     assert model.embedding_space == (
         "google/embeddinggemma-2:2:embeddinggemma2-text-prompts-special-tokens-v1:l2-v1"
     )
@@ -323,7 +327,7 @@ def test_embeddinggemma2_media_only_singleton_keeps_explicit_space(tmp_path: Pat
             ],
         }
     ]
-    assert result[0] == pytest.approx((0.6, 0.8))
+    assert result[0] == pytest.approx((3.0, 4.0))
     assert model.embedding_space == "application-pinned-space"
 
 
@@ -340,7 +344,7 @@ def test_embeddinggemma2_input_mode_keeps_generic_recipe() -> None:
             embedding_model="google/embeddinggemma-2",
             embedding_dimension=2,
         )
-        model.embed(("unchanged",), EmbedTask.QUERY)
+        model.embed((ModelInput(text="unchanged"),), EmbedTask.QUERY)
 
     assert requests == [
         {
@@ -412,7 +416,7 @@ def test_embedding_retries_a_context_length_rejection_as_ordered_stills(
     # The clip goes once as video and comes back as four ordered stills, and the text is kept.
     assert [part["type"] for part in requests[0]] == ["text", "video_url"]
     assert [part["type"] for part in requests[1]] == ["text", *["image_url"] * 4]
-    assert result[0] == pytest.approx((0.6, 0.8))
+    assert result[0] == pytest.approx((3.0, 4.0))
     attributes = exporter.get_finished_spans()[0].attributes
     assert attributes is not None
     assert attributes[MODEL_REQUEST_COUNT] == 2
@@ -472,10 +476,10 @@ def test_messages_embedding_batches_chat_conversations() -> None:
             embedding_dimension=2,
             embedding_request_format="messages",
         )
-        first, second = model.embed(("first", "second"))
+        first, second = model.embed((ModelInput(text="first"), ModelInput(text="second")))
 
-    assert first == pytest.approx((0.6, 0.8))
-    assert second == pytest.approx((0.0, 1.0))
+    assert first == pytest.approx((3.0, 4.0))
+    assert second == pytest.approx((0.0, 5.0))
 
 
 def test_answer_maps_native_hit_media_and_abstains_without_hits(tmp_path: Path) -> None:
@@ -886,8 +890,8 @@ def test_description_rejects_an_oversized_image_before_reading_it(
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"123456")
     monkeypatch.setattr(openai_backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 28)
     monkeypatch.setattr(
-        openai_backend,
-        "_asset_data",
+        media_backend,
+        "asset_data",
         lambda _asset: pytest.fail("oversized image must not be read"),
     )
 
@@ -1312,6 +1316,50 @@ def test_provider_reason_classifies_sdk_transport_failures() -> None:
     )
     # Unrelated failures stay unclassified rather than being guessed into a retry.
     assert openai_backend._provider_reason(RuntimeError("connection ended")) is None
+
+
+@pytest.mark.parametrize(
+    ("message", "reason"),
+    (
+        (
+            "Model output became abnormal while generating JSON. The generation was aborted.",
+            "provider_unavailable",
+        ),
+        ("The supplied image is invalid", "request_rejected"),
+    ),
+)
+def test_adapter_classifies_generation_aborts(message: str, reason: str) -> None:
+    request = httpx.Request("POST", "https://sdk.example.test/v1/chat/completions")
+    error = openai.BadRequestError(
+        "request failed",
+        response=httpx.Response(400, request=request),
+        body={"message": message},
+    )
+    assert openai_backend._provider_reason(error) == reason
+
+
+@pytest.mark.parametrize("budget", (0, 1))
+def test_vision_kernel_respects_sdk_retry_budget(tmp_path: Path, budget: int) -> None:
+    requests = 0
+
+    def throttled(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            429,
+            headers={"retry-after-ms": "1"},
+            json={"error": {"message": "slow down"}},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(throttled)) as client:
+        model = _vision_model(
+            _sdk_client(client).with_options(max_retries=budget),
+            capabilities=frozenset({Modality.IMAGE}),
+        )
+        with Memory(tmp_path, embedder=TinyEmbedder(), vision_describer=model) as memory:
+            record = memory.add(Blob(b"image", "image/png"))
+            assert memory.get(record.id).id == record.id
+        assert requests == budget + 1
 
 
 @pytest.mark.parametrize(
@@ -2518,7 +2566,7 @@ def test_answer_serializes_temporal_and_metadata_evidence() -> None:
         metadata={"dialog": "delivery", "turn": 7},
     )
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        answer = _model(_sdk_client(client)).answer("When did it arrive?", (hit,))
+        answer = _model(_sdk_client(client)).answer(ModelInput(text="When did it arrive?"), (hit,))
 
     assert answer.answer == "It arrived on August 26."
 
@@ -2622,7 +2670,7 @@ def test_answer_source_qualifies_shared_provenance_without_selecting_by_label() 
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = _model(_sdk_client(client)).answer("Where is the parcel?", hits)
+        result = _model(_sdk_client(client)).answer(ModelInput(text="Where is the parcel?"), hits)
 
     assert result.hits == hits
 
@@ -2653,7 +2701,9 @@ def test_answer_instructs_the_reader_to_resolve_relative_time() -> None:
         occurred_at=datetime(2026, 8, 20, 9, tzinfo=timezone.utc),
     )
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        _model(_sdk_client(client)).answer("How long ago did grandpa visit?", (hit,))
+        _model(_sdk_client(client)).answer(
+            ModelInput(text="How long ago did grandpa visit?"), (hit,)
+        )
 
     assert systems == [openai_backend._GROUNDED_SYSTEM_PROMPT]
     # Anchored on the instruction, not on its wording: rephrasing the sentence is fine, dropping
@@ -2700,7 +2750,7 @@ def test_answer_can_pin_sampling_for_reproducible_evaluation() -> None:
             generation_max_tokens=512,
             generation_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
-        answer = models.answer("What?", (hit,))
+        answer = models.answer(ModelInput(text="What?"), (hit,))
         streamed = "".join(models.stream_answer(ModelInput(text="What?"), (hit,)))
 
     assert answer.answer == "Pinned."
@@ -2747,7 +2797,9 @@ def test_stream_answer_closes_the_provider_response(ending: str) -> None:
 
     hit = SearchHit(id="memory_1", content="Hello is a greeting.", score=0.9, created_at=NOW)
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        stream = _model(_sdk_client(client)).stream_answer("What is hello?", (hit,))
+        stream = _model(_sdk_client(client)).stream_answer(
+            ModelInput(text="What is hello?"), (hit,)
+        )
         try:
             assert next(stream) == "Hello."
             if ending == "abandoned":
@@ -2821,7 +2873,9 @@ def test_stream_answer_close_failure_preserves_errors_and_records_usage(ending: 
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     try:
         with provider.get_tracer("test").start_as_current_span("model"):
-            stream = _model(cast(Any, client)).stream_answer("What is hello?", (hit,))
+            stream = _model(cast(Any, client)).stream_answer(
+                ModelInput(text="What is hello?"), (hit,)
+            )
             if ending != "empty":
                 assert next(stream) == (" " if ending == "whitespace" else "Hello.")
             if ending == "abandoned":
@@ -3153,7 +3207,7 @@ def test_answer_rejects_an_oversized_grounding_payload(
     with httpx.Client() as client:
         model = _model(_sdk_client(client))
         with pytest.raises(ModelError, match="4 MiB"):
-            model.answer("What happened?", (hit,))
+            model.answer(ModelInput(text="What happened?"), (hit,))
 
 
 def test_multimodal_answer_budgets_the_final_text_parts(
@@ -3183,7 +3237,7 @@ def test_multimodal_answer_budgets_the_final_text_parts(
     def unexpected_media_read(_asset: AssetRef) -> str:
         pytest.fail("oversized evidence read media before rejecting the request")
 
-    monkeypatch.setattr(openai_backend, "_asset_data", unexpected_media_read)
+    monkeypatch.setattr(media_backend, "asset_data", unexpected_media_read)
 
     def unexpected_request(_request: httpx.Request) -> httpx.Response:
         pytest.fail("oversized evidence reached the model endpoint")
@@ -3215,7 +3269,7 @@ def test_answer_text_ceiling_includes_system_prompt_before_reading_media(
     def unexpected_request(_request: httpx.Request) -> httpx.Response:
         pytest.fail("oversized complete text reached the provider")
 
-    monkeypatch.setattr(openai_backend, "_asset_data", unexpected_media_read)
+    monkeypatch.setattr(media_backend, "asset_data", unexpected_media_read)
     with httpx.Client(transport=httpx.MockTransport(unexpected_request)) as client:
         model = _model(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
@@ -3329,12 +3383,12 @@ def test_answer_converts_only_videos_below_the_configured_provider_minimum(
         )
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         model = _model(_sdk_client(client), generation_min_video_seconds=2.0)
-        prepared = model._answer_request("What happened?", (hit,))
+        prepared = model._answer_request(ModelInput(text="What happened?"), (hit,))
         assert prepared is not None
         assert prepared[2] == frozenset(
             {Modality.TEXT, Modality.IMAGE if converted else Modality.VIDEO}
         )
-        result = model.answer("What happened?", (hit,))
+        result = model.answer(ModelInput(text="What happened?"), (hit,))
 
     assert result.hits == (hit,)
     assert video.path is not None and video.path.read_bytes() == original
@@ -3434,9 +3488,9 @@ def test_answer_retries_provider_rejected_hit_video_as_text(
             generation_min_video_seconds=2.0,
         )
         if streaming:
-            answer = "".join(model.stream_answer("Where is the toolbox?", (hit,)))
+            answer = "".join(model.stream_answer(ModelInput(text="Where is the toolbox?"), (hit,)))
         else:
-            result = model.answer("Where is the toolbox?", (hit,))
+            result = model.answer(ModelInput(text="Where is the toolbox?"), (hit,))
             answer = result.answer
             assert result.hits[0].assets == ()
             assert result.hits[0].modality is Modality.TEXT
@@ -3504,7 +3558,7 @@ def test_answer_does_not_elide_video_for_an_unrelated_bad_request(tmp_path: Path
         httpx.Client(transport=httpx.MockTransport(respond)) as client,
         pytest.raises(ModelError) as failure,
     ):
-        _model(_sdk_client(client)).answer("What happened?", (hit,))
+        _model(_sdk_client(client)).answer(ModelInput(text="What happened?"), (hit,))
 
     assert requests == 1
     assert failure.value.reason == "request_rejected"
@@ -3945,7 +3999,9 @@ def test_answer_preserves_mixed_source_type_when_only_an_image_is_supplied(tmp_p
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = _model(_sdk_client(client), generation_video_limit=1).answer("What?", hits)
+        result = _model(_sdk_client(client), generation_video_limit=1).answer(
+            ModelInput(text="What?"), hits
+        )
     assert result.hits[1].modality is Modality.IMAGE
     assert result.hits[1].assets == (image,)
     assert hits[1].modality is Modality.OMNI and hits[1].assets == (omitted, image)
@@ -4019,7 +4075,9 @@ def test_answer_combines_typed_provenance_with_later_media_omission(tmp_path: Pa
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = _model(_sdk_client(client), generation_video_limit=1).answer("What?", hits)
+        result = _model(_sdk_client(client), generation_video_limit=1).answer(
+            ModelInput(text="What?"), hits
+        )
 
     assert [len(hit.assets) for hit in result.hits] == [1, 0]
 
@@ -4419,7 +4477,7 @@ def test_provider_failures_do_not_leak_key_or_body(network_error: bool) -> None:
         httpx.Client(transport=httpx.MockTransport(respond)) as client,
         pytest.raises(ModelError) as failure,
     ):
-        _model(_sdk_client(client, api_key=secret)).embed((private_body,))
+        _model(_sdk_client(client, api_key=secret)).embed((ModelInput(text=private_body),))
 
     assert secret not in str(failure.value)
     assert private_body not in str(failure.value)
@@ -4506,7 +4564,7 @@ def test_generation_and_transcription_name_their_own_stage(tmp_path: Path) -> No
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         model = _model(_sdk_client(client))
         with pytest.raises(ModelError) as generation:
-            model.answer("what happened?", (_search_hit(),))
+            model.answer(ModelInput(text="what happened?"), (_search_hit(),))
         with pytest.raises(ModelError) as transcription:
             model.transcribe((audio,))
 
@@ -4534,6 +4592,12 @@ def test_missing_client_and_unsupported_modality_fail_before_http(tmp_path: Path
     model = OpenAIModels()
     image = _asset(tmp_path, "image", Modality.IMAGE, "image/png", b"image")
     assert model.embed(()) == ()
+    with pytest.raises(ValidationError, match="ModelInput"):
+        model.embed((cast(ModelInput, "remember this"),))
+    with pytest.raises(ValidationError, match="ModelInput"):
+        model.answer(cast(ModelInput, "What?"), ())
+    with pytest.raises(ValidationError, match="ModelInput"):
+        tuple(model.stream_answer(cast(ModelInput, "What?"), ()))
     with pytest.raises(ModelError, match="embedding SDK client is not configured"):
         model.embed((ModelInput(text="remember this"),))
     with pytest.raises(ModelError, match="does not support: image"):
@@ -5003,7 +5067,7 @@ def test_formation_prompt_states_every_source_rule_the_validator_enforces(
 
 def test_embedding_width_mismatch_names_both_widths() -> None:
     with pytest.raises(ModelError) as failure:
-        openai_backend._normalized((0.1, 0.2, 0.3), 2)
+        openai_backend._embedding_vector((0.1, 0.2, 0.3), 2)
 
     assert failure.value.reason == "response_invalid"
     assert "returned 3 values but the configured dimension is 2" in str(failure.value)
@@ -5338,8 +5402,8 @@ def test_the_default_answer_policy_sends_the_same_request_as_asking_for_abstenti
     hit = SearchHit(id="memory_1", content="the toolbox is blue", score=0.9, created_at=NOW)
     with httpx.Client(transport=_answer_policy_transport(requests, "Blue.")) as client:
         model = _model(_sdk_client(client))
-        model.answer("What colour?", (hit,))
-        model.answer("What colour?", (hit,), answer_policy="strict")
+        model.answer(ModelInput(text="What colour?"), (hit,))
+        model.answer(ModelInput(text="What colour?"), (hit,), answer_policy="strict")
 
     assert requests[0] == requests[1]
     system = cast(list[dict[str, str]], requests[0]["messages"])[0]["content"]
@@ -5393,7 +5457,9 @@ def test_the_prompt_describes_the_evidence_order_the_caller_actually_supplied(
         ),
     )
     with httpx.Client(transport=_answer_policy_transport(requests, "Blue.")) as client:
-        _model(_sdk_client(client)).answer("What colour?", (hit,), exhaustive=exhaustive)
+        _model(_sdk_client(client)).answer(
+            ModelInput(text="What colour?"), (hit,), exhaustive=exhaustive
+        )
 
     system = cast(list[dict[str, str]], requests[0]["messages"])[0]["content"]
     assert expected in system
@@ -5410,7 +5476,7 @@ def test_best_effort_asks_for_a_committed_answer_and_reports_the_marker_separate
     reply = f"{openai_backend._ABSTENTION_MARKER}\nThe toolbox is probably blue."
     with httpx.Client(transport=_answer_policy_transport(requests, reply)) as client:
         result = _model(_sdk_client(client)).answer(
-            "What colour is the toolbox?", (hit,), answer_policy="best_effort"
+            ModelInput(text="What colour is the toolbox?"), (hit,), answer_policy="best_effort"
         )
 
     system = cast(list[dict[str, str]], requests[0]["messages"])[0]["content"]
@@ -5428,7 +5494,7 @@ def test_best_effort_still_guesses_when_nothing_was_retrieved() -> None:
     requests: list[dict[str, object]] = []
     with httpx.Client(transport=_answer_policy_transport(requests, "Probably blue.")) as client:
         result = _model(_sdk_client(client)).answer(
-            "What colour is the toolbox?", (), answer_policy="best_effort"
+            ModelInput(text="What colour is the toolbox?"), (), answer_policy="best_effort"
         )
 
     assert len(requests) == 1
@@ -5444,7 +5510,7 @@ def test_best_effort_falls_back_to_the_refusal_sentence_when_the_model_only_mark
         transport=_answer_policy_transport(requests, openai_backend._ABSTENTION_MARKER)
     ) as client:
         result = _model(_sdk_client(client)).answer(
-            "What colour?", (hit,), answer_policy="best_effort"
+            ModelInput(text="What colour?"), (hit,), answer_policy="best_effort"
         )
 
     assert result.answer == UNKNOWN_ANSWER
@@ -5494,3 +5560,20 @@ def test_streaming_best_effort_yields_the_marker_but_completes_with_the_clean_an
     assert grounded.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
     assert isinstance(grounded, AnswerResult)
     assert grounded.hits == (hit,)
+
+
+def test_independent_transcription_requests_overlap_and_keep_input_order(tmp_path: Path) -> None:
+    barrier = Barrier(2, timeout=5)
+    assets = tuple(
+        _asset(tmp_path, name, Modality.AUDIO, "audio/wav", name.encode())
+        for name in ("first", "second")
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        barrier.wait()
+        return httpx.Response(
+            200, json={"text": "first" if b"first" in request.content else "second"}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert OpenAIModels(_sdk_client(client)).transcribe(assets) == ("first", "second")

@@ -235,7 +235,7 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
         "--deliberate",
         action="store_true",
         help=(
-            "run Memory.deliberate() after each cutoff's ingest and before its questions, so "
+            "run Memory.consolidate() after each cutoff's ingest and before its questions, so "
             "the slow loop's effect on QA scores is measurable; requires a config declaring "
             "`consolidation`"
         ),

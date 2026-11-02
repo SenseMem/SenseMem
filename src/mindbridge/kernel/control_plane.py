@@ -51,7 +51,6 @@ from mindbridge.types import (
     ConsolidationCandidate,
     ConsolidationReport,
     ContentInput,
-    DeliberationReport,
     EvidenceBasis,
     IdentityChange,
     MemoryIntent,
@@ -219,19 +218,22 @@ class ControlPlane(Traced):
             )
         return tuple(candidates)
 
-    def deliberate(
+    def consolidate_pending(
         self,
         *,
         limit: int = 32,
         max_rounds: int = 4,
         idle: bool = False,
-    ) -> DeliberationReport:
-        with self._trace("mindbridge.deliberate", kind="operation"):
-            validate_limit(limit, maximum=100)
-            validate_limit(max_rounds, maximum=100)
-            if not isinstance(idle, bool):
-                raise ValidationError("idle must be a boolean")
-            rounds = weighed = skipped = applied = rejected = calls = 0
+    ) -> ConsolidationReport:
+        """Process due consolidation candidates under a bounded scheduling budget."""
+        validate_limit(limit, maximum=100)
+        validate_limit(max_rounds, maximum=100)
+        if not isinstance(idle, bool):
+            raise ValidationError("idle must be a boolean")
+        with self._trace("mindbridge.consolidate", kind="operation"):
+            rounds = weighed = skipped = calls = 0
+            operations: builtins.list[MemoryOperationRecord] = []
+            rejected: builtins.list[tuple[MemoryOperation, str]] = []
             for _round in range(max_rounds):
                 candidates = self.consolidation_candidates(limit=limit, idle=idle)
                 if not candidates:
@@ -239,23 +241,19 @@ class ControlPlane(Traced):
                 rounds += 1
                 for candidate in candidates:
                     report = self.consolidate(
-                        evidence_ids=candidate.memory_ids,
-                        limit=limit,
-                        trigger=candidate.trigger,
+                        evidence_ids=candidate.memory_ids, limit=limit, trigger=candidate.trigger
                     )
-                    if report.weighed:
-                        weighed += 1
-                        calls += 1
-                    else:
-                        skipped += 1
-                    applied += len(report.operations)
-                    rejected += len(report.rejected)
-            return DeliberationReport(
+                    weighed += report.weighed
+                    calls += report.model_calls
+                    skipped += not report.weighed
+                    operations.extend(report.operations)
+                    rejected.extend(report.rejected)
+            return ConsolidationReport(
                 rounds=rounds,
                 weighed=weighed,
                 skipped=skipped,
-                applied=applied,
-                rejected=rejected,
+                operations=tuple(operations),
+                rejected=tuple(rejected),
                 model_calls=calls,
             )
 
@@ -267,19 +265,20 @@ class ControlPlane(Traced):
         limit: int = 32,
         trigger: MemoryTrigger = MemoryTrigger.MANUAL,
     ) -> ConsolidationReport:
+        """Process one evidence set, selected by IDs, query or the recent-record window."""
+        validate_limit(limit, maximum=100)
+        if not isinstance(trigger, MemoryTrigger):
+            raise ValidationError("trigger must be a MemoryTrigger")
         with (
-            self._trace("mindbridge.consolidate", kind="operation"),
+            self._trace("mindbridge.consolidate.pass", kind="operation"),
             self._lifecycle.operation(model_work=True) as assets,
         ):
-            validate_limit(limit, maximum=100)
             if self._backends.consolidator is None:
                 raise ModelError(
                     "consolidation backend is not configured",
                     reason="backend_not_configured",
                     stage="consolidate",
                 )
-            if not isinstance(trigger, MemoryTrigger):
-                raise ValidationError("trigger must be a MemoryTrigger")
             shown, window = self._consolidation_evidence(
                 evidence_ids,
                 query,
@@ -354,6 +353,8 @@ class ControlPlane(Traced):
                 operations=tuple(applied),
                 rejected=tuple(rejected),
                 weighed=len(shown),
+                rounds=1,
+                model_calls=1,
             )
 
     def _record_deliberation(

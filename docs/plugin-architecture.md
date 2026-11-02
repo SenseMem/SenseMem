@@ -40,7 +40,9 @@ with Memory.from_config(
 ```
 
 `Memory.from_config` validates a closed catalog of bundled providers, constructs owned adapters, and
-then delegates through `Memory.from_plugins` to the normal constructor. Custom and third-party
+then delegates through `Memory.from_plugins` to the normal constructor. Plugin bundles contain
+values; protocols and declarations are validated once at assembly, before storage opens.
+Custom and third-party
 implementations remain explicit object injection. All paths share capability validation, durable
 identity checks, storage, and execution. Omitting an optional plugin adds no model call or optional
 dependency. Reusing one object for several protocols is supported by the object API, and the bundled
@@ -55,6 +57,35 @@ and is composed by passing an object to `Memory`, `Memory.from_plugins`, or `Mem
 Composition is fixed for one `Memory` lifetime. Changing an adapter requires closing and reopening
 the instance; changing the embedder also requires a compatible durable space or a new directory.
 There is no mid-operation hot swap.
+Routing and `Memory.capabilities` share the immutable assembly snapshot; reading the public
+document never probes the plugin again. An unsupported Sentence Transformers capability returns
+`False`; an exception during discovery fails assembly rather than silently removing a modality.
+
+`GenerationRouter` composes several `GenerationBackend` objects in the answerer slot. It chooses
+against the question and grounded evidence together, preferring complete native support and then
+the narrowest capability set; caller order resolves ties. Text, text-plus-image and text-plus-video
+can therefore use different models without application dispatch. Declarative `generation.routes`
+constructs the same composition. Model rejection remains an explicit error.
+The kernel probes the optional `GenerationRoutingBackend` protocol, so evidence wrappers can
+preserve routing without exposing their concrete implementation to the answer plane.
+
+`EmbeddingRouter` composes specialized encoders only when they declare the same vector space and
+dimension. `EmbeddingInputSupport.embedding_routes` declares exact native combinations and
+`max_assets_per_modality` limits through immutable `EmbeddingRoute` values;
+when an aggregate is unsupported, the kernel uses supported atomic keys. Distinct vector spaces
+cannot share this index. These compositions own each distinct nested resource once.
+
+All consumers share source-backed native/derived routing. A caption or transcript can supply text
+to embedding, queries, generation and formation while original assets remain durable. Required
+conversion is automatic when a matching plugin exists; `query_vision` separately enables optional
+supplemental retrieval routes. A transcript describes speech, not unseen video content.
+Routing checks each attachment separately. Existing source-labelled captions and transcripts remain
+usable after reopening without their producer. Removing a speech plugin preserves the stored
+recipe and cached identity evidence; reattaching an incompatible recipe still fails explicitly.
+Embedding model names are diagnostic: compatibility depends on the declared space and dimension,
+so composing or reordering compatible encoders does not require re-ingestion.
+Partial descriptions do not cover other assets, and an empty transcript supplies no fallback.
+Lexical queries use available speech-to-text preparation without calling the query embedder.
 
 ## Kernel and plugin boundary
 
@@ -62,6 +93,18 @@ Current computation plugins own model and runtime details such as device, precis
 thresholds intrinsic to that model, or a caller-supplied remote SDK client. Potential OCR, emotion,
 visual-grounding and semantic-extraction capabilities belong on this side only after a
 concrete implementation proves a narrow contract.
+
+Validation has one owner per boundary. Assembly validates configuration and backend declarations;
+typed input values validate scope and spatial constraints; model output validation precedes any
+durable effect. Embedding adapters decode vectors, and the kernel owns L2 normalization. The
+local store keeps database constraints and persisted-data/FP32 checks, without revalidating
+configured recognition thresholds or typed retrieval scopes on each call.
+
+Adapters classify provider errors and own their request retry budgets. The kernel makes one
+vision call per batch, propagates failures of required modality conversion, and may skip failed
+optional enhancement when another usable representation exists. Storage translation handles
+concrete I/O, database, capacity and persisted-data errors; internal programming failures remain
+visible to the outer error boundary.
 
 `RerankingBackend` is an optional computation plugin with explicit `reranking_capabilities`.
 It receives a query and ordered documents as `ModelInput` values and returns an equally sized
@@ -91,17 +134,20 @@ Request-local reranking scores are not persisted derivations and need no `*_spac
 `reranking_model` property identifies the loaded model for diagnostics. Changing a reranker
 requires reopening the instance but does not change stored embeddings or require re-ingestion.
 
-`VisionDescriptionBackend.describe` has one further reserved contract, because its output is
-parsed by the kernel rather than only stored. A line beginning with the literal prefix `Fact:` is
-split out of the visible caption into its own indexed `[facts:<asset>]` section rather than left
-inside the description; a plugin's prompt must produce that prefix deliberately; free prose must
-never start a line with it by coincidence. One fact shape reads as more than indexed text: a line
-that says exactly `speaker_N is called <name>` binds the diarised label the plugin was shown to a
-stated name and performs an automatic `IDENTIFY` write, auditable through `operations()` and
-reversible through `rollback()`, never overwriting a name the identity already carries. `inputs[i]`
-may also carry non-empty `text` — derived transcript context the write already knows under the same
-`speaker_N` labels the index prints — which a plugin reads as context for the caption and must
-never echo back into it.
+`VisionDescriptionBackend.describe` returns plain observation text. Text beginning with `Fact:`
+has no identity side effect. The optional `VisionAnalysisBackend.describe_analysis` returns typed
+`VisualDescription(text, facts, speaker_names)` values. `SpeakerName(speaker_label, name)` is an
+explicit proposal about the source-local diarised label. The identity plane validates those
+proposals, preserves existing names, and owns auditable, reversible `IDENTIFY` writes and all
+cross-modal merges. The bundled OpenAI adapter translates its provider output into these values.
+The kernel uses the `typed-v1` description-cache format; old cache rows are recomputed.
+
+`EvidenceGeneration` composes any generation backend with independent `MediaSelectionBackend`
+and `SourceMetadataBackend` implementations. The kernel owns bounded selection and evidence
+preservation; `OpenAIModels.select_media` supplies only the diagnostic computation.
+`GazetteerEnricher` implements local source metadata lookup. `GenerationMediaBackend` optionally
+reports which original assets fit a provider request before enrichment. Metadata is untrusted
+request context and never becomes a durable fact.
 
 The optional `server` and `mcp` dependencies are packaging boundaries, not plugins. REST, MCP, and
 the product CLI remain thin transports over the application-composed `Memory`.

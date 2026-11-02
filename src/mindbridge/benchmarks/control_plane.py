@@ -1,4 +1,4 @@
-"""Behaviour benchmark for the slow loop: `deliberate()`, `record_outcome()`, `rollback()`.
+"""Behaviour benchmark for the slow loop: `consolidate()`, `record_outcome()`, `rollback()`.
 
 Everything here drives the public SDK -- `Memory.add_many`, `Memory.apply`, `Memory.search`,
 `Memory.deliberate`, `Memory.operations`, `Memory.record_outcome`, `Memory.rollback`,
@@ -25,6 +25,7 @@ from pathlib import Path
 
 import yaml
 
+from mindbridge import MemoryConfig
 from mindbridge.configuration import MindBridgeConfig, resolve_memory_config
 from mindbridge.memory import Memory
 from mindbridge.models.base import ConsolidationBackend, EmbeddingBackend, FormationInput
@@ -160,7 +161,7 @@ def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
         built.queries.append(query)
         # Two near-equal empty recalls are the whole of the trigger; one is not a signal.
         for _attempt in range(2):
-            if memory.search(query, limit=10, occurred_from=_HORIZON):
+            if memory.search(query, limit=10, occurred_from=_HORIZON).hits:
                 raise RuntimeError("the control-plane scenario requires these recalls to fail")
     return Scenario(
         duplicates=tuple(built.duplicates),
@@ -173,7 +174,7 @@ def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
 
 def _claim(memory: Memory, subject: str, value: str) -> str:
     """Find one typed preference claim the deterministic scenario former just committed."""
-    for hit in memory.search(f"{subject} only seat preference {value}", limit=100):
+    for hit in memory.search(f"{subject} only seat preference {value}", limit=100).hits:
         context = hit.context
         if (
             context is not None
@@ -205,12 +206,11 @@ def run_benchmark(
         consolidator=consolidator,
         # The deliberation window must cover the whole scenario, and reinforcement must not make
         # one query's retrieval depend on which earlier one ran. Both are measurement policy.
-        minimum_relevance=0,
-        reinforce_on_answer=False,
+        config=MemoryConfig(minimum_relevance=0, reinforce_on_answer=False),
     ) as memory:
         scenario = build_scenario(memory, persons=persons, seed=seed)
         before = {record.operation_id for record in memory.operations(limit=limit)}
-        report = memory.deliberate(limit=limit, max_rounds=max_rounds)
+        report = memory.consolidate_pending(limit=limit, max_rounds=max_rounds)
         applied = tuple(
             record for record in memory.operations(limit=limit) if record.operation_id not in before
         )
@@ -240,7 +240,7 @@ def run_benchmark(
                 "weighed": report.weighed,
                 "skipped": report.skipped,
                 "applied": report.applied,
-                "rejected": report.rejected,
+                "rejected": len(report.rejected),
                 # The loop's whole cost proxy: `ConsolidationBackend` reports no token or currency
                 # cost, so counting round trips is the honest measure rather than an invented one.
                 "model_calls": report.model_calls,

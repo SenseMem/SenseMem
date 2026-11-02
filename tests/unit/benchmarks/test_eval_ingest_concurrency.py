@@ -22,6 +22,7 @@ from mindbridge import (
     EmbedTask,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
 )
@@ -108,7 +109,11 @@ async def test_real_sdk_chunks_share_the_model_budget_and_checkpoint_only_comple
         receipts.append(count)
 
     async with AsyncMemory(
-        Memory(run.unit_dir("unit"), embedder=backend, index_quantization=IndexQuantization.NONE)
+        Memory(
+            run.unit_dir("unit"),
+            embedder=backend,
+            config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+        )
     ) as memory:
         pending = asyncio.create_task(
             runner._ingest(
@@ -145,7 +150,9 @@ async def test_cancel_waits_for_real_sdk_writes_then_records_the_completed_wave(
     async def ingest() -> None:
         async with AsyncMemory(
             Memory(
-                run.unit_dir("unit"), embedder=backend, index_quantization=IndexQuantization.NONE
+                run.unit_dir("unit"),
+                embedder=backend,
+                config=MemoryConfig(index_quantization=IndexQuantization.NONE),
             )
         ) as memory:
             await runner._ingest(
@@ -175,7 +182,11 @@ async def test_cancel_waits_for_real_sdk_writes_then_records_the_completed_wave(
     fresh = _BlockingEmbedder()
     fresh.release.set()
     async with AsyncMemory(
-        Memory(run.unit_path("unit"), embedder=fresh, index_quantization=IndexQuantization.NONE)
+        Memory(
+            run.unit_path("unit"),
+            embedder=fresh,
+            config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+        )
     ) as memory:
         assert len((await memory.list(limit=100)).items) == 2
 
@@ -457,7 +468,11 @@ async def test_real_sdk_reverse_delay_preserves_sqlite_order_for_overlapping_clo
         )
     directory = tmp_path / "store"
     async with AsyncMemory(
-        Memory(directory, embedder=backend, index_quantization=IndexQuantization.NONE)
+        Memory(
+            directory,
+            embedder=backend,
+            config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+        )
     ) as memory:
         pending = asyncio.create_task(
             runner._ingest(

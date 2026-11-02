@@ -39,6 +39,7 @@ from mindbridge.infrastructure.local.store._naming_projection import (
     NamingProjectionFactory,
     naming_snapshot,
     refresh_naming_documents,
+    validate_speech_projection,
 )
 from mindbridge.infrastructure.local.store._operations import active_operation_id, insert_operation
 from mindbridge.infrastructure.local.store.errors import ProtectedMemoryError, StaleOperationError
@@ -118,6 +119,7 @@ class Semantics:
         projection_identity_id: str | None = None,
         projection_memories: Iterable[StoredMemory] = (),
         projection_embeddings: Iterable[StoredEmbedding] = (),
+        projection_sources: Sequence[StoredMemory] | None = None,
         naming_projection_factory: NamingProjectionFactory | None = None,
     ) -> bool:
         """Commit derived records, evidence, and source completion in one transaction.
@@ -168,6 +170,8 @@ class Semantics:
             if not members or len(set(members)) != len(members):
                 raise ValueError("evidence clause members must be non-empty and unique")
         with self._connections.transaction() as connection:
+            if projection_identity_id is not None and projection_sources is not None:
+                validate_speech_projection(connection, projection_identity_id, projection_sources)
             # Same in-transaction idempotency check `apply_control_operation` makes: a duplicate
             # that arrives after the caller's pre-check must be refused, not surface as a
             # unique-index violation.

@@ -68,6 +68,11 @@ from mindbridge.benchmarks._official.worldmemarena_qa import (
     parse_qa_response as parse_worldmemarena_response,
 )
 from mindbridge.benchmarks.personamem_v3 import RANKING_TASK_TYPES
+from mindbridge.benchmarks.videozerobench import (
+    VIDEOZERO_METRICS,
+    VIDEOZERO_SCORER_VERSION,
+    local_metrics,
+)
 
 SCORER_VERSION = "official_scorers_v6"
 
@@ -119,6 +124,7 @@ _PROTOCOLS = {
     "locomo-refined": "locomo_refined_judge_887091190789",
     "m3-bench": "m3_agent_judge_0e3e41939bd8_system_v1",
     "video-mme-v2": "video_mme_v2_6e4bebb03202",
+    "videozerobench": VIDEOZERO_SCORER_VERSION,
     "worldmemarena": "worldmemarena_checkpoint_qa_15ea25b723d9",
     "egotempo": "egotempo_gemini_judge_7022ba77b4d8",
     "memlens": "memlens_judge_77f3ab9a52fa",
@@ -171,6 +177,7 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
     # The two files emitted by the released scorer. `question_accuracy` is an internal 0-1
     # building block; the official `_acc.json` value is exposed as `accuracy` on 0-100.
     "video-mme-v2": frozenset({"accuracy", "rating"}),
+    "videozerobench": frozenset({"accuracy", *VIDEOZERO_METRICS}),
     "worldmemarena": frozenset(
         {"correct_ratio", "hallucination_ratio", "omission_ratio", "answer_f1", "answer_bleu1"}
     ),
@@ -328,6 +335,7 @@ def task_primary_metric(task: str) -> str:
         "locomo-refined": "llm_judge",
         "m3-bench": "accuracy",
         "video-mme-v2": "rating",
+        "videozerobench": "accuracy",
         "worldmemarena": "correct_ratio",
         "egotempo": "accuracy",
         "memlens": "accuracy",
@@ -478,6 +486,8 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
         )
         score = float(parsed_choice == expected_choice)
         return {metric: score}
+    if family == "videozerobench":
+        return local_metrics(cast(int, metadata["level"]), references[0], prediction, metadata)
     if family == "locomo-refined":
         normalized = _locomo_prediction(prediction)
         if any(normalized == reference for reference in references):

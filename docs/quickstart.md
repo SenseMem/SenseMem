@@ -71,7 +71,7 @@ with Memory.from_config(config) as memory:
 
 # Reopen the same directory and search the persisted record.
 with Memory.from_config(config) as memory:
-    hits = memory.search("Where is the spare key?", limit=1)
+    hits = memory.search("Where is the spare key?", limit=1).hits
     if not hits:
         raise SystemExit("No memory matched the question.")
     print("found:", hits[0].content)
@@ -162,7 +162,7 @@ memory.add(
 hits = memory.search(
     "What happened during the workshop?",
     memory_type=MemoryType.EPISODIC,
-)
+).hits
 ```
 
 MindBridge also supports semantic memories for facts and procedural memories for instructions.

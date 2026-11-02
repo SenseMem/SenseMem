@@ -271,6 +271,7 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         "PersonaMem-v3",
         "SuperMemory-VQA",
         "Video-MME-v2",
+        "VideoZeroBench",
         "WorldMemArena",
     }
     assert expand(("m3-bench", "atm-bench-main", "supermemory-vqa")) == (
@@ -1063,13 +1064,12 @@ def test_backend_pool_forwards_every_memory_setting_and_plugin(
 
     pool.memory(tmp_path / "unused")
 
-    for entry in fields(MemoryConfig):
-        assert captured[entry.name] == getattr(settings, entry.name), entry.name
+    assert captured["config"] is settings
     for name, value in backends.items():
         assert captured[name] is value, name
     # Deriving the forwarding from the dataclasses is only safe while every declared field names
     # a real constructor keyword; a field added without one would raise at call time instead.
-    declared = {entry.name for entry in (*fields(MemoryConfig), *fields(MemoryPlugins))}
+    declared = {entry.name for entry in fields(MemoryPlugins)} | {"config"}
     unaccepted = declared - set(signature(Memory.__init__).parameters)
     assert not unaccepted, f"Memory.__init__ has no keyword for {sorted(unaccepted)}"
 
@@ -4276,6 +4276,7 @@ _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
     "locomo-refined": ("category",),
     "m3-bench": ("question_types",),
     "video-mme-v2": ("group_type", "level", "second_head", "third_head"),
+    "videozerobench": ("category", "language", "evidence_span", "annotation_capabilities"),
     "worldmemarena": ("question_type", "question_type_abbrev", "difficulty"),
     "egotempo": ("question_type",),
     "memlens": ("question_type", "question_subtype"),
@@ -6142,8 +6143,16 @@ async def test_retry_transient_waits_out_provider_outages_only(
     # A connection reset describes the network, not the answer; it is waited out within a budget.
     # A rejected request is a fact about the request and is raised at once, and an outage that
     # outlives the budget surfaces as the same structured error the caller already records.
-    monkeypatch.setattr(eval_results_module, "_TRANSIENT_RETRY_SECONDS", 0.2)
-    monkeypatch.setattr(eval_results_module, "_TRANSIENT_RETRY_CAP_SECONDS", 0.01)
+    elapsed = 0.0
+
+    async def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(eval_results_module, "time", SimpleNamespace(monotonic=lambda: elapsed))
+    monkeypatch.setattr(eval_results_module, "asyncio", SimpleNamespace(sleep=sleep))
+    monkeypatch.setattr(eval_results_module, "_TRANSIENT_RETRY_SECONDS", 10.0)
+    monkeypatch.setattr(eval_results_module, "_TRANSIENT_RETRY_CAP_SECONDS", 1.0)
     calls = 0
 
     async def flaky() -> str:
@@ -6155,6 +6164,7 @@ async def test_retry_transient_waits_out_provider_outages_only(
 
     assert await eval_results_module._retry_transient(flaky) == "answered"
     assert calls == 3
+    assert elapsed == 2.0
 
     async def rejected() -> str:
         nonlocal calls
@@ -6169,14 +6179,13 @@ async def test_retry_transient_waits_out_provider_outages_only(
     async def outage() -> str:
         raise ModelError("still down", reason="timeout", stage="embed")
 
-    started = time.monotonic()
+    started = elapsed
     with pytest.raises(ModelError, match="still down"):
         await eval_results_module._retry_transient(outage)
-    assert time.monotonic() - started < 2
+    assert elapsed - started == 10.0
 
-    # The answer path streams `response_format` replies, and one gateway reports aborting its
-    # own JSON generation as a 400. That is `request_rejected` by status, yet an identical
-    # request seconds later succeeds; it is recognized by the provider's words and waited out.
+    # The adapter classifies a gateway's aborted JSON generation as provider_unavailable.
+    # The harness uses that classification without inspecting provider status or message.
     calls = 0
 
     async def aborted_generation() -> str:
@@ -6206,17 +6215,15 @@ class _AbortedJsonGeneration(Exception):
 
 
 def _aborted_json_generation() -> ModelError:
-    error = ModelError("generation request failed", reason="request_rejected", stage="generate")
+    error = ModelError("generation request failed", reason="provider_unavailable", stage="generate")
     error.__cause__ = _AbortedJsonGeneration()
     return error
 
 
 def test_failure_detail_keeps_the_provider_message_for_the_next_diagnosis() -> None:
-    # The stable fields say "request rejected"; only the provider's words say whether the prompt
-    # was malformed or the gateway aborted its own generation, and a one-in-two-hundred failure
-    # cannot be reproduced on demand afterwards.
+    # Provider details remain available in explicitly requested benchmark diagnostics.
     detail = eval_results_module._failure_detail(_aborted_json_generation())
-    assert detail.reason == "request_rejected"
+    assert detail.reason == "provider_unavailable"
     assert detail.message is not None
     assert detail.message.startswith("<400> InternalError.Algo.InvalidParameter")
     assert detail.json()["message"] == detail.message

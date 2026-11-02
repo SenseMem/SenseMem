@@ -9,7 +9,7 @@ slot. Terminal answer streams return their worker before network delivery. See
 
 ## Surface
 
-The optional FastAPI adapter exposes thirteen `Memory` operations under `/v1`, or twenty-three when
+The optional FastAPI adapter exposes thirteen `Memory` operations under `/v1`, or twenty-two when
 the host builds it with `identity_operations=True` and `embodied_operations=True`. It validates
 transport input, calls the injected synchronous memory, and serializes the public SDK values; it
 is not a separate storage or retrieval implementation.
@@ -158,8 +158,7 @@ The next ten exist only when the host enables the matching switch:
 
 | Method and path | Operation ID | Input | Success | Switch |
 | --- | --- | --- | --- | --- |
-| `POST /v1/speech` | `analyzeSpeech` | `AnalyzeRequest` | `200 {"segments":[...]}` | `embodied_operations` |
-| `POST /v1/faces` | `analyzeFaces` | `AnalyzeRequest` | `200 {"observations":[...]}` | `embodied_operations` |
+| `POST /v1/perception` | `perceiveMemory` | `PerceptionRequest` | `200 {"speech":[...],"faces":[...],"coverage":[...]}` | `embodied_operations` |
 | `POST /v1/identities` | `registerIdentity` | `IdentityRegisterRequest` | `200 {"registered":true}` | `identity_operations` |
 | `GET /v1/identities/{identity_id}` | `getIdentity` | non-empty path value | `200 {"identity":IdentityProfile\|null}` | `identity_operations` |
 | `POST /v1/identities/{alias_id}/unlink` | `unlinkIdentity` | non-empty path value | `200 {"restored_identity_id":str\|null}` | `identity_operations` |
@@ -183,7 +182,7 @@ Request fields and defaults are:
 | `ContextRequest` | required `goal`; optional `budget`, `reference_at`, `scope`; `allow_partial_sources=false` |
 | `ContextBudgetRequest` | `max_chars=16000`; `max_items=24`; `min_confidence=0.0`; `selected_proofs=false`; optional `max_media_items` (`0` for a text-only bundle); optional `memory_types` with at least one value; optional `freshness_seconds`; optional `max_latency_ms` |
 | `SettleRequest` | `limit=100`; `max_attempts=3`; optional `memory_ids` with 1–100 IDs |
-| `AnalyzeRequest` | required `memory_id` |
+| `PerceptionRequest` | required `memory_id`; optional `kinds` array containing `"speech"` and/or `"faces"` |
 | `IdentityRegisterRequest` | required `identity_id`, `name`; optional `relationship` |
 | List query | `limit=100`; optional opaque `cursor` |
 
@@ -284,7 +283,7 @@ and moves the ranker's reinforcement factor, so a lost response must not be retr
 Unknown IDs are skipped, and `reinforced` counts the ones that existed.
 
 `answer` may run face recognition on a retrieved photo or video to identify who appears in it, the
-same as `analyzeFaces`, and that recognition can corroborate and commit a cross-modal identity
+same as `perceiveMemory`, and that recognition can corroborate and commit a cross-modal identity
 merge. `POST /v1/answers` passes `Memory.ask(..., link_identities=embodied_operations)`, so a
 caller with recall access alone cannot acquire that merge authority through an answer unless the
 host has also opted `create_app` into `embodied_operations`: with the switch off, an answer may
@@ -321,9 +320,11 @@ from `items` is not pending, and `getMemory` tells whether it is settled or was 
 
 The identity and embodied routes follow the SDK operation they dispatch to, exactly as the
 [MCP tools](mcp.md#tools) do, because both adapters call the same injected `Memory`.
-`analyzeSpeech` and `analyzeFaces` read one stored memory's assets and return an empty result
-rather than failing when no matching asset exists; both fail with `model_error` when the
-required backend is unavailable. `registerIdentity` asserts a name on the host's behalf as a
+`perceiveMemory` reads one stored memory's assets and returns typed speech and face collections.
+Omitting `kinds` selects configured recognition plugins automatically. An explicit selection
+requires the relevant backend and modality when applicable media exists. Text-only records
+return empty collections. The recognition path may commit a corroborated voice/face merge.
+`registerIdentity` asserts a name on the host's behalf as a
 versioned, reversible memory record and fails with `identity_not_found` for an unregistered ID;
 omitting `relationship` leaves any recorded relationship intact, and there is deliberately no way
 to clear one. `getIdentity` follows merge aliases and never fails for an unknown ID, returning
@@ -335,7 +336,7 @@ gone.
 
 ### Retrieval trace
 
-`POST /v1/memories/search` with `"explain": true` routes to `Memory.search_with_trace` and returns a
+`POST /v1/memories/search` with `"explain": true` routes to `Memory.search(..., explain=True)` and returns a
 `trace` object beside the unchanged `hits`. `trace.candidates` lists every candidate considered with
 its effective score components (`dense_relevance`, `dense_confidence`, `lexical_relevance`,
 `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
@@ -367,8 +368,7 @@ wrong two numbers. `minimum_relevance` and `ambiguity_margin` are fixed when the
 | `SettleResponse` | `settled` |
 | `PendingCaptureResponse` | `memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting` (`"enrichment"` or `"formation"`) |
 | `PendingCapturesResponse` | `items` |
-| `SpeechResponse` | `segments`: `asset_id`, `start_ms`, `end_ms`, `text`, `speaker_id`, `speaker_name`, `identity_score` |
-| `FacesResponse` | `observations`: `asset_id`, `bounding_box`, `identity_id`, `identity_name`, `identity_score`, `observed_at_ms` |
+| `PerceptionResponse` | `speech`: `SpeakerSegment` values; `faces`: `FaceObservation` values; `coverage`: per-kind/asset `{kind, asset_id, reason}` entries |
 | `IdentityResponse` | `identity`: `identity_id`, `name`, `relationship`, `confirmed`, `evidence_ids`, or `null` |
 | `RegisterResponse` | `registered` |
 | `UnlinkResponse` | `restored_identity_id` |
@@ -388,7 +388,7 @@ wrong two numbers. `minimum_relevance` and `ambiguity_margin` are fixed when the
 | `ProvisionalActorResponse` | `identity_id`, `memory_ids`: one recognized person in the included evidence whom no visible naming assertion names |
 | `NamedActorResponse` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id`: one person a naming assertion names, reached through other evidence |
 | `AffectCueResponse` | every hit field plus `event_ids`: the events formed from the same observations the cue cites in its own `context.evidence_ids`, which is co-occurrence inside one capture and not an attributed cause |
-| `CapabilitiesResponse` | `embedding`, `embedding_model`, `embedding_space`, `embedding_dimension`, `generation`, `transcription`, `vision`, `face`, `formation`, `generation_model`, `transcription_space`, `vision_model`, `face_model`, `formation_model`, `consolidation_model`, `speaker_recognition`, `streaming_generation`, `operations` |
+| `CapabilitiesResponse` | `embedding`, `embedding_model`, `embedding_space`, `embedding_dimension`, `embedding_routes`, `generation`, `generation_routes`, `transcription`, `vision`, `face`, `formation`, `reranking`, `reranking_model`, `generation_model`, `transcription_space`, `vision_model`, `face_model`, `formation_model`, `consolidation_model`, `speaker_recognition`, `operations` |
 | `HealthResponse` | `status`, `capabilities` |
 
 `modality` is `text`, `image`, `video`, `audio`, or `omni`. `memory_type` is `semantic`,
@@ -432,15 +432,21 @@ to send a probe write to learn what the deployment can do:
 {
   "status": "ok",
   "capabilities": {
-    "embedding": ["audio", "image", "text", "video"],
-    "embedding_model": "test-omni",
-    "embedding_space": "test-omni:1024",
+    "embedding": ["text"],
+    "embedding_model": "test-text",
+    "embedding_space": "test-text:1024",
     "embedding_dimension": 1024,
+    "embedding_routes": [
+      {"modalities": ["text"], "max_assets_per_modality": null}
+    ],
     "generation": ["text"],
+    "generation_routes": [["text"]],
     "transcription": ["audio"],
     "vision": [],
     "face": [],
     "formation": [],
+    "reranking": [],
+    "reranking_model": null,
     "generation_model": "qwen3-omni",
     "transcription_space": "funasr-nano:cam++",
     "vision_model": null,
@@ -448,20 +454,24 @@ to send a probe write to learn what the deployment can do:
     "formation_model": null,
     "consolidation_model": null,
     "speaker_recognition": true,
-    "streaming_generation": false,
-    "operations": ["ask", "speech", "transcribe"]
+    "operations": ["ask", "perceive", "transcribe"]
   }
 }
 ```
 
-The six modality lists are the declarations routing reads, sorted for a stable document; an empty
-list means the backend is absent, not that it supports nothing. A `null` model ID means the same.
+The seven modality lists are the declarations routing reads, sorted for a stable document; an empty
+list means no native capability is declared. A `null` optional model ID means no name was declared;
+generation plugins are not required to publish one, so this alone does not mean the plugin is absent.
+`generation_routes` lists individual native route coverage. Separate image-text and video-text
+routes do not imply a route covering text, image and video together. `embedding_routes` lists
+exact native combinations and per-modality asset count limits; an unsupported joint input may
+still use atomic retrieval keys. `reranking` and `reranking_model` describe the configured scorer.
 `embedding_space` is the value that decides whether stored vectors and a new backend belong to the
 same space. `speaker_recognition` is not derivable from `transcription`: a transcription backend
 and a speech backend occupy one slot and declare the same modalities, but only the second resolves
-speakers, so this is the field that says whether `speech` will work. `operations` is derived from
+speakers, so this is the field that says whether speech recognition will work. `operations` is derived from
 those backends rather than declared, so a caller does not have to know that `ask` needs generation,
-and it is then narrowed to what this app can actually route to: `speech` and `faces` appear only
+and it is then narrowed to what this app can actually route to: `perceive` appears only
 when the host built it with `embodied_operations=True` (the example above), and `consolidate` never
 appears, because the control plane has no `/v1` route. Values are captured when `Memory` is
 constructed, so the route performs no I/O and no model call.
@@ -513,7 +523,6 @@ are never serialized.
 | `validation_error` | `input_invalid` |
 | `request_too_large` | `payload_too_large` |
 | `memory_not_found` | `memory_not_found` |
-| `speaker_not_found` | `speaker_not_found` |
 | `identity_not_found` | `identity_not_found` |
 | `model_error` | unset, `backend_not_configured`, `unsupported_modality`, `auth_failed`, `rate_limited`, `quota_exhausted`, `provider_unavailable`, `timeout`, `connection_failed`, `request_rejected`, `context_length_exceeded`, `model_refused`, `response_invalid`, `payload_too_large`, `asset_unavailable`, `asset_changed`, `model_failed` |
 | `model_output_truncated` | `output_truncated` |
@@ -547,7 +556,7 @@ in both directions, so a client can act on the status without also reading the r
 
 | Status | `reason` |
 | --- | --- |
-| 404 | unknown route; `memory_not_found`, `speaker_not_found`, `identity_not_found` |
+| 404 | unknown route; `memory_not_found`, `identity_not_found` |
 | 405 | method not allowed |
 | 413 | `context_length_exceeded` for provider context overflow; `payload_too_large` for byte-based request or backend payload limits |
 | 422 | `input_invalid`, `unsupported_modality` |
@@ -558,9 +567,9 @@ in both directions, so a client can act on the status without also reading the r
 
 Two rows are worth stating explicitly, because both used to answer twice. `payload_too_large` is
 one condition seen from two sides and both are fixed by sending less, so the provider path no
-longer reports 502. `io_failed` is the coarse label the storage wrapper puts on a failure it
-cannot classify, programming errors included, and it is deliberately not retryable, so it reports
-500 rather than telling a client the condition is transient.
+longer reports 502. `io_failed` describes database, filesystem, asset-store or persisted-data
+decoding failures and is deliberately not retryable, so it reports 500. Programming errors retain
+their Python exception internally and use the transport's generic `unexpected` envelope.
 
 ### Operations without a route
 
@@ -569,10 +578,8 @@ REST has no route for these Python operations:
 | Operation | Boundary |
 | --- | --- |
 | `add_stream` | Send each completed observation to `POST /v1/memories` |
-| `search_with_trace` | Send `POST /v1/memories/search` with `"explain": true` |
-| `register_speaker` | No route; has an [MCP tool](mcp.md#tools). REST names an identity, not a voice-only speaker |
 | `reindex`, `optimize` | Index maintenance an operator schedules |
-| `consolidation_candidates`, `consolidate`, `deliberate`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | No route and no MCP tool; the memory control plane stays under host authority |
+| `consolidation_candidates`, `consolidate`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | No route and no MCP tool; the memory control plane stays under host authority |
 
 `exportSubject` is the one place a control-plane value reaches a transport: an export carries the
 operation-log rows that moved the subject's records, because the right of access covers how the
@@ -591,7 +598,7 @@ like `deleteMemory`, because it acts on a declared policy over the whole store r
 record the caller named. Send `{"dry_run": true}` first: it reports the same identifiers and
 deletes nothing.
 
-`speech`, `faces`, `register_identity`, `identity`, `unlink_identity`, `forget_identity`,
+`perceive`, `register_identity`, `identity`, `unlink_identity`, `forget_identity`,
 `record_consent`, `consent`, `export`, and `apply_retention` do
 have routes, listed in [Endpoints](#endpoints) -- but only when the host enables
 `embodied_operations` or `identity_operations`. A host that leaves a switch off gets no route for

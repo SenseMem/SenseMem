@@ -6,10 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import mindbridge.models.reranking as reranking
-from mindbridge import Modality, ModelInput, RerankingBackend
+import mindbridge.models.sentence_transformers as sentence_transformers
+from mindbridge import Modality, ModelInput, RerankingBackend, SentenceTransformersReranker
 from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.models.reranking import SentenceTransformersReranker
 
 REVISION = "a" * 40
 
@@ -96,7 +95,7 @@ def test_load_resolves_revision_and_uses_safe_crossencoder_arguments(
         assert name == "sentence_transformers"
         return SimpleNamespace(CrossEncoder=factory)
 
-    monkeypatch.setattr(reranking, "import_module", importer)
+    monkeypatch.setattr(sentence_transformers, "import_module", importer)
     model = SentenceTransformersReranker.load("org/model", device="cpu", max_length=512)
     assert imported == ["huggingface_hub", "sentence_transformers"]
     assert arguments == {
@@ -133,6 +132,6 @@ def test_reranker_rejects_mutable_revision_and_missing_optional_dependency(
     def missing(_name: str) -> object:
         raise ImportError("missing")
 
-    monkeypatch.setattr(reranking, "import_module", missing)
+    monkeypatch.setattr(sentence_transformers, "import_module", missing)
     with pytest.raises(ModelError, match="local extra"):
         SentenceTransformersReranker.load("org/model", revision=REVISION)

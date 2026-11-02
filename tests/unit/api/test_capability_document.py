@@ -2,7 +2,7 @@
 
 `MemoryCapabilities.operations` is derived from the declared backends, but a derivation is not a
 routing table. The memory control plane is SDK-only by design (`docs/context-os.md`), so
-`consolidate` has no `/v1` route and none of the fifteen MCP tools, and the embodied operations
+`consolidate` has no `/v1` route and none of the thirteen MCP tools, and the embodied operations
 reach a route or a tool only when the host opts in. An agent that read `consolidate` in the MCP
 greeting would go looking for a tool that is not there, so every surface narrows the list to what
 it serves -- except `mindbridge doctor`, which reports for a CLI that does have the command.
@@ -38,7 +38,7 @@ EVERYTHING = MemoryCapabilities(
     consolidation_model="qwen3-omni",
     speaker_recognition=True,
 )
-_EMBODIED = frozenset({"speech", "faces"})
+_EMBODIED = frozenset({"perceive"})
 
 
 class _Declared:
@@ -57,10 +57,22 @@ class _Embedder:
     embedding_space = "space_1"
     embedding_dimension = 8
 
+    def embed(self, inputs: object, task: object = None) -> tuple[()]:
+        raise AssertionError("capability discovery must not call the model")
+
+    def close(self) -> None:
+        pass
+
 
 class _Consolidator:
     consolidation_model = "qwen3-omni"
     consolidation_recipe = "qwen3-omni:consolidate"
+
+    def consolidate(self, evidence: object, *, trigger: object) -> tuple[()]:
+        raise AssertionError("capability discovery must not call the model")
+
+    def close(self) -> None:
+        pass
 
 
 def _healthz(*, embodied_operations: bool) -> dict[str, Any]:

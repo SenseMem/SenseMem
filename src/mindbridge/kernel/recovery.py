@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from mindbridge.kernel.contracts import Backends
@@ -26,7 +27,8 @@ class Recovery:
         self._backends = backends
         self._settings = settings
 
-    def prepare(self, index_path: Path) -> None:
+    def prepare(self, index_path: Path) -> Backends:
+        """Validate durability and retain the recipe needed to read existing speech evidence."""
         expected = {
             STORE_METADATA_KEYS["model"]: self._backends.embedding_model,
             STORE_METADATA_KEYS["space"]: self._backends.space_id,
@@ -43,6 +45,15 @@ class Recovery:
         missing = not index_path.exists()
         with translate_storage_errors("validate local store metadata"):
             stored = {key: self._store.get_metadata(key) for key in expected}
+            transcription_key = STORE_METADATA_KEYS["transcription"]
+            if (
+                self._backends.transcriber is None
+                and (stored_space := stored[transcription_key]) is not None
+            ):
+                expected[transcription_key] = stored_space
+            unused_transcription = not self._store.media.has_transcription_derivations()
+            if unused_transcription and stored[transcription_key] != expected[transcription_key]:
+                stored[transcription_key] = None
             face_keys = frozenset(
                 {STORE_METADATA_KEYS["face"], STORE_METADATA_KEYS["face_analysis"]}
             )
@@ -55,7 +66,8 @@ class Recovery:
                 expected,
                 stored,
                 has_records=bool(self._store.records.list_memories(limit=1)),
-                initializable=face_keys if initializing_faces else frozenset(),
+                initializable=(face_keys if initializing_faces else frozenset())
+                | (frozenset({transcription_key}) if unused_transcription else frozenset()),
             )
         with translate_storage_errors("reconcile local store metadata"):
             if plan.rebuild_index and index_path.exists():
@@ -74,3 +86,9 @@ class Recovery:
                     missing,
                     plan.rebuild_index,
                 )
+        space = expected[STORE_METADATA_KEYS["transcription"]]
+        return (
+            self._backends
+            if space == self._backends.transcription_space
+            else replace(self._backends, transcription_space=space)
+        )

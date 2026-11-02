@@ -27,7 +27,8 @@ data, not an account, authorization, request, or isolation boundary.
 `memory.py` holds the two public facades, `Memory` and `AsyncMemory`, and nothing else that
 decides behavior. `Memory.__init__` is the one place the runtime is assembled: it resolves
 `Settings` and `Backends`, opens the store, constructs the planes that need no index, delegates
-store recovery to `Recovery`, opens the index, constructs the remaining planes,
+store recovery to `Recovery`, retains cached speech bindings when its producer is omitted,
+opens the index, constructs the remaining planes,
 and drains the outbox. Every plane's dependencies are keyword arguments to its constructor, so
 the wiring in that method is the dependency graph, and a plane cannot reach a resource it was
 not handed.
@@ -37,10 +38,10 @@ not handed.
 | `kernel/lifecycle.py` | `Lifecycle` | Operation leases, fork detection, close coordination, and the media leases an operation holds. |
 | `kernel/materialization.py` | `Materializer` | Validating caller content and leasing its media before any model runs. |
 | `kernel/hydration.py` | `Hydrator` | Stored rows to public `MemoryRecord`, `SearchHit`, and `AssetRef` values. |
-| `kernel/recovery.py` | `Recovery` | Validating current store identities before writes, initializing unused face spaces, replacing derived indexes, and checkpointing recovery work before index creation. |
-| `kernel/speech.py`, `vision.py`, `embedding.py` | `Speech`, `Vision`, `Embedding` | The perception planes: transcripts and voice identities; descriptions, faces, and cross-modal links; routing content into the embedder and keying rows. |
+| `kernel/recovery.py` | `Recovery` | Validating current store identities before writes, initializing unused face/transcription spaces, replacing derived indexes, and checkpointing recovery work before index creation. |
+| `kernel/speech.py`, `vision.py`, `embedding.py` | `Speech`, `Vision`, `Embedding` | The perception planes: transcripts and voice identities; descriptions and faces; routing content into the embedder and keying rows. |
 | `kernel/projection.py` | `Projection` | Applying committed SQLite truth to Zvec through the outbox, batched flushes, `reindex()`, `optimize()`. |
-| `kernel/retrieval.py` | `Retrieval` | Index candidates, authoritative hydration, and one ranking, shared by search, answer, compile, and the control plane. |
+| `kernel/retrieval.py` | `Retrieval` | Query preparation, bounded candidate expansion, authoritative hydration and reranking; pure score calculation lives in `kernel/ranking.py`. Search, answer, compile and the control plane share these stages. |
 | `kernel/formation.py` | `Formation` | Running the formation backend over committed sources and committing accepted proposals. |
 | `kernel/identity.py` | `Identities` | Naming, consent, linking, unlinking, and erasing people. |
 | `kernel/ingestion.py` | `Ingestion` | `add`, `add_many`, `capture`, `settle`, and streamed observations. |
@@ -102,8 +103,10 @@ registry. Unknown predicates and compound objects retain literal keys. SQLite sc
 the original predicate alongside its key, registry revision, and match method. Only the current
 schema is accepted; opening a directory never upgrades an older schema.
 
-The store also records the embedding model, space, dimension, transcription space, configured face
-spaces, and the index recipe. A mismatch fails at open instead of mixing representations.
+The store records the embedding model for diagnostics, and space, dimension, transcription space,
+configured face spaces and index recipe for compatibility. A representation mismatch fails at open.
+Compatible embedding model names may change without re-embedding. An omitted speech plugin keeps
+the stored recipe for cached evidence; a configured incompatible speech recipe still fails.
 Changing quantization within the current index recipe rebuilds Zvec from stored vectors.
 Changing a model space or using an older index recipe requires a fresh directory and re-ingestion.
 
@@ -194,9 +197,9 @@ flowchart LR
 A captured record is durable and readable but has no vectors, so it enqueues no index work and
 `search()` cannot return it. `settle()` and the `add()` path share one enrichment routine over the
 committed row, so a settled record holds exactly the derived content, vectors, and formation a
-blocking `add()` would have produced. Retrieval and shutdown never settle. That shared routine
-runs under one process-wide settlement lock, so a concurrent `settle()` or an `add()` of the same
-captured content waits instead of running the model stages twice.
+blocking `add()` would have produced. Retrieval and shutdown never settle. A per-record claim
+lets a concurrent `settle()` or `add()` of the same captured content await its completed work,
+while disjoint records can proceed concurrently.
 
 Enrichment appends. Derived text is added to `memory_records.content` behind a per-asset marker —
 `[transcript:<asset_id>]`, `[visual description:<asset_id>]`, `[facts:<asset_id>]`, or
@@ -210,7 +213,11 @@ because one is observation and the other a distillation that outlives the clip.
 `settle()` attempts every record it read: a failing one keeps its queue row, its attempt count,
 and its reason while the records behind it still settle, and the first failure is raised once the
 batch is done. A record that has already failed `max_attempts` times is skipped rather than
-retried, so one poisoned capture cannot block the queue. `capture()` applies the same
+retried, so one poisoned capture cannot block the queue. Claims are per record; disjoint
+settlements run concurrently with bounded workers. Plain text without formation uses batched
+embedding. An index-flush failure retains pending work, and retry drains the outbox without
+re-embedding committed vectors. Independent temporal/index routes use a rolling bounded scheduler;
+cloud transcription requests and independent voice/face inference can overlap. `capture()` applies the same
 embedder-capability check `add()` applies, so media no configured model could ever take is
 refused before the commit instead of becoming a durable row that can never settle.
 
@@ -401,7 +408,7 @@ left unspent, their media rows stop at the same `2 * limit` cap `_budgeted_recal
 and the read reports which edge produced each row so a run can say why the store could answer. `RelatedRead` carries that attribution; the trace carries it as
 `mindbridge.expansion.edges`.
 
-`search_with_trace()` exposes bounded ranking signals and terminal rejection reasons without
+`search(..., explain=True)` exposes bounded ranking signals and terminal rejection reasons without
 copying memory content or metadata into the trace. `ask()` uses the same retrieval path, applies
 the evidence budget, routes the question and hits through the generation backend's declared
 capabilities, and returns only evidence the backend actually used. `compile()` reuses that same
@@ -421,8 +428,17 @@ application lock, so distinct sources progress concurrently and duplicate source
 
 Model calls and separate SQLite transactions may overlap. SQLite serializes its own writers with
 `BEGIN IMMEDIATE`. A process-local write lock protects outbox application, destructive operations,
-index replacement, final record and asset hydration, and add-time speaker identity updates, whose
-identity changes must roll back with a failed add. Ordinary Zvec queries may overlap with each
+index replacement, final record and asset hydration, and atomic add-time speaker commits.
+Speech inference and embedding run outside that lock. A rolled-back SQLite preview determines
+speaker IDs; the final transaction revalidates the plan and commits identities, records and
+embeddings together. A concurrent identity change retries matching and embedding without repeating
+speech inference. Naming and cross-modal linking also prepare affected speech vectors outside
+the write lock. The commit checks the complete affected record set and its source content;
+concurrent additions, enrichment or deletion retry preparation instead of committing a stale
+projection. Naming assertions, identity changes, documents, vectors and outbox rows remain atomic.
+Identity policy changes retain their ordering lock; unrelated searches and ordinary writes can
+continue during model preparation. Unattributed speech turns remain unattributed after reindexing.
+Ordinary Zvec queries may overlap with each
 other and with ordinary native upserts, deletes, and flushes. Zvec 0.8 synchronizes segment
 switching internally. Optimize, collection replacement, and close still wait for every active
 handle lease and exclude new operations. A maintenance check that needs no work takes a shared
@@ -454,11 +470,17 @@ progress, with ownership retained and new operations refused, until the original
 ## Model boundary
 
 The extension contracts are `EmbeddingBackend`, `GenerationBackend`, `TranscriptionBackend`,
-`SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, and
-`ConsolidationBackend`; `StreamingGenerationBackend` adds streamed generation. Routing follows
-declared atomic modalities, not provider or model names. Unsupported visual evidence fails;
-unsupported audio can fall back to transcript text only when a configured transcription backend
-declares the required capability. Provider output is validated before persistence or return.
+`SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `RerankingBackend`, and
+`ConsolidationBackend`; `StreamingGenerationBackend` adds streamed generation and
+`VisionAnalysisBackend` adds typed facts and naming proposals. `GenerationRouter` selects native
+models against both question and evidence. `EmbeddingInputSupport` describes joint restrictions;
+`EmbeddingRouter` combines encoders in one explicitly shared vector space. Shared source-backed
+routing substitutes captions or transcripts when a consumer cannot accept the original modality.
+Provider output is validated before persistence or return.
+
+Identity linking and naming belong to `Identities`; `Vision` supplies observations. Provider-neutral
+`EvidenceGeneration` in `kernel/answer_evidence.py` owns the complete media-selection and
+source-metadata preparation path, including composition around a selected model. Provider adapters retain request formatting, model prompts and parsing.
 
 The two reasoning contracts differ only in horizon and authority scope. A `FormationBackend`
 proposes typed semantics from one committed observation. A `ConsolidationBackend` proposes
@@ -486,25 +508,52 @@ Typed lineage and evidence are a SQLite projection, not a graph database or trav
 future entity/relation search projection must remain derived and rebuildable and pass the evidence
 gate in the [benchmark protocol](benchmarking.md#mandatory-controls).
 
+The public vocabulary follows these shared execution paths:
+
+- `search(..., explain=True)` enables diagnostics on the ordinary retrieval path; every call
+  returns `SearchResult(hits, trace)`, with `trace=None` by default.
+- `perceive` loads and leases one record's assets once, overlaps configured speech and face
+  recognition, then applies corroborated identity links. The result preserves separate typed
+  observations; `register_identity` names either kind of identity through the same policy path.
+- `consolidate` handles one evidence pass; `consolidate_pending` schedules due candidates. Both use the
+  same proposal validation and commit path and return `ConsolidationReport`.
+- `add`, `add_many`, and `add_stream` share ingestion and formation. Completed stream-item
+  dispatch is also shared by async imports and live capture. Buffered and streamed answers share
+  the complete retrieval, grounding, validation, and reinforcement path.
+
+Generic resource ownership lives in `_resources.py`, outside the kernel. Model clients import no
+kernel implementation. OpenAI structured-response parsing lives beside the adapter in
+`models/_answer_output.py`. Pure scalar validators and media URL encoding are shared below the model adapters, so one adapter
+has no dependency on another adapter's configuration validation or local-media serialization.
+Sentence Transformers owns its embedding and cross-encoder clients together; reranking input
+and score validation remains a pure module shared by every provider and the retrieval plane.
+
+Validation and failure handling follow the same boundaries: assembly owns configuration and the
+capability snapshot; typed inputs own scope constraints; adapters own provider error classification
+and transport retry budgets; the embedding plane owns vector normalization; storage owns durable
+representation checks. Required caption conversion preserves its original failure across query
+and answer stages. Optional enhancement may be skipped when native or derived content already
+supplies a usable representation. Programming errors are not relabelled as storage I/O failures.
+
 ## Public and trust boundaries
 
-Supported SDK values are imported from `mindbridge`. The `Memory` SDK exposes 36 product operations.
+Supported SDK values are imported from `mindbridge`. The `Memory` SDK exposes 33 product operations.
 REST exposes thirteen `/v1` routes: add, batch add, list, search, reinforce, get,
-delete, answer, streamed answer, compile context, capture, settle, and pending captures. Ten more -- speech, face,
+delete, answer, streamed answer, compile context, capture, settle, and pending captures. Nine more -- perception,
 register identity, get identity, unlink identity, forget identity, record consent, read consent,
 export a subject, and apply retention -- exist only when the host
 enables the matching `identity_operations` or `embodied_operations` switch on `create_app`,
-mirroring the same-named MCP switch. MCP exposes fifteen tools: the eight corresponding non-batch
-operations plus speech, face, and identity operations, or fewer when the host withholds a group
+mirroring the same-named MCP switch. MCP exposes thirteen tools: the eight corresponding non-batch
+operations plus perception and identity operations, or fewer when the host withholds a group
 with `identity_operations=False`, `embodied_operations=False`, or `write_operations=False`,
 because naming a person, binding a face to a voice, and changing durable state are host
 authority and the host decides whether each is on the wire at all. All three withheld leaves the
-five read tools. The local CLI exposes the same 36 product operations
-plus `doctor`; `--url` is limited to a fixed subset of operations regardless of what REST exposes,
+five read tools. The local CLI exposes 31 product operation commands
+plus `doctor`; streamed answers retain their SDK and REST entry points. `--url` is limited to a fixed subset of operations regardless of what REST exposes,
 listed in [the CLI reference](api/cli.md#operations-without-a-remote-route).
 
 Compiling context is a read-only view. The memory control plane — `consolidation_candidates()`,
-`consolidate()`, `deliberate()`, `apply()`, `record_outcome()`, `forget()`, `rollback()`, and
+`consolidate()`, `consolidate_pending()`, `apply()`, `record_outcome()`, `forget()`, `rollback()`, and
 `operations()` — and physical deletion stay in the owner process, which is also the process that
 can audit and reverse an operation through its log. `export()` is the one read that crosses that
 line, because a data subject's right of access covers the log rows that moved their records; it

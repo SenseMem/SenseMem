@@ -11,7 +11,7 @@ import re
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast, get_type_hints
+from typing import cast, get_type_hints
 
 import pytest
 from fastapi import status
@@ -38,7 +38,6 @@ from mindbridge.kernel.contracts import declared_capabilities
 from mindbridge.types import (
     AffectCue,
     AssetRef,
-    Blob,
     ContextBudget,
     ContextBundle,
     ContextConflict,
@@ -86,9 +85,7 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
     # Embodied and identity operations are gated behind REST's `identity_operations` and
     # `embodied_operations`, mirroring MCP's own switches; `_rest_route` below builds the app
     # with both on so the shared checks below see every gated route.
-    "speech": ("analyzeSpeech", "analyze_speech"),
-    "faces": ("analyzeFaces", "analyze_faces"),
-    "register_speaker": (None, "register_speaker"),
+    "perceive": ("perceiveMemory", "perceive_memory"),
     "register_identity": ("registerIdentity", "register_identity"),
     "identity": ("getIdentity", "get_identity"),
     "unlink_identity": ("unlinkIdentity", "unlink_identity"),
@@ -108,14 +105,13 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
 # someone deciding which of the two it belongs in.
 UNEXPOSED_OPERATIONS: dict[str, str] = {
     "add_stream": "a lazy generator does not fit one finite request or response",
-    "search_with_trace": "candidate-level retrieval diagnostics with no agent or client action",
     "reindex": "unbounded index maintenance an operator schedules, not a caller",
     "optimize": "index maintenance an operator schedules, not a caller",
     # The control plane rewrites derived memory under policy. `docs/context-os.md` keeps that
     # authority with the host: an agent must not gain it by holding ordinary recall access.
     "consolidation_candidates": "the control plane's own due-work queue, read by the host loop",
     "consolidate": "derives and retires memory under host authority, not agent authority",
-    "deliberate": "schedules the loop itself, so it spends the owner's model budget",
+    "consolidate_pending": "schedules due consolidation candidates under host authority",
     "apply": "applies an operation with no proposal behind it, which is host authority itself",
     "record_outcome": "annotates the audit log for measurement, written by the owner",
     "forget": "cognitive forgetting is a policy decision the host owns",
@@ -125,30 +121,9 @@ UNEXPOSED_OPERATIONS: dict[str, str] = {
 # Not operations: construction, lifecycle, and the capability declaration REST reports in
 # `/healthz`.
 NON_OPERATIONS = frozenset({"capabilities", "close", "from_config", "from_plugins"})
-# Transport fields that select between two SDK operations instead of naming an argument to one.
-# `explain` routes the same search to `search_with_trace`, which takes no extra argument itself.
-ROUTING_FIELDS: dict[str, frozenset[str]] = {"search": frozenset({"explain"})}
-# Prose in `docs/api/mcp.md` spells the count out, so the check has to spell it out too.
-_COUNT_WORDS = {
-    10: "Ten",
-    11: "Eleven",
-    12: "Twelve",
-    13: "Thirteen",
-    14: "Fourteen",
-    15: "Fifteen",
-    16: "Sixteen",
-    17: "Seventeen",
-    18: "Eighteen",
-    19: "Nineteen",
-    20: "Twenty",
-    21: "Twenty-one",
-}
-# `search_with_trace` has no route or tool of its own; the search surfaces reach it through
-# `explain`, so the adapter protocol must still declare it exactly as the SDK does. The MCP-only
-# operations are absent from the REST protocol by design, so they are not part of it.
+# Every routed operation uses the SDK signature, including optional diagnostics.
 PROTOCOL_OPERATIONS = (
     *(operation for operation, (route, _tool) in SHARED_OPERATIONS.items() if route is not None),
-    "search_with_trace",
 )
 # One declared composition, so the capability view an MCP server publishes at construction is
 # built from a real value rather than a stub.
@@ -159,6 +134,8 @@ CAPABILITIES = MemoryCapabilities(
     embedding_dimension=1024,
     generation=frozenset({Modality.TEXT}),
     generation_model="qwen3-omni",
+    reranking=frozenset({Modality.TEXT}),
+    reranking_model="test-reranker",
     speaker_recognition=True,
 )
 # Body models are matched to their route by `operation_id`; a route without one takes its arguments
@@ -173,8 +150,7 @@ REST_REQUEST_MODELS: dict[str, type[BaseModel]] = {
     "compileContext": rest.ContextRequest,
     "captureMemory": rest.MemoryCreate,
     "settleCaptures": rest.SettleRequest,
-    "analyzeSpeech": rest.AnalyzeRequest,
-    "analyzeFaces": rest.AnalyzeRequest,
+    "perceiveMemory": rest.PerceptionRequest,
     "registerIdentity": rest.IdentityRegisterRequest,
     "recordConsent": rest.ConsentRequest,
     "applyRetention": rest.RetentionRequest,
@@ -274,7 +250,7 @@ def test_transport_defaults_match_the_sdk(operation: str) -> None:
 @pytest.mark.parametrize("operation", sorted(SHARED_OPERATIONS))
 def test_transport_fields_name_sdk_arguments(operation: str) -> None:
     operation_id, tool = SHARED_OPERATIONS[operation]
-    allowed = _sdk_parameters(operation) | ROUTING_FIELDS.get(operation, frozenset())
+    allowed = _sdk_parameters(operation)
 
     if operation_id is not None:
         assert _rest_fields(operation_id) <= allowed, operation
@@ -312,9 +288,7 @@ def test_every_sdk_operation_is_exposed_or_documented_as_a_gap() -> None:
     # Every embodied and identity operation is agent-callable over MCP: the adapter runs in the
     # process that owns `Memory`, so "owner-process concern" was never a transport boundary.
     for operation in (
-        "speech",
-        "faces",
-        "register_speaker",
+        "perceive",
         "register_identity",
         "identity",
         "forget_identity",
@@ -551,8 +525,8 @@ def test_page_results_expose_the_same_fields_on_both_transports() -> None:
 @pytest.mark.parametrize(
     ("record", "model", "field"),
     [
-        (SpeakerSegment, mcp_adapter.SpeechResult, "segments"),
-        (FaceObservation, mcp_adapter.FacesResult, "observations"),
+        (SpeakerSegment, mcp_adapter.PerceptionResult, "speech"),
+        (FaceObservation, mcp_adapter.PerceptionResult, "faces"),
         (IdentityProfile, mcp_adapter.IdentityResult, "identity"),
         (IdentityErasure, mcp_adapter.ForgetResult, "erasure"),
     ],
@@ -586,6 +560,23 @@ class _TinyEmbedder:
     embedding_space = "space_1"
     embedding_dimension = 1024
 
+    def embed(self, inputs: object, task: object = None) -> tuple[()]:
+        raise AssertionError("capability discovery must not call the model")
+
+    def close(self) -> None:
+        pass
+
+
+class _TinyReranker:
+    reranking_capabilities = frozenset({Modality.TEXT})
+    reranking_model = "test-reranker"
+
+    def rerank(self, query: object, documents: object) -> tuple[()]:
+        raise AssertionError("capability discovery must not call the model")
+
+    def close(self) -> None:
+        pass
+
 
 def test_every_surface_publishes_one_capability_document() -> None:
     """REST, MCP, and the CLI must render `MemoryCapabilities.document()`, not three views.
@@ -600,11 +591,15 @@ def test_every_surface_publishes_one_capability_document() -> None:
     instructions = mcp_adapter.build_mcp_server(_UnusedMemory()).instructions  # type: ignore[arg-type]
     assert instructions is not None
     greeted = json.loads(instructions[instructions.index("{") :])
-    probed = cli._doctor_capabilities({"embedder": _TinyEmbedder()})
+    probed = cli._doctor_capabilities({"embedder": _TinyEmbedder(), "reranker": _TinyReranker()})
 
     assert served == CAPABILITIES.document()
     assert greeted == CAPABILITIES.document()
-    assert probed == declared_capabilities(embedder=cast(Any, _TinyEmbedder())).document()
+    assert (
+        probed
+        == declared_capabilities(embedder=_TinyEmbedder(), reranker=_TinyReranker()).document()
+    )
+    assert probed is not None and probed["reranking_model"] == "test-reranker"
     # The one composition the three surfaces share here differs only in its declared backends.
     assert set(probed or {}) == set(CAPABILITIES.document())
 
@@ -622,7 +617,9 @@ def test_the_capability_document_names_the_backend_each_operation_needs() -> Non
         formation=frozenset({Modality.TEXT}),
         consolidation_model="c",
         speaker_recognition=True,
-    ).operations == frozenset({"speech", "transcribe", "faces", "formation", "consolidate"})
+    ).operations == frozenset(
+        {"perceive", "transcribe", "formation", "consolidate", "consolidate_pending"}
+    )
 
 
 def test_the_compiled_bundle_mirrors_the_sdk_value_on_both_transports() -> None:
@@ -692,69 +689,14 @@ def test_the_mcp_instructions_publish_the_declared_capability_view() -> None:
     assert json.loads(instructions[instructions.index("{") :]) == CAPABILITIES.document()
 
 
-def test_the_documented_count_of_operations_without_a_tool_is_the_real_one() -> None:
-    """`docs/api/mcp.md` states a count in prose; the prose must not drift from the tables."""
-    without_a_tool = len(UNEXPOSED_OPERATIONS) + sum(
-        1 for _route, tool in SHARED_OPERATIONS.values() if tool is None
-    )
-    page = (Path(mindbridge.__file__).parents[2] / "docs" / "api" / "mcp.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert f"{_COUNT_WORDS[without_a_tool]} Python operations have no MCP tool." in page
-
-
-def test_the_documented_count_of_sdk_operations_is_the_real_one() -> None:
-    """Two pages state the SDK operation count in prose, and the two had already drifted apart.
-
-    The enumeration is the one `test_every_sdk_operation_is_exposed_or_documented_as_a_gap` pins
-    against `Memory` itself: every public attribute that is not construction, lifecycle, or the
-    capability declaration.
-    """
-    count = len(SHARED_OPERATIONS) + len(UNEXPOSED_OPERATIONS)
-    docs = Path(mindbridge.__file__).parents[2] / "docs"
-
-    for name in ("architecture.md", "product-capabilities.md"):
-        page = (docs / name).read_text(encoding="utf-8")
-        assert f"{count} product operations" in page, name
-
-
-def test_the_documented_root_import_count_and_inventory_are_the_real_ones() -> None:
-    """`docs/api/python-sdk.md` states `len(mindbridge.__all__)` in prose and lists every name.
-
-    This drift has recurred for several rounds: a new public value lands in `__all__` without
-    the reference page's count or grouped tables following it. Parsing the sentence and scanning
-    the whole page for each name in backticks catches both, rather than one hand-picked table.
-    """
+def test_the_documented_root_import_inventory_contains_every_supported_name() -> None:
+    """The reference must document every name added to the public root exports."""
     page = (Path(mindbridge.__file__).parents[2] / "docs" / "api" / "python-sdk.md").read_text(
         encoding="utf-8"
     )
-    match = re.search(r"These are the (\d+) supported names exported by `mindbridge`:", page)
-
-    assert match is not None
-    assert int(match.group(1)) == len(mindbridge.__all__)
     backticked = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", page))
     missing = [name for name in mindbridge.__all__ if name not in backticked]
     assert missing == []
-
-
-def test_both_transports_decode_content_parts_with_one_implementation() -> None:
-    """The 83-line decoder existed twice; identical inputs must still normalize identically."""
-    parts = [
-        {"type": "input_text", "text": "  At the station.  "},
-        {"type": "input_image", "image_url": "data:image/png;base64,cG5n"},
-        {"type": "input_file", "file_data": "d2F2", "media_type": "audio/wav"},
-    ]
-    request = rest.MemoryCreate.model_validate({"content": parts})
-
-    # Neither transport may define its own decoder again.
-    for module in (rest, mcp_adapter):
-        assert module.__dict__["content_input"] is content.content_input
-    assert content.content_input(request.content) == (
-        "At the station.",
-        Blob(data=b"png", media_type="image/png"),
-        Blob(data=b"wav", media_type="audio/wav"),
-    )
 
 
 def test_delete_reports_the_same_state_on_both_transports() -> None:

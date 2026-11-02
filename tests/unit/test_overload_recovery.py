@@ -41,7 +41,7 @@ def test_model_budget_keeps_lightweight_reads_available_across_directories(tmp_p
                 second.search("overloaded query")
             assert failure.value.reason == "capacity_exceeded"
             assert first.list().items == second.list().items == ()
-        assert second.search("recovered") == ()
+        assert second.search("recovered").hits == ()
 
 
 def test_instance_budget_releases_failed_and_closed_owners(

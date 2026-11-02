@@ -10,7 +10,7 @@ from random import Random
 
 import pytest
 
-from mindbridge import Memory, RetrievalScope
+from mindbridge import Memory, MemoryConfig, RetrievalScope
 from mindbridge.exceptions import StorageError
 from mindbridge.infrastructure.local.scoring import max_cosine_scores
 from mindbridge.infrastructure.local.store import IndexDocument, StoredEmbedding
@@ -151,7 +151,11 @@ def test_completion_uses_every_parent_part_without_an_additional_model_call(
     tmp_path: Path,
 ) -> None:
     embedder = _DirectionalEmbedder()
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0, ambiguity_margin=0) as memory:
+    with Memory(
+        tmp_path,
+        embedder=embedder,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+    ) as memory:
         record = memory.add(("rare aggregate preface", "aligned part"))
         documents = memory._store.index.read_memory_index_documents((record.id,))
         assert len(documents) >= 2
@@ -167,7 +171,8 @@ def test_completion_uses_every_parent_part_without_an_additional_model_call(
         )
         calls_before = len(embedder.calls)
 
-        result = memory.search_with_trace("rare")
+        result = memory.search("rare", explain=True)
+        assert result.trace is not None
 
     assert [hit.id for hit in result.hits] == [record.id]
     candidate = next(item for item in result.trace.candidates if item.memory_id == record.id)
@@ -184,7 +189,11 @@ def test_a_valid_zero_dense_hit_is_not_treated_as_a_missing_score(
     tmp_path: Path,
 ) -> None:
     embedder = _DirectionalEmbedder(all_documents_align=True)
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0, ambiguity_margin=0) as memory:
+    with Memory(
+        tmp_path,
+        embedder=embedder,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+    ) as memory:
         measured = memory.add("rare measured")
         missing = memory.add("rare missing")
         monkeypatch.setattr(
@@ -214,7 +223,8 @@ def test_a_valid_zero_dense_hit_is_not_treated_as_a_missing_score(
 
         monkeypatch.setattr(memory._store.index, "iter_memory_embedding_vectors", read_vectors)
 
-        result = memory.search_with_trace("rare")
+        result = memory.search("rare", explain=True)
+        assert result.trace is not None
 
     by_id = {
         candidate.memory_id: candidate
@@ -234,7 +244,11 @@ def test_completion_reads_only_records_that_survive_type_time_and_known_at_scope
 ) -> None:
     embedder = _DirectionalEmbedder(all_documents_align=True)
     event = datetime(2026, 1, 2, tzinfo=timezone.utc)
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0, ambiguity_margin=0) as memory:
+    with Memory(
+        tmp_path,
+        embedder=embedder,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+    ) as memory:
         included = memory.add("rare included", occurred_at=event)
         wrong_type = memory.add(
             "rare episodic",
@@ -268,7 +282,7 @@ def test_completion_reads_only_records_that_survive_type_time_and_known_at_scope
             memory_type=MemoryType.SEMANTIC,
             occurred_from=event - timedelta(hours=1),
             occurred_until=event + timedelta(hours=1),
-        )
+        ).hits
         assert [hit.id for hit in hits] == [included.id]
         assert requested == [(included.id,)]
 
@@ -277,7 +291,7 @@ def test_completion_reads_only_records_that_survive_type_time_and_known_at_scope
             memory.search(
                 "rare",
                 scope=RetrievalScope(known_at=datetime(2000, 1, 1, tzinfo=timezone.utc)),
-            )
+            ).hits
             == ()
         )
         assert requested == []
@@ -288,7 +302,11 @@ def test_corrupt_persisted_vector_uses_the_storage_error_path(
     tmp_path: Path,
 ) -> None:
     embedder = _DirectionalEmbedder(all_documents_align=True)
-    with Memory(tmp_path, embedder=embedder, minimum_relevance=0, ambiguity_margin=0) as memory:
+    with Memory(
+        tmp_path,
+        embedder=embedder,
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+    ) as memory:
         record = memory.add("rare corrupt")
         monkeypatch.setattr(memory._index, "search", lambda *_args, **_kwargs: ())
         monkeypatch.setattr(
@@ -339,9 +357,9 @@ def test_dense_mode_keeps_the_index_score_and_skips_completion(
     with Memory(
         tmp_path,
         embedder=embedder,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
+        ),
     ) as memory:
         record = memory.add("rare dense")
         monkeypatch.setattr(
@@ -355,7 +373,8 @@ def test_dense_mode_keeps_the_index_score_and_skips_completion(
             lambda *_args, **_kwargs: pytest.fail("dense mode must not complete scores"),
         )
 
-        result = memory.search_with_trace("rare")
+        result = memory.search("rare", explain=True)
+        assert result.trace is not None
 
     candidate = next(item for item in result.trace.candidates if item.memory_id == record.id)
     assert candidate.dense_relevance == pytest.approx(0.25)

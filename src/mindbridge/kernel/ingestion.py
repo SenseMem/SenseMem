@@ -7,16 +7,18 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
 from itertools import islice
 from pathlib import Path
+from threading import Condition
 from time import perf_counter
 from typing import TypeVar
 
 from opentelemetry.trace import Tracer
 
 from mindbridge._telemetry import CAPTURE_FAILED, CAPTURE_SETTLED, CAPTURE_TIME_TO_SEARCHABLE
-from mindbridge.exceptions import MindBridgeError, StorageError, ValidationError
-from mindbridge.infrastructure.local.store import StoredEmbedding, StoredMemory
+from mindbridge.exceptions import MindBridgeError, ModelError, StorageError, ValidationError
+from mindbridge.infrastructure.local.store import StaleOperationError, StoredEmbedding, StoredMemory
 from mindbridge.kernel.content import (
     PreparedContent,
     PreparedMemory,
@@ -27,16 +29,14 @@ from mindbridge.kernel.content import (
 )
 from mindbridge.kernel.contracts import Backends, fallback_unsupported
 from mindbridge.kernel.derived import (
-    NAME_BINDING,
     description_sections,
     has_stream_description,
     prepared_from_stored,
-    speaker_labels,
-    split_description,
     with_stream_description,
     with_stream_transcript,
 )
 from mindbridge.kernel.embedding import DOCUMENT_TASK, Embedding
+from mindbridge.kernel.execution import Execution
 from mindbridge.kernel.formation import Formation
 from mindbridge.kernel.hydration import Hydrator
 from mindbridge.kernel.identity import Identities
@@ -55,6 +55,7 @@ from mindbridge.kernel.validation import (
     validated_memory_type,
 )
 from mindbridge.kernel.vision import Vision
+from mindbridge.perception import VisualDescription
 from mindbridge.types import (
     AssetRef,
     Blob,
@@ -118,9 +119,12 @@ class Ingestion(Traced):
         vision: Vision,
         formation: Formation,
         identities: Identities,
+        execution: Execution,
     ) -> None:
         super().__init__(tracer)
-        self._settle_lock = storage.settle_lock
+        self._settlement_claims = Condition()
+        self._settling: set[str] = set()
+        self._execution = execution
         self._store = storage.store
         self._write_lock = storage.write_lock
         self._backends = backends
@@ -191,44 +195,6 @@ class Ingestion(Traced):
             self._formation.form_sources((record,), operation=assets)
             self._complete_formation((record,))
             return record
-
-    def add_stream_input(self, item: StreamInput) -> MemoryRecord:
-        return self._add_one(
-            item.content,
-            occurred_at=item.occurred_at,
-            occurred_end=item.occurred_end,
-            metadata=item.metadata,
-            memory_type=item.memory_type,
-            context=item.context,
-            transcript=item.transcript,
-            description=item.description,
-        )
-
-    def _stream_record(
-        self,
-        content: ContentInput | StreamInput,
-        *,
-        capture: bool,
-    ) -> MemoryRecord:
-        if isinstance(content, StreamInput):
-            if capture:
-                return self.capture_stream_input(content)
-            return self.add_stream_input(content)
-        if capture:
-            return self.capture(content)
-        return self.add(content)
-
-    def capture_stream_input(self, item: StreamInput) -> MemoryRecord:
-        return self._capture_one(
-            item.content,
-            occurred_at=item.occurred_at,
-            occurred_end=item.occurred_end,
-            metadata=item.metadata,
-            memory_type=item.memory_type,
-            context=item.context,
-            transcript=item.transcript,
-            description=item.description,
-        )
 
     def add_many(
         self,
@@ -354,17 +320,14 @@ class Ingestion(Traced):
                 memory_type=memory_type,
                 context=context,
             )
-            # Reject here what `add()` would reject, before the commit. Committing media no
-            # configured model can ever take would make the record durable and then fail every
-            # `settle()` forever, which is a queue entry no retry ceiling should have to absorb.
-            # Unconditional: `add()` rejects twice, once early and once inside
-            # `_embedding_content`, so guarding this on one capability would miss the second.
-            # With an embedder that takes everything it is a no-op.
+            # Reject unsupported media before committing a capture; otherwise `settle()` cannot
+            # process it with the configured native or derived capabilities.
             fallback_unsupported(
                 prepared.content,
                 self._backends.embedding_capabilities,
                 "embedding",
-                rescuable=self._vision.deferred_rescue(prepared.content.assets),
+                rescuable=self._backends.vision_capabilities
+                | self._speech.transcript_fallback(prepared.content.assets),
             )
             now = datetime.now(timezone.utc)
             # No index lock: a capture enqueues no vectors, so it has no outbox work to drain and
@@ -425,24 +388,23 @@ class Ingestion(Traced):
             ):
                 raise ValidationError("max_attempts must be a positive integer")
             memory_ids = memory_id_filter(memory_ids)
-            with self._settle_lock:
-                with translate_storage_errors("read the capture queue"):
-                    # Same filter `pending_captures()` publishes, so naming records reuses the
-                    # queue read rather than adding a second way to select them.
-                    queued = self._store.captures.pending_captures(
-                        limit=limit,
-                        memory_ids=memory_ids,
-                        max_attempts=None if memory_ids is not None else max_attempts,
-                    )
-                span.set_attribute(CAPTURE_SETTLED, 0)
-                span.set_attribute(CAPTURE_FAILED, 0)
-                if not queued:
-                    return 0
-                with translate_storage_errors("hydrate captured memories"):
-                    rows = self._store.records.read_memories(tuple(row.memory_id for row in queued))
-                settled, failures = self._settle_stored(rows, operation=assets)
-                span.set_attribute(CAPTURE_SETTLED, len(settled))
-                span.set_attribute(CAPTURE_FAILED, len(failures))
+            with translate_storage_errors("read the capture queue"):
+                # Same filter `pending_captures()` publishes, so naming records reuses the
+                # queue read rather than adding a second way to select them.
+                queued = self._store.captures.pending_captures(
+                    limit=limit,
+                    memory_ids=memory_ids,
+                    max_attempts=None if memory_ids is not None else max_attempts,
+                )
+            span.set_attribute(CAPTURE_SETTLED, 0)
+            span.set_attribute(CAPTURE_FAILED, 0)
+            if not queued:
+                return 0
+            with translate_storage_errors("hydrate captured memories"):
+                rows = self._store.records.read_memories(tuple(row.memory_id for row in queued))
+            settled, failures = self._settle_stored(rows, operation=assets)
+            span.set_attribute(CAPTURE_SETTLED, len(settled))
+            span.set_attribute(CAPTURE_FAILED, len(failures))
             enqueued_at = {row.memory_id: row.enqueued_at for row in queued}
             now = datetime.now(timezone.utc)
             waits = tuple(
@@ -506,7 +468,7 @@ class Ingestion(Traced):
                     error.subject = f"contents[{index}]"
                 raise
             with self._projection.deferred(defer=not capture):
-                record = self._add_stream_item(content, index=index, capture=capture)
+                record = self.add_stream_item(content, index=index, capture=capture)
             if not capture:
                 grouped, group_started = self._advance_stream_group(grouped + 1, group_started)
             yield record
@@ -514,17 +476,36 @@ class Ingestion(Traced):
         if grouped:
             self._flush_stream_group()
 
-    def _add_stream_item(
+    def add_stream_item(
         self,
         content: ContentInput | StreamInput,
         *,
-        index: int,
+        index: int | None,
         capture: bool,
     ) -> MemoryRecord:
         try:
-            return self._stream_record(content, capture=capture)
+            write = self._capture_one if capture else self._add_one
+            if isinstance(content, StreamInput):
+                return write(
+                    content.content,
+                    occurred_at=content.occurred_at,
+                    occurred_end=content.occurred_end,
+                    metadata=content.metadata,
+                    memory_type=content.memory_type,
+                    context=content.context,
+                    transcript=content.transcript,
+                    description=content.description,
+                )
+            return write(
+                content,
+                occurred_at=None,
+                occurred_end=None,
+                metadata=None,
+                memory_type=MemoryType.SEMANTIC,
+                context=None,
+            )
         except MindBridgeError as error:
-            if error.subject is None:
+            if error.subject is None and index is not None:
                 error.subject = f"contents[{index}]"
             raise
 
@@ -541,6 +522,25 @@ class Ingestion(Traced):
             self._projection.drain(force=True)
 
     def _add_prepared(
+        self, prepared: Sequence[PreparedMemory], *, operation: OperationAssets
+    ) -> tuple[MemoryRecord, ...]:
+        for attempt in range(4):
+            try:
+                return self._add_prepared_once(prepared, operation=operation)
+            except StaleOperationError:
+                for plan in operation.speech_plans:
+                    operation.speech_segments.pop(plan.asset.asset_id, None)
+                operation.speech_plans.clear()
+                operation.speaker_names.clear()
+                if attempt == 3:
+                    raise StorageError(
+                        "identity state is busy; retry the write",
+                        reason="capacity_exceeded",
+                        stage="admission",
+                    ) from None
+        raise AssertionError("unreachable")
+
+    def _add_prepared_once(
         self,
         prepared: Sequence[PreparedMemory],
         *,
@@ -561,150 +561,144 @@ class Ingestion(Traced):
         )
         existing_ids = set(candidates_by_id) & set(ordered_ids)
         missing = [unique[memory_id] for memory_id in ordered_ids if memory_id not in existing_ids]
-        # Settled before this write takes its own speech-index guard: the two batches are
-        # independent, and nesting the guards would share one rollback list between them.
+        # Settle before preparing this write: the two batches are
+        # independent and must not share pending speech identity plans.
         self._settle_queued(existing_rows, operation=operation)
         speech_indexed = self._settings.index_speech and any(
             self._speech.answer_speech_assets(memory.content.assets) for memory in missing
         )
-        with self._speech_index_guard(operation, enabled=speech_indexed):
-            stored_memories: tuple[StoredMemory, ...] = ()
-            stored_embeddings: tuple[StoredEmbedding, ...] = ()
-            if missing:
-                if speech_indexed:
-                    self._speech.recognize(
-                        self._speech.answer_speech_assets(
-                            tuple(asset for memory in missing for asset in memory.content.assets)
-                        ),
-                        operation,
-                        reversible=True,
-                    )
-                batched = tuple(asset for memory in missing for asset in memory.content.assets)
-                # Derived visual text can rescue media this embedder cannot take, so it has to
-                # exist before the fallback guard below decides the write is impossible.
-                described = self._vision.pending_descriptions(
-                    tuple(memory.content for memory in missing),
+        stored_memories: tuple[StoredMemory, ...] = ()
+        stored_embeddings: tuple[StoredEmbedding, ...] = ()
+        if missing:
+            if speech_indexed:
+                self._speech.prepare_index(
+                    self._speech.answer_speech_assets(
+                        tuple(asset for memory in missing for asset in memory.content.assets)
+                    ),
                     operation,
                 )
-                self._stage_speaker_names(described, operation)
-                missing = [
-                    replace(
-                        memory,
-                        content=self._with_visual_descriptions(
-                            memory.content, described, operation
-                        ),
-                    )
-                    for memory in missing
-                ]
-                fallback = Modality.AUDIO not in self._backends.embedding_capabilities
-                if fallback:
-                    for memory in missing:
-                        fallback_unsupported(
-                            memory.content,
-                            self._backends.embedding_capabilities,
-                            "embedding",
-                            rescuable=self._speech.transcript_fallback(memory.content.assets),
-                        )
-                if fallback:
-                    self._speech.cache_audio_transcripts(
-                        tuple(
-                            asset
-                            for memory in missing
-                            if not memory.content.audio_transcript
-                            for asset in memory.content.assets
-                        ),
-                        operation,
-                    )
-                elif self._speech.derives_transcripts(batched):
-                    self._speech.cache_audio_transcripts(batched, operation)
-                missing = [self._embedding.prepare(memory, operation) for memory in missing]
-                selector_maps = {
-                    memory.memory_id: text_selector_map(
+            batched = tuple(asset for memory in missing for asset in memory.content.assets)
+            if Modality.AUDIO not in self._backends.embedding_capabilities:
+                self._speech.cache_audio_transcripts(
+                    tuple(
+                        asset
+                        for memory in missing
+                        if not memory.content.audio_transcript
+                        for asset in memory.content.assets
+                    ),
+                    operation,
+                )
+            elif self._speech.derives_transcripts(batched):
+                self._speech.cache_audio_transcripts(batched, operation)
+            # Derived visual text can rescue media this embedder cannot take, so it has to
+            # exist before the fallback guard below decides the write is impossible.
+            described = self._vision.pending_descriptions(
+                tuple(memory.content for memory in missing),
+                operation,
+            )
+            self._identities.stage_speaker_names(described, operation)
+            missing = [
+                replace(
+                    memory,
+                    content=self._with_visual_descriptions(memory.content, described, operation),
+                )
+                for memory in missing
+            ]
+            fallback = Modality.AUDIO not in self._backends.embedding_capabilities
+            if fallback:
+                for memory in missing:
+                    fallback_unsupported(
                         memory.content,
-                        raw_observation=not isinstance(memory.context, MemoryContext),
+                        self._backends.embedding_capabilities,
+                        "embedding",
+                        rescuable=self._speech.transcript_fallback(memory.content.assets),
                     )
-                    for memory in missing
-                }
-                embedding_parts = tuple(
-                    (memory, object_part, model_input)
-                    for memory in missing
-                    for object_part, model_input in enumerate(
-                        self._embedding.inputs(memory.content)
-                    )
+            missing = [self._embedding.prepare(memory, operation) for memory in missing]
+            selector_maps = {
+                memory.memory_id: text_selector_map(
+                    memory.content,
+                    raw_observation=not isinstance(memory.context, MemoryContext),
                 )
-                vectors, embedding_parts = self._embedding.embed_document_parts(embedding_parts)
-                now = datetime.now(timezone.utc)
-                stored_memories = tuple(
-                    StoredMemory(
-                        memory_id=memory.memory_id,
-                        content=memory.content.text,
-                        modality=memory.content.modality.value,
-                        memory_type=memory.memory_type.value,
-                        assets=memory.content.assets,
-                        metadata_json=memory.metadata_json,
-                        occurred_at=memory.occurred_at,
-                        occurred_end=memory.occurred_end,
-                        created_at=now,
-                        updated_at=now,
-                        place_id=memory.place_id,
-                        context=stored_memory_context(memory, recorded_at=now),
-                    )
-                    for memory in missing
+                for memory in missing
+            }
+            embedding_parts = tuple(
+                (memory, object_part, model_input)
+                for memory in missing
+                for object_part, model_input in enumerate(self._embedding.inputs(memory.content))
+            )
+            vectors, embedding_parts = self._embedding.embed_document_parts(embedding_parts)
+            now = datetime.now(timezone.utc)
+            stored_memories = tuple(
+                StoredMemory(
+                    memory_id=memory.memory_id,
+                    content=memory.content.text,
+                    modality=memory.content.modality.value,
+                    memory_type=memory.memory_type.value,
+                    assets=memory.content.assets,
+                    metadata_json=memory.metadata_json,
+                    occurred_at=memory.occurred_at,
+                    occurred_end=memory.occurred_end,
+                    created_at=now,
+                    updated_at=now,
+                    place_id=memory.place_id,
+                    context=stored_memory_context(memory, recorded_at=now),
                 )
-                stored_embeddings = tuple(
-                    StoredEmbedding(
-                        embedding_id=embedding_row_id(memory.memory_id, object_part),
-                        memory_id=memory.memory_id,
-                        values=vector,
-                        model_id=self._backends.embedding_model,
-                        space_id=self._backends.space_id,
-                        task=DOCUMENT_TASK,
-                        created_at=now,
-                        object_part=object_part,
-                        normalized=True,
-                        text_selectors=selector_maps[memory.memory_id].get(model_input, ()),
-                    )
-                    for (memory, object_part, model_input), vector in zip(
-                        embedding_parts, vectors, strict=True
-                    )
+                for memory in missing
+            )
+            stored_embeddings = tuple(
+                StoredEmbedding(
+                    embedding_id=embedding_row_id(memory.memory_id, object_part),
+                    memory_id=memory.memory_id,
+                    values=vector,
+                    model_id=self._backends.embedding_model,
+                    space_id=self._backends.space_id,
+                    task=DOCUMENT_TASK,
+                    created_at=now,
+                    object_part=object_part,
+                    normalized=True,
+                    text_selectors=selector_maps[memory.memory_id].get(model_input, ()),
                 )
-            if stored_memories:
-                # SQLite is authoritative and uses one WAL connection per transaction. Commit
-                # before taking the index lock so ordinary concurrent writers can share one drain.
-                with (
-                    self._trace("mindbridge.storage.write", kind="stage"),
-                    translate_storage_errors("write memories"),
-                ):
-                    # With a former configured, the same transaction enqueues the formation this
-                    # call still owes. `add()` deletes the row once it returns, so the row only
-                    # outlives the commit when the process did not: the next `settle()` then
-                    # finds an embedded record that owes formation and finishes it.
-                    self._store.records.write_memories(
-                        stored_memories,
-                        stored_embeddings,
-                        formation_pending_at=(
-                            stored_memories[0].created_at
-                            if self._backends.former is not None
-                            else None
-                        ),
-                    )
-            with self._write_lock:
-                self._projection.drain()
-                with (
-                    self._trace("mindbridge.storage.hydrate", kind="stage"),
-                    translate_storage_errors("hydrate written memories"),
-                ):
-                    authoritative = self._store.records.read_memories(ordered_ids)
-                operation.persisted.update(
-                    asset.asset_id for memory in authoritative for asset in memory.assets
+                for (memory, object_part, model_input), vector in zip(
+                    embedding_parts, vectors, strict=True
                 )
-                if operation.speech_updates:
-                    self._speech.persist_transcripts(operation)
-                self._vision.persist_descriptions(operation)
+            )
+        if stored_memories:
+            # SQLite is authoritative and uses one WAL connection per transaction. Commit
+            # before taking the index lock so ordinary concurrent writers can share one drain.
+            with (
+                self._trace("mindbridge.storage.write", kind="stage"),
+                translate_storage_errors("write memories"),
+            ):
+                # With a former configured, the same transaction enqueues the formation this
+                # call still owes. `add()` deletes the row once it returns, so the row only
+                # outlives the commit when the process did not: the next `settle()` then
+                # finds an embedded record that owes formation and finishes it.
+                self._store.records.write_memories(
+                    stored_memories,
+                    stored_embeddings,
+                    speech_plans=operation.speech_plans,
+                    formation_pending_at=(
+                        stored_memories[0].created_at if self._backends.former is not None else None
+                    ),
+                )
+        self._speech.complete_index(operation)
+        with self._write_lock:
+            self._projection.drain()
+            with (
+                self._trace("mindbridge.storage.hydrate", kind="stage"),
+                translate_storage_errors("hydrate written memories"),
+            ):
+                authoritative = self._store.records.read_memories(ordered_ids)
+            operation.persisted.update(
+                asset.asset_id for memory in authoritative for asset in memory.assets
+            )
+            if operation.speech_updates:
+                self._speech.persist_transcripts(operation)
+            self._vision.persist_descriptions(operation)
         rows_by_id = {memory.memory_id: memory for memory in authoritative}
         if rows_by_id.keys() != unique.keys():
             raise StorageError("written memories could not be read from SQLite", reason="io_failed")
-        # After the commit, and outside the speech-index guard: the naming assertion reindexes
+        # After the commit: the naming assertion reindexes
         # every memory that mentions the person, and this write's own memory has to be one of
         # them -- `speaker_memory_ids` joins through `memory_assets`, which exists only now.
         self._identities.bind_speaker_names(operation)
@@ -753,41 +747,130 @@ class Ingestion(Traced):
         if failures:
             raise failures[0]
 
+    @contextmanager
+    def _claim_settlement(self, ids: Sequence[str]) -> Iterator[None]:
+        claimed = set(ids)
+        with self._settlement_claims:
+            while claimed & self._settling:
+                self._settlement_claims.wait()
+            self._settling.update(claimed)
+        try:
+            yield
+        finally:
+            with self._settlement_claims:
+                self._settling.difference_update(claimed)
+                self._settlement_claims.notify_all()
+
     def _settle_stored(
-        self,
-        rows: Sequence[StoredMemory],
-        *,
-        operation: OperationAssets,
+        self, rows: Sequence[StoredMemory], *, operation: OperationAssets
     ) -> tuple[tuple[str, ...], tuple[MindBridgeError, ...]]:
-        """Run the stages `capture()` deferred over already-committed rows, and report both sides.
-
-        `settle()` and the `add()` path share this routine, so a captured record reaches exactly
-        the state a blocking `add()` would have left it in. Each row commits on its own and a
-        failing one is collected rather than raised, so it keeps its queue row, its attempt count,
-        and its reason while every other record in the batch still settles. Returns the IDs that
-        settled and the failures, and the caller decides which of them to raise.
-
-        Held under `_settle_lock`, which is the whole cross-thread guard: a `settle()` and an
-        `add()` of the same captured content would otherwise both find the row unembedded and
-        run every model stage over it. Serialized, the second caller reaches `_settle_row`'s
-        vector check after the first committed and owes formation only.
-        """
-        settled: list[str] = []
-        failures: list[MindBridgeError] = []
-        for row in rows:
+        if len(rows) > 1 and all(not row.assets for row in rows) and self._backends.former is None:
             try:
-                with self._settle_lock:
-                    completed = self._settle_row(row, operation=operation)
+                return self._settle_text_batch(rows)
+            except ModelError:
+                # Isolate a poisoned row without abandoning the other committed captures.
+                pass
+        outcomes = self._execution.perception(tuple(partial(self._settle_one, row) for row in rows))
+        return (
+            tuple(
+                row.memory_id
+                for row, outcome in zip(rows, outcomes, strict=True)
+                if outcome is True
+            ),
+            tuple(outcome for outcome in outcomes if isinstance(outcome, MindBridgeError)),
+        )
+
+    def _settle_one(self, row: StoredMemory) -> bool | MindBridgeError:
+        with self._claim_settlement((row.memory_id,)):
+            if not self._store.captures.pending_captures(limit=1, memory_ids=(row.memory_id,)):
+                return False
+            try:
+                with self._lifecycle.operation() as operation:
+                    with self._write_lock:
+                        # Another claimant may have committed enrichment before failing later.
+                        # Resume from authoritative content, not the pre-claim queue snapshot.
+                        current = self._store.records.read_memory(row.memory_id)
+                        if current is None:
+                            return False
+                        row = current
+                        self._lifecycle.lease_assets(row.assets, operation.leased)
+                    return self._settle_row(row, operation=operation)
             except MindBridgeError as error:
-                with translate_storage_errors("record a failed settlement"):
-                    self._store.captures.record_capture_failure(row.memory_id, str(error))
-                if error.subject is None:
-                    error.subject = row.memory_id
-                failures.append(error)
-                continue
-            if completed:
-                settled.append(row.memory_id)
-        return tuple(settled), tuple(failures)
+                return self._settlement_failure(row.memory_id, error)
+
+    def _settlement_failure(self, memory_id: str, error: MindBridgeError) -> MindBridgeError:
+        with translate_storage_errors("record a failed settlement"):
+            self._store.captures.record_capture_failure(memory_id, str(error))
+        if error.subject is None:
+            error.subject = memory_id
+        return error
+
+    def _settle_text_batch(
+        self, rows: Sequence[StoredMemory]
+    ) -> tuple[tuple[str, ...], tuple[MindBridgeError, ...]]:
+        ids = tuple(row.memory_id for row in rows)
+        with self._claim_settlement(ids):
+            queued = {
+                item.memory_id
+                for item in self._store.captures.pending_captures(
+                    limit=len(ids),
+                    memory_ids=ids,
+                )
+            }
+            rows = tuple(row for row in rows if row.memory_id in queued)
+            embedded = {
+                row.memory_id
+                for row in rows
+                if self._store.index.read_embedding(embedding_row_id(row.memory_id, 0)) is not None
+            }
+            prepared = tuple(
+                prepared_from_stored(row) for row in rows if row.memory_id not in embedded
+            )
+            parts = tuple(
+                (memory, part, value)
+                for memory in prepared
+                for part, value in enumerate(self._embedding.inputs(memory.content))
+            )
+            vectors, parts = self._embedding.embed_document_parts(parts) if parts else ((), ())
+            now = datetime.now(timezone.utc)
+            by_id: dict[str, list[StoredEmbedding]] = {}
+            for (memory, part, model_input), vector in zip(parts, vectors, strict=True):
+                selectors = text_selector_map(memory.content, raw_observation=True)
+                by_id.setdefault(memory.memory_id, []).append(
+                    StoredEmbedding(
+                        embedding_id=embedding_row_id(memory.memory_id, part),
+                        memory_id=memory.memory_id,
+                        values=vector,
+                        model_id=self._backends.embedding_model,
+                        space_id=self._backends.space_id,
+                        task=DOCUMENT_TASK,
+                        created_at=now,
+                        object_part=part,
+                        normalized=True,
+                        text_selectors=selectors.get(model_input, ()),
+                    )
+                )
+            settled: list[str] = []
+            failures: list[MindBridgeError] = []
+            for row in rows:
+                try:
+                    with translate_storage_errors("settle captured text"):
+                        if row.memory_id in embedded or self._store.captures.settle_capture(
+                            replace(row, context=None, updated_at=now),
+                            by_id.get(row.memory_id, ()),
+                        ):
+                            settled.append(row.memory_id)
+                except MindBridgeError as error:
+                    failures.append(self._settlement_failure(row.memory_id, error))
+            try:
+                with self._write_lock:
+                    self._projection.drain()
+            except MindBridgeError as error:
+                for memory_id in settled:
+                    self._settlement_failure(memory_id, error)
+                raise
+            self._store.captures.complete_captures(settled)
+            return tuple(settled), tuple(failures)
 
     def _settle_row(self, row: StoredMemory, *, operation: OperationAssets) -> bool:
         """Settle one captured row, or report `False` if another writer settled it first."""
@@ -806,11 +889,30 @@ class Ingestion(Traced):
                 return False
             settled = enriched
         self._formation.form_sources((self._hydrator.memory_record(settled),), operation=operation)
+        with self._write_lock:
+            self._projection.drain()
         with translate_storage_errors("complete captured memory"):
             self._store.captures.complete_captures((row.memory_id,))
         return True
 
-    def _enrich_row(
+    def _enrich_row(self, row: StoredMemory, *, operation: OperationAssets) -> StoredMemory | None:
+        for attempt in range(4):
+            try:
+                return self._enrich_row_once(row, operation=operation)
+            except StaleOperationError:
+                for plan in operation.speech_plans:
+                    operation.speech_segments.pop(plan.asset.asset_id, None)
+                operation.speech_plans.clear()
+                operation.speaker_names.clear()
+                if attempt == 3:
+                    raise StorageError(
+                        "identity state is busy; retry the write",
+                        reason="capacity_exceeded",
+                        stage="admission",
+                    ) from None
+        raise AssertionError("unreachable")
+
+    def _enrich_row_once(
         self,
         row: StoredMemory,
         *,
@@ -820,143 +922,85 @@ class Ingestion(Traced):
         memory = prepared_from_stored(row)
         speech_assets = self._speech.answer_speech_assets(memory.content.assets)
         speech_indexed = self._settings.index_speech and bool(speech_assets)
-        with self._speech_index_guard(operation, enabled=speech_indexed):
-            if speech_indexed:
-                self._speech.recognize(speech_assets, operation, reversible=True)
-            # Same order as `_add_prepared`: derived visual text has to exist before the fallback
-            # guard decides whether this embedder can take the media at all.
-            described = self._vision.pending_descriptions((memory.content,), operation)
-            self._stage_speaker_names(described, operation)
-            memory = replace(
-                memory,
-                content=self._with_visual_descriptions(memory.content, described, operation),
-            )
-            if Modality.AUDIO not in self._backends.embedding_capabilities:
-                # Same rescue set `_add_prepared` allows, so a composition `add()` accepts is not
-                # one `settle()` refuses after the record is already durable.
-                fallback_unsupported(
-                    memory.content,
-                    self._backends.embedding_capabilities,
-                    "embedding",
-                    rescuable=self._speech.transcript_fallback(memory.content.assets),
-                )
-                if not memory.content.audio_transcript:
-                    self._speech.cache_audio_transcripts(memory.content.assets, operation)
-            elif self._speech.derives_transcripts(memory.content.assets):
+        if speech_indexed:
+            self._speech.prepare_index(speech_assets, operation)
+        if Modality.AUDIO not in self._backends.embedding_capabilities:
+            if not memory.content.audio_transcript:
                 self._speech.cache_audio_transcripts(memory.content.assets, operation)
-            memory = self._embedding.prepare(memory, operation)
-            vectors, parts = self._embedding.embed_document_parts(
-                tuple(
-                    (memory, object_part, model_input)
-                    for object_part, model_input in enumerate(
-                        self._embedding.inputs(memory.content)
-                    )
-                )
-            )
-            selector_map = text_selector_map(
+        elif self._speech.derives_transcripts(memory.content.assets):
+            self._speech.cache_audio_transcripts(memory.content.assets, operation)
+        # Same order as `_add_prepared`: derived visual text has to exist before the fallback
+        # guard decides whether this embedder can take the media at all.
+        described = self._vision.pending_descriptions((memory.content,), operation)
+        self._identities.stage_speaker_names(described, operation)
+        memory = replace(
+            memory,
+            content=self._with_visual_descriptions(memory.content, described, operation),
+        )
+        if Modality.AUDIO not in self._backends.embedding_capabilities:
+            # Same rescue set `_add_prepared` allows, so a composition `add()` accepts is not
+            # one `settle()` refuses after the record is already durable.
+            fallback_unsupported(
                 memory.content,
-                raw_observation=(row.context is None or row.context.kind is MemoryKind.OBSERVATION),
+                self._backends.embedding_capabilities,
+                "embedding",
+                rescuable=self._speech.transcript_fallback(memory.content.assets),
             )
-            now = datetime.now(timezone.utc)
-            enriched = replace(row, content=memory.content.text, updated_at=now)
-            with (
-                self._trace("mindbridge.storage.write", kind="stage"),
-                translate_storage_errors("settle captured memory"),
-            ):
-                # The captured row already carries its assets and its observation context, so
-                # this commit replaces only the derived text and adds the queued vectors. The
-                # queue row survives it: formation is still owed, and a former failure below must
-                # leave the record retryable rather than searchable but silently unformed.
-                committed = self._store.captures.settle_capture(
-                    replace(enriched, context=None),
-                    tuple(
-                        StoredEmbedding(
-                            embedding_id=embedding_row_id(row.memory_id, object_part),
-                            memory_id=row.memory_id,
-                            values=vector,
-                            model_id=self._backends.embedding_model,
-                            space_id=self._backends.space_id,
-                            task=DOCUMENT_TASK,
-                            created_at=now,
-                            object_part=object_part,
-                            normalized=True,
-                            text_selectors=selector_map.get(model_input, ()),
-                        )
-                        for (_memory, object_part, model_input), vector in zip(
-                            parts, vectors, strict=True
-                        )
-                    ),
-                )
-            with self._write_lock:
-                self._projection.drain()
-                operation.persisted.update(asset.asset_id for asset in row.assets)
-                if operation.speech_updates:
-                    self._speech.persist_transcripts(operation)
-                self._vision.persist_descriptions(operation)
+        memory = self._embedding.prepare(memory, operation)
+        vectors, parts = self._embedding.embed_document_parts(
+            tuple(
+                (memory, object_part, model_input)
+                for object_part, model_input in enumerate(self._embedding.inputs(memory.content))
+            )
+        )
+        selector_map = text_selector_map(
+            memory.content,
+            raw_observation=(row.context is None or row.context.kind is MemoryKind.OBSERVATION),
+        )
+        now = datetime.now(timezone.utc)
+        enriched = replace(row, content=memory.content.text, updated_at=now)
+        with (
+            self._trace("mindbridge.storage.write", kind="stage"),
+            translate_storage_errors("settle captured memory"),
+        ):
+            # The captured row already carries its assets and its observation context, so
+            # this commit replaces only the derived text and adds the queued vectors. The
+            # queue row survives it: formation is still owed, and a former failure below must
+            # leave the record retryable rather than searchable but silently unformed.
+            committed = self._store.captures.settle_capture(
+                replace(enriched, context=None),
+                tuple(
+                    StoredEmbedding(
+                        embedding_id=embedding_row_id(row.memory_id, object_part),
+                        memory_id=row.memory_id,
+                        values=vector,
+                        model_id=self._backends.embedding_model,
+                        space_id=self._backends.space_id,
+                        task=DOCUMENT_TASK,
+                        created_at=now,
+                        object_part=object_part,
+                        normalized=True,
+                        text_selectors=selector_map.get(model_input, ()),
+                    )
+                    for (_memory, object_part, model_input), vector in zip(
+                        parts, vectors, strict=True
+                    )
+                ),
+                speech_plans=operation.speech_plans,
+            )
+        if not committed:
+            return None
+        self._speech.complete_index(operation)
+        with self._write_lock:
+            self._projection.drain()
+            operation.persisted.update(asset.asset_id for asset in row.assets)
+            if operation.speech_updates:
+                self._speech.persist_transcripts(operation)
+            self._vision.persist_descriptions(operation)
         # Same order as `_add_prepared`: after the commit, so the row this write just settled is
         # one of the memories the naming assertion reindexes.
         self._identities.bind_speaker_names(operation)
         return enriched if committed else None
-
-    def _stage_speaker_names(
-        self,
-        descriptions: Mapping[str, str],
-        operation: OperationAssets,
-    ) -> None:
-        """Collect the names a caption's facts stated for this write's own diarised speakers.
-
-        A stated name is the one distillation that is more than indexed text: it re-keys the
-        person in every document that mentions them, now and for every later clip that resolves
-        to the same voice, which is what carries an identity across clips at all.
-
-        Only a label this asset's own recognizer produced can be resolved, so a fact naming a
-        speaker who is not in this clip is dropped rather than guessed at -- counted into
-        `operation.speaker_names_refused`, the same drop tally `_bind_speaker_names` adds to and
-        reports, so a fact naming a label nobody produced is not simply invisible. Cached
-        descriptions are read too: re-ingesting a corpus must reach the same named store as the
-        first ingest, and re-asserting a standing name is a no-op.
-        """
-        for asset_id, description in descriptions.items():
-            segments = operation.speech_segments.get(asset_id)
-            if not segments:
-                continue
-            identities = {label: identity for identity, label in speaker_labels(segments).items()}
-            for fact in split_description(description)[1].splitlines():
-                match = NAME_BINDING.fullmatch(fact.strip())
-                if match is None:
-                    continue
-                identity_id = identities.get(f"speaker_{int(match['index'])}")
-                if identity_id is None:
-                    operation.speaker_names_refused += 1
-                    continue
-                operation.speaker_names.setdefault(identity_id, match["name"].strip())
-
-    def _known_speaker_names(self, asset_id: str, operation: OperationAssets) -> dict[str, str]:
-        """Map this asset's `speaker_N` labels to whatever name is already known for them.
-
-        "Known now" is a name this very batch's own facts just staged (`operation.speaker_names`)
-        or a name an already-registered identity carries on its recognized segments; a name a
-        later write asserts is not, which is the write-time/retrieval-time split documented on
-        `project_fact_labels`.
-        """
-        segments = operation.speech_segments.get(asset_id)
-        if not segments:
-            return {}
-        names: dict[str, str] = {}
-        for identity_id, label in speaker_labels(segments).items():
-            name = operation.speaker_names.get(identity_id)
-            if name is None:
-                name = next(
-                    (
-                        segment.speaker_name
-                        for segment in segments
-                        if segment.speaker_id == identity_id and segment.speaker_name
-                    ),
-                    None,
-                )
-            if name:
-                names[label] = name
-        return names
 
     def _stage_stream_description(
         self,
@@ -976,12 +1020,12 @@ class Ingestion(Traced):
             return
         for asset in prepared.assets:
             if Modality(asset.modality) in self._backends.vision_capabilities:
-                operation.descriptions.setdefault(asset.asset_id, description)
+                operation.descriptions.setdefault(asset.asset_id, VisualDescription(description))
 
     def _with_visual_descriptions(
         self,
         prepared: PreparedContent,
-        descriptions: Mapping[str, str],
+        descriptions: Mapping[str, VisualDescription],
         operation: OperationAssets,
     ) -> PreparedContent:
         """Union derived visual text into the indexed document, whatever the embedder can take.
@@ -1005,7 +1049,7 @@ class Ingestion(Traced):
             for section in description_sections(
                 asset.asset_id,
                 descriptions[asset.asset_id],
-                self._known_speaker_names(asset.asset_id, operation),
+                self._identities.known_speaker_names(asset.asset_id, operation),
             )
         )
         if not sections:
@@ -1036,26 +1080,3 @@ class Ingestion(Traced):
             ),
             visual_description=True,
         )
-
-    @contextmanager
-    def _speech_index_guard(
-        self,
-        operation: OperationAssets,
-        *,
-        enabled: bool,
-    ) -> Iterator[None]:
-        if not enabled:
-            yield
-            return
-        # ponytail: serialize add-time identity matching through the memory commit; replace this
-        # with a staged identity plan only if speech-indexed add throughput becomes material.
-        with self._write_lock:
-            try:
-                yield
-            except BaseException:
-                with translate_storage_errors("roll back speaker recognition"):
-                    for rollback in reversed(operation.speech_rollbacks):
-                        self._store.media.rollback_speech(rollback)
-                raise
-            finally:
-                operation.speech_rollbacks.clear()

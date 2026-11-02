@@ -22,6 +22,7 @@ from mindbridge import (
     AssetRef,
     EmbedTask,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     ObservationContext,
@@ -111,12 +112,14 @@ def _memory(
         tmp_path / "store",
         embedder=embedder or TinyEmbedder(),  # type: ignore[arg-type]
         answerer=answerer,
-        minimum_relevance=0.0,
-        ambiguity_margin=0.0,
-        reinforce_on_answer=False,
-        evidence_expansion=evidence_expansion,
-        evidence_expansion_max_rows=evidence_expansion_max_rows,
-        evidence_budget_chars=evidence_budget_chars,
+        config=MemoryConfig(
+            minimum_relevance=0.0,
+            ambiguity_margin=0.0,
+            reinforce_on_answer=False,
+            evidence_expansion=evidence_expansion,
+            evidence_expansion_max_rows=evidence_expansion_max_rows,
+            evidence_budget_chars=evidence_budget_chars,
+        ),
     )
 
 
@@ -151,7 +154,7 @@ def test_expansion_recovers_the_partner_record_similarity_left_behind(tmp_path: 
             "S2": _capture(memory, "S2", "the blue crate", "in the shed", minute=60),
             "S3": _capture(memory, "S3", "a plain wooden bench", "beside the door", minute=120),
         }
-        ranked = memory.search("how long into red art?", limit=1)
+        ranked = memory.search("how long into red art?", limit=1).hits
         top = ranked[0].id
         partner = next(
             other for ids in captures.values() if top in ids for other in ids if other != top
@@ -240,7 +243,7 @@ def test_expansion_never_displaces_the_window_the_ranking_earned(tmp_path: Path)
     with _memory(tmp_path, answerer, evidence_expansion=True, evidence_budget_chars=None) as memory:
         _capture(memory, "S1", "a red wrench", "a red hammer", minute=0)
         _capture(memory, "S2", "a plain wooden crate", "a tin of nails", minute=10)
-        window = tuple(hit.id for hit in memory.search("red wrench?", limit=2))
+        window = tuple(hit.id for hit in memory.search("red wrench?", limit=2).hits)
 
         memory.ask("red wrench?", limit=2)
 
@@ -284,8 +287,7 @@ def test_evidence_expansion_max_rows_must_be_positive(tmp_path: Path) -> None:
         Memory(
             tmp_path / "store",
             embedder=TinyEmbedder(),
-            evidence_expansion=True,
-            evidence_expansion_max_rows=0,
+            config=MemoryConfig(evidence_expansion=True, evidence_expansion_max_rows=0),
         )
 
 
@@ -301,8 +303,9 @@ def test_evidence_expansion_max_rows_is_bounded_by_the_store_read_it_becomes(
         Memory(
             tmp_path / "store",
             embedder=TinyEmbedder(),
-            evidence_expansion=True,
-            evidence_expansion_max_rows=RECALL_MAX_ROWS + 1,
+            config=MemoryConfig(
+                evidence_expansion=True, evidence_expansion_max_rows=RECALL_MAX_ROWS + 1
+            ),
         )
 
 
@@ -408,7 +411,7 @@ def test_a_linked_row_the_ranking_also_ranked_is_still_offered(tmp_path: Path) -
     ) as memory:
         anchor, partner = _far_partner_store(memory)
         # The partner is inside the pool the ask ranks and outside the window it grounds.
-        pool = {hit.id for hit in memory.search("a red wrench on the bench", limit=5)}
+        pool = {hit.id for hit in memory.search("a red wrench on the bench", limit=5).hits}
 
         memory.ask("a red wrench on the bench", limit=1)
 
@@ -429,7 +432,7 @@ def test_a_linked_row_the_ranking_never_proposed_is_admitted(tmp_path: Path) -> 
         embedder=_ScriptedEmbedder(_FAR_PARTNER),
     ) as memory:
         _anchor, partner = _far_partner_store(memory)
-        pool = {hit.id for hit in memory.search("a red wrench on the bench", limit=3)}
+        pool = {hit.id for hit in memory.search("a red wrench on the bench", limit=3).hits}
 
         memory.ask("a red wrench on the bench", limit=1)
 

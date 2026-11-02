@@ -864,7 +864,7 @@ def test_compile_arm_answers_from_a_rendered_bundle_via_the_public_sdk(tmp_path:
 
     async def run() -> eval_results_module._AnswerOutcome | BaseException:
         async with AsyncMemory(
-            Memory(tmp_path, embedder=_TinyEmbedder(), minimum_relevance=0)
+            Memory(tmp_path, embedder=_TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
         ) as memory:
             await memory.add("Ada signed the contract")
             await memory.add("a lunch invitation")
@@ -908,7 +908,7 @@ def test_the_product_arm_answers_a_compile_surface_task_from_the_compiled_bundle
 
     async def run() -> eval_results_module._AnswerOutcome | BaseException:
         async with AsyncMemory(
-            Memory(tmp_path, embedder=_TinyEmbedder(), minimum_relevance=0)
+            Memory(tmp_path, embedder=_TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
         ) as memory:
             await memory.add("Ada signed the contract")
             answered = await _answer_many(
@@ -991,7 +991,7 @@ def test_compile_arm_records_partial_sources_separately_from_full_evidence(
             Memory(
                 tmp_path,
                 embedder=_ExcerptEmbedder(),
-                minimum_relevance=0,
+                config=MemoryConfig(minimum_relevance=0),
             )
         ) as memory:
             source = await memory.add(source_text)
@@ -1166,7 +1166,12 @@ def test_ingest_capture_produces_real_capture_settle_spans_for_the_compile_arm(
 
     def memory_factory(path: Path) -> AsyncMemory:
         return AsyncMemory(
-            Memory(path, embedder=_TinyEmbedder(), minimum_relevance=0, tracer=telemetry.tracer)
+            Memory(
+                path,
+                embedder=_TinyEmbedder(),
+                config=MemoryConfig(minimum_relevance=0),
+                tracer=telemetry.tracer,
+            )
         )
 
     try:
@@ -1903,7 +1908,7 @@ def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path
                 tmp_path,
                 embedder=_TinyEmbedder(),
                 answerer=cast(GenerationBackend, borrowed),
-                minimum_relevance=0,
+                config=MemoryConfig(minimum_relevance=0),
             )
         ) as memory:
             await memory.add("Ada signed the contract")
@@ -2021,8 +2026,7 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
                 tmp_path,
                 embedder=_TinyEmbedder(),
                 answerer=cast(GenerationBackend, borrowed),
-                minimum_relevance=0,
-                recall_planning=True,
+                config=MemoryConfig(minimum_relevance=0, recall_planning=True),
                 tracer=telemetry.tracer,
             )
         ) as memory:

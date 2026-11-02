@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import sqlite3
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -11,15 +12,15 @@ from pathlib import Path
 from threading import RLock
 from typing import Protocol
 
-from mindbridge.exceptions import IndexUnavailableError, MindBridgeError, StorageError
+from mindbridge.exceptions import IndexUnavailableError, StorageError
 from mindbridge.infrastructure.local._lock import DataDirectoryInUseError
-from mindbridge.infrastructure.local.assets import AssetStore
+from mindbridge.infrastructure.local.assets import AssetStore, AssetStoreError
+from mindbridge.infrastructure.local.scoring import InvalidVectorError
 from mindbridge.infrastructure.local.store import (
     IndexDocument,
     LocalStore,
     LocalStoreCapacityError,
-    ProtectedMemoryError,
-    StaleOperationError,
+    StoredDataError,
     UnsupportedSchemaError,
 )
 from mindbridge.infrastructure.local.zvec_index import IndexHit
@@ -97,11 +98,15 @@ def open_store(data_dir: Path) -> LocalStore:
         raise StorageError(
             "local storage capacity exceeded", reason="capacity_exceeded", stage="open"
         ) from error
-    except Exception as error:
-        if isinstance(error, OSError) and error.errno in {errno.EMFILE, errno.ENFILE}:
+    except OSError as error:
+        if error.errno in {errno.EMFILE, errno.ENFILE}:
             raise StorageError(
                 "local file descriptor capacity exceeded", reason="capacity_exceeded", stage="open"
             ) from error
+        raise StorageError(
+            "failed to open the local memory store", reason="io_failed", stage="open"
+        ) from error
+    except (sqlite3.Error, AssetStoreError, StoredDataError) as error:
         raise StorageError(
             "failed to open the local memory store", reason="io_failed", stage="open"
         ) from error
@@ -111,9 +116,6 @@ def open_store(data_dir: Path) -> LocalStore:
 def translate_storage_errors(action: str) -> Iterator[None]:
     try:
         yield
-    # Preserve policy refusals for the kernel to classify instead of reporting an IO failure.
-    except (MindBridgeError, ProtectedMemoryError, StaleOperationError):
-        raise
     except LocalStoreCapacityError as error:
         raise StorageError(
             "local SQLite connection capacity exceeded",
@@ -128,10 +130,9 @@ def translate_storage_errors(action: str) -> Iterator[None]:
                 stage="admission",
             ) from error
         raise StorageError(f"failed to {action}", reason="io_failed") from error
-    except Exception as error:
-        # `io_failed` is this wrapper's pre-existing contract and a test pins it. It is coarse by
-        # design -- the wrapper catches whatever any storage action raised -- and deliberately not
-        # in `RETRYABLE_REASONS`, so a caller does not retry a failure it cannot know is transient.
+    except (sqlite3.Error, AssetStoreError, StoredDataError, InvalidVectorError) as error:
+        # Query vectors have crossed model validation before score completion. Only persisted
+        # vectors can fail this representation check; programming ValueErrors stay visible.
         raise StorageError(f"failed to {action}", reason="io_failed") from error
 
 
@@ -139,9 +140,7 @@ def translate_storage_errors(action: str) -> Iterator[None]:
 def translate_index_errors(action: str) -> Iterator[None]:
     try:
         yield
-    except MindBridgeError:
-        raise
-    except Exception as error:
+    except (OSError, RuntimeError) as error:
         if isinstance(error, OSError) and error.errno in {errno.EMFILE, errno.ENFILE}:
             raise StorageError(
                 f"local file descriptor capacity exceeded: {error.strerror}",
@@ -159,11 +158,10 @@ class Storage:
     protects outbox application, destructive operations, index replacement, final record and
     asset hydration, and add-time speaker identity updates, whose identity changes must roll
     back with a failed add. `formation_lock` serializes the formation backend's proposals per
-    source. `settle_lock` keeps two settlers from running the model stages over one queued row.
+    source. Settlement and formation claim their own individual source IDs.
     """
 
     store: LocalStore
     assets: AssetStore
     write_lock: RLock
     formation_lock: RLock
-    settle_lock: RLock

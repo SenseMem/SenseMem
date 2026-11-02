@@ -26,6 +26,7 @@ from mindbridge import (
     FaceAnalysis,
     FaceEmbedding,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     SearchHit,
@@ -101,12 +102,11 @@ def _library(tmp_path: Path, *, planning: bool = False) -> tuple[Memory, str, st
         embedder=_Embedder(),
         face_analyzer=_Face(),
         answerer=_EntityAnswerer() if planning else None,
-        recall_planning=planning,
-        minimum_relevance=0,
+        config=MemoryConfig(recall_planning=planning, minimum_relevance=0),
     )
     seen = memory.add(Blob(b"one", "image/png", "alice.png"))
     memory.add("a kettle nobody was photographed beside")
-    alice = memory.faces(seen.id)[0].identity_id
+    alice = memory.perceive(seen.id).faces[0].identity_id
     if planning:
         memory.register_identity(alice, "Alice")
     return memory, seen.id, alice

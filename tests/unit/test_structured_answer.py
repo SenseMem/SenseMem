@@ -64,7 +64,7 @@ def test_structured_budget_counts_the_schema_and_preserves_post_fit_source_alias
     probe = OpenAIModels(
         generation_answer_format="structured", generation_request_max_bytes=100_000
     )
-    prepared = probe._answer_request("Which source?", (hit,), stream=stream)
+    prepared = probe._answer_request(ModelInput(text="Which source?"), (hit,), stream=stream)
     assert isinstance(prepared, tuple)
     exact = adapter._answer_wire_size(prepared[0], stream=stream)
     requests: list[bytes] = []
@@ -94,10 +94,10 @@ def test_structured_budget_counts_the_schema_and_preserves_post_fit_source_alias
             generation_request_max_bytes=exact,
         )
         if stream:
-            chunks, answer = _consume(model.stream_answer("Which source?", (hit,)))
+            chunks, answer = _consume(model.stream_answer(ModelInput(text="Which source?"), (hit,)))
             assert chunks == ["public-source"]
         else:
-            answer = model.answer("Which source?", (hit,))
+            answer = model.answer(ModelInput(text="Which source?"), (hit,))
         assert answer.answer == "public-source"
         assert len(requests[0]) == exact
         too_small = OpenAIModels(
@@ -107,9 +107,9 @@ def test_structured_budget_counts_the_schema_and_preserves_post_fit_source_alias
         )
         with pytest.raises(ModelError) as failure:
             if stream:
-                _consume(too_small.stream_answer("Which source?", (hit,)))
+                _consume(too_small.stream_answer(ModelInput(text="Which source?"), (hit,)))
             else:
-                too_small.answer("Which source?", (hit,))
+                too_small.answer(ModelInput(text="Which source?"), (hit,))
         assert failure.value.reason == "payload_too_large"
         assert len(requests) == 1
 
@@ -144,7 +144,7 @@ def test_structured_sources_use_post_fit_aliases_and_the_host_source_key(
             generation_answer_format="structured",
             generation_source_metadata_key="document_ref",
         )
-        answer = model.answer("Which source?", (removed, survivor))
+        answer = model.answer(ModelInput(text="Which source?"), (removed, survivor))
     assert answer.answer == "doc-survivor"
     assert answer.hits == (survivor,)
     format_ = cast(dict[str, object], calls[0]["response_format"])
@@ -161,6 +161,7 @@ def test_structured_numeric_answer_checks_visible_quote_not_only_evidence_id(
     reply = json.dumps(
         {
             "draft": {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "sum",
                 "operands": [
@@ -181,7 +182,9 @@ def test_structured_numeric_answer_checks_visible_quote_not_only_evidence_id(
             generation_response_format=format_,
         )
         with pytest.raises(ModelError, match="visible evidence quote") as error:
-            model.answer("What was the total?", (_hit("fare", "Fare: 12 GBP.", "receipt"),))
+            model.answer(
+                ModelInput(text="What was the total?"), (_hit("fare", "Fare: 12 GBP.", "receipt"),)
+            )
     assert error.value.reason == "response_invalid"
     assert "999" not in str(error.value)
 
@@ -192,6 +195,7 @@ def test_structured_numeric_answer_checks_visible_quote_not_only_evidence_id(
         (
             source,
             {
+                "format": "with_unit",
                 "kind": "calculation",
                 "operation": "scalar",
                 "operands": [
@@ -219,7 +223,10 @@ def test_structured_transport_rejects_quotes_that_split_original_source_tokens(
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
         with pytest.raises(ModelError) as error:
-            model.answer("What does the evidence establish?", (_hit("source", source, "public"),))
+            model.answer(
+                ModelInput(text="What does the evidence establish?"),
+                (_hit("source", source, "public"),),
+            )
     assert error.value.reason == "response_invalid"
     assert error.value.stage == "generate"
 
@@ -228,6 +235,7 @@ def test_structured_date_uses_explicit_granularity_and_final_timestamps() -> Non
     reply = json.dumps(
         {
             "draft": {
+                "format": "iso8601",
                 "kind": "date",
                 "source_value": NOW.isoformat(),
                 "granularity": "day",
@@ -242,7 +250,9 @@ def test_structured_date_uses_explicit_granularity_and_final_timestamps() -> Non
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
         assert (
-            model.answer("On which date?", (_hit("visit", "A visit.", "source"),)).answer
+            model.answer(
+                ModelInput(text="On which date?"), (_hit("visit", "A visit.", "source"),)
+            ).answer
             == "2026-04-09"
         )
 
@@ -279,10 +289,10 @@ def test_structured_transport_utc_datetime_keeps_the_original_witness(
         hits = (_hit("boarding", f"Boarding: {source_value}.", "source"),)
         if expected is None:
             with pytest.raises(ModelError) as error:
-                model.answer("Give UTC boarding time.", hits)
+                model.answer(ModelInput(text="Give UTC boarding time."), hits)
             assert error.value.reason == "response_invalid"
         else:
-            assert model.answer("Give UTC boarding time.", hits).answer == expected
+            assert model.answer(ModelInput(text="Give UTC boarding time."), hits).answer == expected
 
 
 @pytest.mark.parametrize("duration", [False, True], ids=["numeric", "duration"])
@@ -310,7 +320,9 @@ def test_structured_transport_number_format_omits_only_the_rendered_unit(duratio
     reply = json.dumps({"draft": draft})
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
-        result = model.answer("Give the number only.", (_hit("source", source, "public"),))
+        result = model.answer(
+            ModelInput(text="Give the number only."), (_hit("source", source, "public"),)
+        )
     assert result.answer == ("3" if duration else "12.5")
 
 
@@ -322,7 +334,9 @@ def test_structured_abstention_keeps_existing_answer_policy(
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
         result = model.answer(
-            "What color?", (_hit("color", "Unclear color.", "photo"),), answer_policy=policy
+            ModelInput(text="What color?"),
+            (_hit("color", "Unclear color.", "photo"),),
+            answer_policy=policy,
         )
     assert result.abstained
     assert result.answer == (adapter.UNKNOWN_ANSWER if policy == "strict" else "Probably amber.")
@@ -352,7 +366,7 @@ def test_structured_best_effort_text_cleans_the_marker_without_losing_abstention
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
         result = model.answer(
-            "What color?",
+            ModelInput(text="What color?"),
             (_hit("color", "Unclear color.", "photo"),),
             answer_policy="best_effort",
         )
@@ -406,7 +420,7 @@ def test_structured_stream_buffers_validates_and_closes_before_exposing_text(end
     with httpx.Client(transport=httpx.MockTransport(lambda request: response)) as transport:
         model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
         stream = model.stream_answer(
-            "Which source?", (_hit("internal", "Evidence.", "public-source"),)
+            ModelInput(text="Which source?"), (_hit("internal", "Evidence.", "public-source"),)
         )
         if ending == "stop":
             assert next(stream) == "public-source"
@@ -431,7 +445,7 @@ def test_default_text_answer_does_not_add_schema_or_reinterpret_json() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
         result = OpenAIModels(_sdk_client(transport)).answer(
-            "Show the text.", (_hit("example", "Evidence.", "source"),)
+            ModelInput(text="Show the text."), (_hit("example", "Evidence.", "source"),)
         )
     assert "response_format" not in calls[0]
     assert result.answer == text

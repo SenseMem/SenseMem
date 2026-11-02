@@ -26,6 +26,7 @@ from mindbridge import (
     FaceAnalysis,
     FaceEmbedding,
     Memory,
+    MemoryConfig,
     Modality,
     ModelInput,
     RetrievalScope,
@@ -107,23 +108,23 @@ def test_identity_scope_selects_only_the_memories_that_person_is_in(tmp_path: Pa
         tmp_path,
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "image/png", "alice.png"))
         second = memory.add(Blob(b"two", "image/png", "alice.png"))
         other = memory.add(Blob(b"three", "image/png", "bob.png"))
         text_only = memory.add("a kettle on a worktop")
 
-        alice = memory.faces(first.id)[0].identity_id
-        bob = memory.faces(other.id)[0].identity_id
+        alice = memory.perceive(first.id).faces[0].identity_id
+        bob = memory.perceive(other.id).faces[0].identity_id
         assert alice != bob
-        assert memory.faces(second.id)[0].identity_id == alice
+        assert memory.perceive(second.id).faces[0].identity_id == alice
 
-        scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=alice))
+        scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=alice)).hits
 
         assert {hit.id for hit in scoped} == {first.id, second.id}
         assert text_only.id not in {hit.id for hit in scoped}
-        assert {hit.id for hit in memory.search("kettle", limit=10)} >= {
+        assert {hit.id for hit in memory.search("kettle", limit=10).hits} >= {
             first.id,
             second.id,
             other.id,
@@ -137,13 +138,13 @@ def test_identity_scope_includes_the_person_a_claim_is_about(tmp_path: Path) -> 
         tmp_path,
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         record = memory.add(Blob(b"one", "image/png", "alice.png"))
-        alice = memory.faces(record.id)[0].identity_id
+        alice = memory.perceive(record.id).faces[0].identity_id
         memory.register_identity(alice, "Alice")
 
-        scoped = memory.search("Alice", limit=10, scope=RetrievalScope(identity_id=alice))
+        scoped = memory.search("Alice", limit=10, scope=RetrievalScope(identity_id=alice)).hits
 
         # The clip plus the naming assertion the registration wrote about her.
         assert len(scoped) == 2
@@ -157,27 +158,29 @@ def test_identity_scope_follows_a_merge_to_the_surviving_person(tmp_path: Path) 
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         transcriber=_Speech(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "video/mp4", "alice.mp4"))
-        face_id = memory.faces(first.id)[0].identity_id
-        voice_id = memory.speech(first.id)[0].speaker_id
+        face_id = memory.perceive(first.id).faces[0].identity_id
+        voice_id = memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         assert voice_id is not None and face_id != voice_id
 
         second = memory.add(Blob(b"two", "video/mp4", "alice.mp4"))
-        memory.faces(second.id)
-        survivor = memory.faces(first.id)[0].identity_id
+        memory.perceive(second.id)
+        survivor = memory.perceive(first.id).faces[0].identity_id
         retired = face_id if survivor == voice_id else voice_id
         assert survivor != retired
 
-        scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=survivor))
+        scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=survivor)).hits
         assert {hit.id for hit in scoped} == {first.id, second.id}
 
         # A merged-away ID resolves to the person it became, exactly as `identity()` does: a
         # caller holding a pre-merge observation must still reach them.
         assert {
             hit.id
-            for hit in memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=retired))
+            for hit in memory.search(
+                "kettle", limit=10, scope=RetrievalScope(identity_id=retired)
+            ).hits
         } == {first.id, second.id}
 
 
@@ -196,35 +199,35 @@ def test_a_merge_reprojects_a_memory_that_carried_only_the_retired_identity(
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         transcriber=_Speech(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "video/mp4", "alice.mp4"))
-        voice_id = memory.speech(first.id)[0].speaker_id
+        voice_id = memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         assert voice_id is not None
         # A link plan keeps the named identity, so naming the voice retires the face.
-        memory.register_speaker(voice_id, "Alice")
+        memory.register_identity(voice_id, "Alice")
         # Face analysis is lazy, and the link needs the pair corroborated on two assets.
-        assert memory.faces(first.id)[0].identity_id != voice_id
+        assert memory.perceive(first.id).faces[0].identity_id != voice_id
 
         # Seen and never heard: its projection is the face alone.
         seen = memory.add(Blob(b"two", "image/png", "alice.mp4"))
-        face_id = memory.faces(seen.id)[0].identity_id
+        face_id = memory.perceive(seen.id).faces[0].identity_id
         assert face_id != voice_id
 
         second = memory.add(Blob(b"three", "video/mp4", "alice.mp4"))
-        memory.faces(second.id)
-        assert memory.faces(seen.id)[0].identity_id == voice_id
+        memory.perceive(second.id)
+        assert memory.perceive(seen.id).faces[0].identity_id == voice_id
 
-        scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=voice_id))
+        scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=voice_id)).hits
 
     assert seen.id in {hit.id for hit in scoped}
 
 
 def test_an_unknown_identity_scopes_to_nothing(tmp_path: Path) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), minimum_relevance=0) as memory:
+    with Memory(tmp_path, embedder=_Embedder(), config=MemoryConfig(minimum_relevance=0)) as memory:
         memory.add("a kettle on a worktop")
 
-        assert memory.search("kettle", scope=RetrievalScope(identity_id="nobody")) == ()
+        assert memory.search("kettle", scope=RetrievalScope(identity_id="nobody")).hits == ()
 
 
 class _EntityAnswerer:
@@ -267,20 +270,18 @@ def test_entity_plan_intersects_the_callers_identity_scope(tmp_path: Path, perso
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         answerer=_EntityAnswerer(),
-        recall_planning=True,
-        minimum_relevance=0,
-        reinforce_on_answer=False,
+        config=MemoryConfig(recall_planning=True, minimum_relevance=0, reinforce_on_answer=False),
     ) as memory:
         alice_record = memory.add(("Alice's red kettle", alice_image))
         bob_record = memory.add(("Bob's blue kettle", bob_image))
         shared = memory.add(("A kettle shared by Alice and Bob", alice_image, bob_image))
-        alice = memory.faces(alice_record.id)[0].identity_id
-        bob = memory.faces(bob_record.id)[0].identity_id
-        memory.faces(shared.id)
+        alice = memory.perceive(alice_record.id).faces[0].identity_id
+        bob = memory.perceive(bob_record.id).faces[0].identity_id
+        memory.perceive(shared.id)
         memory.register_identity(alice, "Alice")
         memory.register_identity(bob, "Bob")
         scope = RetrievalScope(identity_id={"Alice": alice, "Bob": bob}.get(person, "missing"))
-        allowed = {hit.id for hit in memory.search("kettle", limit=100, scope=scope)}
+        allowed = {hit.id for hit in memory.search("kettle", limit=100, scope=scope).hits}
 
         result = memory.ask("What do we know about Alice's kettle?", limit=2, scope=scope)
 
@@ -298,12 +299,15 @@ def test_entity_plan_intersects_the_callers_identity_scope(tmp_path: Path, perso
 
 def test_entity_name_requires_disambiguation_instead_of_choosing_an_id(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=_Embedder(), face_analyzer=_PerAssetFace(), minimum_relevance=0
+        tmp_path,
+        embedder=_Embedder(),
+        face_analyzer=_PerAssetFace(),
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "image/png", "alice.png"))
         second = memory.add(Blob(b"two", "image/png", "bob.png"))
-        alice = memory.faces(first.id)[0].identity_id
-        other = memory.faces(second.id)[0].identity_id
+        alice = memory.perceive(first.id).faces[0].identity_id
+        other = memory.perceive(second.id).faces[0].identity_id
         assert alice != other
         memory.register_identity(alice, "Alice")
         memory.register_identity(other, "Alice")
@@ -333,20 +337,22 @@ def test_ambiguous_entity_plan_preserves_ranking_until_the_caller_disambiguates(
         embedder=_TextFirstEmbedder(),
         face_analyzer=_PerAssetFace(),
         answerer=answerer,
-        recall_planning=True,
-        minimum_relevance=0,
-        evidence_budget_chars=None,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            recall_planning=True,
+            minimum_relevance=0,
+            evidence_budget_chars=None,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         memory.add_many(tuple(f"A kettle note {index}" for index in range(8)))
         first = memory.add(Blob(b"one", "image/png", "alice.png"))
         second = memory.add(Blob(b"two", "image/png", "bob.png"))
-        alice = memory.faces(first.id)[0].identity_id
-        other = memory.faces(second.id)[0].identity_id
+        alice = memory.perceive(first.id).faces[0].identity_id
+        other = memory.perceive(second.id).faces[0].identity_id
         memory.register_identity(alice, "Alice")
         memory.register_identity(other, "Alice")
         scope = RetrievalScope(identity_id=alice) if scoped else None
-        ranked = memory.search("kettle", limit=2, scope=scope)
+        ranked = memory.search("kettle", limit=2, scope=scope).hits
 
         result = memory.ask("kettle", limit=2, scope=scope)
 
@@ -371,14 +377,14 @@ def test_identity_membership_sql_agrees_in_both_directions(tmp_path: Path) -> No
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         transcriber=_Speech(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     ) as memory:
         clip = memory.add(Blob(b"one", "video/mp4", "alice.mp4"))
         memory.add(Blob(b"two", "image/png", "bob.png"))
         memory.add("a kettle nobody is in")
-        alice = memory.faces(clip.id)[0].identity_id
+        alice = memory.perceive(clip.id).faces[0].identity_id
         memory.register_identity(alice, "Alice")
-        memory.speech(clip.id)
+        memory.perceive(clip.id, kinds=frozenset({"speech"}))
 
         with memory._store._connections.read_transaction() as connection:
             per_document = {

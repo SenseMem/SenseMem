@@ -336,9 +336,9 @@ the incorrect derived record instead of presenting a rewrite as the original obs
 Applications can query roles separately when one role must not crowd out another:
 
 ```python
-semantic = memory.search(query, memory_type=MemoryType.SEMANTIC, limit=2)
-episodic = memory.search(query, memory_type=MemoryType.EPISODIC, limit=2)
-procedural = memory.search(query, memory_type=MemoryType.PROCEDURAL, limit=1)
+semantic = memory.search(query, memory_type=MemoryType.SEMANTIC, limit=2).hits
+episodic = memory.search(query, memory_type=MemoryType.EPISODIC, limit=2).hits
+procedural = memory.search(query, memory_type=MemoryType.PROCEDURAL, limit=1).hits
 ```
 
 Procedural records are evidence for the application; MindBridge never executes their text.

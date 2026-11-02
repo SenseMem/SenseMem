@@ -6,14 +6,65 @@ from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from openai import OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from test_openai_sdk import _asset, _sdk_client, _search_hit
 
-from mindbridge import ModelError, OpenAIModels, ValidationError
+from mindbridge import (
+    AbstentionReason,
+    EvidenceGeneration,
+    ModelError,
+    ModelInput,
+    OpenAIModels,
+    ValidationError,
+)
 from mindbridge._telemetry import MODEL_REQUEST_COUNT, TOKEN_TOTAL, model_span, operation_span
 from mindbridge.types import EvidenceBasis, MemoryContext, MemoryKind, Modality
+
+
+def _selected(
+    client: OpenAI, *, generation_capabilities: frozenset[Modality] = frozenset({Modality.TEXT})
+) -> EvidenceGeneration:
+    model = OpenAIModels(client, generation_capabilities=generation_capabilities)
+    return EvidenceGeneration(model, selector=model, media_max_items=1)
+
+
+@pytest.mark.parametrize("stream", (False, True))
+def test_unselected_media_only_evidence_remains_insufficient(tmp_path: Path, stream: bool) -> None:
+    hit = replace(
+        _search_hit(),
+        content="",
+        modality=Modality.IMAGE,
+        assets=(_asset(tmp_path, "source", Modality.IMAGE, "image/png", b"png"),),
+    )
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"index": 0, "message": {"content": '{"requests":[]}'}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = _selected(
+            _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
+        )
+        if stream:
+            result_stream = model.stream_answer(ModelInput(text="what is shown?"), (hit,))
+            while True:
+                try:
+                    next(result_stream)
+                except StopIteration as complete:
+                    result = complete.value
+                    break
+        else:
+            result = model.answer(ModelInput(text="what is shown?"), (hit,))
+    assert result.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
 
 
 @pytest.mark.parametrize(
@@ -85,17 +136,15 @@ def test_diagnosis_is_bounded_and_keeps_text_omissions_and_request_cost(
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     tracer = provider.get_tracer("media-test")
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = _selected(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
-            generation_media_policy="on_demand",
-            generation_media_max_items=1,
         )
         with (
             operation_span(tracer, "operation", attributes={}),
             model_span(tracer, "answer", attributes={}),
         ):
-            model.answer("What does the missing label say?", (hit,))
+            model.answer(ModelInput(text="What does the missing label say?"), (hit,))
     attributes = {span.name: span.attributes for span in exporter.get_finished_spans()}
     provider.shutdown()
     assert len(sent) == 2
@@ -123,9 +172,7 @@ def test_text_only_answers_skip_diagnosis() -> None:
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        OpenAIModels(_sdk_client(client), generation_media_policy="on_demand").answer(
-            "question", (_search_hit(),)
-        )
+        _selected(_sdk_client(client)).answer(ModelInput(text="question"), (_search_hit(),))
     assert len(sent) == 1
 
 
@@ -141,13 +188,12 @@ def test_diagnosis_text_ceiling_includes_system_prompt_before_http(
         pytest.fail("oversized diagnosis text reached the provider")
 
     with httpx.Client(transport=httpx.MockTransport(unexpected_request)) as client:
-        adapter = OpenAIModels(
+        adapter = _selected(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
-            generation_media_policy="on_demand",
         )
         with pytest.raises(ModelError) as failure:
-            adapter.answer("question", (hit,))
+            adapter.answer(ModelInput(text="question"), (hit,))
     assert failure.value.reason == "payload_too_large"
     assert failure.value.stage == "generate"
 
@@ -204,29 +250,20 @@ def test_provider_rejection_does_not_diagnose_again_or_lose_original_omissions(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = _selected(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
-            generation_media_policy="on_demand",
         )
         if safety_rejection:
             with pytest.raises(ModelError) as failure:
-                model.answer("question", (hit,), exhaustive=True)
+                model.answer(ModelInput(text="question"), (hit,), exhaustive=True)
             assert failure.value.reason == "model_refused"
         else:
-            model.answer("question", (hit,), exhaustive=True)
+            model.answer(ModelInput(text="question"), (hit,), exhaustive=True)
     assert len(sent) == (2 if safety_rejection else 3)
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"generation_media_policy": "invalid"},
-        {"generation_media_max_items": True},
-        {"generation_media_max_items": 0},
-        {"generation_media_max_items": 9},
-    ],
-)
-def test_media_controls_reject_invalid_values(kwargs: dict[str, object]) -> None:
+@pytest.mark.parametrize("limit", [True, 0, 9])
+def test_media_controls_reject_invalid_values(limit: int) -> None:
     with pytest.raises(ValidationError):
-        OpenAIModels(**kwargs)  # type: ignore[arg-type]
+        EvidenceGeneration(OpenAIModels(), media_max_items=limit)

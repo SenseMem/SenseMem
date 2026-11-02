@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from threading import Event
 from typing import cast
@@ -14,11 +15,13 @@ from typing import cast
 import pytest
 
 import mindbridge.infrastructure.local.store.index as index_module
+import mindbridge.kernel.ranking as ranking_module
 import mindbridge.kernel.retrieval as retrieval_module
 from mindbridge import (
     Blob,
     IndexQuantization,
     Memory,
+    MemoryConfig,
     Modality,
     RetrievalMode,
     SearchHit,
@@ -68,12 +71,14 @@ def test_delete_and_search_progress_during_ranking_while_media_remains_leased(
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        index_quantization=(
-            IndexQuantization.NONE if stage == "max_cosine_scores" else IndexQuantization.INT8
+        config=MemoryConfig(
+            index_quantization=(
+                IndexQuantization.NONE if stage == "max_cosine_scores" else IndexQuantization.INT8
+            ),
+            retrieval_mode=RetrievalMode.HYBRID,
+            minimum_relevance=0,
+            ambiguity_margin=0,
         ),
-        retrieval_mode=RetrievalMode.HYBRID,
-        minimum_relevance=0,
-        ambiguity_margin=0,
     ) as memory:
         target = memory.add(("shared target", Blob(b"target", "image/png")))
         decoy = memory.add(("shared neighbor", Blob(b"neighbor", "image/png")))
@@ -82,9 +87,15 @@ def test_delete_and_search_progress_during_ranking_while_media_remains_leased(
         if stage == "max_cosine_scores":
             # Make both parents lexical-only candidates so unquantized completion is required.
             monkeypatch.setattr(memory._index, "search", lambda *_args, **_kwargs: ())
-        expected = memory.search_with_trace("shared", limit=2)
+        expected = memory.search("shared", limit=2, explain=True)
+        assert expected.trace is not None
         entered, release = Event(), Event()
-        original = cast(Callable[..., object], getattr(retrieval_module, stage))
+        owner = (
+            ranking_module
+            if stage in {"lexical_relevance", "ranking_signals"}
+            else retrieval_module
+        )
+        original = cast(Callable[..., object], getattr(owner, stage))
 
         def paused(*args: object, **kwargs: object) -> object:
             if not entered.is_set():
@@ -94,21 +105,21 @@ def test_delete_and_search_progress_during_ranking_while_media_remains_leased(
                     raise ValueError("injected ranking failure")
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(retrieval_module, stage, paused)
+        monkeypatch.setattr(owner, stage, paused)
         with ThreadPoolExecutor(max_workers=3) as pool:
-            searching = pool.submit(memory.search_with_trace, "shared", limit=2)
+            searching = pool.submit(partial(memory.search, explain=True), "shared", limit=2)
             try:
                 assert entered.wait(5)
                 assert pool.submit(memory.delete, target.id).result(timeout=3)
                 assert target_path.is_file()
                 later = pool.submit(memory.search, "shared", limit=2).result(timeout=3)
-                assert [hit.id for hit in later] == [decoy.id]
+                assert [hit.id for hit in later.hits] == [decoy.id]
             finally:
                 release.set()
             if fail:
                 with pytest.raises(
-                    StorageError if stage.startswith("max_cosine") else ValueError,
-                    match=r"score search candidates|injected ranking failure",
+                    ValueError,
+                    match="injected ranking failure",
                 ):
                     searching.result(timeout=5)
             else:
@@ -143,7 +154,7 @@ def test_embedding_stream_keeps_one_snapshot_across_sql_batches(
 def test_delete_before_authoritative_hydration_does_not_return_a_snapshot_hit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), ambiguity_margin=0) as memory:
+    with Memory(tmp_path, embedder=_Embedder(), config=MemoryConfig(ambiguity_margin=0)) as memory:
         target = memory.add("shared target")
         original = cast(Callable[..., object], parent_index_signals)
 
@@ -153,7 +164,7 @@ def test_delete_before_authoritative_hydration_does_not_return_a_snapshot_hit(
             return signals
 
         monkeypatch.setattr(retrieval_module, "parent_index_signals", deleted)
-        assert memory.search("shared") == ()
+        assert memory.search("shared").hits == ()
 
 
 @pytest.mark.parametrize("missing_target", (False, True))
@@ -163,10 +174,12 @@ def test_media_validation_is_limited_to_selected_candidates(
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        index_quantization=IndexQuantization.INT8,
-        retrieval_mode=RetrievalMode.DENSE,
-        minimum_relevance=0.85,
-        ambiguity_margin=0,
+        config=MemoryConfig(
+            index_quantization=IndexQuantization.INT8,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.85,
+            ambiguity_margin=0,
+        ),
     ) as memory:
         target = memory.add(("target", Blob(b"target", "image/png")))
         decoy = memory.add(("neighbor", Blob(b"neighbor", "image/png")))
@@ -177,13 +190,17 @@ def test_media_validation_is_limited_to_selected_candidates(
             with pytest.raises(StorageError, match="lease local media"):
                 memory.search("query")
         else:
-            assert [hit.id for hit in memory.search("query")] == [target.id]
+            assert [hit.id for hit in memory.search("query").hits] == [target.id]
 
 
 def test_only_selected_media_remains_leased_during_hit_hydration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), minimum_relevance=0, ambiguity_margin=0) as memory:
+    with Memory(
+        tmp_path,
+        embedder=_Embedder(),
+        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+    ) as memory:
         target = memory.add(("shared target", Blob(b"target", "image/png")))
         decoy = memory.add(("shared neighbor", Blob(b"neighbor", "image/png")))
         target_path, decoy_path = target.assets[0].path, decoy.assets[0].path
@@ -207,5 +224,5 @@ def test_only_selected_media_remains_leased_during_hit_hydration(
                 assert target_path.is_file()
             finally:
                 release.set()
-            assert [hit.id for hit in searching.result(timeout=5)] == [target.id]
+            assert [hit.id for hit in searching.result(timeout=5).hits] == [target.id]
         assert not target_path.exists()

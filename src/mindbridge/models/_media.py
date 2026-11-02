@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 import re
 import warnings
@@ -12,6 +13,9 @@ from fractions import Fraction
 from numbers import Real
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
+
+from mindbridge.exceptions import ModelError, ValidationError
+from mindbridge.types import AssetRef, Modality
 
 if TYPE_CHECKING:
     from PIL.Image import Image as PILImage
@@ -182,3 +186,51 @@ def container_duration_seconds(
         if math.isfinite(duration) and duration > 0:
             return duration
     return None
+
+
+def asset_url_part(
+    asset: AssetRef,
+    cache: dict[str, str],
+) -> dict[str, object]:
+    modality, _media_type, _path = resolved_asset(asset)
+    kind = f"{modality.value}_url"
+    url = cache.get(asset.id)
+    if url is None:
+        url = asset_url(asset)
+        cache[asset.id] = url
+    return {"type": kind, kind: {"url": url}}
+
+
+def asset_url(asset: AssetRef) -> str:
+    _modality, media_type, _path = resolved_asset(asset)
+    return f"data:{media_type};base64,{asset_data(asset)}"
+
+
+def asset_data(asset: AssetRef) -> str:
+    _modality, _media_type, path = resolved_asset(asset)
+    try:
+        data = path.resolve(strict=True).read_bytes()
+    except OSError:
+        raise ModelError(
+            "local media asset is unavailable",
+            reason="asset_unavailable",
+            subject=asset.id,
+        ) from None
+    if asset.size_bytes is not None and len(data) != asset.size_bytes:
+        raise ModelError(
+            "local media asset changed after ingestion",
+            reason="asset_changed",
+            subject=asset.id,
+        )
+    return base64.b64encode(data).decode("ascii")
+
+
+def resolved_asset(asset: AssetRef) -> tuple[Modality, str, Path]:
+    if not asset.is_resolved:
+        raise ValidationError("asset reference must be resolved before model use")
+    modality = asset.modality
+    media_type = asset.media_type
+    path = asset.path
+    if modality is None or media_type is None or path is None:
+        raise ValidationError("asset reference must be resolved before model use")
+    return modality, media_type, path

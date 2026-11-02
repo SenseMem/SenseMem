@@ -3,25 +3,45 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
+from typing import cast
 
 from opentelemetry.trace import Tracer
 
-from mindbridge._telemetry import IDENTITY_NAMES_BOUND, IDENTITY_NAMES_REFUSED
+from mindbridge._telemetry import (
+    IDENTITY_EVIDENCE_ASSETS,
+    IDENTITY_EVIDENCE_REQUIRED,
+    IDENTITY_LINKED,
+    IDENTITY_NAMES_BOUND,
+    IDENTITY_NAMES_REFUSED,
+)
 from mindbridge.control import IDENTITY_LINK_RECIPE, dump_operation, operation_key
 from mindbridge.exceptions import (
     IdentityNotFoundError,
     MemoryNotFoundError,
     ModelError,
-    SpeakerNotFoundError,
+    StorageError,
     ValidationError,
 )
-from mindbridge.infrastructure.local.store import StoredEmbedding, StoredMemory, StoredOperation
+from mindbridge.infrastructure.local.store import (
+    IdentityLink,
+    StaleOperationError,
+    StoredAsset,
+    StoredEmbedding,
+    StoredMemory,
+    StoredOperation,
+)
 from mindbridge.kernel.content import prepare_memory
 from mindbridge.kernel.contracts import Backends
-from mindbridge.kernel.derived import has_indexed_speech
+from mindbridge.kernel.derived import (
+    has_indexed_speech,
+    speaker_labels,
+)
 from mindbridge.kernel.embedding import Embedding
+from mindbridge.kernel.execution import Execution
 from mindbridge.kernel.formation import (
     CONSENT_RECIPE,
     NAMING_RECIPE,
@@ -37,6 +57,7 @@ from mindbridge.kernel.lifecycle import Lifecycle, OperationAssets
 from mindbridge.kernel.materialization import Materializer
 from mindbridge.kernel.projection import Projection
 from mindbridge.kernel.runtime import Storage, translate_storage_errors
+from mindbridge.kernel.settings import Settings
 from mindbridge.kernel.speech import Speech
 from mindbridge.kernel.tracing import Traced
 from mindbridge.kernel.validation import (
@@ -44,12 +65,12 @@ from mindbridge.kernel.validation import (
     validated_identity_name,
 )
 from mindbridge.kernel.vision import Vision
-from mindbridge.models.base import FaceBackend, SpeechBackend
+from mindbridge.models.base import SpeechBackend
+from mindbridge.perception import VisualDescription
 from mindbridge.types import (
     ConsentClaim,
     ConsentState,
     EvidenceBasis,
-    FaceObservation,
     IdentityChange,
     IdentityClaim,
     IdentityErasure,
@@ -59,10 +80,38 @@ from mindbridge.types import (
     MemoryOperationRecord,
     MemoryTrigger,
     Modality,
-    SpeakerSegment,
+    PerceptionCoverage,
+    PerceptionKind,
+    PerceptionResult,
+    PerceptionSkipReason,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _perception_coverage(
+    assets: Sequence[StoredAsset],
+    *,
+    kind: PerceptionKind,
+    kinds: frozenset[PerceptionKind] | None,
+    modalities: set[Modality],
+    available: bool,
+    supported: frozenset[Modality],
+) -> tuple[PerceptionCoverage, ...]:
+    """Describe the execution scope independently of whether recognition found a person."""
+    coverage = []
+    for asset in assets:
+        reason: PerceptionSkipReason | None = None
+        if kinds is not None and kind not in kinds:
+            reason = "not_requested"
+        elif Modality(asset.modality) not in modalities:
+            reason = "unsupported_modality"
+        elif not available:
+            reason = "backend_not_configured"
+        elif Modality(asset.modality) not in supported:
+            reason = "unsupported_modality"
+        coverage.append(PerceptionCoverage(kind=kind, asset_id=asset.asset_id, reason=reason))
+    return tuple(coverage)
 
 
 class Identities(Traced):
@@ -81,6 +130,8 @@ class Identities(Traced):
         projection: Projection,
         vision: Vision,
         formation: Formation,
+        settings: Settings,
+        execution: Execution,
     ) -> None:
         super().__init__(tracer)
         self._formation_lock = storage.formation_lock
@@ -94,98 +145,88 @@ class Identities(Traced):
         self._projection = projection
         self._vision = vision
         self._formation = formation
+        self._settings = settings
+        self._execution = execution
 
-    def speech(self, memory_id: str) -> tuple[SpeakerSegment, ...]:
+    def perceive_memory(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult:
+        if kinds is not None and (
+            not isinstance(kinds, frozenset) or not kinds or not kinds <= {"speech", "faces"}
+        ):
+            raise ValidationError("kinds must be a non-empty frozenset of speech and/or faces")
+        selected: frozenset[PerceptionKind] = kinds if kinds is not None else frozenset()
+        if kinds is None:
+            if isinstance(self._backends.transcriber, SpeechBackend):
+                selected |= {"speech"}
+            if self._backends.face_analyzer is not None:
+                selected |= {"faces"}
         with (
-            self._trace("mindbridge.speech", kind="operation"),
+            self._trace("mindbridge.perceive", kind="operation"),
             self._lifecycle.operation(model_work=True) as operation,
         ):
             normalized_id = validated_identifier(memory_id, "memory_id")
-            with self._write_lock, translate_storage_errors("read speech memory"):
+            with self._write_lock, translate_storage_errors("read perception memory"):
                 memory = self._store.records.read_memory(normalized_id)
-            if memory is None:
-                raise MemoryNotFoundError(f"memory does not exist: {normalized_id}")
-            speech_assets = tuple(
-                {
-                    asset.asset_id: asset
-                    for asset in memory.assets
-                    if asset.modality in {"audio", "video"}
-                }.values()
-            )
-            if not speech_assets:
-                return ()
-            if not isinstance(self._backends.transcriber, SpeechBackend):
-                raise ModelError(
+                if memory is None:
+                    raise MemoryNotFoundError(f"memory does not exist: {normalized_id}")
+                assets = tuple({asset.asset_id: asset for asset in memory.assets}.values())
+                self._lifecycle.lease_assets(assets, operation.leased)
+            coverage: list[PerceptionCoverage] = []
+            for kind, modalities, available, supported, missing in (
+                (
+                    "speech",
+                    {Modality.AUDIO, Modality.VIDEO},
+                    isinstance(self._backends.transcriber, SpeechBackend),
+                    self._backends.transcription_capabilities,
                     "configured transcription backend does not provide speaker recognition",
-                    reason="backend_not_configured",
+                ),
+                (
+                    "faces",
+                    {Modality.IMAGE, Modality.VIDEO},
+                    self._backends.face_analyzer is not None,
+                    self._backends.face_capabilities,
+                    "no face backend is configured",
+                ),
+            ):
+                kind = cast(PerceptionKind, kind)
+                coverage.extend(
+                    _perception_coverage(
+                        assets,
+                        kind=kind,
+                        kinds=kinds,
+                        modalities=modalities,
+                        available=available,
+                        supported=supported,
+                    )
                 )
-            self._lifecycle.lease_assets(speech_assets, operation.leased)
-            operation.persisted.update(asset.asset_id for asset in speech_assets)
-            self._speech.recognize(speech_assets, operation)
-            return tuple(
-                segment
-                for asset in speech_assets
-                for segment in operation.speech_segments[asset.asset_id]
+                if kind not in selected:
+                    continue
+                relevant = {Modality(asset.modality) for asset in assets} & modalities
+                if relevant and not available:
+                    raise ModelError(missing, reason="backend_not_configured")
+                unsupported = relevant - supported
+                if unsupported and kinds is not None:
+                    names = ", ".join(sorted(value.value for value in unsupported))
+                    raise ModelError(
+                        f"configured {kind} backend does not support: {names}",
+                        reason="unsupported_modality",
+                    )
+            operation.persisted.update(asset.asset_id for asset in assets)
+            self.perceive(assets, operation, kinds=selected)
+            return PerceptionResult(
+                coverage=tuple(coverage),
+                speech=tuple(
+                    segment
+                    for asset in assets
+                    for segment in operation.speech_segments.get(asset.asset_id, ())
+                ),
+                faces=tuple(
+                    face
+                    for asset in assets
+                    for face in operation.face_observations.get(asset.asset_id, ())
+                ),
             )
-
-    def faces(self, memory_id: str) -> tuple[FaceObservation, ...]:
-        with (
-            self._trace("mindbridge.faces", kind="operation"),
-            self._lifecycle.operation(model_work=True) as operation,
-        ):
-            normalized_id = validated_identifier(memory_id, "memory_id")
-            with self._write_lock, translate_storage_errors("read face memory"):
-                memory = self._store.records.read_memory(normalized_id)
-            if memory is None:
-                raise MemoryNotFoundError(f"memory does not exist: {normalized_id}")
-            visual_assets = tuple(
-                {
-                    asset.asset_id: asset
-                    for asset in memory.assets
-                    if asset.modality in {"image", "video"}
-                }.values()
-            )
-            if not visual_assets:
-                return ()
-            if not isinstance(self._backends.face_analyzer, FaceBackend):
-                raise ModelError("no face backend is configured", reason="backend_not_configured")
-            unsupported = {
-                Modality(asset.modality)
-                for asset in visual_assets
-                if Modality(asset.modality) not in self._backends.face_capabilities
-            }
-            if unsupported:
-                names = ", ".join(sorted(modality.value for modality in unsupported))
-                raise ModelError(
-                    f"configured face backend does not support: {names}",
-                    reason="unsupported_modality",
-                )
-            self._lifecycle.lease_assets(visual_assets, operation.leased)
-            operation.persisted.update(asset.asset_id for asset in visual_assets)
-            self._vision.recognize(visual_assets, operation)
-            return tuple(
-                observation
-                for asset in visual_assets
-                for observation in operation.face_observations[asset.asset_id]
-            )
-
-    def register_speaker(
-        self,
-        speaker_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        self._register_identity(speaker_id, name, relationship=relationship, speaker=True)
-
-    def register_identity(
-        self,
-        identity_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        self._register_identity(identity_id, name, relationship=relationship, speaker=False)
 
     def identity(self, identity_id: str) -> IdentityProfile | None:
         with (
@@ -211,12 +252,9 @@ class Identities(Traced):
         with (
             self._trace("mindbridge.record_consent", kind="operation"),
             self._lifecycle.operation(model_work=True) as operation,
-            # `_formation_lock` before `_write_lock`, the same order `consolidate()`'s apply
-            # phase and `add()`'s formation use: `_assert_consent` commits through the same
-            # `_commit_formation` path as naming, so a consent statement must not land while a
-            # consolidate apply pass is in progress either.
+            # Serialize identity policy changes; formation takes the write lock only after
+            # preparing model output, in the same lock order as consolidation.
             self._formation_lock,
-            self._write_lock,
         ):
             with translate_storage_errors("read identity memories"):
                 normalized_id = self._store.identities.resolve_identity_id(requested_id)
@@ -450,20 +488,26 @@ class Identities(Traced):
         speaker_name: str | None,
         operation: OperationAssets,
         previous_speaker_id: str | None = None,
+        expected: list[StoredMemory] | None = None,
     ) -> tuple[tuple[StoredMemory, ...], tuple[StoredEmbedding, ...]]:
         """Rebuild every indexed memory whose speech projection names one identity.
 
         This always runs beside a projection recompute, so the text a search matches and the
         name `identities` reports are written from the same assertion in one commit.
         """
-        with translate_storage_errors("read identity memories"):
+        with self._write_lock, translate_storage_errors("read identity memories"):
             memory_ids = self._store.identities.speaker_memory_ids(
                 previous_speaker_id or identity_id
             )
             if not memory_ids:
                 return (), ()
             stored = self._store.records.read_memories(memory_ids)
-        indexed = tuple(memory for memory in stored if has_indexed_speech(memory))
+            indexed = tuple(memory for memory in stored if has_indexed_speech(memory))
+            self._lifecycle.lease_assets(
+                tuple(asset for memory in indexed for asset in memory.assets), operation.leased
+            )
+        if expected is not None:
+            expected.extend(indexed)
         if not indexed:
             return (), ()
         return self._embedding.refresh_speaker_memories(
@@ -475,41 +519,32 @@ class Identities(Traced):
             operation=operation,
         )
 
-    def _register_identity(
+    def register_identity(
         self,
         identity_id: str,
         name: str,
         *,
         relationship: str | None = None,
-        speaker: bool,
     ) -> None:
-        id_label = "speaker_id" if speaker else "identity_id"
-        requested_id = validated_identifier(identity_id, id_label)
+        requested_id = validated_identifier(identity_id, "identity_id")
         normalized_name = validated_identity_name(name)
         normalized_relationship = (
             None
             if relationship is None
             else validated_identity_name(relationship, "identity relationship")
         )
-        operation_name = "register_speaker" if speaker else "register_identity"
         with (
-            self._trace(f"mindbridge.{operation_name}", kind="operation"),
+            self._trace("mindbridge.register_identity", kind="operation"),
             self._lifecycle.operation(model_work=True) as operation,
-            # `_formation_lock` before `_write_lock`, the same order `consolidate()`'s apply
-            # phase and `add()`'s formation use: the IDENTIFY naming commit below must not land
-            # while a consolidate apply pass is in progress, and taking the two locks in a
-            # different order here would deadlock against that path.
+            # Naming shares the policy lock with consolidation. Its model preparation runs
+            # before formation acquires the write lock for the atomic commit.
             self._formation_lock,
-            self._write_lock,
         ):
             with translate_storage_errors("read identity memories"):
                 normalized_id = self._store.identities.resolve_identity_id(requested_id)
                 if normalized_id is None:
                     identity_exists = False
                     memory_ids = None
-                elif speaker:
-                    memory_ids = self._store.identities.speaker_memory_ids(normalized_id)
-                    identity_exists = memory_ids is not None
                 else:
                     identity_exists = (
                         self._store.identities.identity_memory_ids(normalized_id) is not None
@@ -517,8 +552,6 @@ class Identities(Traced):
                     speaker_memory_ids = self._store.identities.speaker_memory_ids(normalized_id)
                     memory_ids = () if speaker_memory_ids is None else speaker_memory_ids
             if not identity_exists:
-                if speaker:
-                    raise SpeakerNotFoundError(f"speaker does not exist: {requested_id}")
                 raise IdentityNotFoundError(f"identity does not exist: {requested_id}")
             assert normalized_id is not None
             assert memory_ids is not None
@@ -602,33 +635,48 @@ class Identities(Traced):
         # `add()`'s automatic formation holds across its own `_commit_formation`, see
         # `_form_sources`), so this IDENTIFY commit cannot land while a consolidate apply pass
         # is in progress either.
-        self._formation.commit(
-            ((prepared, None, proposal.confidence),),
-            (),
-            assets=operation,
-            completed_at=now,
-            recipe=NAMING_RECIPE,
-            # Re-asserting a standing name changes nothing, so it logs nothing: the operation
-            # key is already active and the log's unique index would refuse it anyway.
-            operation=(
-                None
-                if key is None
-                else StoredOperation(
-                    operation_key=key,
-                    intent=proposed.intent.value,
-                    trigger=MemoryTrigger.MANUAL.value,
+        for attempt in range(4):
+            expected: list[StoredMemory] = []
+            try:
+                self._formation.commit(
+                    ((prepared, None, proposal.confidence),),
+                    (),
+                    assets=operation,
+                    completed_at=now,
                     recipe=NAMING_RECIPE,
-                    operation_json=dump_operation(proposed),
-                    applied_at=now,
+                    # Re-asserting a standing name changes nothing, so it logs nothing: the operation
+                    # key is already active and the log's unique index would refuse it anyway.
+                    operation=(
+                        None
+                        if key is None
+                        else StoredOperation(
+                            operation_key=key,
+                            intent=proposed.intent.value,
+                            trigger=MemoryTrigger.MANUAL.value,
+                            recipe=NAMING_RECIPE,
+                            operation_json=dump_operation(proposed),
+                            applied_at=now,
+                        )
+                    ),
+                    projection_identity_id=identity_id,
+                    projection_factory=partial(
+                        self.reindex_speech,
+                        identity_id,
+                        speaker_name=name,
+                        operation=operation,
+                        expected=expected,
+                    ),
+                    projection_sources=expected,
                 )
-            ),
-            projection_identity_id=identity_id,
-            projection_factory=lambda: self.reindex_speech(
-                identity_id,
-                speaker_name=name,
-                operation=operation,
-            ),
-        )
+            except StaleOperationError:
+                if attempt == 3:
+                    raise StorageError(
+                        "identity projection is busy; retry the update",
+                        reason="capacity_exceeded",
+                        stage="admission",
+                    ) from None
+            else:
+                break
         return prepared.memory_id
 
     def forget_identity(self, identity_id: str) -> IdentityErasure:
@@ -720,7 +768,7 @@ class Identities(Traced):
         bound = 0
         refused = 0
         for identity_id, name in bindings.items():
-            with self._formation_lock, self._write_lock:
+            with self._formation_lock:
                 with translate_storage_errors("read identity profile"):
                     profile = self._store.identities.identity_profile(identity_id)
                 try:
@@ -753,3 +801,244 @@ class Identities(Traced):
             with self._trace("mindbridge.identity.names", kind="stage") as span:
                 span.set_attribute(IDENTITY_NAMES_BOUND, bound)
                 span.set_attribute(IDENTITY_NAMES_REFUSED, refused)
+
+    def stage_speaker_names(
+        self,
+        descriptions: Mapping[str, VisualDescription],
+        operation: OperationAssets,
+    ) -> None:
+        """Collect the names a caption's facts stated for this write's own diarised speakers.
+
+        A stated name is the one distillation that is more than indexed text: it re-keys the
+        person in every document that mentions them, now and for every later clip that resolves
+        to the same voice, which is what carries an identity across clips at all.
+
+        Only a label this asset's own recognizer produced can be resolved, so a fact naming a
+        speaker who is not in this clip is dropped rather than guessed at -- counted into
+        `operation.speaker_names_refused`, the same drop tally `_bind_speaker_names` adds to and
+        reports, so a fact naming a label nobody produced is not simply invisible. Cached
+        descriptions are read too: re-ingesting a corpus must reach the same named store as the
+        first ingest, and re-asserting a standing name is a no-op.
+        """
+        for asset_id, description in descriptions.items():
+            segments = operation.speech_segments.get(asset_id)
+            if not segments:
+                continue
+            identities = {label: identity for identity, label in speaker_labels(segments).items()}
+            for proposed in description.speaker_names:
+                identity_id = identities.get(proposed.speaker_label)
+                if identity_id is None:
+                    operation.speaker_names_refused += 1
+                    continue
+                operation.speaker_names.setdefault(identity_id, proposed.name)
+
+    def known_speaker_names(self, asset_id: str, operation: OperationAssets) -> dict[str, str]:
+        """Map this asset's `speaker_N` labels to whatever name is already known for them.
+
+        "Known now" is a name this very batch's own facts just staged (`operation.speaker_names`)
+        or a name an already-registered identity carries on its recognized segments; a name a
+        later write asserts is not, which is the write-time/retrieval-time split documented on
+        `project_fact_labels`.
+        """
+        segments = operation.speech_segments.get(asset_id)
+        if not segments:
+            return {}
+        names: dict[str, str] = {}
+        for identity_id, label in speaker_labels(segments).items():
+            name = operation.speaker_names.get(identity_id)
+            if name is None:
+                name = next(
+                    (
+                        segment.speaker_name
+                        for segment in segments
+                        if segment.speaker_id == identity_id and segment.speaker_name
+                    ),
+                    None,
+                )
+            if name:
+                names[label] = name
+        return names
+
+    def perceive(
+        self,
+        assets: Sequence[StoredAsset],
+        operation: OperationAssets,
+        *,
+        link: bool = True,
+        kinds: frozenset[PerceptionKind] = frozenset({"speech", "faces"}),
+    ) -> None:
+        """Recognize independent voice/face inputs concurrently, then authorize identity links."""
+        speech = self._speech.answer_speech_assets(assets) if "speech" in kinds else ()
+        faces = self._vision.answer_face_assets(assets) if "faces" in kinds else ()
+        if speech and faces:
+            with self._execution.overlap_speech(
+                self._speech.recognize, speech, operation
+            ) as pending:
+                self._vision.recognize(faces, operation)
+                pending.result()
+        elif speech:
+            self._speech.recognize(speech, operation)
+        elif faces:
+            self._vision.recognize(faces, operation)
+        if link:
+            with self._formation_lock:
+                for asset in faces:
+                    self._link_asset_identity(asset.asset_id, operation)
+
+    def _identity_link_is_corroborated(
+        self,
+        speaker_id: str,
+        face_id: str,
+        asset_id: str,
+    ) -> bool:
+        """Record this asset's voice-and-face co-occurrence and report whether it is enough.
+
+        One asset's co-occurrence is not evidence that one person produced both. Egocentric
+        capture is the adversarial case: the wearer speaks while a different person's face
+        fills the frame, so a single clip would bind the listener's face to the wearer's voice
+        and nothing downstream could tell.
+
+        Counting assets raises the price of that mistake but does not prevent it. A wearer
+        talks to the same person across many clips, so the wrong pair accumulates as fast as a
+        genuine speaker's, and measurement on synthetic egocentric traffic confirms it: at the
+        default of two assets the wearer still binds to an interlocutor's face under every
+        ingestion order tried. What the count does buy is that a face seen once is never
+        bound, and `_link_asset_identity` keeps the damage to that one bind by refusing to let
+        an identity holding both modalities absorb anything further.
+        """
+        observed = self._store.identities.record_identity_link_evidence(
+            speaker_id, face_id, asset_id
+        )
+        corroborated = observed >= self._settings.identity_link_min_assets
+        with self._trace("mindbridge.identity.link", kind="stage") as span:
+            span.set_attribute(IDENTITY_EVIDENCE_ASSETS, observed)
+            span.set_attribute(IDENTITY_EVIDENCE_REQUIRED, self._settings.identity_link_min_assets)
+            span.set_attribute(IDENTITY_LINKED, corroborated)
+        return corroborated
+
+    def _identity_link_operation(self, plan: IdentityLink) -> StoredOperation:
+        """Build the MERGE log row one corroborated cross-modal bind commits with."""
+        proposed = MemoryOperation(
+            intent=MemoryIntent.MERGE,
+            identity=IdentityChange(
+                identity_id=plan.target_id,
+                moved_ids=(plan.source_id,),
+            ),
+            rationale=(
+                f"one voice and one face co-occurred in at least "
+                f"{self._settings.identity_link_min_assets} assets"
+            ),
+        )
+        return StoredOperation(
+            operation_key=operation_key(proposed, recipe=IDENTITY_LINK_RECIPE),
+            intent=proposed.intent.value,
+            # Independent evidence accumulated until it corroborated the pair, which is exactly
+            # what this trigger names -- no clock and no host request is involved.
+            trigger=MemoryTrigger.EVIDENCE.value,
+            model_id=self._backends.face_model,
+            recipe=IDENTITY_LINK_RECIPE,
+            operation_json=dump_operation(proposed),
+            applied_at=datetime.now(timezone.utc),
+        )
+
+    def _link_asset_identity(self, asset_id: str, operation: OperationAssets) -> None:
+        for attempt in range(4):
+            try:
+                self._link_asset_identity_once(asset_id, operation)
+            except StaleOperationError:
+                if attempt == 3:
+                    raise StorageError(
+                        "identity projection is busy; retry the update",
+                        reason="capacity_exceeded",
+                        stage="admission",
+                    ) from None
+            else:
+                return
+
+    def _link_asset_identity_once(self, asset_id: str, operation: OperationAssets) -> None:
+        speaker_ids = {
+            segment.speaker_id
+            for segment in operation.speech_segments.get(asset_id, ())
+            if segment.speaker_id is not None
+        }
+        face_ids = {
+            observation.identity_id for observation in operation.face_observations.get(asset_id, ())
+        }
+        if len(speaker_ids) != 1 or len(face_ids) != 1:
+            return
+        speaker_id, face_id = next(iter(speaker_ids)), next(iter(face_ids))
+        # Withheld or withdrawn consent stops the merge on either side. Fusing a voice and a
+        # face is a new claim about a person -- that these two templates are one human -- so it
+        # is exactly the processing a refusal refuses, and unlike enrolment it is not something
+        # answering a question needs.
+        with translate_storage_errors("read identity consent"):
+            restrained = self._store.identities.restrained_identities()
+        if {speaker_id, face_id} & restrained:
+            return
+        if speaker_id == face_id:
+            # Already one identity. Recording this would store an identity co-occurring with
+            # itself, once per asset forever, and no such pair can ever yield a plan.
+            return
+        if not self._identity_link_is_corroborated(speaker_id, face_id, asset_id):
+            return
+        # Only a voice-only and a face-only identity may fuse here. Letting a fragment rejoin
+        # an identity that already holds its modality is what turns one wrong cross-modal bind
+        # into a cascade: once a wearer's voice owns one interlocutor's face, that identity
+        # holds both modalities, and every later fragment (the interlocutor's own voice, then
+        # the next interlocutor's face) is a fragment rejoining it. Measured on synthetic
+        # egocentric traffic (one off-camera wearer, three interlocutors, random ingestion
+        # order), permitting it collapsed all four people into one identity every time;
+        # refusing it capped the damage at the single unavoidable first bind and raised
+        # correct merges from 0/3 to 2/3. `LocalStore` still offers the wider merge to a
+        # caller that has established the claim some other way.
+        plan = self._store.identities.identity_link_plan(speaker_id, face_id)
+        if plan is None:
+            return
+        expected: list[StoredMemory] | None = None
+        memories: tuple[StoredMemory, ...] = ()
+        embeddings: tuple[StoredEmbedding, ...] = ()
+        if self._settings.index_speech and plan.source_id == speaker_id:
+            expected = []
+            memories, embeddings = self.reindex_speech(
+                plan.target_id,
+                speaker_name=plan.name,
+                previous_speaker_id=plan.source_id,
+                operation=operation,
+                expected=expected,
+            )
+        with self._write_lock, translate_storage_errors("link recognized identities"):
+            linked = self._store.identities.link_identities(
+                speaker_id,
+                face_id,
+                expected=plan,
+                memories=memories,
+                embeddings=embeddings,
+                projection_sources=expected,
+                operation=self._identity_link_operation(plan),
+            )
+            if linked is None:
+                return
+            self._projection.drain()
+        linked_ids = {plan.target_id, plan.source_id}
+        for cached_asset, segments in tuple(operation.speech_segments.items()):
+            operation.speech_segments[cached_asset] = tuple(
+                replace(
+                    segment,
+                    speaker_id=plan.target_id,
+                    speaker_name=plan.name,
+                )
+                if segment.speaker_id in linked_ids
+                else segment
+                for segment in segments
+            )
+        for cached_asset, observations in tuple(operation.face_observations.items()):
+            operation.face_observations[cached_asset] = tuple(
+                replace(
+                    observation,
+                    identity_id=plan.target_id,
+                    identity_name=plan.name,
+                )
+                if observation.identity_id in linked_ids
+                else observation
+                for observation in observations
+            )

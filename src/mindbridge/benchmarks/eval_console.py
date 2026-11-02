@@ -22,6 +22,7 @@ from tqdm import tqdm
 if TYPE_CHECKING:
     pass
 from mindbridge.benchmarks.eval_results import DEFAULT_ARM
+from mindbridge.benchmarks.videozerobench import VIDEOZERO_METRICS
 
 # The harness writes from threads in one process. tqdm's default multiprocessing RLock
 # allocates a named semaphore on Python 3.14, which survives abrupt or late shutdown.
@@ -350,10 +351,41 @@ def _table(results: Mapping[str, object]) -> str:
     widths = tuple(
         max(len(row[index]) for row in (headers, *rows)) for index in range(len(headers))
     )
-    return "\n".join(
+    table = "\n".join(
         "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
         for row in (headers, *rows)
     )
+    level_lines = []
+    for task in tasks:
+        if task["task"] != "videozerobench":
+            continue
+        metrics = cast(Mapping[str, Mapping[str, object]], task["metrics"])
+        label = str(task["task"])
+        if task.get("arm", DEFAULT_ARM) != DEFAULT_ARM:
+            label += f" [{task['arm']}]"
+        level_lines.append(f"\n{label}: all levels (0-100)")
+        for name in VIDEOZERO_METRICS:
+            summary = metrics.get(name)
+            if summary is None:
+                level_lines.append(f"  {name:<22} NOT SCORED")
+                continue
+            mean = summary["mean"]
+            count = summary["sample_count"]
+            value = (
+                "INVALID"
+                if task.get("score_valid") is False
+                else "—"
+                if mean is None or not count
+                else f"{float(cast(float, mean)):.4f}"
+            )
+            interval = summary["confidence_interval_95"]
+            confidence = (
+                "—"
+                if not isinstance(interval, list)
+                else f"[{float(interval[0]):.4f}, {float(interval[1]):.4f}]"
+            )
+            level_lines.append(f"  {name:<22} {value:<10} 95% CI {confidence}  n={count}")
+    return "\n".join((table, *level_lines))
 
 
 def _control_cell(value: object) -> str:

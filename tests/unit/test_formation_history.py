@@ -15,6 +15,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryContext,
     MemoryIntent,
     MemoryKind,
@@ -71,7 +72,10 @@ def test_history_is_read_only_and_joint_sources_require_agreed_metadata(
 ) -> None:
     former = HistoryFormer()
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, formation_history_max_rows=8
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        config=MemoryConfig(formation_history_max_rows=8),
     ) as memory:
         original = memory.add("Ada is the visitor.", metadata={"common": 1, "old": 2})
         current = memory.add("She left her notebook.", metadata={"common": 1, "new": 3})
@@ -127,7 +131,10 @@ def test_self_citing_restatement_is_refused_without_failing_source_write(
 
     former = RestatingFormer()
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, formation_history_max_rows=16
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        config=MemoryConfig(formation_history_max_rows=16),
     ) as memory:
         original = memory.add("Rava studies botany.")
         current = memory.add("The notebook arrived.")
@@ -150,8 +157,7 @@ def test_history_reports_truncation_without_skipping_a_long_recent_correction(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        formation_history_max_rows=8,
-        formation_history_budget_chars=30,
+        config=MemoryConfig(formation_history_max_rows=8, formation_history_budget_chars=30),
     ) as memory:
         memory.add("Ada is the visitor.")
         memory.add("The earlier name was a guess. " * 5)
@@ -165,7 +171,10 @@ def test_text_history_does_not_resolve_or_reopen_original_media(
 ) -> None:
     former = HistoryFormer()
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, formation_history_max_rows=8
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        config=MemoryConfig(formation_history_max_rows=8),
     ) as memory:
         original = memory.add(("Ada is the visitor.", Blob(b"image", "image/png")))
 
@@ -189,7 +198,10 @@ def test_forgetting_a_cited_history_during_model_call_prevents_atomic_commit(
 ) -> None:
     former = HistoryFormer()
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, formation_history_max_rows=8
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        config=MemoryConfig(formation_history_max_rows=8),
     ) as memory:
         original = memory.add("Ada is the visitor.")
         former.before_return = lambda: memory.forget((original.id,))
@@ -207,8 +219,7 @@ def test_withdrawing_support_that_hides_history_prevents_atomic_commit(tmp_path:
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        independent_evidence=True,
-        formation_history_max_rows=16,
+        config=MemoryConfig(independent_evidence=True, formation_history_max_rows=16),
     ) as memory:
         roots = (memory.add("First independent event."), memory.add("Second independent event."))
         proposal = FormationProposal(
@@ -245,7 +256,10 @@ def test_withdrawing_support_that_hides_history_prevents_atomic_commit(tmp_path:
 def test_delayed_formation_reads_the_history_version_known_at_capture(tmp_path: Path) -> None:
     former = HistoryFormer()
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, formation_history_max_rows=16
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        config=MemoryConfig(formation_history_max_rows=16),
     ) as memory:
         source = memory.add("A named visitor arrived.")
         history_id = memory.apply(
@@ -282,7 +296,10 @@ def test_batch_grounding_uses_each_targets_own_history_snapshot(
 ) -> None:
     former = HistoryFormer()
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, formation_history_max_rows=16
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        config=MemoryConfig(formation_history_max_rows=16),
     ) as memory:
         standing = memory.add("Ada is the visitor.")
         assert standing.context is not None
@@ -454,5 +471,9 @@ def test_formation_input_rejects_duplicate_snapshots_within_one_targets_history(
 @pytest.mark.parametrize("rows", [-1, 129, True])
 def test_history_window_is_validated_before_opening_storage(tmp_path: Path, rows: int) -> None:
     with pytest.raises(ValidationError, match="formation_history_max_rows"):
-        Memory(tmp_path / "not-created", embedder=TinyEmbedder(), formation_history_max_rows=rows)
+        Memory(
+            tmp_path / "not-created",
+            embedder=TinyEmbedder(),
+            config=MemoryConfig(formation_history_max_rows=rows),
+        )
     assert not (tmp_path / "not-created").exists()

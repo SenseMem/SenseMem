@@ -29,7 +29,6 @@ from mindbridge.infrastructure.local.store._recall import (
 from mindbridge.infrastructure.local.store._selection import (
     identity_scope,
     memory_time_clause,
-    require_scope_axes,
 )
 from mindbridge.infrastructure.local.store.records import MemoryRecords
 from mindbridge.infrastructure.local.store.rows import (
@@ -92,7 +91,6 @@ class RecallReads:
         folded = recall_terms(terms)
         require_recall_window(occurred_from, occurred_until, require_both=False)
         require_recall_filters(modality, memory_type, max_rows)
-        require_scope_axes(valid_at=valid_at, known_at=known_at, near=near, radius_m=radius_m)
         selected = self._recall_memory_ids(
             folded,
             any_of=any_of,

@@ -18,6 +18,7 @@ from mindbridge import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryKind,
     MemoryRecord,
     Modality,
@@ -105,7 +106,7 @@ def _memory(data_dir: Path) -> Memory:
         embedder=TinyEmbedder(),
         former=CompanionFormer(),
         consolidator=CueConsolidator(),
-        minimum_relevance=0,
+        config=MemoryConfig(minimum_relevance=0),
     )
 
 
@@ -215,7 +216,7 @@ def test_forgetting_a_cue_is_cognitive_and_reversible(tmp_path: Path) -> None:
         operation = memory.forget((cue.id,))
         assert operation is not None
         assert memory.compile(DOG_GOAL, budget=ContextBudget(max_items=8)).affect == ()
-        assert not any(hit.id == cue.id for hit in memory.search(DOG_GOAL, limit=10))
+        assert not any(hit.id == cue.id for hit in memory.search(DOG_GOAL, limit=10).hits)
         assert memory.get(cue.id).forgotten_at is not None
 
         assert memory.rollback(operation.operation_id) is True

@@ -30,6 +30,7 @@ from mindbridge import (
     EmbedTask,
     FormationProposal,
     Memory,
+    MemoryConfig,
     MemoryIntent,
     MemoryKind,
     MemoryNotFoundError,
@@ -278,10 +279,12 @@ def run_case(scenario: Scenario, route: str, seed: int, arm: str, data_dir: Path
         data_dir,
         embedder=embedder,
         consolidator=consolidator,
-        independent_evidence=arm == "B",
-        minimum_relevance=0.0,
-        ambiguity_margin=0.0,
-        reinforce_on_answer=False,
+        config=MemoryConfig(
+            independent_evidence=arm == "B",
+            minimum_relevance=0.0,
+            ambiguity_margin=0.0,
+            reinforce_on_answer=False,
+        ),
     ) as memory:
         ids: dict[str, str] = {}
         root_order = list(range(len(scenario.groups)))

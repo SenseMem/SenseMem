@@ -104,9 +104,12 @@ def test_declarative_structured_adapter_constructs_and_binds_custom_source_ids(
         )
         try:
             if stream:
-                assert "".join(adapter.stream_answer("Which source?", (hit,))) == "source-alpha"
+                assert (
+                    "".join(adapter.stream_answer(ModelInput(text="Which source?"), (hit,)))
+                    == "source-alpha"
+                )
             else:
-                result = adapter.answer("Which source?", (hit,))
+                result = adapter.answer(ModelInput(text="Which source?"), (hit,))
                 assert result.answer == "source-alpha" and result.hits == (hit,)
         finally:
             adapter.close()

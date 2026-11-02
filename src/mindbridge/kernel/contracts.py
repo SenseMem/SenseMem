@@ -7,13 +7,11 @@ planes ask against declared capability rather than provider names.
 
 from __future__ import annotations
 
-import builtins
 import logging
-from collections.abc import Sequence
-from contextlib import suppress
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
 
+from mindbridge._resources import Closable, present_resources, unique_resources
+from mindbridge._validation import nonempty_text
 from mindbridge.exceptions import ModelError, ValidationError
 from mindbridge.kernel.content import PreparedContent, prepared_modalities
 from mindbridge.kernel.validation import positive_int
@@ -23,12 +21,13 @@ from mindbridge.models.base import (
     FaceBackend,
     FormationBackend,
     GenerationBackend,
+    GenerationRoutingBackend,
     RerankingBackend,
     SpeechBackend,
-    StreamingGenerationBackend,
     TranscriptionBackend,
     VisionDescriptionBackend,
     _modalities,
+    embedding_routes,
 )
 from mindbridge.types import MemoryCapabilities, Modality
 
@@ -41,10 +40,6 @@ _NO_TRANSCRIPTION_SPACE = "none:asr-v1"
 _NO_FACE_SPACE = "none:face-v1"
 
 
-class Closable(Protocol):
-    def close(self) -> None: ...
-
-
 def fallback_unsupported(
     prepared: PreparedContent,
     supported: frozenset[Modality],
@@ -54,6 +49,11 @@ def fallback_unsupported(
 ) -> frozenset[Modality]:
     unsupported = prepared_modalities(prepared) - supported
     fallback = {Modality.AUDIO}
+    if (
+        any(asset.transcript is not None for asset in prepared.assets)
+        or "[speech identities:" in prepared.text
+    ):
+        fallback.add(Modality.VIDEO)
     if prepared.visual_description:
         fallback.update((Modality.IMAGE, Modality.VIDEO))
     # This runs before any derived text exists, so it cannot be seen yet -- only its possibility.
@@ -82,20 +82,12 @@ def fallback_unsupported(
     return unsupported
 
 
-def require_audio_transcription(capabilities: frozenset[Modality]) -> None:
-    if Modality.AUDIO not in capabilities:
-        raise ModelError(
-            "audio fallback requires a transcription model with audio capability",
-            reason="unsupported_modality",
-        )
-
-
 def _transcription_contract(
     transcriber: SpeechBackend | TranscriptionBackend | None,
 ) -> tuple[frozenset[Modality], str]:
     if transcriber is None:
         return frozenset(), _NO_TRANSCRIPTION_SPACE
-    return _modalities(transcriber.transcription_capabilities, "transcription"), _model_text(
+    return _modalities(transcriber.transcription_capabilities, "transcription"), nonempty_text(
         transcriber.transcription_space,
         "transcription space",
     )
@@ -119,8 +111,8 @@ def _vision_contract(
         raise ValidationError("vision capabilities must contain image or video")
     return (
         capabilities,
-        _model_text(describer.vision_model, "vision model"),
-        _model_text(describer.vision_space, "vision space"),
+        nonempty_text(describer.vision_model, "vision model"),
+        nonempty_text(describer.vision_space, "vision space") + ":typed-v1",
     )
 
 
@@ -134,8 +126,8 @@ def _formation_contract(
         raise ValidationError("formation capabilities must not be empty")
     return (
         capabilities,
-        _model_text(former.formation_model, "formation model"),
-        _model_text(former.formation_space, "formation space"),
+        nonempty_text(former.formation_model, "formation model"),
+        nonempty_text(former.formation_space, "formation space"),
     )
 
 
@@ -145,8 +137,8 @@ def _consolidation_contract(
     if consolidator is None:
         return "none", "none"
     return (
-        _model_text(consolidator.consolidation_model, "consolidation model"),
-        _model_text(consolidator.consolidation_recipe, "consolidation recipe"),
+        nonempty_text(consolidator.consolidation_model, "consolidation model"),
+        nonempty_text(consolidator.consolidation_recipe, "consolidation recipe"),
     )
 
 
@@ -160,7 +152,7 @@ def _face_contract(
         raise ValidationError("face capabilities must contain image or video")
     return (
         capabilities,
-        _model_text(analyzer.face_model, "face model"),
+        nonempty_text(analyzer.face_model, "face model"),
         _embedding_space(analyzer.face_space),
         _embedding_space(analyzer.face_analysis_space),
     )
@@ -171,46 +163,17 @@ def _embedding_contract(
 ) -> tuple[frozenset[Modality], str, str, int]:
     return (
         _modalities(embedder.embedding_capabilities, "embedding"),
-        _model_text(embedder.embedding_model, "embedding model"),
+        nonempty_text(embedder.embedding_model, "embedding model"),
         _embedding_space(embedder.embedding_space),
         positive_int(embedder.embedding_dimension, "embedder.embedding_dimension"),
     )
 
 
 def _embedding_space(value: object) -> str:
-    space = _model_text(value, "embedding space")
+    space = nonempty_text(value, "embedding space")
     if "'" in space or "\\" in space or any(ord(character) < 32 for character in space):
         raise ValidationError("embedding space contains characters unsupported by Zvec")
     return space
-
-
-def _model_text(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValidationError(f"{name} must be non-empty text")
-    return value.strip()
-
-
-def unique_resources(resources: Sequence[Closable]) -> tuple[Closable, ...]:
-    seen: set[int] = set()
-    unique: builtins.list[Closable] = []
-    for resource in resources:
-        identity = id(resource)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        unique.append(resource)
-    return tuple(unique)
-
-
-def present_resources(*resources: Closable | None) -> tuple[Closable, ...]:
-    return tuple(resource for resource in resources if resource is not None)
-
-
-def close_quietly(*resources: Closable | None) -> None:
-    """Close each distinct present resource once, swallowing whatever `close()` raises."""
-    for resource in unique_resources(present_resources(*resources)):
-        with suppress(Exception):
-            resource.close()
 
 
 def declared_capabilities(
@@ -222,41 +185,19 @@ def declared_capabilities(
     face_analyzer: FaceBackend | None = None,
     former: FormationBackend | None = None,
     consolidator: ConsolidationBackend | None = None,
+    reranker: RerankingBackend | None = None,
 ) -> MemoryCapabilities:
-    """Declare what one set of backends can do, without opening a store.
-
-    `Memory.capabilities` reads it, and so does `mindbridge doctor`, which probes recipes without
-    owning a `data_dir`. Both therefore publish one document rather than two descriptions.
-    """
-    embedding, embedding_model, space_id, dimension = _embedding_contract(embedder)
-    transcription, transcription_space = _transcription_contract(transcriber)
-    vision, vision_model, _vision_space = _vision_contract(vision_describer)
-    face, face_model, _face_space, _face_analysis_space = _face_contract(face_analyzer)
-    formation, formation_model, _formation_space = _formation_contract(former)
-    consolidation_model, _consolidation_recipe = _consolidation_contract(consolidator)
-    return MemoryCapabilities(
-        embedding=embedding,
-        embedding_model=embedding_model,
-        embedding_space=space_id,
-        embedding_dimension=dimension,
-        generation=_generation_contract(answerer),
-        transcription=transcription,
-        vision=vision,
-        face=face,
-        formation=formation,
-        # The contracts substitute a `"none"` sentinel for an absent backend because the space
-        # and recipe digests hash these strings. That sentinel is an implementation detail, so
-        # the published value is absent when the backend is, keyed on the backend itself rather
-        # than on the string -- a real model could be named "none".
-        generation_model=getattr(answerer, "generation_model", None),
-        transcription_space=None if transcriber is None else transcription_space,
-        vision_model=None if vision_describer is None else vision_model,
-        face_model=None if face_analyzer is None else face_model,
-        formation_model=None if former is None else formation_model,
-        consolidation_model=None if consolidator is None else consolidation_model,
-        speaker_recognition=isinstance(transcriber, SpeechBackend),
-        streaming_generation=isinstance(answerer, StreamingGenerationBackend),
-    )
+    """Use the ordinary assembly boundary to inspect plugins without opening storage."""
+    return resolve_backends(
+        embedder=embedder,
+        answerer=answerer,
+        transcriber=transcriber,
+        vision_describer=vision_describer,
+        face_analyzer=face_analyzer,
+        former=former,
+        consolidator=consolidator,
+        reranker=reranker,
+    ).capabilities
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +233,48 @@ class Backends:
     reranker: RerankingBackend | None = None
     reranking_capabilities: frozenset[Modality] = frozenset()
 
+    capabilities: MemoryCapabilities = field(init=False)
+
+    def __post_init__(self) -> None:
+        native_embedding = embedding_routes(self.embedder, self.embedding_capabilities)
+        if self.embedding_capabilities and not native_embedding:
+            raise ValidationError("embedding routes must not be empty for a configured embedder")
+        routes = (
+            self.answerer.generation_routes
+            if isinstance(self.answerer, GenerationRoutingBackend)
+            else (self.generation_capabilities,)
+            if self.answerer is not None
+            else ()
+        )
+        if self.generation_capabilities and not routes:
+            raise ValidationError("generation routes must not be empty for a configured answerer")
+        object.__setattr__(
+            self,
+            "capabilities",
+            MemoryCapabilities(
+                embedding=self.embedding_capabilities,
+                embedding_model=self.embedding_model,
+                embedding_space=self.space_id,
+                embedding_dimension=self.embedding_dimension,
+                embedding_routes=native_embedding,
+                generation=self.generation_capabilities,
+                generation_routes=routes,
+                transcription=self.transcription_capabilities,
+                vision=self.vision_capabilities,
+                face=self.face_capabilities,
+                formation=self.formation_capabilities,
+                reranking=self.reranking_capabilities,
+                reranking_model=None if self.reranker is None else self.reranker.reranking_model,
+                generation_model=getattr(self.answerer, "generation_model", None),
+                transcription_space=None if self.transcriber is None else self.transcription_space,
+                vision_model=None if self.vision_describer is None else self.vision_model,
+                face_model=None if self.face_analyzer is None else self.face_model,
+                formation_model=None if self.former is None else self.formation_model,
+                consolidation_model=None if self.consolidator is None else self.consolidation_model,
+                speaker_recognition=isinstance(self.transcriber, SpeechBackend),
+            ),
+        )
+
     def resources(self) -> tuple[Closable, ...]:
         """Every distinct backend that may hold a client, in closing order."""
         return unique_resources(
@@ -320,10 +303,23 @@ def resolve_backends(
     reranker: RerankingBackend | None = None,
 ) -> Backends:
     """Validate each backend's declared contract and fold the results into one value."""
+    for name, backend, protocols in (
+        ("embedder", embedder, (EmbeddingBackend,)),
+        ("answerer", answerer, (GenerationBackend,)),
+        ("transcriber", transcriber, (SpeechBackend, TranscriptionBackend)),
+        ("vision_describer", vision_describer, (VisionDescriptionBackend,)),
+        ("face_analyzer", face_analyzer, (FaceBackend,)),
+        ("former", former, (FormationBackend,)),
+        ("consolidator", consolidator, (ConsolidationBackend,)),
+        ("reranker", reranker, (RerankingBackend,)),
+    ):
+        if backend is None and name != "embedder":
+            continue
+        if not isinstance(backend, protocols):
+            expected = " or ".join(protocol.__name__ for protocol in protocols)
+            raise ValidationError(f"plugins.{name} must implement {expected}")
     if reranker is not None:
-        if not isinstance(reranker, RerankingBackend):
-            raise ValidationError("reranker must implement RerankingBackend")
-        _model_text(reranker.reranking_model, "reranking model")
+        nonempty_text(reranker.reranking_model, "reranking model")
     reranking_capabilities = (
         frozenset()
         if reranker is None

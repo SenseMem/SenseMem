@@ -12,6 +12,7 @@ from mindbridge.benchmarks.es_memeval import ES_MEMEVAL_ADAPTER_VERSION
 from mindbridge.benchmarks.icm_bench import ICM_ADAPTER_VERSION, ICM_DATA_REVISION
 from mindbridge.benchmarks.longmemeval import LONGMEMEVAL_ADAPTER_VERSION
 from mindbridge.benchmarks.openeqa import OPENEQA_ADAPTER_VERSION, OPENEQA_SPLITS
+from mindbridge.benchmarks.videozerobench import VIDEOZERO_ADAPTER_VERSION
 from mindbridge.benchmarks.worldmemarena import WORLDMEMARENA_ADAPTER_VERSION
 
 
@@ -64,6 +65,7 @@ _VIDEO_MME_V2 = (
     "MME-Benchmarks/Video-MME-v2",
     "6e4bebb03202e1ddbf3d37703e560e51c5aa2d64",
 )
+_VIDEOZERO = ("marinero4972/VideoZeroBench", "aef3b0613ad2909a1355a99201b4a0c48e073836")
 _WORLDMEMARENA = ("LCZZZZ/WorldMemArena", "e2148757921fc7e2d66d8ed899823b763227c341")
 _EGOTEMPO = (
     "google-research-datasets/egotempo",
@@ -201,6 +203,16 @@ TASKS: dict[str, TaskSpec] = {
             digest="8dc7f8c8830aa49dd08a82592f8276899472a145155dde3bea5dd6914a65a9b4",
             media="video-mme-v2/videos",
             media_source=_VIDEO_MME_V2_MEDIA,
+        ),
+        _task(
+            "videozerobench",
+            "VideoZeroBench",
+            "videozerobench/VideoZeroBench_500_v0.json",
+            VIDEOZERO_ADAPTER_VERSION,
+            _VIDEOZERO,
+            digest="e07b42efc3d271a421c5dcccb807ea913a079bb1cdc3d4423215ad0f3af061f1",
+            media="videozerobench/compressed",
+            media_source=MediaSource("videozerobench", *_VIDEOZERO, ("compressed.zip",)),
         ),
         _task(
             "worldmemarena",
