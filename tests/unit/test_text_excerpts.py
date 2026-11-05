@@ -105,7 +105,7 @@ class _PartEmbedder:
         vectors = []
         for value in batch:
             if task is EmbedTask.QUERY or (
-                "TARGET CLAIM" in value.text
+                "TARGET CLAIM says" in value.text
                 and len(value.text) < 3_000
                 and not value.text.startswith("DERIVED TARGET")
             ):

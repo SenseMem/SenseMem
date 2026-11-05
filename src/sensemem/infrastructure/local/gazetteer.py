@@ -8,7 +8,7 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from datetime import date
 from functools import lru_cache
@@ -338,6 +338,11 @@ def _nearby_geometries(
         f"+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad "
         f"+step +proj=aeqd +lat_0={latitude} +lon_0={longitude} +ellps=WGS84 +units=m"
     )
+
+    def project(x: Sequence[float], y: Sequence[float]) -> tuple[list[float], list[float]]:
+        # Lists keep single-coordinate arrays out of pyproj's deprecated scalar coercion.
+        return projection.transform(list(x), list(y))
+
     point, source_point = Point(0, 0), Point(longitude, latitude)
     candidates = []
     for row in rows:
@@ -355,7 +360,7 @@ def _nearby_geometries(
             if not names:
                 continue
             covers = bool(source_geometry.covers(source_point))
-            geometry = transform(source_geometry, projection.transform, interleaved=False)
+            geometry = transform(source_geometry, project, interleaved=False)
             if geometry.is_empty or not geometry.is_valid:
                 continue
             distance = 0.0 if covers else float(geometry.distance(point))

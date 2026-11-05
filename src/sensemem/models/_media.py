@@ -63,7 +63,12 @@ def _capture_fields(
         if not isinstance(value, str):
             continue
         value = value.rstrip("\x00")
-        if re.fullmatch(r"[0-9]{4}:[0-9]{2}:[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}", value) is None:
+        if (
+            re.fullmatch(
+                r"[0-9]{4}:[0-9]{2}:[0-9]{2} (?:[01][0-9]|2[0-3]):[0-9]{2}:[0-9]{2}", value
+            )
+            is None
+        ):
             continue
         try:
             local = datetime.fromisoformat(

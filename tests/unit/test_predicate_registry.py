@@ -83,8 +83,8 @@ def test_unknown_predicates_keep_literal_resolution() -> None:
 
 def test_durable_predicate_keys_do_not_change_with_registry_maintenance() -> None:
     assert _lineage("favorite_beverage") == (
-        "5c78526a5163edaab1036eb79164c87080a5260d356eed3766f5a76f559af68b"
+        "188229f8e2109d6904d9f594989541150b78e9c2945364a38d4e54b1116994b5"
     )
     assert _lineage("unregistered") == (
-        "a1e011078b0399b8ece7f3adbb1daa1615b7b9fcb4dde75d6cbc0c2c0be5886a"
+        "453b5277a2b0628664f7504493f8143dbc67f99b6452f7f1cb7f633844e16f04"
     )

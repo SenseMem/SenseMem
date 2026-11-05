@@ -431,7 +431,12 @@ def test_joint_dependent_does_not_count_its_members_as_independent(tmp_path: Pat
         reinforcement = memory.consolidate(evidence_ids=(second[0],))
         assert _visible(memory, cited.id) is True
 
-        dependent = _trait_over(memory, (cited.id, first[0]))
+        report = memory.consolidate(evidence_ids=(cited.id, first[0]))
+        assert report.operations == ()
+        ((operation, reason),) = report.rejected
+        assert reason == "dependent_evidence"
+        # A host may assert the joint dependency, but it cannot create independent support.
+        dependent = memory.get(memory.apply(operation).created_ids[0])
         assert _visible(memory, dependent.id) is False
 
         assert memory.rollback(reinforcement.operations[0].operation_id) is True
@@ -481,7 +486,11 @@ def test_deleting_a_joint_source_cannot_leave_dependent_content_authorized(tmp_p
         )
 
         cited = _trait_over_separate_operations(memory, (cues[0], raw.id))
-        dependent = _trait_over(memory, (cited.id, cues[0]))
+        report = memory.consolidate(evidence_ids=(cited.id, cues[0]))
+        assert report.operations == ()
+        ((operation, reason),) = report.rejected
+        assert reason == "dependent_evidence"
+        dependent = memory.get(memory.apply(operation).created_ids[0])
         assert _visible(memory, cited.id) is True
         assert _visible(memory, dependent.id) is False
 

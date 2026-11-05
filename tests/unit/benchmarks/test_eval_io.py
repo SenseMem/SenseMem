@@ -1571,7 +1571,7 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
                 **{
                     field.name: {
                         "vision_describer": describer,
-                        "embedder": SimpleNamespace(),
+                        "embedder": SimpleNamespace(embed=lambda *_args, **_kwargs: ((1.0, 0.0),)),
                     }.get(field.name)
                     for field in fields(MemoryPlugins)
                 }
@@ -1594,7 +1594,7 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
             assert built._vision_describer is not None
             return built._vision_describer.describe((value,))
         finally:
-            cache.close()
+            built.close()
 
     first_backend = _CountingDescriber(prefix="old-prompt")
     first_backend.vision_space = "caption-model:prompt-v1"

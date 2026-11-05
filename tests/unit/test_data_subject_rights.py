@@ -150,13 +150,19 @@ class ScriptedConsolidator:
         pass
 
 
-def _memory(tmp_path: Path, **kwargs: object) -> Memory:
+def _memory(
+    tmp_path: Path, *, retention: RetentionPolicy | None = None, **kwargs: object
+) -> Memory:
     return Memory(
         tmp_path,
         embedder=TinyEmbedder(),
         transcriber=PersonSpeech(),
         face_analyzer=PersonFace(),
-        config=MemoryConfig(identity_link_min_assets=1, minimum_relevance=0),
+        config=MemoryConfig(
+            identity_link_min_assets=1,
+            minimum_relevance=0,
+            retention=RetentionPolicy() if retention is None else retention,
+        ),
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -236,9 +242,9 @@ def test_no_model_may_state_or_retire_consent(tmp_path: Path) -> None:
         consent=ConsentClaim(identity_id=identity_id, state=ConsentState.GRANTED),
     )
     with _memory(tmp_path, consolidator=ScriptedConsolidator(proposed)) as memory:
-        assert [reason for _operation, reason in memory.consolidate_pending().rejected] == [
-            "unauthorized"
-        ]
+        assert [
+            reason for _operation, reason in memory.consolidate(evidence_ids=(clip.id,)).rejected
+        ] == ["unauthorized"]
         # The same refusal on the public replay path, which is not a shortcut around it either.
         with pytest.raises(ValidationError) as refused:
             memory.apply(proposed)
