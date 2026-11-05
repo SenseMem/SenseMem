@@ -41,6 +41,13 @@ Both choices enter cache identities; evaluate their quality with the selected mo
 [ATM](../examples/atm-sgm-max-thinking-vllm.yaml) and
 [Mem-Gallery](../examples/mem-gallery-qwen-wemm.yaml) examples show task-specific configurations.
 
+Search latency replay is enabled by default. `--no-search-replay` or
+`benchmark.run.search_replay: false` skips the extra public searches after all answers, while
+preserving answer-time retrieval and scoring. `--search-replay` overrides a disabled file setting.
+Results record `search_replay` and
+`measurement_protocol.post_answer_search_replay_in_client_resource_window`. Disabled replay does
+not make an otherwise successful run fail; standalone search-latency measurements are unavailable.
+
 These options are invocation-only: `--blind`, `--blind-baseline`, `--resume`, `--deliberate`,
 `--fallback-reference-at`, `--list-tasks`, and `--check-integrity`. Evaluation is zero-shot;
 `--model`, `--memory-config`, few-shot settings, and underscore option aliases are unsupported.
@@ -266,7 +273,7 @@ and attempt-latency counts. Missing observations are `null`, with coverage/compl
 Caller TTFT includes harness admission waiting and ends at the first non-empty text delta.
 Generation first-chunk time can include an empty chunk. Per-sample `latency_ms` starts after
 admission. Buffered answers have no caller TTFT. Search replay is not in-answer retrieval; failed
-or missing planned replays make its distribution incomplete.
+or missing planned replays make its distribution incomplete when replay is enabled.
 
 ASR real-time factor is successful compute seconds / audio seconds; lower is better. Missing
 durations make the full ratio unavailable. Token totals are never estimated: `reported_*` fields

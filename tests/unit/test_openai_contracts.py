@@ -379,6 +379,38 @@ def test_trace_keeps_request_id_without_provider_bodies(failed: bool) -> None:
     provider.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("code", "reason", "retryable"),
+    [
+        ("502001", "provider_unavailable", True),
+        (502001, "provider_unavailable", True),
+        ("unknown", None, False),
+    ],
+)
+def test_streamed_upstream_error_preserves_recovery_contract(
+    code: str | int, reason: str | None, retryable: bool
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        error = {
+            "error": {"code": code, "message": "private upstream detail", "type": "upstream_error"}
+        }
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(error)}\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        adapter = OpenAIModels(_sdk_client(client))
+        with pytest.raises(ModelError) as failure:
+            list(adapter.stream_answer(ModelInput(text="question"), (_search_hit(),)))
+    assert failure.value.reason == reason
+    assert failure.value.retryable is retryable
+    response = exception_response(failure.value)
+    assert response.status_code == (503 if retryable else 502)
+    assert "private" not in bytes(response.body).decode()
+
+
 def test_strict_formation_uses_schema_but_still_rejects_invented_witnesses() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

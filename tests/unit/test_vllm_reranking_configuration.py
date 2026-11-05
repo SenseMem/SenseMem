@@ -66,6 +66,7 @@ def test_configured_server_reranks_search_and_records_provider_usage(
                 "api_key": "fixture-key",
                 "modalities": ["text"],
                 "batch_size": 2,
+                "request_concurrency": 2,
                 "timeout": 7.0,
             },
             "settings": {
@@ -109,6 +110,9 @@ def test_configured_server_reranks_search_and_records_provider_usage(
         {"timeout": True},
         {"timeout": "60"},
         {"batch_size": 0},
+        {"request_concurrency": 0},
+        {"request_concurrency": True},
+        {"request_concurrency": "2"},
         {"media_candidates": 0},
         {"media_weight": 0},
         {"media_weight": 1.1},

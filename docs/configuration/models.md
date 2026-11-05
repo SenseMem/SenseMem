@@ -96,6 +96,7 @@ reranking:
   base_url: http://127.0.0.1:8002
   api_key: EMPTY
   batch_size: 32
+  request_concurrency: 32
   media_candidates: 40
   media_weight: 0.5
   timeout: 240.0
@@ -104,6 +105,9 @@ reranking:
 The absolute HTTP(S) server base must have no query/fragment; the client appends `/rerank`.
 An unset key sends no authorization header and does not read `OPENAI_API_KEY`.
 Counts/timeouts are positive, media weight is (0,1], and modalities include text/image/video.
+`request_concurrency` bounds active HTTP batches across calls sharing this adapter (default 32).
+Completed batches refill the pool immediately; returned scores retain input order. Close waits
+for started requests and media readers before closing the transport, including after failure.
 
 The server owns revision, context, templates, and preprocessing; local revision/device/max-length
 fields are unsupported. Omit `media_candidates` for direct multimodal pairs; setting it refines a
@@ -127,18 +131,24 @@ reranking:
   video_limit: 2
   image_max_pixels: 262144
   video_frames: 8
+  video_cache_bytes: 268435456
 ```
 
 Text and supported original images/videos automatically form query/candidate pairs, including
 media-only inputs. Raw audio is unsupported; transcripts can supply text. The adapter follows the
 [official pooling/classification recipe](https://github.com/QwenLM/Qwen3-VL-Embedding/blob/main/examples/reranker_vllm.ipynb)
-with its no/yes head and one classify call for the candidate pool. Batch size bounds concurrent sequences.
+with its no/yes head. Each classify call contains at most `batch_size` pairs. Preparation of the
+next batch overlaps serialized inference, with at most one batch prepared ahead per call.
 
 `max_length` bounds the complete tokenized pair including template/suffix. Oversized text or
 expanded visual input raises `payload_too_large` at reranking without truncation, media removal,
 or retry. Media counts combine query and candidate: eight images/two videos by default.
 Processed images default to 262144 pixels; videos sample 2–64 ordered frames (default eight),
 retaining timestamps without model resampling. Query decoding is reused; files stay leased.
+Decoded videos use an LRU cache keyed by content SHA-256 and sampling settings, retaining timing
+metadata. `video_cache_bytes` bounds retained frame-array bytes (default 256 MiB); zero disables
+retention. Active batches and decoder temporaries can use additional memory. Close clears the cache
+after active calls finish.
 
 The supported prebuilt runtime is Linux x86-64/CUDA with the lockfile's CUDA 13.0 PyTorch family.
 Device is omitted or `cuda`; use `CUDA_VISIBLE_DEVICES` for selection.

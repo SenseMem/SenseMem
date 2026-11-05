@@ -64,7 +64,9 @@ def test_pair_at_context_limit_keeps_query_document_and_template(
     def classify(rows: object, *, use_tqdm: bool) -> list[object]:
         assert not use_tqdm
         submitted.append(rows)
-        return [SimpleNamespace(outputs=SimpleNamespace(probs=[score])) for score in (0.1, 0.9)]
+        return [
+            SimpleNamespace(outputs=SimpleNamespace(probs=[0.1 if len(submitted) == 1 else 0.9]))
+        ]
 
     llm = SimpleNamespace(get_tokenizer=Tokenizer, classify=classify)
     monkeypatch.setattr(
@@ -79,7 +81,7 @@ def test_pair_at_context_limit_keeps_query_document_and_template(
     assert model.rerank(
         ModelInput(text=query), tuple(ModelInput(text=text) for text in documents)
     ) == (0.1, 0.9)
-    assert submitted == [[{"prompt": prompt} for prompt in prompts]]
+    assert submitted == [[{"prompt": prompt}] for prompt in prompts]
 
 
 @pytest.mark.parametrize("modality", [Modality.IMAGE, Modality.VIDEO])
@@ -120,7 +122,10 @@ def test_visual_context_errors_are_classified_without_dropping_media_or_retrying
     media = (
         SimpleNamespace(close=lambda: closed.append(True))
         if modality is Modality.IMAGE
-        else ("frames", {"fps": 4, "total_num_frames": 8, "frames_indices": list(range(8))})
+        else (
+            SimpleNamespace(nbytes=16),
+            {"fps": 4, "total_num_frames": 8, "frames_indices": list(range(8))},
+        )
     )
     submitted: list[object] = []
 

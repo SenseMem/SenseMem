@@ -237,7 +237,7 @@ from sensemem.models.base import (
 from sensemem.models.openai_sdk import _answer_result
 from sensemem.perception import VisualDescription
 
-EVAL_RUNNER_VERSION = "sensemem_eval_official_v25"
+EVAL_RUNNER_VERSION = "sensemem_eval_official_v26"
 _BENCHMARK_SEARCH_REPLAY_SETUP_SPAN = "sensemem.benchmark.search_replay_setup"
 # Mirror the fixed per-instance SDK admission contract documented in docs/operations.md.
 _SDK_STREAM_LIMIT = 8
@@ -921,7 +921,7 @@ def _execution_has_errors(samples: Sequence[SampleResult], results: Mapping[str,
         for sample in samples
     )
     rows = cast(Sequence[Mapping[str, object]], results["tasks"])
-    return sample_errors or _incomplete_search_replay(rows)
+    return sample_errors or (results["search_replay"] is True and _incomplete_search_replay(rows))
 
 
 def _load_tasks(
@@ -1606,8 +1606,9 @@ async def _run_arms(
         results.extend(task_samples)
     # This is deliberately a run-global second pass. Replaying one task while a later task is
     # still answering changes shared model-service load and contaminates both latency families.
-    for search_replay in deferred_searches:
-        await search_replay()
+    if arguments.search_replay:
+        for search_replay in deferred_searches:
+            await search_replay()
     return tuple(results)
 
 
@@ -3715,7 +3716,7 @@ def _results(
                 or sample.retrieval_diagnostic_error is not None
                 for sample in samples
             )
-            or _incomplete_search_replay(task_rows)
+            or (arguments.search_replay and _incomplete_search_replay(task_rows))
             else "completed"
         ),
         "duration_seconds": duration_seconds,
@@ -3723,6 +3724,7 @@ def _results(
         "seeds": arguments.seeds,
         "bootstrap_samples": arguments.bootstrap_samples,
         "predict_only": arguments.predict_only,
+        "search_replay": arguments.search_replay,
         "log_samples": arguments.log_samples,
         "response_cache": None if arguments.use_cache is None else str(arguments.use_cache),
         "resume": arguments.resume,
@@ -3837,7 +3839,7 @@ def _measurement_protocol(
         "vision_description_cache": "shared_within_run_only; cold_again_for_each_repeat",
         "remote_server_state": "uncontrolled",
         "answer_e2e_includes_request_admission": True,
-        "post_answer_search_replay_in_client_resource_window": True,
+        "post_answer_search_replay_in_client_resource_window": arguments.search_replay,
         "judge_in_client_resource_window": False,
         "judge_measurement_exclusion": (
             "interleaved sub-windows removed from client and model-server counters"

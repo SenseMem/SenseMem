@@ -159,6 +159,7 @@ class Qwen3VLRerankingConfig(_ConfigModel):
     video_limit: _PositiveInt = 2
     image_max_pixels: _PositiveInt = 262144
     video_frames: Annotated[int, Field(strict=True, ge=2, le=64)] = 8
+    video_cache_bytes: _NonNegativeInt = 268435456
 
 
 class VLLMRerankingConfig(_ConfigModel):
@@ -168,6 +169,7 @@ class VLLMRerankingConfig(_ConfigModel):
     api_key: SecretStr | None = None
     timeout: _PositiveFloat = 60.0
     batch_size: _PositiveInt = 32
+    request_concurrency: _PositiveInt = 32
     media_candidates: _PositiveInt | None = None
     media_weight: Annotated[float, Field(strict=True, gt=0, le=1)] = 0.5
     modalities: Annotated[
@@ -436,6 +438,7 @@ def _build_reranking(config: RerankingProviderConfig) -> RerankingBackend:
             api_key=None if config.api_key is None else config.api_key.get_secret_value(),
             timeout=config.timeout,
             batch_size=config.batch_size,
+            request_concurrency=config.request_concurrency,
             modalities=config.modalities,
             media_candidates=config.media_candidates,
             media_weight=config.media_weight,
@@ -452,6 +455,7 @@ def _build_reranking(config: RerankingProviderConfig) -> RerankingBackend:
             video_limit=config.video_limit,
             image_max_pixels=config.image_max_pixels,
             video_frames=config.video_frames,
+            video_cache_bytes=config.video_cache_bytes,
         )
     return SentenceTransformersReranker(
         model_id=config.model,

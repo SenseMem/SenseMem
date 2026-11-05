@@ -89,7 +89,9 @@ the public `ask_stream()` surface and benchmark reporting/answer-surface control
 
 `answer_style: concise` asks for requested values/entities without explanatory prose or citations,
 while preserving refusal and evidence policy. The model checks roles, dates, units, and list
-conditions; these are prompt instructions, not deterministic validators. Evaluate the style for
+conditions, keeps separate event episodes distinct, and includes every supported item matching
+the requested category. Approximate relative periods retain their precision and source-date
+anchor. These are prompt instructions, not deterministic validators. Evaluate the style for
 the chosen model/task. Formation, vision, and consolidation do not accept it.
 
 `answer_format: structured` validates a typed draft against final fitted evidence, then renders

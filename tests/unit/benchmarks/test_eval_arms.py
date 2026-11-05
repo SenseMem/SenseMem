@@ -1427,7 +1427,8 @@ def test_answer_span_attributes_name_the_task_and_the_sample() -> None:
     assert seen[0][BENCHMARK_SAMPLE] == "blind:atm-bench/unit/q1"
 
 
-def test_results_report_each_arm_beside_the_product_arm() -> None:
+@pytest.mark.parametrize("search_replay", [True, False])
+def test_results_report_each_arm_beside_the_product_arm(search_replay: bool) -> None:
     task, _, _ = _task("atm-bench-main", labelled=False)
     arguments = cast(
         eval_config_module._Arguments,
@@ -1445,6 +1446,7 @@ def test_results_report_each_arm_beside_the_product_arm() -> None:
             repeat_index=0,
             stream_results=False,
             stream_answers=False,
+            search_replay=search_replay,
             seed=7,
             seeds=(7, 7, 7, 7),
             bootstrap_samples=20,
@@ -1509,6 +1511,9 @@ def test_results_report_each_arm_beside_the_product_arm() -> None:
     )
     rows = cast(list[dict[str, object]], results["tasks"])
     assert results["stream_answers"] is False
+    assert results["search_replay"] is search_replay
+    protocol = cast(dict[str, object], results["measurement_protocol"])
+    assert protocol["post_answer_search_replay_in_client_resource_window"] is search_replay
     arms = cast(dict[str, object], results["arms"])
     table = eval_console_module._table(results)
 
@@ -1546,8 +1551,8 @@ def test_results_report_each_arm_beside_the_product_arm() -> None:
     assert retrieval[DEFAULT_ARM]["retrieval_candidate_limit"] == RETRIEVAL_CANDIDATE_LIMIT
     assert retrieval["random"]["retrieval_candidate_limit"] == arguments.recall_limit
     assert "retrieval_candidate_limit" not in retrieval["blind"]
-    assert results["status"] == "completed_with_errors"
-    assert eval_module._execution_has_errors(samples, results)
+    assert results["status"] == ("completed_with_errors" if search_replay else "completed")
+    assert eval_module._execution_has_errors(samples, results) is search_replay
     assert "atm-bench-main [blind]" in table
 
 

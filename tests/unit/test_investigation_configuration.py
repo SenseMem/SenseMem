@@ -162,6 +162,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
         if provider == "qwen3-vl":
             reranking["gpu_memory_utilization"] = 0.7
             reranking.update(image_limit=3, video_limit=1, image_max_pixels=131072, video_frames=4)
+            reranking["video_cache_bytes"] = 1048576
     config = SenseMemConfig.model_validate(
         {
             "data_dir": tmp_path,
@@ -189,6 +190,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
             video_limit=1 if explicit_controls else 2,
             image_max_pixels=131072 if explicit_controls else 262144,
             video_frames=4 if explicit_controls else 8,
+            video_cache_bytes=1048576 if explicit_controls else 268435456,
         )
     assert built == [expected]
 
@@ -206,6 +208,9 @@ def test_reranker_is_an_owned_optional_declarative_backend(
         {"image_max_pixels": 0},
         {"video_frames": 1},
         {"video_frames": 65},
+        {"video_cache_bytes": -1},
+        {"video_cache_bytes": True},
+        {"video_cache_bytes": "1024"},
     ],
 )
 def test_qwen3_vl_runtime_controls_are_strict(controls: dict[str, object]) -> None:

@@ -5,7 +5,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import httpx2 as httpx
@@ -14,6 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+import sensemem.models.vllm_reranking as reranking
 from sensemem import AssetRef, Modality, ModelError, ModelInput, ValidationError, VLLMReranker
 from sensemem._telemetry import (
     MODEL_REQUEST_COUNT,
@@ -89,6 +90,68 @@ def test_text_requests_batch_all_documents_and_restore_server_indices() -> None:
             {"model": "org/model", "query": "query", "documents": ["0", "1"], "top_n": 2},
             {"model": "org/model", "query": "query", "documents": ["2"], "top_n": 1},
         ]
+    finally:
+        adapter.close()
+
+
+def test_failed_batch_waits_for_other_media_readers_before_returning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = _asset(tmp_path, Modality.IMAGE)
+    entered = threading.Barrier(2)
+    failed = threading.Event()
+    release = threading.Event()
+    sent: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        document = json.loads(request.content)["documents"][0]
+        if document == "fail":
+            sent.append("fail")
+            entered.wait(timeout=5)
+            return httpx.Response(503)
+        sent.append("media")
+        entered.wait(timeout=5)
+        assert release.wait(5)
+        assert image.path is not None and image.path.read_bytes() == b"image"
+        assert not client.is_closed
+        return _reply(0.8)
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    adapter = VLLMReranker(
+        client,
+        model_id="org/model",
+        base_url="https://fixture.test",
+        batch_size=1,
+        request_concurrency=2,
+    )
+    response_result = reranking._response_scores
+
+    def observe_failure(
+        response: httpx.Response, count: int, usage: reranking._RequestUsage
+    ) -> tuple[float, ...]:
+        try:
+            return response_result(response, count, usage)
+        finally:
+            if response.status_code == 503:
+                failed.set()
+
+    monkeypatch.setattr(reranking, "_response_scores", observe_failure)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(
+                adapter.rerank,
+                ModelInput(text="query"),
+                [ModelInput(text="fail"), ModelInput(assets=(image,)), ModelInput(text="unsent")],
+            )
+            try:
+                assert failed.wait(5)
+                assert not result.done()
+            finally:
+                release.set()
+            with pytest.raises(ModelError) as raised:
+                result.result(timeout=5)
+            assert raised.value.reason == "provider_unavailable"
+        assert sorted(sent) == ["fail", "media"]
     finally:
         adapter.close()
     adapter.close()
@@ -504,6 +567,9 @@ def test_missing_media_preserves_asset_error_at_reranking_stage(tmp_path: Path) 
         {"timeout": True},
         {"timeout": float("nan")},
         {"batch_size": 0},
+        {"request_concurrency": 0},
+        {"request_concurrency": True},
+        {"request_concurrency": "2"},
         {"modalities": []},
         {"modalities": [Modality.AUDIO]},
         {"base_url": "fixture.test"},
@@ -519,3 +585,97 @@ def test_constructor_rejects_invalid_controls(controls: dict[str, object]) -> No
     }
     with pytest.raises(ValidationError):
         VLLMReranker(**values)  # type: ignore[arg-type]
+
+
+def test_batches_overlap_and_refill_before_the_first_batch_finishes() -> None:
+    release = threading.Event()
+    refilled = threading.Event()
+    finished: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        index = int(json.loads(request.content)["documents"][0])
+        if index == 0:
+            assert release.wait(5)
+        elif index == 2:
+            refilled.set()
+            assert release.wait(5)
+        finished.append(index)
+        return _reply(float(index))
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    adapter = VLLMReranker(
+        client,
+        model_id="org/model",
+        base_url="https://fixture.test",
+        batch_size=1,
+        request_concurrency=2,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(
+                adapter.rerank,
+                ModelInput(text="query"),
+                [ModelInput(text=str(i)) for i in range(5)],
+            )
+            try:
+                assert refilled.wait(5)
+                assert finished == [1]
+                assert not result.done()
+            finally:
+                release.set()
+            assert result.result(timeout=5) == (0.0, 1.0, 2.0, 3.0, 4.0)
+    finally:
+        adapter.close()
+
+
+def test_request_limit_is_shared_across_callers(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = threading.Barrier(3)
+    submitted = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = peak = submissions = 0
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        if not release.is_set():
+            entered.wait(timeout=5)
+        assert release.wait(5)
+        with lock:
+            active -= 1
+        return _reply(0.8)
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    adapter = VLLMReranker(
+        client, model_id="org/model", base_url="https://fixture.test", request_concurrency=2
+    )
+    submit = adapter._workers.submit
+
+    def observe_submit(fn: Callable[..., httpx.Response], *args: object) -> Future[httpx.Response]:
+        nonlocal submissions
+        future = submit(fn, *args)
+        with lock:
+            submissions += 1
+            if submissions == 3:
+                submitted.set()
+        return future
+
+    monkeypatch.setattr(adapter._workers, "submit", observe_submit)
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            results = [
+                executor.submit(adapter.rerank, ModelInput(text="query"), [ModelInput(text="doc")])
+                for _ in range(3)
+            ]
+            try:
+                entered.wait(timeout=5)
+                assert submitted.wait(5)
+                assert active == peak == 2
+            finally:
+                release.set()
+            assert [result.result(timeout=5) for result in results] == [(0.8,)] * 3
+        assert peak == 2
+    finally:
+        adapter.close()

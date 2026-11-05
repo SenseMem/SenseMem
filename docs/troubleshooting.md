@@ -38,6 +38,11 @@ Retry only when `retryable` is true. The closed retryable reasons are `connectio
 `rate_limited`, and `timeout`. REST returns
 `Retry-After: 1` only for retryable 503 responses.
 
+TokenHub's documented [`502001` upstream failure](https://cloud.tencent.com/document/product/1823/131595)
+maps to `model_error` with `reason="provider_unavailable"` and `retryable=true`, including SSE
+errors delivered after HTTP 200. String and integer forms have the same classification. Unknown
+provider codes remain unclassified; this mapping adds no retry loop to the model adapter.
+
 ## Memory does not open
 
 ### A configuration filename is rejected

@@ -115,6 +115,8 @@ benchmark:
     request_concurrency: 4
     # false uses buffered ask; true uses ask_stream and exposes caller TTFT.
     stream_answers: true
+    # false skips standalone search-latency replay after answering; answer retrieval still runs.
+    search_replay: true
     judge_concurrency: 8
     batch_size: auto
     max_batch_size: 64

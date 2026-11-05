@@ -988,7 +988,7 @@ def test_response_cache_namespace_changes_with_runner_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert eval_results_module.EVAL_SCHEMA_VERSION == 23
-    assert eval_module.EVAL_RUNNER_VERSION == "sensemem_eval_official_v25"
+    assert eval_module.EVAL_RUNNER_VERSION == "sensemem_eval_official_v26"
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
 
@@ -3454,8 +3454,10 @@ async def test_standalone_search_reopens_warm_stores_after_every_answer(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("search_replay", [True, False])
 async def test_run_arms_defers_replay_until_every_task_answer_finishes(
     tmp_path: Path,
+    search_replay: bool,
 ) -> None:
     events: list[str] = []
 
@@ -3544,6 +3546,7 @@ async def test_run_arms_defers_replay_until_every_task_answer_finishes(
             stream_answers=True,
             request_concurrency=1,
             recall_limit=3,
+            search_replay=search_replay,
             answer_policy=None,
             predict_only=False,
             log_samples=False,
@@ -3577,13 +3580,15 @@ async def test_run_arms_defers_replay_until_every_task_answer_finishes(
 
     answers = [index for index, event in enumerate(events) if event.startswith("answer:")]
     warm_searches = [index for index, event in enumerate(events) if event.startswith("search:3:")]
-    assert len(samples) == len(answers) == len(warm_searches) == 2
-    assert max(answers) < min(warm_searches)
+    assert len(samples) == len(answers) == 2
+    assert len(warm_searches) == (2 if search_replay else 0)
+    if search_replay:
+        assert max(answers) < min(warm_searches)
     assert not any(event.startswith("search:100:") for event in events)
     assert all(sample.ranked_source_ids == ("gold",) for sample in samples)
     for result in performance.values():
         search_e2e = cast(dict[str, object], result["search_e2e"])
-        assert search_e2e["attempt_count"] == search_e2e["count"] == 1
+        assert search_e2e["attempt_count"] == search_e2e["count"] == int(search_replay)
 
 
 @pytest.mark.asyncio
@@ -5788,6 +5793,7 @@ def _streaming_arguments(output_path: Path, **overrides: object) -> eval_config_
         "seed": 7,
         "stream_results": False,
         "stream_answers": True,
+        "search_replay": True,
         "use_cache": None,
     }
     values.update(overrides)
@@ -6251,3 +6257,22 @@ def test_failure_detail_keeps_the_provider_message_for_the_next_diagnosis() -> N
     assert len(plain.message) == eval_results_module._FAILURE_MESSAGE_CHARS
     assert eval_results_module._restored_failure({**detail.json(), "message": None}).message is None
     assert eval_results_module._restored_failure(dict(detail.json())) == detail
+
+
+@pytest.mark.parametrize(
+    ("configured", "flags", "expected"),
+    [
+        (None, [], True),
+        (False, [], False),
+        (False, ["--search-replay"], True),
+        (True, ["--no-search-replay"], False),
+    ],
+)
+def test_search_replay_cli_overrides_configuration(
+    configured: bool | None, flags: list[str], expected: bool
+) -> None:
+    parser = eval_config_module._build_parser(None)
+    parsed = parser.parse_args(["--tasks", "locomo-refined", *flags])
+    overrides = HarnessOverrides.model_validate({"run": {"search_replay": configured}})
+    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    assert arguments.search_replay is expected

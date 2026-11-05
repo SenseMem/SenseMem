@@ -155,6 +155,7 @@ class _Arguments:
     fallback_reference_at: datetime | None = None
     ingest_concurrency: int = 1
     stream_answers: bool = True
+    search_replay: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,6 +400,12 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
         help="use SDK answer streams (8 per instance); disable for buffered ask (28 per instance)",
     )
     parser.add_argument(
+        "--search-replay",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="replay public searches after scoring to measure standalone search latency",
+    )
+    parser.add_argument(
         "--download",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -594,6 +601,7 @@ def _arguments(
         log_samples=log_samples,
         stream_results=stream_results,
         stream_answers=stream_answers,
+        search_replay=_picked(parsed.search_replay, run.search_replay, True),
         allow_unverified_data=allow_unverified,
         download=download_inputs,
         overwrite=overwrite,

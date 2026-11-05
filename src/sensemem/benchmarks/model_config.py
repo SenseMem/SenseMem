@@ -190,6 +190,7 @@ class RunOverrides(_HarnessModel):
     # Reporting cadence, not a sweep knob: it only decides when each task's table is printed.
     stream_results: bool | None = None
     stream_answers: bool | None = None
+    search_replay: bool | None = None
     allow_unverified_data: bool | None = None
     download: bool | None = None
     overwrite: bool | None = None

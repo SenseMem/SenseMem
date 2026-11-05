@@ -32,6 +32,10 @@ Changes for version `0.3.0`.
 
 ### Added
 
+- Bounded concurrent HTTP reranking batches, local video-frame caching and media preparation
+  during inference. See [reranker configuration](docs/configuration/models.md#semantic-reranking).
+- Optional `--no-search-replay` / `benchmark.run.search_replay: false` for evaluations that omit
+  standalone search-latency measurement. The choice is recorded in result metadata.
 - Ordered text, image, video, audio, and mixed observations through synchronous and asynchronous
   SDKs, with immutable media, content-addressed IDs, and explicit model capabilities.
 - Deferred `capture`/`settle` ingestion, pending-work inspection, completed-observation streams,
@@ -57,6 +61,9 @@ Changes for version `0.3.0`.
 
 ### Fixed
 
+- Recognize TokenHub SSE error `502001` as a retryable upstream failure without exposing its body.
+- Preserve event identity, requested list membership, and source-relative time precision in the
+  optional concise answer style.
 - Preserve SQLite authority through index failures, missing-index rebuilds, stale index IDs,
   concurrent writes, media leasing, and bounded resource cleanup.
 - Deliver derived answer evidence only with its complete eligible source closure. Packing,

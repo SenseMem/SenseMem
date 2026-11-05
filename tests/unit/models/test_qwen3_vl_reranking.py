@@ -135,8 +135,10 @@ def test_vllm_batches_native_media_in_order_reuses_query_and_closes_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: bool
 ) -> None:
     calls: dict[str, object] = {}
+    classified: list[tuple[object, dict[str, object]]] = []
+    batch_scores = iter(((0.1, 0.9), (0.3,)))
     image = SimpleNamespace(close=lambda: closed.append("image"))
-    frames = ("decoded-frames", {"fps": 4, "total_num_frames": 8})
+    frames = (SimpleNamespace(nbytes=16), {"fps": 4, "total_num_frames": 8})
     closed: list[str] = []
     fetched: list[tuple[str, object]] = []
 
@@ -157,10 +159,10 @@ def test_vllm_batches_native_media_in_order_reuses_query_and_closes_images(
             return Tokenizer()
 
         def classify(self, prompts: object, **kwargs: object) -> list[object]:
-            calls["classify"] = (prompts, kwargs)
+            classified.append((prompts, kwargs))
             if fail:
                 raise RuntimeError("private model response")
-            return [SimpleNamespace(outputs=SimpleNamespace(probs=[v])) for v in (0.1, 0.9, 0.3)]
+            return [SimpleNamespace(outputs=SimpleNamespace(probs=[v])) for v in next(batch_scores)]
 
     def fetch_image(url: str) -> object:
         fetched.append(("image", url))
@@ -211,23 +213,29 @@ def test_vllm_batches_native_media_in_order_reuses_query_and_closes_images(
         assert model.rerank(query, documents) == (0.1, 0.9, 0.3)
     marker = "<|vision_start|><|image_pad|><|vision_end|>"
     video_marker = "<|vision_start|><|video_pad|><|vision_end|>"
-    assert calls["classify"] == (
-        [
-            {
-                "prompt": reranking._prompt(marker + "question", "source"),
-                "multi_modal_data": {"image": [image]},
-            },
-            {
-                "prompt": reranking._prompt(marker + "question", video_marker + marker),
-                "multi_modal_data": {"image": [image, image], "video": [frames]},
-            },
-            {
-                "prompt": reranking._prompt(marker + "question", "中文"),
-                "multi_modal_data": {"image": [image]},
-            },
-        ],
-        {"use_tqdm": False},
-    )
+    first_batch = [
+        {
+            "prompt": reranking._prompt(marker + "question", "source"),
+            "multi_modal_data": {"image": [image]},
+        },
+        {
+            "prompt": reranking._prompt(marker + "question", video_marker + marker),
+            "multi_modal_data": {"image": [image, image], "video": [frames]},
+        },
+    ]
+    expected = [
+        (first_batch, {"use_tqdm": False}),
+        (
+            [
+                {
+                    "prompt": reranking._prompt(marker + "question", "中文"),
+                    "multi_modal_data": {"image": [image]},
+                }
+            ],
+            {"use_tqdm": False},
+        ),
+    ]
+    assert classified == expected[: 1 if fail else 2]
     assert fetched == [
         ("image", (tmp_path / "image.png").as_uri()),
         (
@@ -311,4 +319,4 @@ def test_media_limit_applies_to_query_plus_document_and_never_drops_media(
         model.rerank(value, (value,))
     assert error.value.reason == "payload_too_large"
     assert error.value.stage == "reranking"
-    assert closed == [True]
+    assert closed == []

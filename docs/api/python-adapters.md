@@ -88,6 +88,7 @@ VLLMReranker(
     api_key: str | None = None,
     timeout: float = 60.0,
     batch_size: int = 32,
+    request_concurrency: int = 32,
     modalities: Iterable[Modality] = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
     media_candidates: int | None = None,
     media_weight: float = 0.5,
@@ -96,6 +97,8 @@ VLLMReranker(
 
 Uses the openai extra's HTTP transport for `base_url`/rerank and restores finite input-order scores.
 It owns its client, including an injected client, and waits for active calls on close.
+`request_concurrency` bounds HTTP batches across callers sharing the adapter; batch completion
+order does not change returned score positions.
 Server deployment owns revision/media/context policy. Optional `media_candidates`/`media_weight`
 add bounded text/media probability-logit fusion; usage counts both passes.
 See [remote reranking](../configuration/models.md#remote-vllm-service).
@@ -116,6 +119,7 @@ Qwen3VLReranker(
     video_limit: int = 2,
     image_max_pixels: int = 262144,
     video_frames: int = 8,
+    video_cache_bytes: int = 268435456,
 )
 
 Qwen3VLReranker.load(
@@ -130,6 +134,7 @@ Qwen3VLReranker.load(
     video_limit: int = 2,
     image_max_pixels: int = 262144,
     video_frames: int = 8,
+    video_cache_bytes: int = 268435456,
 ) -> Qwen3VLReranker
 ```
 
@@ -138,7 +143,9 @@ rejected. Select GPUs through `CUDA_VISIBLE_DEVICES`. Create the owner inside a 
 
 The vLLM pooling runner classifies all text/native-image/native-video pairs with pinned model and
 tokenizer revisions, remote code disabled, and checkpoint yes/no sigmoid scores. Batch size limits
-concurrent sequences. Oversized tokenized pairs or media counts raise `payload_too_large` at
+pairs per classify call, with one batch of media prepared ahead during inference. A shared LRU cache
+retains up to `video_cache_bytes` frame-array bytes; zero disables retention. Oversized tokenized
+pairs or media counts raise `payload_too_large` at
 reranking with no truncation/removal/retry. Query decoding is reused, source timing retained,
 and transcripts can represent unsupported raw audio. Close shuts down the engine.
 [Model setup](../configuration/models.md#local-qwen3-vl) owns complete input limits and sampling.

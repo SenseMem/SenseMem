@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import threading
 from collections.abc import Iterable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -90,6 +92,7 @@ class VLLMReranker:
     Model loading, revision pinning, templates, context limits, and media preprocessing
     belong to the server. The owning Memory closes the HTTP client, including an injected one.
     Calls may run concurrently; closing waits for active calls and rejects new ones.
+    HTTP batches share a bounded worker pool across calls.
     Optional text/media fusion refines a bounded shortlist using probability logits.
     """
 
@@ -102,6 +105,7 @@ class VLLMReranker:
         api_key: str | None = None,
         timeout: float = 60.0,
         batch_size: int = 32,
+        request_concurrency: int = 32,
         modalities: Iterable[Modality] = _CAPABILITIES,
         media_candidates: int | None = None,
         media_weight: float = 0.5,
@@ -110,6 +114,7 @@ class VLLMReranker:
         self._url = _server_base_url(base_url) + "/rerank"
         self._api_key = optional_text(api_key, "api_key")
         self._batch_size = positive_int(batch_size, "batch_size")
+        self._request_concurrency = positive_int(request_concurrency, "request_concurrency")
         self._capabilities = _modalities(modalities, "reranking")
         self._media_candidates = (
             None if media_candidates is None else positive_int(media_candidates, "media_candidates")
@@ -142,6 +147,9 @@ class VLLMReranker:
                 ) from None
             client = httpx2.Client()
         self._client = client
+        self._workers = ThreadPoolExecutor(
+            max_workers=self._request_concurrency, thread_name_prefix="sensemem-reranking"
+        )
         self._condition = threading.Condition()
         self._closed = False
         self._active_requests = 0
@@ -221,8 +229,11 @@ class VLLMReranker:
 
         query_payload = _score_input(query, {})
         headers = {} if self._api_key is None else {"Authorization": f"Bearer {self._api_key}"}
-        scores: list[float] = []
-        for start in range(0, len(batch), self._batch_size):
+        scores = [0.0] * len(batch)
+        pending: dict[Future[httpx2.Response], int] = {}
+        request_lock = threading.Lock()
+
+        def request(start: int) -> httpx2.Response:
             chunk = batch[start : start + self._batch_size]
             cache: dict[str, str] = {}
             payload = {
@@ -231,10 +242,11 @@ class VLLMReranker:
                 "documents": [_score_input(document, cache) for document in chunk],
                 "top_n": len(chunk),
             }
-            usage.requests += 1
-            mark_model_requests(usage.requests)
+            with request_lock:
+                usage.requests += 1
+                mark_model_requests(usage.requests)
             try:
-                response = self._client.post(
+                return self._client.post(
                     self._url, json=payload, headers=headers, timeout=self._timeout
                 )
             except httpx2.TimeoutException:
@@ -245,31 +257,39 @@ class VLLMReranker:
                 raise ModelError(
                     "reranking connection failed", reason="connection_failed", stage="reranking"
                 ) from None
-            request_id = response.headers.get("x-request-id")
-            if request_id:
-                record_model_request_id(request_id)
-            if not response.is_success:
-                reason = {
-                    401: "auth_failed",
-                    403: "auth_failed",
-                    408: "timeout",
-                    413: "payload_too_large",
-                    429: "rate_limited",
-                }.get(response.status_code)
-                if reason is None:
-                    reason = (
-                        "provider_unavailable"
-                        if response.status_code >= 500
-                        else "request_rejected"
+
+        starts = iter(range(0, len(batch), self._batch_size))
+        try:
+            for _ in range(
+                min(self._request_concurrency, math.ceil(len(batch) / self._batch_size))
+            ):
+                start = next(starts)
+                pending[self._workers.submit(copy_context().run, request, start)] = start
+            while pending:
+                done, _remaining = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    start = pending.pop(future)
+                    count = min(self._batch_size, len(batch) - start)
+                    scores[start : start + count] = _response_scores(future.result(), count, usage)
+                for _ in done:
+                    next_start = next(starts, None)
+                    if next_start is None:
+                        break
+                    pending[self._workers.submit(copy_context().run, request, next_start)] = (
+                        next_start
                     )
-                raise ModelError("reranking request failed", reason=reason, stage="reranking")
-            scores.extend(_response_scores(response.content, len(chunk), usage))
-        return tuple(scores)
+            return tuple(scores)
+        finally:
+            # A failed call owns its media until every started reader has stopped.
+            for future in pending:
+                future.cancel()
+            wait(pending)
 
     def close(self) -> None:
         with self._condition:
             self._closed = True
             self._condition.wait_for(lambda: self._active_requests == 0)
+            self._workers.shutdown(wait=True)
             if not self._client.is_closed:
                 self._client.close()
 
@@ -288,9 +308,25 @@ def _score_input(value: ModelInput, cache: dict[str, str]) -> str | dict[str, ob
     return {"content": parts}
 
 
-def _response_scores(content: bytes, count: int, usage: _RequestUsage) -> tuple[float, ...]:
+def _response_scores(
+    response: httpx2.Response, count: int, usage: _RequestUsage
+) -> tuple[float, ...]:
+    request_id = response.headers.get("x-request-id")
+    if request_id:
+        record_model_request_id(request_id)
+    if not response.is_success:
+        reason = {
+            401: "auth_failed",
+            403: "auth_failed",
+            408: "timeout",
+            413: "payload_too_large",
+            429: "rate_limited",
+        }.get(response.status_code)
+        if reason is None:
+            reason = "provider_unavailable" if response.status_code >= 500 else "request_rejected"
+        raise ModelError("reranking request failed", reason=reason, stage="reranking")
     try:
-        result = _RerankResponse.model_validate_json(content)
+        result = _RerankResponse.model_validate_json(response.content)
     except PydanticValidationError:
         raise ModelError(
             "reranking response was invalid", reason="response_invalid", stage="reranking"
