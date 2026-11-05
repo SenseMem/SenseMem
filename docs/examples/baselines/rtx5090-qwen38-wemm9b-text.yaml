@@ -41,7 +41,7 @@ benchmark:
     data_root: .benchmarks/data
   run:
     tasks: personamem-v3,locomo-refined,memlens,longmemeval-s
-    arms: mindbridge
+    arms: sensemem
     limit: all
     batch_size: "1"
     max_batch_size: 1

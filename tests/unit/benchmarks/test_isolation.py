@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.infrastructure.local import (
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.infrastructure.local import (
     DataDirectoryInUseError,
     LocalStore,
     StoredMemory,

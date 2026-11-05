@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from mindbridge.benchmarks import rejudge_icm
-from mindbridge.benchmarks.eval_config import _JudgeConfig
-from mindbridge.benchmarks.eval_results import EVAL_SCHEMA_VERSION
+from sensemem.benchmarks import rejudge_icm
+from sensemem.benchmarks.eval_config import _JudgeConfig
+from sensemem.benchmarks.eval_results import EVAL_SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -24,7 +24,7 @@ def _saved(**updates: object) -> dict[str, object]:
         "question_id": "q1",
         "dataset_sha256": "original-corpus",
         "evaluation_sha256": "evaluation-inputs",
-        "arm": "mindbridge",
+        "arm": "sensemem",
         "prediction": "Ada",
         "references": ["Ada"],
         "source_question": "Who left?",

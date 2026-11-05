@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
-from mindbridge.infrastructure.local.store.rows import StoredTextSelector, StoredTextSpanPiece
+from sensemem.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store.rows import StoredTextSelector, StoredTextSpanPiece
 
 _NOW = datetime(2026, 10, 27, tzinfo=timezone.utc)
 

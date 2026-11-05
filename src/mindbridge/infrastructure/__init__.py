@@ -1,1 +1,0 @@
-"""MindBridge infrastructure adapters."""

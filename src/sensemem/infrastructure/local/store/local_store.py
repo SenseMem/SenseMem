@@ -1,0 +1,104 @@
+"""SQLite source of truth for the local SenseMem runtime.
+
+`LocalStore` owns one data directory and exposes its storage surface by table family. The
+families share one connection pool and one directory lock. Each family is the writer of its own
+tables; a transaction that spans families -- a formation commit that writes records, evidence,
+embeddings, and outbox rows together -- lives in the family that owns the primary write and
+calls the other families' connection-level functions inside it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+
+from sensemem.infrastructure.local.store._codec import datetime_text, row_text
+from sensemem.infrastructure.local.store._connections import Connections
+from sensemem.infrastructure.local.store.captures import CaptureQueue
+from sensemem.infrastructure.local.store.control import OperationLog
+from sensemem.infrastructure.local.store.identities import IdentityRegistry
+from sensemem.infrastructure.local.store.index import IndexOutbox
+from sensemem.infrastructure.local.store.media import MediaAnalyses
+from sensemem.infrastructure.local.store.recall import RecallReads
+from sensemem.infrastructure.local.store.records import MemoryRecords
+from sensemem.infrastructure.local.store.rows import require_identifier
+from sensemem.infrastructure.local.store.semantics import Semantics
+
+
+class LocalStore:
+    """Own one data directory and expose its transactional storage surface by table family."""
+
+    def __init__(self, data_dir: str | Path) -> None:
+        self.data_dir = Path(data_dir).expanduser().resolve()
+        self._connections = Connections(self.data_dir)
+        self.database_path = self._connections.database_path
+        self.records = MemoryRecords(
+            connections=self._connections,
+        )
+        self.index = IndexOutbox(
+            connections=self._connections,
+        )
+        self.media = MediaAnalyses(
+            connections=self._connections,
+        )
+        self.captures = CaptureQueue(
+            connections=self._connections,
+        )
+        self.semantics = Semantics(
+            connections=self._connections,
+            records=self.records,
+        )
+        self.identities = IdentityRegistry(
+            connections=self._connections,
+            records=self.records,
+        )
+        self.recall = RecallReads(
+            connections=self._connections,
+            records=self.records,
+        )
+        self.control = OperationLog(
+            connections=self._connections,
+        )
+
+    def __enter__(self) -> LocalStore:
+        self._connections.require_open()
+        return self
+
+    def __exit__(self, *_error: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release the pooled connections and the directory; repeated calls are harmless."""
+        self._connections.close()
+
+    def update_metadata(self, values: Mapping[str, str | None]) -> None:
+        """Commit marker changes together; a value of None removes a marker."""
+        for key in values:
+            require_identifier(key, "metadata key")
+        with self._connections.transaction() as connection:
+            now = datetime_text(datetime.now(timezone.utc))
+            for key, value in values.items():
+                if value is None:
+                    connection.execute("DELETE FROM store_metadata WHERE key = ?", (key,))
+                    continue
+                connection.execute(
+                    """
+                INSERT INTO store_metadata (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                    (key, value, now),
+                )
+
+    def get_metadata(self, key: str) -> str | None:
+        """Read one store-level identity or setting."""
+        require_identifier(key, "metadata key")
+        with self._connections.connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM store_metadata WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return None if row is None else row_text(row, "value")

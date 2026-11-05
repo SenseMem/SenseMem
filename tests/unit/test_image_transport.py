@@ -19,20 +19,20 @@ import httpx2 as httpx
 import pytest
 from openai import OpenAI
 
-import mindbridge.configuration as configuration
-import mindbridge.models.openai_sdk as backend
-from mindbridge import (
+import sensemem.configuration as configuration
+import sensemem.models.openai_sdk as backend
+from sensemem import (
     FormationInput,
     Memory,
-    MindBridgeConfig,
     Modality,
     ModelInput,
     ObservationContext,
     SearchHit,
+    SenseMemConfig,
 )
-from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.models.openai_sdk import OpenAIModels
-from mindbridge.types import AssetRef
+from sensemem.exceptions import ModelError, ValidationError
+from sensemem.models.openai_sdk import OpenAIModels
+from sensemem.types import AssetRef
 
 if TYPE_CHECKING:
     from PIL.Image import Image
@@ -249,7 +249,7 @@ def test_image_bound_rejects_invalid_constructor_values(pixels: object) -> None:
 def test_config_image_bounds_reach_each_model_role(slot: str) -> None:
     payload: dict[str, object] = {"embedding": {"provider": "openai", "api_key": "EMPTY"}}
     payload[slot] = {"provider": "openai", "api_key": "EMPTY", "image_max_pixels": 4096}
-    config = MindBridgeConfig.model_validate(payload)
+    config = SenseMemConfig.model_validate(payload)
     model = (
         configuration._build_embedding(config.embedding)
         if slot == "embedding"

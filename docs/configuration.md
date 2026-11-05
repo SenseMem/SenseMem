@@ -34,16 +34,16 @@ model runtimes and transports:
 For example:
 
 ```bash
-uv add "mindbridge[local,openai]"
+uv add "sensemem[local,openai]"
 ```
 
 ## Declarative configuration
 
 `Memory.from_config()` validates pure data and constructs adapters from a closed provider
-catalog. `data_dir` defaults to `.mindbridge`; `embedding` is the only required slot.
+catalog. `data_dir` defaults to `.sensemem`; `embedding` is the only required slot.
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 config = {
     "data_dir": "./data/assistant",
@@ -69,7 +69,7 @@ with Memory.from_config(config) as memory:
     memory.add("Remember this.")
 ```
 
-`AsyncMemory.from_config()` accepts the same shape. Use `MindBridgeConfig.model_validate()` when a
+`AsyncMemory.from_config()` accepts the same shape. Use `SenseMemConfig.model_validate()` when a
 host needs validation before opening storage.
 
 **Contract:** Unknown fields and providers are rejected. Numeric and Boolean values are strict;
@@ -78,14 +78,14 @@ creates.
 
 ### Loading a configuration file
 
-`Memory.from_config()` accepts a `MindBridgeConfig` or a mapping, not a filename. File decoding
+`Memory.from_config()` accepts a `SenseMemConfig` or a mapping, not a filename. File decoding
 belongs to the host. JSON needs only the Python standard library:
 
 ```python
 import json
 from pathlib import Path
 
-from mindbridge import Memory
+from sensemem import Memory
 
 config = json.loads(Path("config.json").read_text(encoding="utf-8"))
 with Memory.from_config(config) as memory:
@@ -93,7 +93,7 @@ with Memory.from_config(config) as memory:
 ```
 
 For YAML, install a YAML parser in the host and decode with `yaml.safe_load()` before passing
-the mapping. MindBridge's product configuration does not depend on a YAML parser. The benchmark
+the mapping. SenseMem's product configuration does not depend on a YAML parser. The benchmark
 runner's `--config` flag handles YAML itself through the `benchmarks` extra.
 
 ### Provider fields
@@ -385,7 +385,7 @@ reranking:
 ```
 
 This example selects a pinned checkpoint; task accuracy and SOTA performance require actual
-evaluation. MindBridge automatically combines each query and candidate's available text, original
+evaluation. SenseMem automatically combines each query and candidate's available text, original
 images and original videos into `ModelInput` values. No modality switch is needed. A caption
 accompanies its media rather than replacing it; image-only and video-only queries and candidates
 also participate. Qwen3-VL does not accept raw audio; available transcript text can participate.
@@ -420,25 +420,25 @@ TorchAudio and TorchVision builds to match vLLM's compiled runtime; a compatible
 is required. The `reranking` extra supplies the Qwen runtime.
 
 When using vLLM in a standalone Python script, create the reranker and its owning `Memory` inside
-an `if __name__ == "__main__":` guard. MindBridge loads the embedder before the reranker; if that
+an `if __name__ == "__main__":` guard. SenseMem loads the embedder before the reranker; if that
 embedder has already initialized CUDA, vLLM switches to the `spawn` multiprocessing method.
 The child imports the main module again, so creating models at module level can recursively
 initialize them and fail during process bootstrapping. Setting
 `VLLM_WORKER_MULTIPROC_METHOD=spawn` alone does not replace the guard. See
 [vLLM's multiprocessing requirements](https://docs.vllm.ai/en/latest/usage/troubleshooting/#python-multiprocessing).
 
-For example, save the equivalent configuration as `mindbridge.json` and load it in
+For example, save the equivalent configuration as `sensemem.json` and load it in
 `run_memory.py`:
 
 ```python
 import json
 from pathlib import Path
 
-from mindbridge import Memory
+from sensemem import Memory
 
 
 def main() -> None:
-    config = json.loads(Path("mindbridge.json").read_text(encoding="utf-8"))
+    config = json.loads(Path("sensemem.json").read_text(encoding="utf-8"))
     with Memory.from_config(config) as memory:
         print(memory.search("Which reservation was cancelled?", limit=5).hits)
         # Each call automatically uses the modalities present in its input and candidates.
@@ -487,7 +487,7 @@ Changing this query-time model requires reopening the instance, not re-ingesting
 The embedding model defines durable vector identity, so every memory requires one:
 
 - `sentence-transformers` loads an application-selected model. An optional `revision` pins a
-  40-character immutable commit hash. When omitted, MindBridge resolves the current Hub revision
+  40-character immutable commit hash. When omitted, SenseMem resolves the current Hub revision
   before loading and retains that commit in the vector-space identity.
   Resolution requires Hub access. Specify a commit for reproducible or cached offline loading.
   Models load immediately with `trust_remote_code=False` and declare their supported modalities.
@@ -511,14 +511,14 @@ preserves cached transcripts, speech identities and the recorded recipe; it does
 opening the directory for other capabilities.
 
 **Contract:** Changing a model, revision, dimension, or input recipe changes the vector space.
-MindBridge refuses store metadata mismatches instead of mixing spaces.
+SenseMem refuses store metadata mismatches instead of mixing spaces.
 
 **Guidance:** Start a new data directory when intentionally changing embedding space; see
 [store metadata mismatch](troubleshooting.md#store-metadata-mismatch).
 
 ### EmbeddingGemma 2
 
-Install `mindbridge[local]` and select
+Install `sensemem[local]` and select
 [Google EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) through the existing
 Sentence Transformers provider:
 
@@ -553,7 +553,7 @@ separate backends. Use a new data directory when switching from another embeddin
 
 #### EmbeddingGemma 2 through vLLM
 
-Install `mindbridge[openai]` on the application side and deploy vLLM separately using the
+Install `sensemem[openai]` on the application side and deploy vLLM separately using the
 [serving instructions](deployment.md#embeddinggemma-2-model-server). Select its OpenAI-compatible
 embeddings endpoint with the existing `openai` provider:
 
@@ -572,7 +572,7 @@ embeddings endpoint with the existing `openai` provider:
 }
 ```
 
-Use the exact model name `google/embeddinggemma-2`: in messages mode, MindBridge recognizes this
+Use the exact model name `google/embeddinggemma-2`: in messages mode, SenseMem recognizes this
 name and prefixes query text with `"task: search result | query: "` and document text with
 `"title: none | text: "`. Pure media receives no prefix; mixed inputs preserve text and attachment
 order. The request enables the checkpoint's BOS/EOS special tokens and sends inline data URLs
@@ -616,7 +616,7 @@ use; measure latency on the target hardware before selecting them.
 `ncpu` is a strictly positive integer. Upstream applies it to both PyTorch and BLAS for the
 entire process when loading models; another `AutoModel` can replace that budget. Embedding
 and other numerical work in the same process share these limits. It does not enable concurrent
-calls to one transcriber: MindBridge serializes inference over its loaded FunASR pipeline.
+calls to one transcriber: SenseMem serializes inference over its loaded FunASR pipeline.
 
 The transcription-space identity includes the pinned FunASR source revision and the complete
 model recipe. Device placement and CPU budgets do not create another semantic space. This
@@ -632,7 +632,7 @@ observation commits. Derived records are additive: the raw source stays durable 
 retrievable.
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 with Memory.from_config(
     {
@@ -685,10 +685,10 @@ The formation request carries a source observation's spatial `frame_id` and obse
 `anchor`, so a model can preserve the coordinate system, but does not disclose metric `x`/`y`
 coordinates to the provider.
 
-MindBridge validates the response envelope and every proposal. Invalid envelopes fail the call;
+SenseMem validates the response envelope and every proposal. Invalid envelopes fail the call;
 individual proposals the adapter cannot read are dropped and counted by
-`mindbridge.formation.dropped_proposals`, and proposals the kernel refuses to ground are counted
-over the whole operation by `mindbridge.formation.refused_proposals`. See
+`sensemem.formation.dropped_proposals`, and proposals the kernel refuses to ground are counted
+over the whole operation by `sensemem.formation.refused_proposals`. See
 [memory types, time, and decay](memory-types-time-and-decay.md) for the resulting typed records and
 visibility rules.
 
@@ -813,7 +813,7 @@ These controls bound what it costs and what it can do:
   When a text-only backend requires a caption to handle the input, the original `ModelError`
   propagates with its classification intact. `capture()` can durably retain the raw observation;
   a failed `settle()` leaves it pending for the host to retry explicitly. Failed batches are
-  counted as `mindbridge.vision.failed_batches`.
+  counted as `sensemem.vision.failed_batches`.
   Write-path failures are not cached, but re-adding an already-embedded record remains idempotent
   and does not backfill its caption.
 - Captions are not reproducible. Models supporting sampling controls receive `temperature` 0 and
@@ -869,7 +869,7 @@ primitives stay available for a host that wants to schedule the two halves itsel
 
 Consolidation stays off when the slot is omitted. An explicit evidence pass or due candidate
 raises `ModelError(reason="backend_not_configured")`; an empty candidate loop does no model work. Declaring
-it flips `consolidate` on in the capability document `mindbridge doctor` prints. `/healthz` and the
+it flips `consolidate` on in the capability document `sensemem doctor` prints. `/healthz` and the
 MCP server instructions never list it, whatever is declared: neither surface has a route or a tool
 for consolidation, because the control plane stays with the process that owns the memory, and each
 surface publishes only the operations it can serve. Unlike formation it is not on the write path:
@@ -891,7 +891,7 @@ server = build_mcp_server(memory, deliberate_every=900.0)
 
 It is a number of seconds, off by default, and it means the same thing on both surfaces. The round
 runs in a worker thread inside the server lifespan, so it never blocks a request or a tool call,
-and each round logs one line at `INFO` on the `mindbridge.api.deliberation` logger:
+and each round logs one line at `INFO` on the `sensemem.api.deliberation` logger:
 `deliberation: rounds=… weighed=… applied=… rejected=…`. A failed round logs a warning and the
 next one still runs. Passing it without a configured `consolidation` backend, or with a
 non-positive interval, raises `ValidationError` at construction rather than failing on the first
@@ -920,7 +920,7 @@ The `settings` mapping is the value-only `MemoryConfig` policy:
 | `retrieval_mode` | `hybrid` | Instance candidate policy: `hybrid`, `dense`, or lexical-only `lexical`; lexical ranks by native normalized full-text relevance (RRF when both text fields apply); use physically isolated stores when comparing modes |
 | `minimum_relevance` | `0.10` | Floor on query-relevant evidence before retention and reinforcement ranking |
 | `ambiguity_margin` | `0.01` | Withhold an unresolved top-two tie when `limit=1`, including lexical matches |
-| `evidence_budget_chars` | `24000` | Soft budget for widening `ask` grounding; mandatory `limit` hits survive even when over budget. `None` disables ranked-tail expansion; planning and linked expansion may still add records. No provider token guarantee |
+| `evidence_budget_chars` | `24000` | Soft budget for widening `ask` grounding. Mandatory raw observations survive an undersized allowance; derived assertions require their complete scoped source closure to fit. `None` disables ranked-tail expansion, but source closure, planning and linked expansion may still add records. No provider token guarantee |
 | `recall_planning` | `False` | Ask the answerer for a recall plan during `ask`, and ground on the set, sequence or entity it names; off means `ask` runs the one search it always has. An answerer without `plan_recall` cannot plan: the store logs one warning when it opens and every question runs that same search |
 | `recall_query_expansion` | `False` | Execute planner `similar.query` through bounded semantic searches. Routes share the per-ask query cache, character/media budgets and `recall_max_queries` ceiling; also permits replanning after a strict-policy abstention |
 | `recall_max_queries` | `6` | Maximum additional semantic searches across every step and planning round of one `ask`; integer from `1` through `32`. Failed searches and original-query deepening consume slots; cached reads do not |
@@ -1041,7 +1041,7 @@ reading media, and applies separate inline-media byte and video-count limits. Th
 safety bounds, not token/context limits. `generation.max_tokens` bounds output, including
 reasoning for models that use it; it does not cap input. Reserve output capacity when sizing a
 request against the provider's context window. Exact input preflight needs that endpoint's own
-counting protocol for the actual request; MindBridge does not provide a universal token preflight.
+counting protocol for the actual request; SenseMem does not provide a universal token preflight.
 Provider-declared context overflow raises permanent `ModelError(reason="context_length_exceeded")`
 (HTTP 413), without retrying an answer after dropping evidence. The independent
 [`compile_context` budget](context-compilation.md#budget) remains a hard character ceiling on
@@ -1160,8 +1160,8 @@ privacy failure.
 
 The obvious fix does not work. The pinned CAM++ recipe publishes its own threshold — `yesOrno_thr`
 is `0.31` in the model's `configuration.json`, and ModelScope's speaker-verification pipeline uses
-exactly that value on a raw cosine, the same quantity MindBridge compares. But `0.31` is calibrated
-for **one pair** of embeddings, and MindBridge accepts on the **maximum over up to 20 stored
+exactly that value on a raw cosine, the same quantity SenseMem compares. But `0.31` is calibrated
+for **one pair** of embeddings, and SenseMem accepts on the **maximum over up to 20 stored
 exemplars**. A maximum over more samples can only rise, so a pair threshold is a lower bound on the
 correct max-over-many threshold, never the value itself: measured against this matcher, mutually
 orthogonal random impostor vectors already reach `0.28` at 20 exemplars. `speaker_margin` does not
@@ -1169,7 +1169,7 @@ compensate, because it only breaks ties between two candidate identities — wit
 identity it never applies, and with several the maximum inflates only the winner.
 
 To calibrate it for a deployment, embed a labelled set of that deployment's own audio with the
-configured recipe, then plot two distributions of the score MindBridge actually decides on — the
+configured recipe, then plot two distributions of the score SenseMem actually decides on — the
 maximum over an identity's exemplar bank — one for same-speaker pairs and one for
 different-speaker pairs. Set the threshold between them, and keep `speaker_margin` non-zero. Around
 30 utterances each from 4-8 speakers in the real acoustic environment is enough to see whether a gap
@@ -1208,7 +1208,7 @@ positive numbers of days, measured from the material's own recorded time rather 
 time it was read, so traffic cannot reset a policy.
 
 Nothing here runs on its own. The policy is inert until a host calls
-[`Memory.apply_retention()`](api/python-sdk.md#data-subject-rights) or `mindbridge
+[`Memory.apply_retention()`](api/python-sdk.md#data-subject-rights) or `sensemem
 apply-retention`, which is what keeps physical deletion an explicit act with an auditable report.
 Start with `apply_retention(dry_run=True)`, which names exactly what a real pass would remove and
 removes nothing.
@@ -1225,7 +1225,7 @@ connection pooling:
 ```python
 from openai import OpenAI
 
-from mindbridge import SentenceTransformersEmbedder, Memory, OpenAIModels
+from sensemem import SentenceTransformersEmbedder, Memory, OpenAIModels
 
 with OpenAI(timeout=30.0, max_retries=3) as client:
     models = OpenAIModels(

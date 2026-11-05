@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import mindbridge.models.sentence_transformers as sentence_transformers
-from mindbridge import Modality, ModelInput, RerankingBackend, SentenceTransformersReranker
-from mindbridge.exceptions import ModelError, ValidationError
+import sensemem.models.sentence_transformers as sentence_transformers
+from sensemem import Modality, ModelInput, RerankingBackend, SentenceTransformersReranker
+from sensemem.exceptions import ModelError, ValidationError
 
 REVISION = "a" * 40
 

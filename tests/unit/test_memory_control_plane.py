@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,
@@ -59,11 +59,11 @@ from mindbridge import (
     SpeechTurn,
     ValidationError,
 )
-from mindbridge.control import dump_operation, load_operation, operation_key
-from mindbridge.infrastructure.local import LocalStore
-from mindbridge.infrastructure.local.store import StoredOperation
-from mindbridge.infrastructure.local.store.control import OperationLog
-from mindbridge.infrastructure.local.store.semantics import Semantics
+from sensemem.control import dump_operation, load_operation, operation_key
+from sensemem.infrastructure.local import LocalStore
+from sensemem.infrastructure.local.store import StoredOperation
+from sensemem.infrastructure.local.store.control import OperationLog
+from sensemem.infrastructure.local.store.semantics import Semantics
 
 OCCURRED = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
 
@@ -1330,7 +1330,7 @@ def test_zero_confidence_or_limited_capture_cannot_put_an_inferred_name_in_speec
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limited: bool
 ) -> None:
     if limited:
-        from mindbridge.infrastructure.local.store import _corroboration
+        from sensemem.infrastructure.local.store import _corroboration
 
         monkeypatch.setattr(_corroboration, "_MAX_MEMBER_ROWS", 1)
     with Memory(
@@ -3650,8 +3650,8 @@ def test_every_operation_payload_field_is_derived_from_the_dataclass() -> None:
     """A new proposal field must reach the idempotency key, or two proposals hash alike."""
     import dataclasses
 
-    from mindbridge import SpatialAnchor, SpatialContext
-    from mindbridge.control import _spatial_payload, proposal_payload
+    from sensemem import SpatialAnchor, SpatialContext
+    from sensemem.control import _spatial_payload, proposal_payload
 
     spatial = SpatialContext(frame_id="home", anchor=SpatialAnchor.OBSERVER, x=1.0, y=2.0)
     proposal = replace(_trait("Li", "patient"), spatial=spatial)

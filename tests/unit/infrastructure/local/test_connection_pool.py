@@ -26,11 +26,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from mindbridge.infrastructure.local import LocalStore, StoredMemory
-from mindbridge.infrastructure.local._capacity import Capacity
-from mindbridge.infrastructure.local._lock import DataDirectoryInUseError
-from mindbridge.infrastructure.local.store import _connections as connections_module
-from mindbridge.infrastructure.local.store._connections import Connections
+from sensemem.infrastructure.local import LocalStore, StoredMemory
+from sensemem.infrastructure.local._capacity import Capacity
+from sensemem.infrastructure.local._lock import DataDirectoryInUseError
+from sensemem.infrastructure.local.store import _connections as connections_module
+from sensemem.infrastructure.local.store._connections import Connections
 
 _NOW = datetime(2026, 9, 9, 12, 0, 0, tzinfo=timezone.utc)
 

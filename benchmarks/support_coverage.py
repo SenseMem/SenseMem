@@ -19,8 +19,8 @@ the **answer**, by the official LongMemEval answer-check prompt and parser. The 
 upstream's is ``gpt-4o-2024-08-06`` and this runs the same model that answers, exactly as the
 project's own baseline did, so no number here is comparable to a published row.
 
-Generation and embedding endpoints come from ``~/.config/mindbridge-eval.env`` (override with
-``MINDBRIDGE_EVAL_ENV``), because a run executes a committed snapshot and a credential must not
+Generation and embedding endpoints come from ``~/.config/sensemem-eval.env`` (override with
+``SENSEMEM_EVAL_ENV``), because a run executes a committed snapshot and a credential must not
 live in the tree that snapshot is taken from.
 """
 
@@ -50,7 +50,7 @@ import httpx2 as httpx
 from corpora import Unit, gallery_units, write_unit
 from openai import APIError, OpenAI
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     GenerationBackend,
@@ -63,21 +63,21 @@ from mindbridge import (
     OpenAIModels,
     SearchHit,
 )
-from mindbridge.benchmarks._official.longmemeval_prompts import (
+from sensemem.benchmarks._official.longmemeval_prompts import (
     build_answer_check_prompt,
     parse_answer_check,
 )
-from mindbridge.benchmarks.atm_bench import (
+from sensemem.benchmarks.atm_bench import (
     atm_capture_time,
     atm_email_block,
     load_atm_bench,
     load_atm_emails,
 )
-from mindbridge.benchmarks.longmemeval import load_longmemeval
-from mindbridge.benchmarks.official_scorers import judge_plan, local_scores, parse_judge_response
-from mindbridge.benchmarks.prompts import ATM_BENCH_QUERY_PROMPT
-from mindbridge.context import evidence_cost
-from mindbridge.exceptions import ModelError
+from sensemem.benchmarks.longmemeval import load_longmemeval
+from sensemem.benchmarks.official_scorers import judge_plan, local_scores, parse_judge_response
+from sensemem.benchmarks.prompts import ATM_BENCH_QUERY_PROMPT
+from sensemem.context import evidence_cost
+from sensemem.exceptions import ModelError
 
 RECALL_LIMIT = 12
 EMBEDDING_DIMENSION = 2048
@@ -87,7 +87,7 @@ INGEST_BATCH = 64
 # row is long and the ranked rows it displaces are short, so an expansion that fired can leave the
 # window *smaller*. That proxy is what made a confounded first run look like a clean loss.
 _EXPANSION_NOTE = re.compile(r"(\d+) further records linked to the evidence above")
-_ENV_PATH = Path(os.environ.get("MINDBRIDGE_EVAL_ENV", "~/.config/mindbridge-eval.env"))
+_ENV_PATH = Path(os.environ.get("SENSEMEM_EVAL_ENV", "~/.config/sensemem-eval.env"))
 # How long the run may go without completing a single unit of work before it prints every Python
 # thread's stack. A Mem-Gallery run stopped making progress at its 675th answer and left nothing to
 # read: the process was idle, and the 224 native threads it carries -- OpenCV's per-core pool,
@@ -99,7 +99,7 @@ _ENV_PATH = Path(os.environ.get("MINDBRIDGE_EVAL_ENV", "~/.config/mindbridge-eva
 _STALL_SECONDS = 900.0
 # Which corpus this commit measures. A run command is fixed for the whole experiment tree it
 # belongs to, so the corpus is a committed property of a branch rather than a flag. The default is
-# the one `--dataset` names; the other two read their corpus from `MINDBRIDGE_BENCH_ROOT` and print
+# the one `--dataset` names; the other two read their corpus from `SENSEMEM_BENCH_ROOT` and print
 # that `--dataset` is unused. Changing this constant is how a branch measures a different corpus --
 # and the other two need extras (`face` for identity, `benchmarks` for Mem-Gallery's own `f1`) that
 # a tree's command has to install, which is a property of the tree rather than of this file.
@@ -276,7 +276,7 @@ def _env() -> Mapping[str, str]:
                 continue
             name, _, value = stripped.partition("=")
             values[name.strip()] = value.strip()
-    values.update({k: v for k, v in os.environ.items() if k.startswith("MINDBRIDGE_")})
+    values.update({k: v for k, v in os.environ.items() if k.startswith("SENSEMEM_")})
     return values
 
 
@@ -300,13 +300,13 @@ def _embedder(settings: Mapping[str, str]) -> OpenAIModels:
     media = CORPUS != "longmemeval"
     return OpenAIModels(
         embedding_client=OpenAI(
-            base_url=settings["MINDBRIDGE_EMBEDDING_BASE_URL"],
-            api_key=settings.get("MINDBRIDGE_EMBEDDING_API_KEY", "local"),
+            base_url=settings["SENSEMEM_EMBEDDING_BASE_URL"],
+            api_key=settings.get("SENSEMEM_EMBEDDING_API_KEY", "local"),
             max_retries=3,
             # The embedder is local and answers in well under a second.
             timeout=120.0,
         ),
-        embedding_model=settings["MINDBRIDGE_EMBEDDING_MODEL"],
+        embedding_model=settings["SENSEMEM_EMBEDDING_MODEL"],
         embedding_dimension=EMBEDDING_DIMENSION,
         embedding_request_format="messages" if media else "input",
         embedding_capabilities=(
@@ -327,8 +327,8 @@ def _generation_client(settings: Mapping[str, str]) -> OpenAI:
     generous at 180 and the question-level retry above is what recovers a genuine blip.
     """
     return OpenAI(
-        base_url=settings["MINDBRIDGE_GENERATION_BASE_URL"],
-        api_key=settings["MINDBRIDGE_GENERATION_API_KEY"],
+        base_url=settings["SENSEMEM_GENERATION_BASE_URL"],
+        api_key=settings["SENSEMEM_GENERATION_API_KEY"],
         max_retries=2,
         timeout=180.0,
         http_client=httpx.Client(
@@ -341,7 +341,7 @@ def _generation_client(settings: Mapping[str, str]) -> OpenAI:
 def _reader(settings: Mapping[str, str], client: OpenAI) -> OpenAIModels:
     return OpenAIModels(
         generation_client=client,
-        generation_model=settings["MINDBRIDGE_GENERATION_MODEL"],
+        generation_model=settings["SENSEMEM_GENERATION_MODEL"],
         generation_capabilities=(
             frozenset({Modality.TEXT})
             if CORPUS == "longmemeval"
@@ -493,7 +493,7 @@ def _question_outcomes(
                     media_rows=sum(1 for hit in recorder.grounded if hit.assets),
                     correct=_judge(
                         client,
-                        settings["MINDBRIDGE_GENERATION_MODEL"],
+                        settings["SENSEMEM_GENERATION_MODEL"],
                         question,
                         result.answer,
                     ),
@@ -605,11 +605,11 @@ def _atm_outcomes(
     abandoned: list[tuple[str, str]],
 ) -> tuple[tuple[Outcome, ...], ...]:
     """Ingest the ATM corpus once, then read it once per arm with its questions concurrent."""
-    data = Path(settings["MINDBRIDGE_BENCH_ROOT"]) / "atm-bench" / "data"
+    data = Path(settings["SENSEMEM_BENCH_ROOT"]) / "atm-bench" / "data"
     questions = load_atm_bench(data / "atm-bench" / "atm-bench.json")[offset : offset + limit]
     embedder = _embedder(settings)
     store = root / "atm"
-    model = settings["MINDBRIDGE_GENERATION_MODEL"]
+    model = settings["SENSEMEM_GENERATION_MODEL"]
     by_question: dict[str, list[Outcome]] = {}
     try:
         started = time.perf_counter()
@@ -794,11 +794,11 @@ def _face_analyzer(settings: Mapping[str, str]) -> object | None:
         # run reached its first photograph before failing. The import that decides this is the
         # one the adapter itself will eventually make.
         importlib.import_module("cv2")
-        from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
+        from sensemem.models.opencv_face import OpenCVFaceAnalyzer
 
         return OpenCVFaceAnalyzer(
-            detector_model=settings["MINDBRIDGE_FACE_DETECTOR"],
-            recognizer_model=settings["MINDBRIDGE_FACE_RECOGNIZER"],
+            detector_model=settings["SENSEMEM_FACE_DETECTOR"],
+            recognizer_model=settings["SENSEMEM_FACE_RECOGNIZER"],
             score_threshold=0.9,
         )
     except (ImportError, KeyError, ModelError, OSError):
@@ -865,8 +865,8 @@ def _gallery_outcomes(
     abandoned: list[tuple[str, str]],
 ) -> tuple[tuple[Outcome, ...], ...]:
     """One store per persona: ingest, classify, then read the sampled questions once per arm."""
-    data = Path(settings["MINDBRIDGE_BENCH_ROOT"]) / "mem-gallery" / "data"
-    model = settings["MINDBRIDGE_GENERATION_MODEL"]
+    data = Path(settings["SENSEMEM_BENCH_ROOT"]) / "mem-gallery" / "data"
+    model = settings["SENSEMEM_GENERATION_MODEL"]
     by_question: dict[str, list[Outcome]] = {}
     units = gallery_units(data, 10_000)
     for unit in units:
@@ -1074,19 +1074,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     missing = [
         name
         for name in (
-            "MINDBRIDGE_EMBEDDING_BASE_URL",
-            "MINDBRIDGE_EMBEDDING_MODEL",
-            "MINDBRIDGE_GENERATION_BASE_URL",
-            "MINDBRIDGE_GENERATION_API_KEY",
-            "MINDBRIDGE_GENERATION_MODEL",
+            "SENSEMEM_EMBEDDING_BASE_URL",
+            "SENSEMEM_EMBEDDING_MODEL",
+            "SENSEMEM_GENERATION_BASE_URL",
+            "SENSEMEM_GENERATION_API_KEY",
+            "SENSEMEM_GENERATION_MODEL",
         )
         if not settings.get(name)
     ]
     if missing:
         parser.error(f"{_ENV_PATH} is missing {', '.join(missing)}")
 
-    if CORPUS != "longmemeval" and not settings.get("MINDBRIDGE_BENCH_ROOT"):
-        parser.error(f"{_ENV_PATH} is missing MINDBRIDGE_BENCH_ROOT")
+    if CORPUS != "longmemeval" and not settings.get("SENSEMEM_BENCH_ROOT"):
+        parser.error(f"{_ENV_PATH} is missing SENSEMEM_BENCH_ROOT")
     if CORPUS == "mem-gallery":
         budget = GALLERY_BUDGET_CHARS
     else:
@@ -1207,9 +1207,9 @@ def _emit(
         "capture_context": not args.no_capture_context,
         "face_recognition_ran": _FACES_RAN,
         "f1_available": _F1_AVAILABLE,
-        "answer_model": settings["MINDBRIDGE_GENERATION_MODEL"],
+        "answer_model": settings["SENSEMEM_GENERATION_MODEL"],
         "judge": {
-            "model": settings["MINDBRIDGE_GENERATION_MODEL"],
+            "model": settings["SENSEMEM_GENERATION_MODEL"],
             "protocol": judge_protocol,
             "note": (
                 "proxy judge where a judge is used at all: upstream's is a frontier model and "

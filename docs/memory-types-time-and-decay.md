@@ -1,7 +1,7 @@
 # Memory types, time, and decay
 
 This page owns memory-role, event-time, typed-assertion, retrieval-scope, and ranking semantics.
-MindBridge stores semantic, episodic, and procedural roles on the same durable record, and an
+SenseMem stores semantic, episodic, and procedural roles on the same durable record, and an
 optional typed context refines that record into observations, entities, events, state, relations,
 affect, traits, and response policies carrying source evidence, confidence, and their own validity
 and transaction time. Every control below uses the ordinary SQLite record and Zvec projection path;
@@ -23,7 +23,7 @@ none creates another store or isolation scope.
 | `MemoryType.EPISODIC` | Events and observations | Usually paired with event time |
 | `MemoryType.PROCEDURAL` | Instructions and reusable routines | Returned as evidence, never executed |
 
-The caller classifies ordinary content. MindBridge does not extract facts, segment episodes, or
+The caller classifies ordinary content. SenseMem does not extract facts, segment episodes, or
 promote one type into another unless an explicit `FormationBackend` is configured, and even then
 formation proposes a separate typed record rather than rewriting the caller's role. Memory type is
 part of stable identity, so otherwise identical semantic, episodic, and procedural records have
@@ -34,7 +34,7 @@ Every snippet on this page assumes an open `memory`:
 ```python
 from datetime import datetime, timezone
 
-from mindbridge import MemoryType
+from sensemem import MemoryType
 
 memory.add(
     "The deployment failed because the token expired.",
@@ -68,7 +68,7 @@ at `occurred_from`, or starting at `occurred_until`, does not match; an instant 
 timestamp falls inside the requested range, and is treated internally as a one-microsecond
 interval.
 
-**Contract:** MindBridge pushes the filter into Zvec for candidate selection and rechecks it after
+**Contract:** SenseMem pushes the filter into Zvec for candidate selection and rechecks it after
 SQLite hydration, because SQLite is authoritative. Use these explicit bounds whenever records
 outside the interval must be excluded.
 
@@ -112,7 +112,7 @@ more often than a well-timed irrelevant one.
 and optional metric pose or symbolic `place_id` to a source observation:
 
 ```python
-from mindbridge import EvidenceBasis, ObservationContext
+from sensemem import EvidenceBasis, ObservationContext
 
 source = memory.add(
     "The mug is on the kitchen table.",
@@ -210,7 +210,7 @@ survive.
 
 A proposal that fails one of those per-proposal rules — an `AFFECT` cue naming a modality the
 source never carried, a pose in another coordinate frame — is dropped, counted on the
-`mindbridge.formation.refused_proposals` span attribute, and costs only itself: the observation's
+`sensemem.formation.refused_proposals` span attribute, and costs only itself: the observation's
 remaining proposals commit and the write succeeds. One badly grounded opinion must not fail a write
 whose source is already durable, because every retry would re-run the model and fail the same way.
 Two proposals from one source that contradict each other — one record proposed twice with different
@@ -322,7 +322,7 @@ Raw occurrence and typed assertion time answer different questions:
 | --- | --- |
 | `occurred_at` / `occurred_end` | When the captured episode happened |
 | `MemoryContext.valid_from` / `valid_until` | When the assertion is true in the represented world |
-| `MemoryContext.recorded_at` / `retired_at` | When MindBridge knew that assertion version |
+| `MemoryContext.recorded_at` / `retired_at` | When SenseMem knew that assertion version |
 
 Both validity columns and both transaction columns are stored on every typed version, so this is
 full bitemporal invalidation rather than a single timestamp. A formation backend is not required to
@@ -339,7 +339,7 @@ change and its semantic projection share one monotonically allocated transaction
 the device wall clock repeats.
 
 ```python
-from mindbridge import RetrievalScope
+from sensemem import RetrievalScope
 
 what_we_believed_then = memory.search(
     "What drink did Alex prefer?",
@@ -380,7 +380,7 @@ asserting a new valid-time interval or revision order.
 Spatial scope uses the same value:
 
 ```python
-from mindbridge import RetrievalScope, SpatialAnchor, SpatialContext
+from sensemem import RetrievalScope, SpatialAnchor, SpatialContext
 
 scope = RetrievalScope(
     valid_at=event_time,
@@ -397,7 +397,7 @@ hits = memory.search("Where was the red toolbox?", scope=scope).hits
 ```
 
 `near` and `radius_m` must be supplied together. Spatial search compares only matching coordinate
-frames and anchors; position uncertainty expands the conservative intersection test. MindBridge
+frames and anchors; position uncertainty expands the conservative intersection test. SenseMem
 does not infer coordinate transforms.
 
 `ObservationContext(place_id="kitchen")` stores a trimmed symbolic label when metric localization is
@@ -422,7 +422,7 @@ appearing in default `search` and `ask` while `get` and `list` still return it a
 ```python
 from datetime import datetime, timedelta, timezone
 
-from mindbridge import ObservationContext
+from sensemem import ObservationContext
 
 now = datetime.now(timezone.utc)
 expiring = memory.add(
@@ -561,7 +561,7 @@ outcome recording, and rollback behavior.
 
 ## Decay and reinforcement
 
-MindBridge separates five forms of forgetting and never conflates them:
+SenseMem separates five forms of forgetting and never conflates them:
 
 | Form | Call | Effect |
 | --- | --- | --- |

@@ -17,9 +17,19 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import mindbridge.models.openai_sdk as adapter
-from mindbridge import AssetRef, Modality, ModelError, OpenAIModels, SearchHit
-from mindbridge.models.base import ModelInput
+import sensemem.models.openai_sdk as adapter
+from sensemem import (
+    AbstentionReason,
+    AssetRef,
+    EvidenceBasis,
+    MemoryContext,
+    MemoryKind,
+    Modality,
+    ModelError,
+    OpenAIModels,
+    SearchHit,
+)
+from sensemem.models.base import ModelInput
 
 ATOMIC_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
 
@@ -66,6 +76,133 @@ def _reply() -> httpx.Response:
         200,
         json={"choices": [{"index": 0, "message": {"content": "蓝色。"}, "finish_reason": "stop"}]},
     )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("packing", ["inline", "wire", "rejection"])
+@pytest.mark.parametrize("caption", ["", "The source has a caption."])
+def test_media_packing_withholds_transitive_assertions_when_a_source_is_omitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: bool,
+    packing: str,
+    caption: str,
+) -> None:
+    audio = _asset(tmp_path, "source.wav", Modality.AUDIO, b"audio" * 1_000)
+    source = replace(_hit("source", (audio,)), content=caption)
+    intermediate = replace(
+        _hit("intermediate"),
+        content="Intermediate derived assertion.",
+        context=MemoryContext(
+            kind=MemoryKind.RELATION,
+            basis=EvidenceBasis.MODEL_INFERENCE,
+            confidence=0.9,
+            valid_from=None,
+            valid_until=None,
+            recorded_at=source.created_at,
+            evidence_ids=(source.id,),
+        ),
+    )
+    assert intermediate.context is not None
+    final = replace(
+        intermediate,
+        id="final",
+        content="Final derived assertion.",
+        context=replace(intermediate.context, evidence_ids=(intermediate.id,)),
+    )
+    independent = _hit("independent")
+    hits = (final, intermediate, source, independent)
+    question = ModelInput(text="What is here?", evidence_sources=hits)
+    maximum = None
+    if packing == "inline":
+        monkeypatch.setattr(adapter, "_MAX_INLINE_MODEL_ITEM_BYTES", 1_000)
+    elif packing == "wire":
+        probe = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)
+        prepared = probe._answer_request(question, hits, stream=stream)
+        assert isinstance(prepared, tuple)
+        maximum = adapter._answer_wire_size(prepared[0], stream=stream) - 256
+    sent: list[bytes] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        if packing == "rejection" and len(sent) == 1:
+            return httpx.Response(400, json={"error": {"message": "audio input is too short"}})
+        if stream:
+            chunk = {
+                "choices": [{"index": 0, "delta": {"content": "蓝色。"}, "finish_reason": "stop"}]
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return _reply()
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = OpenAIModels(
+            OpenAI(api_key="test", http_client=client, max_retries=0),
+            generation_capabilities=ATOMIC_MODALITIES,
+            generation_request_max_bytes=maximum,
+        )
+        if stream:
+            generator = model.stream_answer(question, hits)
+            while True:
+                try:
+                    next(generator)
+                except StopIteration as completed:
+                    result = completed.value
+                    break
+        else:
+            result = model.answer(question, hits)
+    assert independent.id in {hit.id for hit in result.hits}
+    assert not {final.id, intermediate.id} & {hit.id for hit in result.hits}
+    assert b"Final derived assertion" not in sent[-1]
+    assert b"Intermediate derived assertion" not in sent[-1]
+    assert "not a complete set" in json.loads(sent[-1])["messages"][0]["content"]
+    if maximum is not None:
+        assert len(sent[-1]) <= maximum
+
+
+def test_wire_budget_abstains_when_only_an_incomplete_source_closure_remains(
+    tmp_path: Path,
+) -> None:
+    source = replace(
+        _hit("source", (_asset(tmp_path, "source.wav", Modality.AUDIO, b"audio" * 1_000),)),
+        content="",
+    )
+    assertion = replace(
+        _hit("assertion"),
+        context=MemoryContext(
+            kind=MemoryKind.RELATION,
+            basis=EvidenceBasis.MODEL_INFERENCE,
+            confidence=0.9,
+            valid_from=None,
+            valid_until=None,
+            recorded_at=source.created_at,
+            evidence_ids=(source.id,),
+        ),
+    )
+    hits = (assertion, source)
+    question = ModelInput(text="What is here?", evidence_sources=hits)
+    prepared = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)._answer_request(
+        question, hits
+    )
+    assert isinstance(prepared, tuple)
+    maximum = adapter._answer_wire_size(prepared[0], stream=False) - 256
+
+    def unreachable(_request: httpx.Request) -> httpx.Response:
+        pytest.fail("strict answering must not generate from withheld assertions")
+
+    with httpx.Client(transport=httpx.MockTransport(unreachable)) as client:
+        model = OpenAIModels(
+            OpenAI(api_key="test", http_client=client, max_retries=0),
+            generation_capabilities=ATOMIC_MODALITIES,
+            generation_request_max_bytes=maximum,
+        )
+        result = model.answer(question, hits)
+    assert result.abstained
+    assert result.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
+    assert result.hits == ()
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -235,8 +372,8 @@ def test_ranked_omission_keeps_gps_and_map_metadata_without_absent_attachment(
     assert "attachment" not in fields
     attributes = exporter.get_finished_spans()[0].attributes
     assert attributes is not None
-    assert attributes["mindbridge.grounding.request_bytes"] == len(captured[0])
-    assert attributes["mindbridge.grounding.budget_omitted_assets"] == 1
+    assert attributes["sensemem.grounding.request_bytes"] == len(captured[0])
+    assert attributes["sensemem.grounding.budget_omitted_assets"] == 1
     # Map enrichment is retained in the same source-bound metadata-only payload.
     parts = adapter._answer_text_parts(
         ModelInput(text="Where?"),

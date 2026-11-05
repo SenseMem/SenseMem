@@ -11,21 +11,21 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
     Blob,
     FunASRTranscriber,
     Memory,
-    MindBridgeConfig,
+    SenseMemConfig,
     SpeechAnalysis,
     SpeechTurn,
     StorageError,
 )
-from mindbridge.configuration import FunASRSpeechConfig, _build_speech
+from sensemem.configuration import FunASRSpeechConfig, _build_speech
 
 
 def test_funasr_configuration_forwards_execution_settings() -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "embedding": {"provider": "openai"},
             "speech": {
@@ -79,7 +79,7 @@ def test_funasr_upstream_assigns_the_speaker_with_most_total_overlap() -> None:
 
 
 def test_funasr_old_analysis_space_cannot_be_reopened(tmp_path: Path) -> None:
-    from mindbridge import EmbedTask, Modality, ModelInput
+    from sensemem import EmbedTask, Modality, ModelInput
 
     class Embedder:
         embedding_model = "speech-contract"

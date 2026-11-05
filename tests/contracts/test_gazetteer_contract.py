@@ -9,15 +9,15 @@ import sys
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from mindbridge import MindBridgeConfig, OpenAIModels
+from sensemem import OpenAIModels, SenseMemConfig
 
 
 def test_default_config_and_package_import_do_not_enable_or_load_geospatial_dependencies() -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {"embedding": {"provider": "openai"}, "generation": {"provider": "openai"}}
     )
     assert config.generation is not None and config.generation.offline_gazetteer is None
-    command = "import json,sys; from mindbridge import OfflineGazetteer; print(json.dumps(sorted({'shapely','pyproj','osmium'}.intersection(sys.modules))))"
+    command = "import json,sys; from sensemem import OfflineGazetteer; print(json.dumps(sorted({'shapely','pyproj','osmium'}.intersection(sys.modules))))"
     result = subprocess.run(
         [sys.executable, "-I", "-c", command],
         capture_output=True,
@@ -33,7 +33,7 @@ def test_default_config_and_package_import_do_not_enable_or_load_geospatial_depe
 @pytest.mark.parametrize("slot", ["embedding", "formation", "vision", "consolidation"])
 def test_map_configuration_cannot_enable_write_time_world_knowledge(slot: str) -> None:
     with pytest.raises(PydanticValidationError):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 slot: {
@@ -57,7 +57,7 @@ def test_map_configuration_cannot_enable_write_time_world_knowledge(slot: str) -
 )
 def test_map_resource_bounds_fail_before_clients_or_storage(values: dict[str, object]) -> None:
     with pytest.raises(PydanticValidationError):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "generation": {

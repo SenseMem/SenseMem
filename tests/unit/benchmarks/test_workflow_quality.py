@@ -12,8 +12,8 @@ import httpx2 as httpx
 import pytest
 from openai import OpenAI
 
-from mindbridge import Modality, OpenAIModels
-from mindbridge.benchmarks import workflow_quality
+from sensemem import Modality, OpenAIModels
+from sensemem.benchmarks import workflow_quality
 
 
 def _responder(broken: str | None) -> Callable[[httpx.Request], httpx.Response]:

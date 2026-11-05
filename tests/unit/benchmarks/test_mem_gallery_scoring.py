@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mindbridge.benchmarks.official_scorers import local_scores
+from sensemem.benchmarks.official_scorers import local_scores
 
 
 def _scores(

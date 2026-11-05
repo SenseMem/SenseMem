@@ -10,13 +10,13 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from mindbridge import AnswerResult, AsyncMemory, MemoryRecord, ModelError, SearchHit
-from mindbridge.benchmarks.locomo_refined import (
+from sensemem import AnswerResult, AsyncMemory, MemoryRecord, ModelError, SearchHit
+from sensemem.benchmarks.locomo_refined import (
     LoCoMoRefinedConversation,
     LoCoMoRefinedQuestion,
     LoCoMoRefinedTurn,
 )
-from mindbridge.benchmarks.locomo_refined_runner import run_locomo_refined_conversation
+from sensemem.benchmarks.locomo_refined_runner import run_locomo_refined_conversation
 
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -95,10 +95,10 @@ async def test_runner_uses_only_public_add_and_ask_without_gold_or_identity_fiel
     )
     assert predictions[0].qa_id == "conv-26#q0000"
     assert predictions[0].predicted_answer == "A new course."
-    assert predictions[0].mindbridge_prediction_context == ("D1:1",)
-    assert predictions[0].mindbridge_confidence == pytest.approx(0.73)
+    assert predictions[0].sensemem_prediction_context == ("D1:1",)
+    assert predictions[0].sensemem_confidence == pytest.approx(0.73)
     serialized = predictions[0].model_dump()
-    assert "mindbridge_trace_id" not in serialized
+    assert "sensemem_trace_id" not in serialized
     assert not any("tenant" in key for key in serialized)
     assert "SECRET REFERENCE ANSWER" not in predictions[0].model_dump_json()
 
@@ -110,8 +110,8 @@ async def test_confidence_is_zero_when_ask_returns_no_hits() -> None:
         await run_locomo_refined_conversation(cast(AsyncMemory, memory), _conversation())
     )[0]
 
-    assert prediction.mindbridge_confidence == 0.0
-    assert prediction.mindbridge_prediction_context == ()
+    assert prediction.sensemem_confidence == 0.0
+    assert prediction.sensemem_prediction_context == ()
 
 
 async def test_one_failed_turn_does_not_discard_the_other_turns() -> None:
@@ -146,9 +146,9 @@ async def test_one_failed_turn_does_not_discard_the_other_turns() -> None:
     prediction = (await run_locomo_refined_conversation(cast(AsyncMemory, memory), conversation))[0]
 
     assert [record.metadata["dialog_id"] for record in memory.records] == ["D1:1", "D1:3"]
-    assert prediction.mindbridge_prediction_context == ("D1:1", "D1:3")
-    assert prediction.mindbridge_confidence == pytest.approx(0.8)
-    assert prediction.mindbridge_ingest_failure_count == 1
+    assert prediction.sensemem_prediction_context == ("D1:1", "D1:3")
+    assert prediction.sensemem_confidence == pytest.approx(0.8)
+    assert prediction.sensemem_ingest_failure_count == 1
 
 
 async def test_one_failed_question_keeps_other_predictions_and_stable_error_codes() -> None:
@@ -184,7 +184,7 @@ async def test_one_failed_question_keeps_other_predictions_and_stable_error_code
         "conv-26#q0001",
         "conv-26#q0002",
     ]
-    assert [prediction.mindbridge_error_code for prediction in predictions] == [
+    assert [prediction.sensemem_error_code for prediction in predictions] == [
         None,
         "model_error",
         "RuntimeError",

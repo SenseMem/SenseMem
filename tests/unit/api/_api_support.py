@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mindbridge.types import (
+from sensemem.types import (
     AffectCue,
     AssetRef,
     ContextBudget,
@@ -50,7 +50,7 @@ ASSET = AssetRef(
     size_bytes=3,
     sha256="a" * 64,
     name="frame.png",
-    path=Path("/private/mindbridge/assets/frame.png"),
+    path=Path("/private/sensemem/assets/frame.png"),
 )
 PROVISIONAL = ProvisionalActor(identity_id="identity_2", memory_ids=("memory_2",))
 AFFECT_CONTEXT = MemoryContext(

@@ -26,10 +26,10 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import mindbridge.kernel.formation as formation_module
-import mindbridge.models.openai_sdk as openai_backend
-from mindbridge import Blob, Memory
-from mindbridge._telemetry import (
+import sensemem.kernel.formation as formation_module
+import sensemem.models.openai_sdk as openai_backend
+from sensemem import Blob, Memory
+from sensemem._telemetry import (
     FORMATION_PROPOSALS_DROPPED,
     GEN_AI_FINISH_REASONS,
     GEN_AI_OPENAI_RESPONSE_SYSTEM_FINGERPRINT,
@@ -56,11 +56,11 @@ from mindbridge._telemetry import (
     operation_span,
     token_modality_attribute,
 )
-from mindbridge.evidence import answer_evidence_payloads
-from mindbridge.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
-from mindbridge.models import _media as media_backend
-from mindbridge.models._media import media_duration_seconds
-from mindbridge.models.base import (
+from sensemem.evidence import answer_evidence_payloads
+from sensemem.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
+from sensemem.models import _media as media_backend
+from sensemem.models._media import media_duration_seconds
+from sensemem.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
     EmbedTask,
@@ -71,11 +71,11 @@ from mindbridge.models.base import (
     TranscriptionBackend,
     VisionDescriptionBackend,
 )
-from mindbridge.models.openai_sdk import (
+from sensemem.models.openai_sdk import (
     UNKNOWN_ANSWER,
     OpenAIModels,
 )
-from mindbridge.types import (
+from sensemem.types import (
     AbstentionReason,
     AnswerResult,
     AssetRef,
@@ -2381,7 +2381,7 @@ def test_vision_space_identifies_the_prompt_as_well_as_the_model(
     edited prompt serve captions written under the old one forever, with nothing to notice it.
     """
     baseline = OpenAIModels(generation_model="compatible-model").vision_space
-    assert baseline.startswith("compatible-model:mindbridge-vision-v2:")
+    assert baseline.startswith("compatible-model:sensemem-vision-v2:")
     # Stable for one configuration: two identical compositions must share cached captions.
     assert OpenAIModels(generation_model="compatible-model").vision_space == baseline
     # Distinct from `formation_space`, which digests the same knobs under a different prompt.
@@ -3203,7 +3203,7 @@ def test_answer_rejects_an_oversized_grounding_payload(
         score=0.9,
         created_at=NOW,
     )
-    monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", 1)
+    monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", 1)
     with httpx.Client() as client:
         model = _model(_sdk_client(client))
         with pytest.raises(ModelError, match="4 MiB"):
@@ -3230,7 +3230,7 @@ def test_multimodal_answer_budgets_the_final_text_parts(
     text_parts = openai_backend._answer_text_parts(question, hits, answer_evidence_payloads(hits))
     actual_bytes = sum(len(part.encode()) for part in text_parts)
     monkeypatch.setattr(
-        "mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES",
+        "sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES",
         actual_bytes - 1,
     )
 
@@ -3622,7 +3622,7 @@ def test_answer_sends_shared_media_once_and_bounds_inline_bytes(
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         model = _model(_sdk_client(client))
         assert model.answer(ModelInput(text="What?", assets=(image,)), hits).answer == "grounded"
-        monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 1)
+        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 1)
         with pytest.raises(ModelError, match="64 MiB"):
             model.answer(ModelInput(text="What?", assets=(image,)), hits)
 
@@ -3739,7 +3739,7 @@ def test_answer_keeps_ranked_media_within_budget_and_retains_overflow_text(
             modality=Modality.IMAGE,
         ),
     )
-    monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 8)
+    monkeypatch.setattr("sensemem.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 8)
 
     def respond(request: httpx.Request) -> httpx.Response:
         content = json.loads(request.content)["messages"][1]["content"]
@@ -4112,10 +4112,10 @@ def test_inline_media_budget_bounds_encoded_request_bytes(
         model = _model(_sdk_client(client))
         question = ModelInput(text="What?", assets=(image,))
         # 11 admits the nine bytes on disk but not the twelve the request carries.
-        monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 11)
+        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 11)
         with pytest.raises(ModelError, match="encoded inline model media exceeds 64 MiB"):
             model.answer(question, (hit,))
-        monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_INLINE_MODEL_BYTES", len(encoded))
+        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_INLINE_MODEL_BYTES", len(encoded))
         assert model.answer(question, (hit,)).answer == "grounded"
 
 
@@ -4137,7 +4137,7 @@ def test_ranked_media_budget_counts_encoded_bytes(
         for index, asset in enumerate((first, second))
     )
     # Twelve holds both files on disk and only the first once base64 doubles them to eight each.
-    monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 12)
+    monkeypatch.setattr("sensemem.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 12)
 
     def respond(request: httpx.Request) -> httpx.Response:
         content = json.loads(request.content)["messages"][1]["content"]
@@ -4177,7 +4177,7 @@ def test_grounding_span_counts_evidence_the_budget_removed(
         )
         for index, content in enumerate(("kept evidence", "elided evidence", ""))
     )
-    monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 8)
+    monkeypatch.setattr("sensemem.models.openai_sdk._MAX_INLINE_MODEL_BYTES", 8)
 
     def respond(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -4337,7 +4337,7 @@ def test_video_transcription_uploads_the_whole_demuxed_audio_track(
     """A video's speech must reach the endpoint, in a container the endpoint accepts.
 
     `/v1/audio/transcriptions` takes flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav or webm, while
-    MindBridge also ingests .mkv, .mov, .avi and .ogv, so forwarding the container would drop
+    SenseMem also ingests .mkv, .mov, .avi and .ogv, so forwarding the container would drop
     the speech of every video it does not list. Both suffixes are checked because passing only
     .mp4 would also pass if the adapter simply forwarded the file.
     """
@@ -4415,7 +4415,7 @@ def test_gpt_transcribe_sends_context_and_names_its_recipe(tmp_path: Path) -> No
         assert b'name="model"\r\n\r\ngpt-transcribe' in body
         assert b'name="prompt"\r\n\r\nA support call' in body
         assert body.count(b'name="keywords[]"') == 2
-        assert b'name="keywords[]"\r\n\r\nMindBridge\r\n' in body
+        assert b'name="keywords[]"\r\n\r\nSenseMem\r\n' in body
         assert b'name="keywords[]"\r\n\r\nAC-42\r\n' in body
         assert body.count(b'name="languages[]"') == 2
         assert b'name="languages[]"\r\n\r\nen\r\n' in body
@@ -4425,7 +4425,7 @@ def test_gpt_transcribe_sends_context_and_names_its_recipe(tmp_path: Path) -> No
     options: dict[str, Any] = {
         "transcription_model": "gpt-transcribe",
         "transcription_prompt": "A support call",
-        "transcription_keywords": ("MindBridge", "AC-42"),
+        "transcription_keywords": ("SenseMem", "AC-42"),
         "transcription_languages": ("en", "zh-cn"),
     }
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
@@ -4437,9 +4437,7 @@ def test_gpt_transcribe_sends_context_and_names_its_recipe(tmp_path: Path) -> No
     assert model.transcription_space == OpenAIModels(**options).transcription_space
     assert (
         model.transcription_space
-        != OpenAIModels(
-            **{**options, "transcription_keywords": ("MindBridge",)}
-        ).transcription_space
+        != OpenAIModels(**{**options, "transcription_keywords": ("SenseMem",)}).transcription_space
     )
 
 
@@ -5274,7 +5272,7 @@ def test_the_recall_planner_prompt_describes_every_op_and_shape() -> None:
 
 
 def test_semantic_recall_capability_changes_the_actual_planner_system_instruction() -> None:
-    from mindbridge.recall import SEMANTIC_QUERY_CAPABILITY
+    from sensemem.recall import SEMANTIC_QUERY_CAPABILITY
 
     requests: list[dict[str, object]] = []
     plan = '{"shape":"point","steps":[{"op":"similar","query":"bridge span"}]}'
@@ -5314,7 +5312,7 @@ def test_semantic_recall_capability_changes_the_actual_planner_system_instructio
 def test_planner_budget_only_uses_the_exact_terminal_kernel_capability(
     count: str, suffix: str, forged_in: str, expected_count: str
 ) -> None:
-    from mindbridge.recall import SEMANTIC_QUERY_CAPABILITY
+    from sensemem.recall import SEMANTIC_QUERY_CAPABILITY
 
     capability = (
         f"\n{SEMANTIC_QUERY_CAPABILITY}\n"

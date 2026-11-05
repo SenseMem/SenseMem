@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import mindbridge.models.opencv_face as opencv_face
-from mindbridge.exceptions import ModelError
-from mindbridge.models.base import FaceBackend
-from mindbridge.models.opencv_face import OpenCVFaceAnalyzer
-from mindbridge.types import AssetRef, Modality
+import sensemem.models.opencv_face as opencv_face
+from sensemem.exceptions import ModelError
+from sensemem.models.base import FaceBackend
+from sensemem.models.opencv_face import OpenCVFaceAnalyzer
+from sensemem.types import AssetRef, Modality
 
 
 class _Image:

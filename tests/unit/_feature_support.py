@@ -4,7 +4,7 @@ import hashlib
 import math
 from collections.abc import Sequence
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     FormationProposal,
     MemoryIntent,

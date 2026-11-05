@@ -14,9 +14,9 @@ from threading import Event
 
 import pytest
 
-from mindbridge.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
-from mindbridge.infrastructure.local.store import LocalStoreClosedError
-from mindbridge.infrastructure.local.store._cache import ReadCache
+from sensemem.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store import LocalStoreClosedError
+from sensemem.infrastructure.local.store._cache import ReadCache
 
 _NOW = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
 

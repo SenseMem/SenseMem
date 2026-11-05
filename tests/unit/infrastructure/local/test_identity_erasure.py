@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import EvidenceBasis, MemoryContext, MemoryKind
-from mindbridge.infrastructure.local import (
+from sensemem import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem.infrastructure.local import (
     LocalStore,
     StoredAsset,
     StoredEmbedding,
     StoredMemory,
 )
-from mindbridge.models.base import (
+from sensemem.models.base import (
     FaceAnalysis,
     FaceEmbedding,
     SpeakerEmbedding,

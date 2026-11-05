@@ -10,10 +10,10 @@ from typing import cast
 
 import pytest
 
-from mindbridge import AssetRef, MemoryComposition, Modality
-from mindbridge.benchmarks.eval import _BackendPool, _BorrowedSpeechBackend
-from mindbridge.benchmarks.eval_adapters import MemoryItem
-from mindbridge.models.base import SpeechAnalysis
+from sensemem import AssetRef, MemoryComposition, Modality
+from sensemem.benchmarks.eval import _BackendPool, _BorrowedSpeechBackend
+from sensemem.benchmarks.eval_adapters import MemoryItem
+from sensemem.models.base import SpeechAnalysis
 
 
 def test_backend_pool_drains_speech_prefetch_before_closing_its_model(tmp_path: Path) -> None:

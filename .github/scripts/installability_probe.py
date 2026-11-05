@@ -2,7 +2,7 @@
 
 Every heavy dependency in this package sits behind ``import_module`` inside a function so the
 base import stays cold. That discipline hides missing declarations: importing
-``mindbridge.models.funasr`` succeeds without touching one ``funasr`` symbol, so an import-only
+``sensemem.models.funasr`` succeeds without touching one ``funasr`` symbol, so an import-only
 CI probe cannot tell an installable extra from a broken one. Each leg below therefore imports the
 supported modules and then runs the loader those modules defer to.
 
@@ -30,7 +30,7 @@ class _StubEmbedder:
     embedding_dimension = 2
 
     def __init__(self) -> None:
-        from mindbridge.types import Modality
+        from sensemem.types import Modality
 
         self.embedding_capabilities = frozenset({Modality.TEXT})
 
@@ -47,7 +47,7 @@ class _StubEmbedder:
 
 def _memory_flow(tracer: object = None) -> None:
     """Write and read one record end to end: SQLite, the outbox, and the Zvec loader."""
-    from mindbridge import Memory
+    from sensemem import Memory
 
     with (
         tempfile.TemporaryDirectory() as directory,
@@ -68,20 +68,20 @@ def _base() -> None:
 
 
 def _product_cli() -> None:
-    """Run the `mindbridge` console script's entry point on the base dependency set.
+    """Run the `sensemem` console script's entry point on the base dependency set.
 
     The script is declared whether or not its module imports, and every composition path except
     `--url` needs an extra, so the cheapest honest end-to-end check is a resolution that touches
-    argparse, `mindbridge.recipes`, and the JSON writer without constructing a backend.
+    argparse, `sensemem.recipes`, and the JSON writer without constructing a backend.
     """
-    from mindbridge.cli import main
+    from sensemem.cli import main
 
     assert main(["--url", "http://127.0.0.1:1", "-q", "--explain", "doctor"]) == 0
 
 
 def _benchmarks() -> None:
     """Reach the download client and the Parquet reader the catalog tasks load lazily."""
-    from mindbridge.benchmarks.cli import main
+    from sensemem.benchmarks.cli import main
 
     assert main(["--help"]) == 0
     importlib.import_module("httpx")
@@ -95,14 +95,14 @@ def _observability() -> None:
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from mindbridge._telemetry import TRACER_NAME
+    from sensemem._telemetry import TRACER_NAME
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     _memory_flow(provider.get_tracer(TRACER_NAME))
     provider.shutdown()
-    assert {"mindbridge.add", "mindbridge.search"} <= {
+    assert {"sensemem.add", "sensemem.search"} <= {
         span.name for span in exporter.get_finished_spans()
     }
 
@@ -113,7 +113,7 @@ def _openai() -> None:
     from openai import OpenAI
     from PIL import Image
 
-    from mindbridge import OpenAIModels
+    from sensemem import OpenAIModels
 
     client = OpenAI(api_key="installability-probe", base_url="http://127.0.0.1:1/v1")
     models = OpenAIModels(client)
@@ -146,8 +146,8 @@ def _local() -> None:
 
 def _server() -> None:
     """Build the real ASGI application over a real memory instance."""
-    from mindbridge import Memory
-    from mindbridge.api import create_app
+    from sensemem import Memory
+    from sensemem.api import create_app
 
     with (
         tempfile.TemporaryDirectory() as directory,
@@ -176,8 +176,8 @@ def _mcp() -> None:
     """Build the real MCP server and resolve the fifteen supported tool schemas."""
     import asyncio
 
-    from mindbridge import Memory
-    from mindbridge.api.mcp import build_mcp_server
+    from sensemem import Memory
+    from sensemem.api.mcp import build_mcp_server
 
     with (
         tempfile.TemporaryDirectory() as directory,
@@ -206,36 +206,36 @@ def _mcp() -> None:
 
 MODULES: dict[str, tuple[str, ...]] = {
     "base": (
-        "mindbridge",
-        "mindbridge.benchmarks",
-        "mindbridge.cli",
-        "mindbridge.benchmarks.isolation",
-        "mindbridge.benchmarks.local_index_benchmark",
-        "mindbridge.exceptions",
-        "mindbridge.infrastructure.local",
-        "mindbridge.memory",
-        "mindbridge.models.base",
-        "mindbridge.models.openai_sdk",
-        "mindbridge.recipes",
-        "mindbridge.types",
+        "sensemem",
+        "sensemem.benchmarks",
+        "sensemem.cli",
+        "sensemem.benchmarks.isolation",
+        "sensemem.benchmarks.local_index_benchmark",
+        "sensemem.exceptions",
+        "sensemem.infrastructure.local",
+        "sensemem.memory",
+        "sensemem.models.base",
+        "sensemem.models.openai_sdk",
+        "sensemem.recipes",
+        "sensemem.types",
     ),
     "benchmarks": (
-        "mindbridge.benchmarks.cli",
-        "mindbridge.benchmarks.download",
-        "mindbridge.benchmarks.eval",
-        "mindbridge.benchmarks.official_scorers",
-        "mindbridge.benchmarks.prepare_media",
-        "mindbridge.benchmarks.task_catalog",
+        "sensemem.benchmarks.cli",
+        "sensemem.benchmarks.download",
+        "sensemem.benchmarks.eval",
+        "sensemem.benchmarks.official_scorers",
+        "sensemem.benchmarks.prepare_media",
+        "sensemem.benchmarks.task_catalog",
     ),
-    "observability": ("mindbridge", "mindbridge._telemetry"),
-    "openai": ("mindbridge", "mindbridge.models.openai_sdk"),
-    "face": ("mindbridge", "mindbridge.models.opencv_face"),
+    "observability": ("sensemem", "sensemem._telemetry"),
+    "openai": ("sensemem", "sensemem.models.openai_sdk"),
+    "face": ("sensemem", "sensemem.models.opencv_face"),
     "local": (
-        "mindbridge.models.funasr",
-        "mindbridge.models.sentence_transformers",
+        "sensemem.models.funasr",
+        "sensemem.models.sentence_transformers",
     ),
-    "server": ("mindbridge.api", "mindbridge.api.app"),
-    "mcp": ("mindbridge.api.mcp",),
+    "server": ("sensemem.api", "sensemem.api.app"),
+    "mcp": ("sensemem.api.mcp",),
 }
 
 LOADERS: dict[str, Callable[[], None]] = {

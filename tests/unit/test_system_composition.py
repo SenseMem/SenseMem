@@ -11,7 +11,7 @@ from test_automatic_routing import ALL, Answerer, Describer, Embedder, Transcrib
 from test_capability_composition import RecordingAnswerer
 from test_memory_api import _FakeSpeech
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
     Blob,
     EmbedTask,

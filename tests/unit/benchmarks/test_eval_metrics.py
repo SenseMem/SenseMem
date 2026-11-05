@@ -21,8 +21,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
-from mindbridge import AssetRef, ContextBudget, MemoryType, Modality, SearchHit
-from mindbridge._telemetry import (
+from sensemem import AssetRef, ContextBudget, MemoryType, Modality, SearchHit
+from sensemem._telemetry import (
     CAPTURE_TIME_TO_SEARCHABLE,
     MODEL_MODULE,
     MODEL_REQUEST_COUNT,
@@ -30,23 +30,23 @@ from mindbridge._telemetry import (
     SPAN_KIND,
     TOKEN_AUDIO_SECONDS,
 )
-from mindbridge.benchmarks import eval as eval_module
-from mindbridge.benchmarks import eval_config as eval_config_module
-from mindbridge.benchmarks import eval_console as eval_console_module
-from mindbridge.benchmarks import eval_metrics as eval_metrics_module
-from mindbridge.benchmarks import eval_results as eval_results_module
-from mindbridge.benchmarks import eval_telemetry as eval_telemetry_module
-from mindbridge.benchmarks.eval_adapters import (
+from sensemem.benchmarks import eval as eval_module
+from sensemem.benchmarks import eval_config as eval_config_module
+from sensemem.benchmarks import eval_console as eval_console_module
+from sensemem.benchmarks import eval_metrics as eval_metrics_module
+from sensemem.benchmarks import eval_results as eval_results_module
+from sensemem.benchmarks import eval_telemetry as eval_telemetry_module
+from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     LoadedTask,
     MemoryItem,
 )
-from mindbridge.benchmarks.eval_cache import EvidenceInterval
-from mindbridge.benchmarks.eval_metrics import NOISE_FLOOR
-from mindbridge.benchmarks.eval_results import SampleResult
-from mindbridge.benchmarks.eval_statistics import ScoredValue, percentile
-from mindbridge.benchmarks.eval_telemetry import (
+from sensemem.benchmarks.eval_cache import EvidenceInterval
+from sensemem.benchmarks.eval_metrics import NOISE_FLOOR
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.eval_statistics import ScoredValue, percentile
+from sensemem.benchmarks.eval_telemetry import (
     ASK_RETRIEVAL_SPAN,
     BENCHMARK_ARM,
     BENCHMARK_ARM_SPAN,
@@ -63,8 +63,8 @@ from mindbridge.benchmarks.eval_telemetry import (
     ResourceSampler,
     storage_bytes,
 )
-from mindbridge.benchmarks.task_catalog import TaskSpec
-from mindbridge.context import compile_context
+from sensemem.benchmarks.task_catalog import TaskSpec
+from sensemem.context import compile_context
 
 
 def _span(
@@ -75,7 +75,7 @@ def _span(
     kind: str = "stage",
     task: str = "fixture",
     attributes: Mapping[str, object] | None = None,
-    arm: str = "mindbridge",
+    arm: str = "sensemem",
     error: bool = False,
 ) -> ReadableSpan:
     """Build the minimum ``ReadableSpan`` surface the span processor consumes."""
@@ -225,7 +225,7 @@ def test_task_duration_uses_interval_unions_for_concurrent_work() -> None:
     )
 
     duration = cast(Mapping[str, object], result["duration_seconds"])
-    assert duration["mindbridge"] == pytest.approx(0.15)
+    assert duration["sensemem"] == pytest.approx(0.15)
     assert duration["judge"] == pytest.approx(0.2)
     assert duration["total"] == pytest.approx(0.35)
     assert duration["average"] == pytest.approx(0.175)
@@ -281,7 +281,7 @@ def test_search_latency_reports_p50_p95_and_p99_for_the_named_span() -> None:
     assert "search" not in result
     assert {"wall_seconds", "throughput_per_second"}.isdisjoint(search)
     # The whole retrieval leg of one ask, not the narrower index lookup inside it.
-    assert search["span"] == "mindbridge.retrieve"
+    assert search["span"] == "sensemem.retrieve"
     assert search["count"] == 4
     latency = cast(Mapping[str, object], search["latency_ms"])
     assert latency["complete"] is True
@@ -417,7 +417,7 @@ def test_asr_reports_audio_seconds_per_wall_second_and_inference_latency() -> No
     result = _aggregate(
         (
             _span(
-                "mindbridge.model.transcription",
+                "sensemem.model.transcription",
                 start_ms=0,
                 end_ms=500,
                 kind="model",
@@ -444,7 +444,7 @@ def test_asr_hides_complete_ratio_when_a_successful_call_has_no_duration() -> No
     result = _aggregate(
         (
             _span(
-                "mindbridge.model.transcription",
+                "sensemem.model.transcription",
                 start_ms=0,
                 end_ms=500,
                 kind="model",
@@ -455,14 +455,14 @@ def test_asr_hides_complete_ratio_when_a_successful_call_has_no_duration() -> No
                 },
             ),
             _span(
-                "mindbridge.model.transcription",
+                "sensemem.model.transcription",
                 start_ms=500,
                 end_ms=1_500,
                 kind="model",
                 attributes={MODEL_MODULE: "transcription", MODEL_REQUEST_COUNT: 1},
             ),
             _span(
-                "mindbridge.model.transcription",
+                "sensemem.model.transcription",
                 start_ms=1_500,
                 end_ms=2_000,
                 kind="model",
@@ -503,9 +503,9 @@ def test_asr_block_is_absent_when_no_transcription_ran() -> None:
 def test_time_to_first_token_is_reported_only_when_the_backend_streams() -> None:
     silent = _aggregate(
         (
-            _span("mindbridge.ask", end_ms=200, kind="operation"),
+            _span("sensemem.ask", end_ms=200, kind="operation"),
             _span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 end_ms=150,
                 kind="model",
                 attributes={MODEL_MODULE: "generation"},
@@ -514,9 +514,9 @@ def test_time_to_first_token_is_reported_only_when_the_backend_streams() -> None
     )
     streaming = _aggregate(
         (
-            _span("mindbridge.ask", end_ms=200, kind="operation"),
+            _span("sensemem.ask", end_ms=200, kind="operation"),
             _span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 end_ms=150,
                 kind="model",
                 attributes={MODEL_MODULE: "generation", MODEL_TTFT: 0.025},
@@ -543,7 +543,7 @@ def test_resource_sampler_reports_cpu_memory_and_media_dominated_storage_growth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_telemetry._nvidia_utilization",
+        "sensemem.benchmarks.eval_telemetry._nvidia_utilization",
         lambda: (),
     )
     (tmp_path / "assets").mkdir()
@@ -569,7 +569,7 @@ def test_resource_sampler_reports_gpu_average_and_peak_power(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_environment.subprocess.run",
+        "sensemem.benchmarks.eval_environment.subprocess.run",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
             stdout="0, 50, 1024, 200.5\n1, 25, 512, [N/A]\n",
@@ -596,15 +596,15 @@ def test_resource_sampler_excludes_interleaved_judge_cpu_and_wall_time(
     cpu = iter((10.0, 12.0, 17.0, 20.0))
     wall = iter((100.0, 102.0, 105.0, 110.0))
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_telemetry._nvidia_utilization",
+        "sensemem.benchmarks.eval_telemetry._nvidia_utilization",
         lambda: (),
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_telemetry._cpu_seconds",
+        "sensemem.benchmarks.eval_telemetry._cpu_seconds",
         lambda: next(cpu),
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_telemetry.perf_counter",
+        "sensemem.benchmarks.eval_telemetry.perf_counter",
         lambda: next(wall),
     )
 
@@ -695,15 +695,15 @@ def test_compile_telemetry_counts_every_grounded_media_part() -> None:
 def test_capture_settle_and_compile_spans_are_aggregated_separately() -> None:
     result = _aggregate(
         (
-            _span("mindbridge.capture", end_ms=10, kind="operation"),
-            _span("mindbridge.capture", end_ms=20, kind="operation"),
+            _span("sensemem.capture", end_ms=10, kind="operation"),
+            _span("sensemem.capture", end_ms=20, kind="operation"),
             _span(
-                "mindbridge.settle",
+                "sensemem.settle",
                 end_ms=40,
                 kind="operation",
                 attributes={CAPTURE_TIME_TO_SEARCHABLE: 55.0},
             ),
-            _span("mindbridge.compile", end_ms=30, kind="operation"),
+            _span("sensemem.compile", end_ms=30, kind="operation"),
             _span(
                 BENCHMARK_COMPILE_SPAN,
                 end_ms=1,
@@ -718,7 +718,7 @@ def test_capture_settle_and_compile_spans_are_aggregated_separately() -> None:
     )
 
     capture = cast(Mapping[str, object], result["capture"])
-    assert capture["span"] == "mindbridge.capture"
+    assert capture["span"] == "sensemem.capture"
     assert capture["count"] == 2
     assert cast(float, cast(Mapping[str, object], capture["latency_ms"])["p50"]) == pytest.approx(
         15.0
@@ -729,14 +729,14 @@ def test_capture_settle_and_compile_spans_are_aggregated_separately() -> None:
     assert cast(float, time_to_searchable["p50"]) == pytest.approx(55.0)
 
     formation = cast(Mapping[str, object], result["formation"])
-    assert formation["span"] == "mindbridge.settle"
+    assert formation["span"] == "sensemem.settle"
     assert formation["count"] == 1
     assert cast(float, cast(Mapping[str, object], formation["latency_ms"])["p50"]) == pytest.approx(
         40.0
     )
 
     compile_block = cast(Mapping[str, object], result["compile"])
-    assert compile_block["span"] == "mindbridge.compile"
+    assert compile_block["span"] == "sensemem.compile"
     assert compile_block["count"] == 1
     bundle_chars = cast(Mapping[str, object], compile_block["bundle_chars"])
     assert bundle_chars["count"] == 1
@@ -1086,7 +1086,7 @@ def _blind_document(**overrides: object) -> dict[str, object]:
         "schema_version": eval_results_module.EVAL_SCHEMA_VERSION,
         "run_id": "blind-run",
         "blind": True,
-        "arms": {"definitions": {"blind": {"prompt": "mindbridge_blind_v2"}}},
+        "arms": {"definitions": {"blind": {"prompt": "sensemem_blind_v2"}}},
         "tasks": [
             {
                 "task": "fixture",
@@ -1142,7 +1142,7 @@ def test_blind_baseline_rejects_the_old_forced_guess_prompt(tmp_path: Path) -> N
     path = tmp_path / "results.jsonl"
     path.write_text(
         json.dumps(
-            _blind_document(arms={"definitions": {"blind": {"prompt": "mindbridge_blind_v1"}}})
+            _blind_document(arms={"definitions": {"blind": {"prompt": "sensemem_blind_v1"}}})
         ),
         encoding="utf-8",
     )
@@ -1303,13 +1303,13 @@ def test_noise_floor_widens_past_the_measured_floor_for_a_noisy_run() -> None:
 
 
 def test_search_latency_never_mixes_the_narrower_lookup_or_the_search_operation() -> None:
-    """`mindbridge.retrieve` is the reported boundary; two other spans must not join it."""
+    """`sensemem.retrieve` is the reported boundary; two other spans must not join it."""
     result = _aggregate(
         (
             _span(ASK_RETRIEVAL_SPAN, start_ms=0, end_ms=100),
             # The lookup nested inside the retrieval leg, and the separate public operation.
-            _span("mindbridge.index.search", start_ms=10, end_ms=20),
-            _span("mindbridge.search", start_ms=200, end_ms=900, kind="operation"),
+            _span("sensemem.index.search", start_ms=10, end_ms=20),
+            _span("sensemem.search", start_ms=200, end_ms=900, kind="operation"),
         )
     )
 
@@ -1319,11 +1319,11 @@ def test_search_latency_never_mixes_the_narrower_lookup_or_the_search_operation(
         100.0
     )
     nodes = cast(Mapping[str, Mapping[str, object]], result["nodes"])
-    assert set(nodes) == {ASK_RETRIEVAL_SPAN, "mindbridge.index.search", "mindbridge.search"}
+    assert set(nodes) == {ASK_RETRIEVAL_SPAN, "sensemem.index.search", "sensemem.search"}
 
 
 def test_a_search_only_run_reports_no_in_answer_retrieval() -> None:
-    result = _aggregate((_span("mindbridge.search", end_ms=50, kind="operation"),))
+    result = _aggregate((_span("sensemem.search", end_ms=50, kind="operation"),))
 
     search = cast(Mapping[str, object], result["ask_retrieval_core"])
     assert search["count"] == 0

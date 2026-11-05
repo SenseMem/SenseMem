@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import EvidenceBasis, MemoryContext, MemoryKind
-from mindbridge.infrastructure.local import LocalStore, StoredMemory
-from mindbridge.infrastructure.local.store import datetime_text
-from mindbridge.infrastructure.local.store._selection import read_memory_contexts
+from sensemem import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem.infrastructure.local import LocalStore, StoredMemory
+from sensemem.infrastructure.local.store import datetime_text
+from sensemem.infrastructure.local.store._selection import read_memory_contexts
 
 
 @pytest.mark.parametrize("window", [False, True])

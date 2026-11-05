@@ -16,9 +16,9 @@ from typing import Any, NoReturn, cast
 import numpy as np
 import pytest
 
-import mindbridge.infrastructure.local.zvec_index as zvec_index_module
-from mindbridge.infrastructure.local.store import IndexDocument, StoredEmbedding
-from mindbridge.infrastructure.local.zvec_index import (
+import sensemem.infrastructure.local.zvec_index as zvec_index_module
+from sensemem.infrastructure.local.store import IndexDocument, StoredEmbedding
+from sensemem.infrastructure.local.zvec_index import (
     _MAX_WRITE_BATCH,
     IndexHit,
     ZvecIndex,
@@ -26,7 +26,7 @@ from mindbridge.infrastructure.local.zvec_index import (
     ZvecWriteError,
     _CollectionGate,
 )
-from mindbridge.types import IndexQuantization
+from sensemem.types import IndexQuantization
 
 _NOW = datetime(2026, 8, 27, tzinfo=timezone.utc)
 
@@ -39,7 +39,7 @@ def test_missing_zvec_has_an_actionable_error(
         raise ModuleNotFoundError("No module named 'zvec'")
 
     monkeypatch.setattr(
-        "mindbridge.infrastructure.local.zvec_index.import_module",
+        "sensemem.infrastructure.local.zvec_index.import_module",
         missing_module,
     )
 
@@ -1003,7 +1003,7 @@ def test_updated_collections_merge_in_place_without_a_clean_marker(
     """Zvec merges updates in place without an application-maintained clean marker."""
     _require_zvec()
     path = tmp_path / "index"
-    marker = path / ".mindbridge-clean"
+    marker = path / ".sensemem-clean"
     with ZvecIndex(path, dimension=2) as index:
         index.upsert(
             [_document(f"embedding_{n:02d}", f"note {n}", (1.0, float(n))) for n in range(8)]

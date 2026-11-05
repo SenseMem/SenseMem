@@ -16,7 +16,7 @@ import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
 from test_memory_control_plane import OnePersonFace, OnePersonSpeech
 
-from mindbridge import (
+from sensemem import (
     Blob,
     EvidenceBasis,
     FormationInput,

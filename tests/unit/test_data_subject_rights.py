@@ -16,7 +16,7 @@ from typing import cast
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
     Blob,
     ConsentClaim,

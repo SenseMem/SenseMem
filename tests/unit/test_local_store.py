@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-import mindbridge.infrastructure.local.store._codec as codec_module
-import mindbridge.infrastructure.local.store._identity as identity_module
-import mindbridge.infrastructure.local.store.records as records_module
-from mindbridge import (
+import sensemem.infrastructure.local.store._codec as codec_module
+import sensemem.infrastructure.local.store._identity as identity_module
+import sensemem.infrastructure.local.store.records as records_module
+from sensemem import (
     EvidenceBasis,
     IdentityProfile,
     MemoryContext,
@@ -26,7 +26,7 @@ from mindbridge import (
     SpatialAnchor,
     SpatialContext,
 )
-from mindbridge.infrastructure.local import (
+from sensemem.infrastructure.local import (
     DataDirectoryInUseError,
     LocalStore,
     LocalStoreClosedError,
@@ -36,8 +36,8 @@ from mindbridge.infrastructure.local import (
     StoredOperation,
     UnsupportedSchemaError,
 )
-from mindbridge.infrastructure.local.store import SCHEMA_VERSION
-from mindbridge.models.base import (
+from sensemem.infrastructure.local.store import SCHEMA_VERSION
+from sensemem.models.base import (
     FaceAnalysis,
     FaceEmbedding,
     SpeakerEmbedding,
@@ -298,7 +298,7 @@ def test_schema_is_local_and_enforces_foreign_keys(tmp_path: Path) -> None:
             store.index.write_embedding(_embedding(memory_id="missing-memory"))
 
 
-@pytest.mark.parametrize("version", [1, 16, 17, 18, 19, SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [1, 16, 17, 18, 19, 20, SCHEMA_VERSION + 1])
 def test_other_schema_versions_are_refused_without_changing_durable_data(
     tmp_path: Path, version: int
 ) -> None:
@@ -522,7 +522,7 @@ def test_batch_write_ranked_hydration_and_keyset_listing(
     # Every family module binds the bound by name at import, so each copy is lowered.
     for module in _PARAMETER_BATCH_MODULES:
         monkeypatch.setattr(
-            f"mindbridge.infrastructure.local.store.{module}.SQLITE_PARAMETER_BATCH", 2
+            f"sensemem.infrastructure.local.store.{module}.SQLITE_PARAMETER_BATCH", 2
         )
 
     with LocalStore(tmp_path) as store:
@@ -3465,7 +3465,7 @@ def test_neighbor_memories_merges_anchors_without_repeating_them(tmp_path: Path)
 def test_recall_orders_selected_ids_by_event_time_and_insertion_across_sql_batches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("mindbridge.infrastructure.local.store.recall.SQLITE_PARAMETER_BATCH", 2)
+    monkeypatch.setattr("sensemem.infrastructure.local.store.recall.SQLITE_PARAMETER_BATCH", 2)
     start = datetime(2024, 9, 10, 9, tzinfo=timezone.utc)
     with LocalStore(tmp_path) as store:
         store.records.write_memories(

@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import EmbeddingRouter, Memory, StorageError
-from mindbridge.infrastructure.local.store import LocalStore
-from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.types import Modality
+from sensemem import EmbeddingRouter, Memory, StorageError
+from sensemem.infrastructure.local.store import LocalStore
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.types import Modality
 
 
 class _Embedder:

@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - mindbridge-v03
 
 permissions:
   contents: read
@@ -54,7 +55,7 @@ jobs:
           uv pip install --python .install-venv/bin/python --strict '${{ matrix.requirement }}'
 
       # Importing is not enough. Every heavy dependency loads through `import_module` inside a
-      # function, so `import mindbridge.models.funasr` succeeds with funasr absent. The probe
+      # function, so `import sensemem.models.funasr` succeeds with funasr absent. The probe
       # imports the supported modules and then runs the loader behind them.
       - name: Import and invoke the supported surface
         run: .install-venv/bin/python -I .github/scripts/installability_probe.py ${{ matrix.leg }}
@@ -85,7 +86,7 @@ jobs:
           import tarfile
           import zipfile
 
-          WANTED = ("mindbridge/py.typed", "mindbridge/benchmarks/_official/NOTICE.md")
+          WANTED = ("sensemem/py.typed", "sensemem/benchmarks/_official/NOTICE.md")
           wheel = next(pathlib.Path("dist").glob("*.whl"))
           sdist = next(pathlib.Path("dist").glob("*.tar.gz"))
           built = set(zipfile.ZipFile(wheel).namelist())

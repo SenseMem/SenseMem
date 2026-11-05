@@ -13,7 +13,7 @@ import pytest
 from _feature_support import TinyEmbedder
 from test_automatic_routing import ALL, TEXT, Answerer, Describer, Embedder, Transcriber
 
-from mindbridge import (
+from sensemem import (
     AnswerResult,
     Blob,
     EmbedTask,
@@ -32,9 +32,9 @@ from mindbridge import (
     StorageError,
     ValidationError,
 )
-from mindbridge.infrastructure.local.assets import AssetStoreError
-from mindbridge.infrastructure.local.store import LocalStoreCapacityError, StoredDataError
-from mindbridge.kernel import runtime
+from sensemem.infrastructure.local.assets import AssetStoreError
+from sensemem.infrastructure.local.store import LocalStoreCapacityError, StoredDataError
+from sensemem.kernel import runtime
 
 
 def test_invalid_answer_evidence_is_rejected_at_the_model_boundary(tmp_path: Path) -> None:

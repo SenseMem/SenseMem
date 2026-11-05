@@ -11,7 +11,7 @@ from pathlib import Path
 
 from _feature_support import ATOMIC_MODALITIES, CueConsolidator, TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     Blob,
     ContextBudget,
     EvidenceBasis,

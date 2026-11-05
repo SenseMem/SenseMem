@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.supermemory_vqa import (
+from sensemem.benchmarks.supermemory_vqa import (
     SUPERMEMORY_UNANSWERABLE_CHOICE,
     load_supermemory_vqa,
 )

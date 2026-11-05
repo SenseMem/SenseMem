@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -36,7 +36,7 @@ from mindbridge import (
     SpeechTurn,
     ValidationError,
 )
-from mindbridge.infrastructure.local.store._membership import (
+from sensemem.infrastructure.local.store._membership import (
     IDENTITY_MEMORIES_SQL,
     IDENTITY_MEMORY_SQL,
     IDENTITY_SCOPE_CLAUSE,

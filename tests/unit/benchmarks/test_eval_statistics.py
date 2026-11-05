@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from mindbridge.benchmarks import eval_statistics as statistics
+from sensemem.benchmarks import eval_statistics as statistics
 
 
 def _reference_draws(

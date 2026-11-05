@@ -16,13 +16,13 @@ from threading import Event
 
 import pytest
 
-from mindbridge import EmbedTask, Memory, ModelInput
-from mindbridge.exceptions import ModelError
-from mindbridge.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
-from mindbridge.infrastructure.local.store import index as index_module
-from mindbridge.infrastructure.local.store._codec import optional_datetime_from_row
-from mindbridge.infrastructure.local.store.records import MemoryRecords
-from mindbridge.types import Modality
+from sensemem import EmbedTask, Memory, ModelInput
+from sensemem.exceptions import ModelError
+from sensemem.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store import index as index_module
+from sensemem.infrastructure.local.store._codec import optional_datetime_from_row
+from sensemem.infrastructure.local.store.records import MemoryRecords
+from sensemem.types import Modality
 
 _NOW = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
 

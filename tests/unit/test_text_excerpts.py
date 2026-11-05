@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     ContextBudget,
     ContextExcerpt,
     ContextSymbolCoverage,
@@ -33,20 +33,20 @@ from mindbridge import (
     TextSpanPiece,
     TextSpanSelector,
 )
-from mindbridge.api.app import ContextBundleResponse
-from mindbridge.api.mcp import ContextBundleResult
-from mindbridge.cli import _bundle_value
-from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.infrastructure.local.store import (
+from sensemem.api.app import ContextBundleResponse
+from sensemem.api.mcp import ContextBundleResult
+from sensemem.cli import _bundle_value
+from sensemem.exceptions import ModelError, ValidationError
+from sensemem.infrastructure.local.store import (
     SCHEMA_VERSION,
     LocalStore,
     StoredTextSelector,
     UnsupportedSchemaError,
 )
-from mindbridge.infrastructure.local.store.index import IndexOutbox
-from mindbridge.infrastructure.local.zvec_index import IndexHit
-from mindbridge.kernel.content import contextual_text_key_descriptors, contextual_text_keys
-from mindbridge.models.base import EmbedTask, ModelInput
+from sensemem.infrastructure.local.store.index import IndexOutbox
+from sensemem.infrastructure.local.zvec_index import IndexHit
+from sensemem.kernel.content import contextual_text_key_descriptors, contextual_text_keys
+from sensemem.models.base import EmbedTask, ModelInput
 
 REFERENCE = datetime(2026, 9, 9, tzinfo=timezone.utc)
 

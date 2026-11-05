@@ -21,7 +21,7 @@ from _feature_support import CueConsolidator, TinyEmbedder
 from fastapi.testclient import TestClient
 from mcp import Client
 
-from mindbridge import (
+from sensemem import (
     ConsolidationReport,
     Memory,
     MemoryConfig,
@@ -31,13 +31,13 @@ from mindbridge import (
     ModelError,
     ValidationError,
 )
-from mindbridge.api.app import create_app
-from mindbridge.api.deliberation import _deliberate_periodically
-from mindbridge.api.mcp import build_mcp_server
+from sensemem.api.app import create_app
+from sensemem.api.deliberation import _deliberate_periodically
+from sensemem.api.mcp import build_mcp_server
 
 _QUERY = "where did I leave the blue folder"
 _ANSWER = "The blue folder is on the hallway shelf"
-_LOOP_LOGGER = "mindbridge.api.deliberation"
+_LOOP_LOGGER = "sensemem.api.deliberation"
 
 
 class _RecordingConsolidator(CueConsolidator):

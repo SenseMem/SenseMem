@@ -6,8 +6,8 @@ import httpx2 as httpx
 import pytest
 from test_openai_sdk import _answer_policy_transport, _sdk_client, _search_hit
 
-import mindbridge.models.openai_sdk as adapter
-from mindbridge import AnswerPolicy, ModelInput, OpenAIModels
+import sensemem.models.openai_sdk as adapter
+from sensemem import AnswerPolicy, ModelInput, OpenAIModels
 
 
 @pytest.mark.parametrize("policy", ["strict", "best_effort"])

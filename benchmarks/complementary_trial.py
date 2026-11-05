@@ -21,7 +21,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Memory,
@@ -32,7 +32,7 @@ from mindbridge import (
     RetrievalMode,
     SearchHit,
 )
-from mindbridge.benchmarks.complementary import (
+from sensemem.benchmarks.complementary import (
     SELECTOR_PROMPT,
     Arm,
     EvidencePlan,
@@ -40,12 +40,12 @@ from mindbridge.benchmarks.complementary import (
     select_evidence,
     selector_payload,
 )
-from mindbridge.benchmarks.eval_adapters import dataset_digest
-from mindbridge.benchmarks.icm_bench import ICMQuestion, load_icm_bench
-from mindbridge.benchmarks.official_scorers import judge_plan, parse_judge_response
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks.eval_adapters import dataset_digest
+from sensemem.benchmarks.icm_bench import ICMQuestion, load_icm_bench
+from sensemem.benchmarks.official_scorers import judge_plan, parse_judge_response
+from sensemem.benchmarks.task_catalog import TASKS
 
-ROOT = Path.home() / ".local/share/openresearch/benchmark-cache/mindbridge"
+ROOT = Path.home() / ".local/share/openresearch/benchmark-cache/sensemem"
 BASELINE = ROOT / "icm-four-baseline-20260917"
 REFERENCE = datetime(2026, 9, 17, tzinfo=timezone.utc)
 ARMS: tuple[Arm, ...] = ("rank", "relevance", "coverage")
@@ -506,7 +506,7 @@ def tree_manifest(root: Path) -> TreeManifest:
 def _closed_store_lock(path: Path) -> Iterator[None]:
     if not path.is_dir() or not (path / "state.sqlite3").is_file():
         raise FileNotFoundError(f"source store is missing state.sqlite3: {path}")
-    lock_path = path / ".mindbridge.lock"
+    lock_path = path / ".sensemem.lock"
     if not lock_path.is_file():
         raise FileNotFoundError(f"source store is missing its owner lock: {lock_path}")
     with lock_path.open("rb") as lock:
@@ -619,35 +619,35 @@ def main() -> int:
     print(
         "TRIAL_MODELS "
         + json.dumps(
-            {k: settings[k] for k in ["MINDBRIDGE_EMBEDDING_MODEL", "MINDBRIDGE_GENERATION_MODEL"]}
+            {k: settings[k] for k in ["SENSEMEM_EMBEDDING_MODEL", "SENSEMEM_GENERATION_MODEL"]}
         ),
         flush=True,
     )
     audit = Audit(output / "http-audit.jsonl")
     client = OpenAI(
-        base_url=settings["MINDBRIDGE_GENERATION_BASE_URL"],
-        api_key=settings["MINDBRIDGE_GENERATION_API_KEY"],
+        base_url=settings["SENSEMEM_GENERATION_BASE_URL"],
+        api_key=settings["SENSEMEM_GENERATION_API_KEY"],
         timeout=180,
         max_retries=2,
         http_client=httpx.Client(timeout=180, event_hooks={"response": [audit.response]}),
     )
     embedding_client = OpenAI(
-        base_url=settings["MINDBRIDGE_EMBEDDING_BASE_URL"],
-        api_key=settings.get("MINDBRIDGE_EMBEDDING_API_KEY", "EMPTY"),
+        base_url=settings["SENSEMEM_EMBEDDING_BASE_URL"],
+        api_key=settings.get("SENSEMEM_EMBEDDING_API_KEY", "EMPTY"),
         timeout=180,
         max_retries=2,
     )
     modalities = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
     embedder = OpenAIModels(
         embedding_client=embedding_client,
-        embedding_model=settings["MINDBRIDGE_EMBEDDING_MODEL"],
+        embedding_model=settings["SENSEMEM_EMBEDDING_MODEL"],
         embedding_dimension=2048,
         embedding_request_format="messages",
         embedding_capabilities=modalities,
     )
     backend = OpenAIModels(
         generation_client=client,
-        generation_model=settings["MINDBRIDGE_GENERATION_MODEL"],
+        generation_model=settings["SENSEMEM_GENERATION_MODEL"],
         generation_capabilities=modalities,
         generation_temperature=0,
         generation_seed=0,
@@ -655,9 +655,9 @@ def main() -> int:
         generation_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     reader = SelectorBackend(
-        backend, client, settings["MINDBRIDGE_GENERATION_MODEL"], audit, recipe, output
+        backend, client, settings["SENSEMEM_GENERATION_MODEL"], audit, recipe, output
     )
-    vision = vision_backend(client, settings["MINDBRIDGE_GENERATION_MODEL"])
+    vision = vision_backend(client, settings["SENSEMEM_GENERATION_MODEL"])
     try:
         results = run_cases(recipe, fixtures, profiles, output, embedder, reader, audit, vision)
     finally:

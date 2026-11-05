@@ -3,8 +3,8 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mindbridge"
-version = "0.2.0"
+name = "sensemem"
+version = "0.3.0"
 description = "Agentic native embodied omni-modal memory system"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -16,10 +16,15 @@ dependencies = [
     "zvec>=0.8,<0.9",
 ]
 
+[project.urls]
+Repository = "https://github.com/SenseMem/SenseMem"
+Documentation = "https://github.com/SenseMem/SenseMem/tree/mindbridge-v03/docs"
+Issues = "https://github.com/SenseMem/SenseMem/issues"
+
 [project.scripts]
 # Separate entry points keep product modules independent of benchmark code.
-mindbridge = "mindbridge.cli:main"
-mindbridge-bench = "mindbridge.benchmarks.cli:main"
+sensemem = "sensemem.cli:main"
+sensemem-bench = "sensemem.benchmarks.cli:main"
 
 [project.optional-dependencies]
 # PEP 621 has no include syntax for optional groups; the package test keeps this equal to their
@@ -160,13 +165,13 @@ dev = [
 ]
 
 [tool.hatch.build]
-exclude = ["**/AGENTS.md", "**/CLAUDE.md", "/docs/research/**", "/research/**"]
+exclude = ["**/AGENTS.md", "**/CLAUDE.md", "/docs/research/**", "/research/**", "/paper.*"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mindbridge"]
+packages = ["src/sensemem"]
 
 [tool.ruff]
 # Keep the existing modernization rules stable during the runtime support upgrade.

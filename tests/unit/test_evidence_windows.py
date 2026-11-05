@@ -4,8 +4,8 @@ from itertools import pairwise
 
 import pytest
 
-from mindbridge.exceptions import ValidationError
-from mindbridge.kernel.evidence_windows import query_evidence_windows
+from sensemem.exceptions import ValidationError
+from sensemem.kernel.evidence_windows import query_evidence_windows
 
 
 def test_windows_preserve_unicode_offsets_and_find_a_late_fact() -> None:

@@ -11,17 +11,17 @@ disclosure.
 
 ## Supported versions
 
-MindBridge is pre-1.0. Security fixes land on `master`; there are no maintained release branches.
+SenseMem is pre-1.0. Security fixes land on `master`; there are no maintained release branches.
 
 ## Security model
 
 ### Filesystem isolation
 
-One `data_dir` is one memory domain. MindBridge has no tenant, user, or request scope inside that
+One `data_dir` is one memory domain. SenseMem has no tenant, user, or request scope inside that
 directory. Any process that can read it can read original media under `assets/`, SQLite records and
 metadata, cached speech and face analyses, and FP32 content and identity embeddings.
 
-MindBridge holds an operating-system lock so two live instances cannot own the same directory. On
+SenseMem holds an operating-system lock so two live instances cannot own the same directory. On
 POSIX, it creates data directories with mode `0700`, sets `state.sqlite3` to `0600`, and resets an
 existing top-level data directory to `0700`. Operators remain responsible for parent-directory
 permissions, host account isolation, full-disk encryption, and backup permissions.
@@ -31,14 +31,14 @@ directories. Do not use metadata as an authorization boundary.
 
 ### REST deployment boundary
 
-`create_app(memory=...)` is an unauthenticated ASGI application. MindBridge does not ship a product
+`create_app(memory=...)` is an unauthenticated ASGI application. SenseMem does not ship a product
 server. Internet-facing deployments must host the app behind their existing authenticated gateway,
 service mesh, or ASGI authentication middleware.
 
 `/v1` bodies larger than 8 MiB are rejected before framework parsing, text is limited to 65,536
 characters, and canonical metadata is limited to 262,144 UTF-8 bytes.
 
-MindBridge has no user authentication, rate limiter, quota, key rotation store, or access audit log. The
+SenseMem has no user authentication, rate limiter, quota, key rotation store, or access audit log. The
 gateway must provide the identity, authorization, TLS, rate-limit, and audit controls required by
 the deployment. The memory-operation log records semantic changes; it is not a log of API access.
 
@@ -48,7 +48,7 @@ The documented MCP invocation uses stdio and inherits the privileges of its host
 the client so only the intended local principal can launch it and access its `data_dir`.
 
 The returned MCP server can instead be started with SSE or streamable HTTP. That creates a network
-service, but MindBridge adds no authentication, authorization, TLS, or rate limiting to it. The
+service, but SenseMem adds no authentication, authorization, TLS, or rate limiting to it. The
 host must provide those controls and must treat MCP error envelopes as privileged: their unredacted
 `subject` can contain an owner-local filesystem path.
 
@@ -65,7 +65,7 @@ formation receives committed observations; consolidation receives its bounded ev
 `capture()` makes no model call, but a later `settle()` runs these configured stages. Local storage
 does not imply local inference: review every configured slot's endpoint.
 
-Stored text is untrusted model input. MindBridge separates it from the system instruction and asks
+Stored text is untrusted model input. SenseMem separates it from the system instruction and asks
 the model to treat it as evidence, but it cannot guarantee that a model will resist prompt
 injection or hallucination. Applications should display or inspect `AnswerResult.hits` for
 high-impact decisions.
@@ -127,7 +127,7 @@ host administration, deletion and retention remain authoritative.
 
 ## Out of scope
 
-The following are not security guarantees provided by MindBridge:
+The following are not security guarantees provided by SenseMem:
 
 - Per-user authorization, tenant isolation, quotas, or rate limiting inside one directory.
 - Secure erasure from storage media or backups.

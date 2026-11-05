@@ -1,10 +1,10 @@
-# MindBridge evaluation configuration -- annotated example.
+# SenseMem evaluation configuration -- annotated example.
 #
 # Copy it, edit it, and pass it to the harness:
 #
 #   mkdir -p .benchmarks/configs
 #   cp docs/examples/eval.example.yaml .benchmarks/configs/my-run.yaml
-#   mindbridge-bench eval --tasks locomo-refined --config .benchmarks/configs/my-run.yaml
+#   sensemem-bench eval --tasks locomo-refined --config .benchmarks/configs/my-run.yaml
 #
 # `.benchmarks/` is gitignored, so credentials you put under `.benchmarks/configs/` stay local.
 # Never edit this file with a real key: it is committed.
@@ -13,7 +13,7 @@
 # How a run actually works
 # ---------------------------------------------------------------------------------------------
 # A benchmark task is a list of memory *units*. Each unit gets its own physical `data_dir`,
-# because one directory is one running MindBridge instance -- there is no logical scope that
+# because one directory is one running SenseMem instance -- there is no logical scope that
 # substitutes for that isolation. Per unit, the harness:
 #
 #   1. WRITES the unit's content through the public SDK. Each observation is embedded by the
@@ -93,7 +93,7 @@ generation:
   base_url: https://your-endpoint.example/v1
   # Every OpenAI-compatible slot carries its own credential, which is what lets `embedding` above
   # talk to a local server while this one talks to a hosted endpoint. Unset falls back to
-  # MINDBRIDGE_GENERATION_API_KEY, then to the SDK's own OPENAI_API_KEY lookup. The value is a
+  # SENSEMEM_GENERATION_API_KEY, then to the SDK's own OPENAI_API_KEY lookup. The value is a
   # secret type: it never appears in `model_dump`, in a `repr`, or in a written results file.
   api_key: replace-me
   model: your-vlm
@@ -149,7 +149,7 @@ settings:
   # questions answered, and under concurrency on the order their updates committed.
 
 # =============================================================================================
-# Harness-only section. These have no field in `MindBridgeConfig` and must not gain one:
+# Harness-only section. These have no field in `SenseMemConfig` and must not gain one:
 # judge credentials, corpus acquisition, server observation, and regression budgets exist only
 # in the benchmark harness. Product endpoint credentials stay with their own slots above.
 # =============================================================================================
@@ -203,12 +203,12 @@ benchmark:
     # Which tasks to run: names or groups, comma separated. Required, by flag or here.
     tasks: locomo-refined,clbench
 
-    # Which arms answer: mindbridge (the product), blind (no evidence), full-context (the corpus
+    # Which arms answer: sensemem (the product), blind (no evidence), full-context (the corpus
     # stuffed into one prompt), random (shuffled candidates, retrieval metrics only), compile
     # (Memory.compile's rendered bundle). Baseline arms share one ingest and are never official.
     # `--blind` labels a whole run as the control and stays a flag, so it refuses to run alongside
     # an arm selection made here.
-    arms: mindbridge
+    arms: sensemem
     # Character budget the full-context arm stuffs into one prompt.
     full_context_chars: 128000
     # ContextBudget the compile arm compiles against; defaults match the SDK's own ContextBudget.
@@ -271,7 +271,7 @@ benchmark:
     download: true
     # Accept a corpus whose digest is not pinned. Off by default for a reason.
     allow_unverified_data: false
-    # MindBridge's own log level. Dependencies are held at WARNING unless this is
+    # SenseMem's own log level. Dependencies are held at WARNING unless this is
     # DEBUG, which opens the whole process. The results table prints either way.
     verbosity: INFO
     quiet: false

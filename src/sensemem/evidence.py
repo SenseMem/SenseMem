@@ -1,0 +1,317 @@
+"""Compact, source-qualified evidence for answer generation.
+
+Labels identify records within one answer context, not independent witnesses.
+Counts and overlaps describe omitted supporting records without serializing an
+unbounded provenance graph into the model's answer context.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from typing import cast
+from unicodedata import normalize
+
+from sensemem.types import MemoryContext, MemoryKind, SearchHit
+
+_MAX_EXACT_OMITTED_SOURCES = 64
+
+
+def retain_source_complete_hits(
+    hits: Sequence[SearchHit], sources: Sequence[SearchHit]
+) -> tuple[SearchHit, ...]:
+    """Withhold assertions whose supplied sources a transport packing pass removed.
+
+    A source's text may survive media omission, but it no longer supplies its full evidence.
+    Propagate that loss through dependent assertions without dropping usable raw records.
+    References already outside the supplied pool remain the adapter's explicit S labels.
+    """
+    original = {hit.id: hit for hit in sources}
+    unavailable = original.keys() - {hit.id for hit in hits}
+    for hit in hits:
+        source = original.get(hit.id)
+        if source is not None and {asset.id for asset in source.assets} - {
+            asset.id for asset in hit.assets
+        }:
+            unavailable.add(hit.id)
+    withheld: set[str] = set()
+    while True:
+        rejected = {
+            hit.id
+            for hit in hits
+            if hit.context is not None
+            and any(source_id in unavailable for source_id in hit.context.evidence_ids)
+        } - withheld
+        if not rejected:
+            break
+        withheld.update(rejected)
+        unavailable.update(rejected)
+    return tuple(hit for hit in hits if hit.id not in withheld)
+
+
+def answer_constraint_payloads(
+    hits: Sequence[SearchHit], payloads: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """Source-qualified candidates for applying state, trait and host policy evidence.
+
+    This does not interpret prose, infer preferences, or authorize instructions. Conditions
+    and exceptions stay in the referenced evidence text. Values with overlapping validity
+    are flagged as competing candidates; recording order never selects a winner.
+    """
+    if len(hits) != len(payloads):
+        raise ValueError("constraint payloads must align with selected evidence")
+    selected: list[tuple[MemoryContext, dict[str, object]]] = []
+    for hit, payload in zip(hits, payloads, strict=True):
+        context = hit.context
+        if (
+            context is None
+            or context.kind not in {MemoryKind.STATE, MemoryKind.TRAIT, MemoryKind.RESPONSE_POLICY}
+            or context.subject is None
+            or context.predicate is None
+        ):
+            continue
+        candidate = {
+            "evidence_label": payload["evidence_label"],
+            **_context_payload(context),
+            "current_version": context.visible and context.retired_at is None,
+            "conditions_and_exceptions": "read the referenced evidence text",
+        }
+        selected.append((context, candidate))
+    by_key: dict[tuple[str, str], list[tuple[MemoryContext, dict[str, object]]]] = {}
+    for context, candidate in selected:
+        key = tuple(
+            normalize("NFKC", value).strip().casefold()
+            for value in (
+                context.subject or "",
+                context.predicate or "",
+            )
+        )
+        group = by_key.setdefault((key[0], key[1]), [])
+        for other, previous in group:
+            if (
+                context.value is None
+                or other.value is None
+                or context.value == other.value
+                or not candidate["current_version"]
+                or not previous["current_version"]
+                or (
+                    context.valid_until is not None
+                    and other.valid_from is not None
+                    and context.valid_until <= other.valid_from
+                )
+                or (
+                    other.valid_until is not None
+                    and context.valid_from is not None
+                    and other.valid_until <= context.valid_from
+                )
+            ):
+                continue
+            cast(list[object], candidate.setdefault("competing_evidence_labels", [])).append(
+                previous["evidence_label"]
+            )
+            cast(list[object], previous.setdefault("competing_evidence_labels", [])).append(
+                candidate["evidence_label"]
+            )
+        group.append((context, candidate))
+    return [candidate for _context, candidate in selected]
+
+
+def answer_evidence_payloads(
+    hits: Sequence[SearchHit],
+    *,
+    omitted_media: Mapping[str, Mapping[str, int]] | None = None,
+) -> list[dict[str, object]]:
+    """Project selected records without retrieving or inventing source content.
+
+    Selection order is preserved. Event time, validity and recording time retain
+    their distinct meanings; neither record order nor a missing source label
+    establishes chronology, corroboration or source visibility. The adapter may
+    identify media excluded from the actual request; those counts describe missing
+    input, not missing information in the record's retained text.
+    """
+    qualified = any(hit.context is not None for hit in hits)
+    selected: dict[str, str] = {}
+    for hit in hits:
+        if hit.id not in selected:
+            selected[hit.id] = f"E{len(selected) + 1}"
+    external_labels: dict[str, str] = {}
+
+    def source_label(source_id: str) -> str:
+        if source_id in selected:
+            return selected[source_id]
+        if source_id not in external_labels:
+            external_labels[source_id] = f"S{len(external_labels) + 1}"
+        return external_labels[source_id]
+
+    omitted_sources = {
+        hit.id: frozenset(sid for sid in hit.context.evidence_ids if sid not in selected)
+        for hit in hits
+        if hit.context is not None
+    }
+    exact_sources = _small_source_set(tuple(omitted_sources.values()))
+    shared_sources = {} if exact_sources else _shared_sources(omitted_sources, selected)
+
+    payloads: list[dict[str, object]] = []
+    for hit in hits:
+        payload = _record_payload(hit, selected[hit.id] if qualified else None)
+        if omitted_media is not None and (media_counts := omitted_media.get(hit.id)):
+            payload["media_omitted"] = dict(media_counts)
+        if hit.context is not None:
+            details = _context_payload(hit.context)
+            details.update(
+                _source_payload(
+                    hit.context,
+                    selected,
+                    source_label,
+                    exact_sources=exact_sources,
+                    omitted_count=len(omitted_sources[hit.id]),
+                    shared=shared_sources.get(hit.id, ()),
+                )
+            )
+            payload["context"] = details
+        payloads.append(payload)
+    return payloads
+
+
+def _record_payload(hit: SearchHit, label: str | None) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "content": hit.content,
+        "memory_type": hit.memory_type.value,
+    }
+    if hit.modality.value != "text":
+        payload["source_modality"] = hit.modality.value
+    if hit.occurred_at is not None:
+        payload["occurred_at"] = hit.occurred_at.isoformat()
+    else:
+        payload["created_at"] = hit.created_at.isoformat()
+    if hit.occurred_end is not None:
+        payload["occurred_end"] = hit.occurred_end.isoformat()
+    payload["metadata"] = dict(hit.metadata)
+    if label is not None:
+        payload["evidence_label"] = label
+    if hit.place_id is not None:
+        payload["place_id"] = hit.place_id
+    return payload
+
+
+def _context_payload(context: MemoryContext) -> dict[str, object]:
+    details: dict[str, object] = {
+        "kind": context.kind.value,
+        "basis": context.basis.value,
+        "confidence": context.confidence,
+        "recorded_at": context.recorded_at.isoformat(),
+    }
+    for key, time_value in (
+        ("valid_from", context.valid_from),
+        ("valid_until", context.valid_until),
+    ):
+        if time_value is not None:
+            details[key] = time_value.isoformat()
+    for key, value in (
+        ("subject", context.subject),
+        ("predicate", context.predicate),
+        ("value", context.value),
+    ):
+        if value is not None:
+            details[key] = value
+    return details
+
+
+def _source_payload(
+    context: MemoryContext,
+    selected: Mapping[str, str],
+    source_label: Callable[[str], str],
+    *,
+    exact_sources: bool,
+    omitted_count: int,
+    shared: Sequence[dict[str, object]],
+) -> dict[str, object]:
+    # A source_id describes provenance, whereas supersedes_id describes a
+    # correction. Do not combine correction edges with supporting ones.
+    details: dict[str, object] = {}
+    details.update(
+        _support_payload(
+            context.evidence_ids,
+            selected,
+            source_label,
+            exact_sources=exact_sources,
+            omitted_count=omitted_count,
+            shared=shared,
+        )
+    )
+    if context.source_id is not None:
+        details["source_label"] = source_label(context.source_id)
+        if context.source_id not in selected:
+            details["source_not_in_context"] = True
+    if context.supersedes_id is not None:
+        details["supersedes_label"] = source_label(context.supersedes_id)
+    return details
+
+
+def _support_payload(
+    evidence_ids: Sequence[str],
+    selected: Mapping[str, str],
+    source_label: Callable[[str], str],
+    *,
+    exact_sources: bool,
+    omitted_count: int,
+    shared: Sequence[dict[str, object]],
+) -> dict[str, object]:
+    if exact_sources:
+        source_ids = tuple(dict.fromkeys(evidence_ids))
+        if not source_ids:
+            return {}
+        details: dict[str, object] = {
+            "evidence_labels": [source_label(sid) for sid in source_ids],
+            "supporting_record_count": len(source_ids),
+        }
+        absent = [source_label(sid) for sid in source_ids if sid not in selected]
+        if absent:
+            details["sources_not_in_context"] = absent
+        return details
+    details = {}
+    visible_sources = tuple(dict.fromkeys(sid for sid in evidence_ids if sid in selected))
+    if visible_sources or omitted_count:
+        details["supporting_record_count"] = len(visible_sources) + omitted_count
+    if visible_sources:
+        details["evidence_labels"] = [selected[sid] for sid in visible_sources]
+    if omitted_count:
+        details["sources_not_in_context_count"] = omitted_count
+    if shared:
+        details["shared_sources_not_in_context"] = list(shared)
+    return details
+
+
+def _small_source_set(source_sets: Sequence[frozenset[str]]) -> bool:
+    seen: set[str] = set()
+    for source_ids in source_sets:
+        for source_id in source_ids:
+            seen.add(source_id)
+            if len(seen) > _MAX_EXACT_OMITTED_SOURCES:
+                return False
+    return True
+
+
+def _shared_sources(
+    omitted: Mapping[str, frozenset[str]],
+    selected: Mapping[str, str],
+) -> dict[str, list[dict[str, object]]]:
+    """Bound the rendered provenance by selected records, not lifetime fanout.
+
+    Pairwise overlap does not determine higher-order unions or prove independent
+    observations. Computation still depends on the sizes of the stored source sets.
+    """
+    shared: dict[str, list[dict[str, object]]] = {}
+    items = tuple(omitted.items())
+    for position, (memory_id, source_ids) in enumerate(items):
+        if not source_ids:
+            continue
+        for other_id, other_sources in items[position + 1 :]:
+            overlap = len(source_ids & other_sources)
+            if overlap:
+                shared.setdefault(memory_id, []).append(
+                    {"evidence_label": selected[other_id], "count": overlap}
+                )
+                shared.setdefault(other_id, []).append(
+                    {"evidence_label": selected[memory_id], "count": overlap}
+                )
+    return shared

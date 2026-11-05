@@ -24,7 +24,7 @@ opts in. A switched-off route is never registered, so a caller gets 404 rather t
 discover through the error what an enabled deployment would offer:
 
 ```python
-from mindbridge.api import create_app
+from sensemem.api import create_app
 
 app = create_app(memory=memory, identity_operations=True, embodied_operations=True)
 ```
@@ -42,12 +42,12 @@ Install the server extra together with the extras required by the chosen backend
 server of the deployment's choosing, construct one `Memory`, and inject it:
 
 ```bash
-uv add "mindbridge[local,server]" uvicorn
+uv add "sensemem[local,server]" uvicorn
 ```
 
 ```python
-from mindbridge import Memory
-from mindbridge.api import create_app
+from sensemem import Memory
+from sensemem.api import create_app
 
 memory = Memory.from_config(
     {
@@ -89,7 +89,7 @@ for the app lifetime and close it, together with its caller-owned provider clien
 shutdown. Run one process and one `Memory` for each physical `data_dir`; use a different directory
 for another owner.
 
-MindBridge adds no REST authentication. The host owns authentication, authorization, TLS, and
+SenseMem adds no REST authentication. The host owns authentication, authorization, TLS, and
 request-rate policy, through its gateway, service mesh, or FastAPI/Starlette middleware. See
 [deployment](../deployment.md) for supported process shapes and [operations](../operations.md) for
 shutdown and recovery.
@@ -204,7 +204,7 @@ delta has committed the response, a failure ends the stream with one `event: err
 same envelope; a stream therefore always ends with either `result` or `error` unless its client
 disconnects.
 
-The REST adapter emits a `mindbridge.http.request` server span for every `/v1` request. It records
+The REST adapter emits a `sensemem.http.request` server span for every `/v1` request. It records
 server time to headers, first non-empty response body byte, total completion time, response bytes,
 status, the low-cardinality `http.route` template, and whether delivery was `buffered` or
 `streaming`. These are server-side transport times; client-to-server network latency remains the
@@ -477,7 +477,7 @@ appears, because the control plane has no `/v1` route. Values are captured when 
 constructed, so the route performs no I/O and no model call.
 
 This is `MemoryCapabilities.document()` with `operations` filtered that way. The MCP server embeds
-the same document, filtered to the operations its tools reach, and `mindbridge doctor` prints the
+the same document, filtered to the operations its tools reach, and `sensemem doctor` prints the
 whole derivation under `capabilities`, so no surface can describe one composition differently or
 promise an operation it cannot serve.
 
@@ -528,7 +528,7 @@ are never serialized.
 | `model_output_truncated` | `output_truncated` |
 | `storage_error` | unset, `capacity_exceeded`, `data_dir_in_use`, `schema_unsupported`, `io_failed`, `flush_failed`, `instance_unusable` |
 | `index_unavailable` | unset, `index_missing` |
-| `mindbridge_error` | unset |
+| `sensemem_error` | unset |
 | `internal_error` | `unexpected` |
 | `not_found`, `method_not_allowed`, `http_error` | unset |
 
@@ -548,7 +548,7 @@ REST HTTP 413 with `retryable=false`; it previously surfaced as an unclassified 
 limits. `provider_unavailable` covers temporary upstream server failures after the SDK's own retry
 budget; callers still need a bounded retry policy.
 
-The status is a function of `reason` alone, read from one table in `mindbridge.api.errors`. Which
+The status is a function of `reason` alone, read from one table in `sensemem.api.errors`. Which
 exception class carried the failure, and which raise site produced it, do not change the answer:
 one condition has one status everywhere, and a reason with no row falls back to a coarse status
 for its `code`. Every 503 is a reason in `RETRYABLE_REASONS` and every retryable reason is a 503,
@@ -560,7 +560,7 @@ in both directions, so a client can act on the status without also reading the r
 | 405 | method not allowed |
 | 413 | `context_length_exceeded` for provider context overflow; `payload_too_large` for byte-based request or backend payload limits |
 | 422 | `input_invalid`, `unsupported_modality` |
-| 500 | `unexpected`, `schema_unsupported`, `io_failed`, `instance_unusable`, or a generic `MindBridgeError` with no reason |
+| 500 | `unexpected`, `schema_unsupported`, `io_failed`, `instance_unusable`, or a generic `SenseMemError` with no reason |
 | 501 | `backend_not_configured` |
 | 502 | `auth_failed`, `quota_exhausted`, `request_rejected`, `model_refused`, `response_invalid`, `output_truncated`, `asset_unavailable`, `asset_changed`, `model_failed`, or a `model_error` with no reason |
 | 503 | `capacity_exceeded`, `connection_failed`, `timeout`, `rate_limited`, `provider_unavailable`, `data_dir_in_use`, `flush_failed`, `index_missing`, or a `storage_error` with no reason |

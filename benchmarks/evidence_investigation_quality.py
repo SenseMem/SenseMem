@@ -28,20 +28,20 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import mindbridge
-from mindbridge import (
+import sensemem
+from sensemem import (
     AnswerResult,
     EmbedTask,
     Memory,
     MemoryConfig,
     MemoryPlugins,
-    MindBridgeConfig,
-    MindBridgeError,
     Modality,
     ModelInput,
     OfflineGazetteer,
     OpenAIModels,
     RetrievalMode,
+    SenseMemConfig,
+    SenseMemError,
 )
 
 FIXTURE_VERSION = "evidence-investigation-quality-v1"
@@ -318,7 +318,7 @@ def evaluate(
         error_reason = error_message = None
         result = None
         try:
-            with TemporaryDirectory(prefix="mindbridge-investigation-quality-") as directory:
+            with TemporaryDirectory(prefix="sensemem-investigation-quality-") as directory:
                 root = Path(directory)
                 with Memory.from_plugins(
                     root / "memory",
@@ -335,13 +335,13 @@ def evaluate(
                 ) as memory:
                     _add_documents(memory, case, root)
                     result = memory.ask(case.question, limit=case.limit, reference_at=REFERENCE_AT)
-        except MindBridgeError as error:
+        except SenseMemError as error:
             error_code = error.code
             error_reason, error_message = error.reason, str(error)
         generation_spans = [
             span.attributes or {}
             for span in exporter.get_finished_spans()
-            if (span.attributes or {}).get("mindbridge.model.module") == "generation"
+            if (span.attributes or {}).get("sensemem.model.module") == "generation"
         ]
         rows.append(
             {
@@ -375,9 +375,9 @@ def evaluate(
                         and not isinstance(value, bool)
                     )
                     for key in (
-                        "mindbridge.token_usage.total_tokens",
-                        "mindbridge.token_usage.expected_request_count",
-                        "mindbridge.token_usage.reported_request_count",
+                        "sensemem.token_usage.total_tokens",
+                        "sensemem.token_usage.expected_request_count",
+                        "sensemem.token_usage.reported_request_count",
                     )
                 },
             }
@@ -443,14 +443,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.env_file is not None:
         for token in shlex.split(arguments.env_file.read_text(), comments=True):
             name, separator, value = token.partition("=")
-            if separator and name in {"OPENAI_API_KEY", "MINDBRIDGE_GENERATION_API_KEY"}:
+            if separator and name in {"OPENAI_API_KEY", "SENSEMEM_GENERATION_API_KEY"}:
                 os.environ.setdefault(name, value)
     data = yaml.safe_load(arguments.config.read_text())
-    config = MindBridgeConfig.model_validate(data)
+    config = SenseMemConfig.model_validate(data)
     generation = config.generation
     if generation is None:
         raise ValueError("generation must be configured")
-    package = Path(mindbridge.__file__).parent
+    package = Path(sensemem.__file__).parent
     source_sha256_at_start, source_files_at_start = _source_snapshot(package)
     harness_sha256_at_start = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     requests = 0
@@ -479,9 +479,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             api_key=(
                 generation.api_key.get_secret_value()
                 if generation.api_key is not None
-                else os.environ.get(
-                    "MINDBRIDGE_GENERATION_API_KEY", os.environ.get("OPENAI_API_KEY")
-                )
+                else os.environ.get("SENSEMEM_GENERATION_API_KEY", os.environ.get("OPENAI_API_KEY"))
             ),
             base_url=generation.base_url,
             timeout=120,

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -28,9 +28,9 @@ from mindbridge import (
     ObservationContext,
     SearchHit,
 )
-from mindbridge.exceptions import ValidationError
-from mindbridge.infrastructure.local.store import RECALL_MAX_ROWS
-from mindbridge.kernel.grounding import pack_grounding
+from sensemem.exceptions import ValidationError
+from sensemem.infrastructure.local.store import RECALL_MAX_ROWS
+from sensemem.kernel.grounding import pack_grounding
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
 

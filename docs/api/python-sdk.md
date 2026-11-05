@@ -2,7 +2,7 @@
 
 ## Surface
 
-The supported root-import SDK is re-exported from `mindbridge`. `Memory` is the synchronous
+The supported root-import SDK is re-exported from `sensemem`. `Memory` is the synchronous
 execution boundary, and `AsyncMemory` is its async facade. REST, MCP, and the product CLI expose
 subsets of these operations through their own adapters.
 
@@ -15,7 +15,7 @@ is the isolation boundary. See [architecture](../architecture.md) for storage an
 Pass already-constructed backends directly:
 
 ```python
-from mindbridge import SentenceTransformersEmbedder, Memory
+from sensemem import SentenceTransformersEmbedder, Memory
 
 with Memory(
     "./data/assistant",
@@ -30,7 +30,7 @@ with Memory(
 Or let the bundled declarative configuration construct its adapters:
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 with Memory.from_config(
     {
@@ -74,7 +74,7 @@ The declarative path uses the same configuration and validation boundary.
 
 ```text
 Memory(
-    data_dir: str | Path = ".mindbridge",
+    data_dir: str | Path = ".sensemem",
     *,
     embedder: EmbeddingBackend,
     reranker: RerankingBackend | None = None,
@@ -150,7 +150,7 @@ caption per input, and retries one malformed reply once. Transport retries use t
 budget; the kernel adds no retry loop. If native media or a transcript supplies a usable
 representation, description failure permits storage without a caption. If caption conversion is
 required, the write raises the original error. Failed batches are counted on the vision span as
-`mindbridge.vision.failed_batches`.
+`sensemem.vision.failed_batches`.
 
 `former` proposes typed memories after a source observation commits; omitting it keeps ordinary
 add behavior and makes no formation model call. The bundled OpenAI former is selected by the
@@ -169,12 +169,28 @@ and resolved speaker names out of retrieval text and out of `add`-time identity 
 and absent from the first `limit` of them contributes its best hit in the last slot, so one
 modality cannot shut the others out.
 
-`evidence_budget_chars` (default `24_000`) keeps the `limit` hits and then admits more ranked
+`evidence_budget_chars` (default `24_000`) starts with the `limit` hits and then admits more ranked
 evidence while its text-equivalent cost fits the budget: 2,000 characters per image, 4,000 per
 audio asset, and 12,000 per video asset. `None` disables this ranked-tail expansion; separately
 enabled recall planning or linked expansion may still add evidence. The budget expands the
 guaranteed window rather than imposing a ceiling. Lowering `limit` and setting the budget to
 `None` reduces the basic ranked window, without guaranteeing a provider token fit.
+
+Before generation, `ask()` and `ask_stream()` recursively hydrate each derived assertion's
+`context.evidence_ids` under the same retrieval scope and memory-type filter. The assertion and
+its complete sources must fit the evidence allowance together; missing, filtered, cyclic, or
+bounded provenance withholds the assertion. Shared records are charged once. Mandatory raw
+observations retain the soft-budget guarantee above; derived assertions may be withheld even
+inside the first `limit` hits. With `evidence_budget_chars=None`, source closure still runs and
+may add records beyond `limit`, without a character bound. This uses the same full audit-union
+closure as default context compilation; selected proof delivery remains a `compile()` option.
+Bundled media selection, transport limits, and technical provider fallbacks also withhold an
+assertion if they omit a supplied source or any of its routed media. Usable raw records remain
+available. Source media is leased through answer completion or failure, so concurrent deletion
+does not remove a file while the model reads it. Recall completeness notes describe the final
+matched records after source-closure packing, including any raw records displaced by that packing.
+If later transport packing withholds records, the model is explicitly told the delivered set is
+incomplete, regardless of the earlier predicate-read note.
 In the default text format, `AnswerResult.hits` reports the fitted grounding pool,
 which with the default budget is usually more than `limit` on a corpus of short records.
 Structured output instead reports only the model-declared support subset; `Memory.ask` and
@@ -188,8 +204,9 @@ When any selected record has typed context, the answer receives all selected rec
 `E`-labelled evidence, including selected raw records. Answers with only raw records retain the
 unlabelled representation in the default text format; structured answers always label the final
 fitted evidence. Typed context distinguishes
-validity, recording, and occurrence times; retrieval order is not event order. A derived record
-labels cited sources omitted from the prompt as `S` without claiming their content was inspected:
+validity, recording, and occurrence times; retrieval order is not event order. When called directly
+with a partial evidence pool, model adapters label omitted cited sources as `S` without claiming
+their content was inspected:
 shared lineage is not independent corroboration, `supersedes` denotes a correction, and confidence
 is the stored assessment rather than truth. When an answer contains more than 64 unique omitted
 supporting records, the projection keeps selected `E` links and replaces individual omitted-source
@@ -213,7 +230,7 @@ The two other construction boundaries are:
 
 ```text
 Memory.from_plugins(
-    data_dir: str | Path = ".mindbridge",
+    data_dir: str | Path = ".sensemem",
     *,
     plugins: MemoryPlugins,
     config: MemoryConfig | None = None,
@@ -221,13 +238,13 @@ Memory.from_plugins(
 ) -> Memory
 
 Memory.from_config(
-    config: MindBridgeConfig | Mapping[str, object],
+    config: SenseMemConfig | Mapping[str, object],
     *,
     tracer: Tracer | None = None,
 ) -> Memory
 
 resolve_memory_config(
-    value: MindBridgeConfig | Mapping[str, object],
+    value: SenseMemConfig | Mapping[str, object],
 ) -> MemoryComposition
 ```
 
@@ -252,7 +269,7 @@ ContentInput = ContentAtom | Sequence[ContentAtom]
 - `AssetRef(id, ...)` refers to media already stored in the same `data_dir`; `id` is its 64-character
   lowercase SHA-256 identifier. A returned reference includes `modality`, `media_type`,
   `size_bytes`, `sha256`, `name`, and its local `path`.
-- An ordered sequence combines text and media into one record. MindBridge does not fetch URLs.
+- An ordered sequence combines text and media into one record. SenseMem does not fetch URLs.
 
 Event timestamps must be timezone-aware. `occurred_end` requires `occurred_at` and must be later
 than it. Metadata is a JSON-compatible mapping with non-empty string keys. `MemoryType` is
@@ -450,7 +467,7 @@ another. The default `"strict"` refuses when the retrieved evidence is thin: `an
 sentence, `abstained` is true, and `abstention_reason` says why. `"best_effort"` instructs the
 answerer to commit to the single most likely answer the evidence supports instead -- for a
 multiple-choice question, always one of the offered options -- and to flag the low confidence
-with a structured marker, which MindBridge reads and removes. The result then carries the same
+with a structured marker, which SenseMem reads and removes. The result then carries the same
 `abstained` and `abstention_reason` alongside a usable `answer`, so nothing about the confidence
 signal is lost. Choose it when an unanswerable question is not a case you need reported, such as
 multiple choice or a protocol that gives no credit for "unknown"; keep the default when it is.
@@ -510,7 +527,7 @@ answer delta. Routers and evidence compositions preserve that behavior.
 Incremental generation changes when the answer becomes visible, not how long it
 takes: a model that reasons before it answers spends most of its generation time before the first
 visible token, and `ask_stream` recovers only what follows it. The
-`mindbridge.model.generation` span records `mindbridge.model.time_to_first_token` either way, so
+`sensemem.model.generation` span records `sensemem.model.time_to_first_token` either way, so
 the split is measurable before it is designed around. That span stays open for the life of the
 stream, so with `ask_stream` its duration includes the time a caller spends between chunks.
 
@@ -720,7 +737,7 @@ other person's speech segments, face observations, and transcript attribution em
 Trimming it would answer an access request with less than is held, and redacting the other person
 out of shared evidence is not something the kernel can do without rewriting the observation, which
 is the one thing it never does. A host that must hand an export to one subject alone therefore
-owes the second person's interest its own review; MindBridge tells the truth about what is stored
+owes the second person's interest its own review; SenseMem tells the truth about what is stored
 and does not decide that question. Only shared records cross over: each subject's solo recordings,
 naming assertions, consent statements, and registry row stay theirs.
 
@@ -746,7 +763,7 @@ made unsupported.
 
 `delete` is physical forgetting, the third and strongest of
 [the three forms](../context-os.md#forgetting-is-three-operations). It is not a visibility change:
-after it returns, the record's content is not recoverable from MindBridge. Media is
+after it returns, the record's content is not recoverable from SenseMem. Media is
 content-addressed and shared, so a blob and its descriptor go only once no remaining memory
 references them; deleting one of two memories holding the same file keeps the file.
 
@@ -1041,7 +1058,7 @@ next person. A fragment whose modality the identity already holds stays orphaned
 deliberately through the store if the claim is established some other way.
 
 Binding is recorded, not guessed at read time, so it is durable and reversible through
-`unlink_identity`. Recognizer yield per asset is reported under the `mindbridge.identity.*` span
+`unlink_identity`. Recognizer yield per asset is reported under the `sensemem.identity.*` span
 attributes, including when nothing was detected.
 
 `forget_identity` erases a person rather than a memory. It removes the profile, every face and
@@ -1094,7 +1111,7 @@ A text-only input has count zero. This uses the same immutable declaration as th
 An unsupported aggregate may still be indexed and searched through supported atomic keys.
 
 ```python
-from mindbridge import Modality
+from sensemem import Modality
 
 joint = frozenset({Modality.TEXT, Modality.IMAGE})
 native_joint = memory.capabilities.supports_embedding(joint)
@@ -1207,19 +1224,19 @@ semantics and complete examples.
 
 ### Root import inventory
 
-The supported names exported by `mindbridge` are:
+The supported names exported by `sensemem` are:
 
 | Group | Names |
 | --- | --- |
 | Memory | `Memory`, `AsyncMemory`, `AsyncOmniPrefetch`, `AsyncCaptureStream`, `AsyncAudioStream`, `AsyncVisionStream` |
-| Composition | `MindBridgeConfig`, `MemoryComposition`, `MemoryConfig`, `MemoryPlugins`, `resolve_memory_config` |
+| Composition | `SenseMemConfig`, `MemoryComposition`, `MemoryConfig`, `MemoryPlugins`, `resolve_memory_config` |
 | Content and records | `ContentAtom`, `ContentInput`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `MemoryContext`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `StreamCommit`, `SearchResult`, `PerceptionResult`, `PerceptionCoverage`, `PerceptionSkipReason`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextPresentation`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
 | Delivery certificates | `ContextProof`, `ContextProofNode` |
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
 | Enums and literal aliases | `AnswerPolicy`, `PerceptionKind`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
 | Backend protocols and values | `EmbeddingBackend`, `EmbeddingRoute`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `VisionAnalysisBackend`, `EmbeddingInputSupport`, `MediaSelectionBackend`, `SourceMetadataBackend`, `GenerationMediaBackend`, `GenerationRoutingBackend`, `VisualDescription`, `SpeakerName`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
 | Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `OpenAIModels`, `GenerationRouter`, `EmbeddingRouter`, `EvidenceGeneration`, `GazetteerEnricher`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
-| Exceptions | `MindBridgeError`, `ValidationError`, `MemoryNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
+| Exceptions | `SenseMemError`, `ValidationError`, `MemoryNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
 
 ### Public values
 
@@ -1515,8 +1532,8 @@ like a former it proposes and never writes storage. An `IDENTIFY` proposal carri
 evidence, and the kernel builds the typed assertion.
 
 Recall planning is an optional extension detected through `plan_recall` on the answerer. The
-bundled `OpenAIModels` implements it. The protocol and plan values live in `mindbridge.models.base`
-and `mindbridge.recall`; they are not root exports. Custom answerers may omit the extension:
+bundled `OpenAIModels` implements it. The protocol and plan values live in `sensemem.models.base`
+and `sensemem.recall`; they are not root exports. Custom answerers may omit the extension:
 `recall_planning=True` then logs a warning at open and uses ordinary retrieval. See
 [the recall policy](../configuration.md#local-memory-settings) before implementing it.
 
@@ -1884,7 +1901,7 @@ recipe identity changes to account for this new input; embedding identity is unc
 ### Offline gazetteer
 
 ```python
-from mindbridge import (
+from sensemem import (
     EvidenceGeneration,
     GazetteerEnricher,
     Modality,
@@ -1908,7 +1925,7 @@ answerer = EvidenceGeneration(
 Declare the modalities supported by the provider. Pass the answerer through the existing `Memory` constructor or
 `MemoryPlugins`. Declarative configuration exposes the same resource through
 `generation.offline_gazetteer`; see [configuration](../configuration.md#provider-fields).
-Install `mindbridge[openai,gazetteer]`; importing `mindbridge` does not import Shapely or pyproj.
+Install `sensemem[openai,gazetteer]`; importing `sensemem` does not import Shapely or pyproj.
 
 `OfflineGazetteer.nearby(latitude, longitude)` returns a detached dictionary with `status`,
 `candidates`, source/license provenance, `global_complete=False` and
@@ -1918,7 +1935,7 @@ spatial relation. Names and map data are untrusted. Proximity refers to the reco
 not an assertion about what a photo depicts. The source snapshot may postdate capture.
 `provenance` returns a detached dictionary; `index_sha256` and `budget_chars` are read-only
 properties. No persistent database connection is held between lookups. Multiple instances may
-share this immutable external index; it is not a MindBridge `data_dir` or an isolation boundary.
+share this immutable external index; it is not a SenseMem `data_dir` or an isolation boundary.
 
 The single-region v1 index has SQLite tables `metadata(key,value)`,
 `features(id,osm_type,osm_id,kind,tags_json,geometry_wkb)` and RTree
@@ -2023,11 +2040,11 @@ conversion. Grounded answer text is capped at 4 MiB. Answer fitting reserves med
 the question, keeps highest-ranked evidence that fits, and leaves overflow evidence as text when
 possible. Use a provider-specific upload adapter when the original media must be supplied whole.
 
-Named recipes are available through the supported `mindbridge.recipes` submodule, not as a root
+Named recipes are available through the supported `sensemem.recipes` submodule, not as a root
 re-export:
 
 ```text
-import mindbridge.recipes as recipes
+import sensemem.recipes as recipes
 
 recipes.names() -> tuple[str, ...]
 recipes.slots(name: str) -> tuple[str, ...]
@@ -2051,11 +2068,11 @@ exercises the recipe's published probe (`weights`, `import`, or `client`).
 
 ## Errors and limits
 
-All stable exceptions derive from `MindBridgeError`:
+All stable exceptions derive from `SenseMemError`:
 
 | Exception | `code` | Default `reason` |
 | --- | --- | --- |
-| `MindBridgeError` | `mindbridge_error` | `None` |
+| `SenseMemError` | `sensemem_error` | `None` |
 | `ValidationError` | `validation_error` | `input_invalid` |
 | `MemoryNotFoundError` | `memory_not_found` | `memory_not_found` |
 | `IdentityNotFoundError` | `identity_not_found` | `identity_not_found` |
@@ -2115,9 +2132,9 @@ transport limits and their sizing boundaries.
 Two degradations keep a write alive rather than failing it, and both are recorded on the operation
 span. Media the embedding model will not accept inline drops the retrieval key holding it: the
 memory is still stored with its media and stays reachable through the keys that did embed, counted
-by `mindbridge.embedding.elided_parts`. A memory whose every key is refused still fails, because
+by `sensemem.embedding.elided_parts`. A memory whose every key is refused still fails, because
 nothing would find it. Separately, a video the embedding model cannot fit in its context is embedded
-as four ordered stills, counted by `mindbridge.embedding.video_sampled_inputs`; only a rejection
+as four ordered stills, counted by `sensemem.embedding.video_sampled_inputs`; only a rejection
 that declares the length constraint triggers it, and the video itself is still stored and still
 reaches the answering model on its own route.
 

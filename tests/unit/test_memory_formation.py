@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import (
+from sensemem import (
     Blob,
     EmbedTask,
     EvidenceBasis,
@@ -37,7 +37,7 @@ from mindbridge import (
     SpatialContext,
     ValidationError,
 )
-from mindbridge._telemetry import FORMATION_PROPOSALS_REFUSED
+from sensemem._telemetry import FORMATION_PROPOSALS_REFUSED
 
 
 class PreferenceFormer:
@@ -980,7 +980,7 @@ def test_refused_proposals_are_totalled_over_the_whole_settle(tmp_path: Path) ->
     assert [
         span.attributes[FORMATION_PROPOSALS_REFUSED]
         for span in exporter.get_finished_spans()
-        if span.name == "mindbridge.settle"
+        if span.name == "sensemem.settle"
         and span.attributes is not None
         and FORMATION_PROPOSALS_REFUSED in span.attributes
     ] == [1]

@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
-from mindbridge.benchmarks.download import _extract_tar, acquire_media
-from mindbridge.benchmarks.eval import _prefix_end
-from mindbridge.benchmarks.eval_adapters import load_task
-from mindbridge.benchmarks.icm_bench import ICM_NO_ASR_CLIPS, load_icm_bench
-from mindbridge.benchmarks.official_scorers import JudgeMessage, judge_plan, parse_judge_response
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
+from sensemem.benchmarks.download import _extract_tar, acquire_media
+from sensemem.benchmarks.eval import _prefix_end
+from sensemem.benchmarks.eval_adapters import load_task
+from sensemem.benchmarks.icm_bench import ICM_NO_ASR_CLIPS, load_icm_bench
+from sensemem.benchmarks.official_scorers import JudgeMessage, judge_plan, parse_judge_response
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 def _question(**overrides: object) -> dict[str, object]:
@@ -207,6 +207,6 @@ def test_icm_download_still_requires_requested_tar(
     def empty_download(*args: object) -> None:
         pass
 
-    monkeypatch.setattr("mindbridge.benchmarks.download._snapshot", empty_download)
+    monkeypatch.setattr("sensemem.benchmarks.download._snapshot", empty_download)
     with pytest.raises(FileNotFoundError, match=r"download did not produce: videos\.tar"):
         acquire_media(TASKS["icm-bench"], tmp_path)

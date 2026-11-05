@@ -5,10 +5,10 @@ import base64
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from mindbridge.api.app import MemoryCreate
-from mindbridge.api.content import InputPart, content_input
-from mindbridge.exceptions import ValidationError as ContentValidationError
-from mindbridge.types import Blob
+from sensemem.api.app import MemoryCreate
+from sensemem.api.content import InputPart, content_input
+from sensemem.exceptions import ValidationError as ContentValidationError
+from sensemem.types import Blob
 
 
 @pytest.mark.parametrize(

@@ -15,12 +15,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from mindbridge import AsyncMemory, Memory, MindBridgeConfig, Modality
-from mindbridge.benchmarks import eval as evaluation
-from mindbridge.benchmarks import eval_leaderboard as aml
-from mindbridge.benchmarks.eval_artifacts import _atomic_replace, _json_bytes
-from mindbridge.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
-from mindbridge.models.base import EmbedTask, ModelInput
+from sensemem import AsyncMemory, Memory, Modality, SenseMemConfig
+from sensemem.benchmarks import eval as evaluation
+from sensemem.benchmarks import eval_leaderboard as aml
+from sensemem.benchmarks.eval_artifacts import _atomic_replace, _json_bytes
+from sensemem.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
+from sensemem.models.base import EmbedTask, ModelInput
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg=="
@@ -321,9 +321,9 @@ def test_missing_index_rebuild_uses_stored_embeddings(
     "environment",
     [
         {},
-        {"MINDBRIDGE_TIMEOUT_SECONDS": "invalid"},
-        {"MINDBRIDGE_GENERATION_MODEL": ""},
-        {"MINDBRIDGE_GENERATION_MODALITIES": "unsupported"},
+        {"SENSEMEM_TIMEOUT_SECONDS": "invalid"},
+        {"SENSEMEM_GENERATION_MODEL": ""},
+        {"SENSEMEM_GENERATION_MODALITIES": "unsupported"},
     ],
 )
 def test_cli_loads_config_runs_server_and_closes_backends(
@@ -331,7 +331,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
 ) -> None:
     import uvicorn
 
-    configs: list[MindBridgeConfig] = []
+    configs: list[SenseMemConfig] = []
     closed: list[bool] = []
     configuration = tmp_path / "config.yaml"
     configuration.write_text(
@@ -346,7 +346,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
                 closing(DataDirectoryLock(tmp_path / "data")),
             ):
                 pass
-            configs.append(cast(MindBridgeConfig, kwargs["memory_config"]))
+            configs.append(cast(SenseMemConfig, kwargs["memory_config"]))
 
         def memory(self, path: Path) -> AsyncMemory:
             return memory_factory(path)
@@ -364,7 +364,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
 
     monkeypatch.setattr(evaluation, "_BackendPool", Pool)
     monkeypatch.setattr(uvicorn, "run", run)
-    monkeypatch.setenv("MINDBRIDGE_AML_API_KEY", "secret")
+    monkeypatch.setenv("SENSEMEM_AML_API_KEY", "secret")
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     assert (
@@ -475,11 +475,11 @@ def test_eval_dispatch_and_server_validation(
         calls.append((argv, prog))
         return 0
 
-    monkeypatch.delenv("MINDBRIDGE_AML_API_KEY", raising=False)
+    monkeypatch.delenv("SENSEMEM_AML_API_KEY", raising=False)
     with pytest.raises(SystemExit) as error:
         aml.main(["--config", str(tmp_path / "config.yaml"), "--data-root", str(tmp_path)])
     assert error.value.code == 2
-    assert "MINDBRIDGE_AML_API_KEY" in capsys.readouterr().err
+    assert "SENSEMEM_AML_API_KEY" in capsys.readouterr().err
     monkeypatch.setattr(aml, "main", serve)
-    assert evaluation.main(["serve", "--help"], prog="mindbridge-bench eval") == 0
-    assert calls == [(["--help"], "mindbridge-bench eval serve")]
+    assert evaluation.main(["serve", "--help"], prog="sensemem-bench eval") == 0
+    assert calls == [(["--help"], "sensemem-bench eval serve")]

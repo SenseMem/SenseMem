@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.infrastructure.local import AssetStore, AssetStoreError, AssetTooLargeError
+from sensemem.infrastructure.local import AssetStore, AssetStoreError, AssetTooLargeError
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX named pipes")

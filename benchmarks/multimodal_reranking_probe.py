@@ -12,15 +12,15 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
-    MindBridgeConfig,
     Modality,
     ModelInput,
     Qwen3VLReranker,
     RerankingBackend,
+    SenseMemConfig,
 )
-from mindbridge.benchmarks.eval import _BorrowedRerankingBackend
+from sensemem.benchmarks.eval import _BorrowedRerankingBackend
 
 
 def run_probe(config_path: Path, directory: Path) -> int:
@@ -29,7 +29,7 @@ def run_probe(config_path: Path, directory: Path) -> int:
 
     payload = yaml.safe_load(config_path.read_text())
     payload.pop("benchmark", None)
-    config = MindBridgeConfig.model_validate(payload).reranking
+    config = SenseMemConfig.model_validate(payload).reranking
     if config is None or config.provider != "qwen3-vl":
         raise ValueError("probe requires native multimodal Qwen reranking")
     fixture_root = directory / "fixtures"

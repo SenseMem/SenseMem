@@ -65,7 +65,7 @@ benchmark:
     benchmarks_root: .benchmarks/atm-inputs
   run:
     tasks: atm-bench-main-sgm
-    arms: mindbridge
+    arms: sensemem
     seed: 0
     recall_limit: 20
     answer_policy: strict

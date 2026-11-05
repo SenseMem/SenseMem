@@ -10,10 +10,10 @@ from typing import cast
 
 import pytest
 
-import mindbridge.models.funasr as funasr_module
-from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.models.base import SpeechBackend, SpeechTurn
-from mindbridge.models.funasr import (
+import sensemem.models.funasr as funasr_module
+from sensemem.exceptions import ModelError, ValidationError
+from sensemem.models.base import SpeechBackend, SpeechTurn
+from sensemem.models.funasr import (
     DEFAULT_FUNASR_MODEL_ID,
     DEFAULT_FUNASR_MODEL_REVISION,
     DEFAULT_FUNASR_RECIPE,
@@ -21,7 +21,7 @@ from mindbridge.models.funasr import (
     DEFAULT_FUNASR_VAD_MODEL_ID,
     FunASRTranscriber,
 )
-from mindbridge.types import AssetRef, Modality
+from sensemem.types import AssetRef, Modality
 
 
 def test_funasr_delegates_execution_to_official_automodel_and_maps_speech(

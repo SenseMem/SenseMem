@@ -14,8 +14,8 @@ from typing import IO, Any, cast
 import pytest
 from _gazetteer_support import index_fixture, multi_index_fixture
 
-from mindbridge import OfflineGazetteer, StorageError, ValidationError
-from mindbridge.infrastructure.local import gazetteer as implementation
+from sensemem import OfflineGazetteer, StorageError, ValidationError
+from sensemem.infrastructure.local import gazetteer as implementation
 
 
 def test_true_geometry_holes_boundary_road_and_bbox_only_false_positive(

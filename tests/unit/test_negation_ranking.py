@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import EmbedTask, Memory, MemoryConfig, Modality, ModelInput
-from mindbridge.infrastructure.local.store import StoredMemory
-from mindbridge.kernel.ranking import lexical_query_terms, lexical_relevance
+from sensemem import EmbedTask, Memory, MemoryConfig, Modality, ModelInput
+from sensemem.infrastructure.local.store import StoredMemory
+from sensemem.kernel.ranking import lexical_query_terms, lexical_relevance
 
 
 def _stored(memory_id: str, content: str) -> StoredMemory:

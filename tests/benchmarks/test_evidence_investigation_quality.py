@@ -14,7 +14,7 @@ from types import ModuleType
 import httpx2 as httpx
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,

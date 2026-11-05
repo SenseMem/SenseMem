@@ -17,11 +17,11 @@ from openai import OpenAI
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
-from mindbridge import AssetRef, Modality, ModelInput, OpenAIModels, SearchHit
-from mindbridge.evidence import answer_evidence_payloads
-from mindbridge.exceptions import ModelError
-from mindbridge.models._media import _capture_fields, image_capture_metadata
-from mindbridge.models.openai_sdk import _answer_text_parts
+from sensemem import AssetRef, Modality, ModelInput, OpenAIModels, SearchHit
+from sensemem.evidence import answer_evidence_payloads
+from sensemem.exceptions import ModelError
+from sensemem.models._media import _capture_fields, image_capture_metadata
+from sensemem.models.openai_sdk import _answer_text_parts
 
 GPS = {1: "S", 2: (31, 15, IFDRational(1, 2)), 3: "W", 4: (121, 30, 0)}
 NOW = datetime(2026, 10, 28, tzinfo=timezone.utc)

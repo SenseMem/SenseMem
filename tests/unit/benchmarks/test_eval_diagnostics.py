@@ -13,21 +13,21 @@ from typing import Any, cast
 
 import pytest
 
-from mindbridge import AnswerChunk, AnswerResult, AsyncMemory, SearchHit
-from mindbridge._telemetry import _record_generation_inputs, _record_retrieval_results
-from mindbridge.benchmarks.eval import (
+from sensemem import AnswerChunk, AnswerResult, AsyncMemory, SearchHit
+from sensemem._telemetry import _record_generation_inputs, _record_retrieval_results
+from sensemem.benchmarks.eval import (
     _answer_many,
     _answer_span,
     _cache_outcome,
     _cached_results,
     _with_grounding_loss,
 )
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from mindbridge.benchmarks.eval_arms import _Arm, _BaselineGenerator
-from mindbridge.benchmarks.eval_cache import CachedAnswer, EvidenceInterval, ResponseCache
-from mindbridge.benchmarks.eval_results import SampleResult, _AnswerOutcome
-from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
-from mindbridge.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_arms import _Arm, _BaselineGenerator
+from sensemem.benchmarks.eval_cache import CachedAnswer, EvidenceInterval, ResponseCache
+from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
+from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
+from sensemem.benchmarks.task_catalog import TaskSpec
 
 
 def _sample(**changes: object) -> SampleResult:
@@ -56,7 +56,7 @@ def _sample(**changes: object) -> SampleResult:
 
 
 def _diagnose(sample: SampleResult) -> dict[str, Any]:
-    module = importlib.import_module("mindbridge.benchmarks.eval_diagnostics")
+    module = importlib.import_module("sensemem.benchmarks.eval_diagnostics")
     result: dict[str, Any] = module.quality_diagnostics(sample)
     return result
 
@@ -130,7 +130,7 @@ def test_returned_metadata_cannot_replace_observed_reader_source_provenance() ->
 
 
 def test_conditional_scores_count_unknown_observations_separately() -> None:
-    module = importlib.import_module("mindbridge.benchmarks.eval_diagnostics")
+    module = importlib.import_module("sensemem.benchmarks.eval_diagnostics")
     full = _sample(
         generation_evidence=(
             EvidenceInterval("m1", "s1", None, None),
@@ -273,8 +273,8 @@ def test_compile_partial_organization_survives_response_cache(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_failed_compile_generation_retains_the_organization_boundary() -> None:
-    from mindbridge import ContextBudget, ContextBundle
-    from mindbridge.context import compile_context
+    from sensemem import ContextBudget, ContextBundle
+    from sensemem.context import compile_context
 
     class BrokenGenerator:
         async def answer(self, *_args: object, **_kwargs: object) -> str:
@@ -316,7 +316,7 @@ async def test_failed_compile_generation_retains_the_organization_boundary() -> 
 def test_review_export_is_stratified_reproducible_and_has_no_synthetic_gold(
     tmp_path: Path,
 ) -> None:
-    module = importlib.import_module("mindbridge.benchmarks.eval_review")
+    module = importlib.import_module("sensemem.benchmarks.eval_review")
     rows = [
         _sample(question_id=str(index), metadata={}, score=float(index % 2)).json()
         for index in range(20)
@@ -348,7 +348,7 @@ def test_review_publication_cannot_overwrite_a_concurrently_created_annotation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = importlib.import_module("mindbridge.benchmarks.eval_review")
+    module = importlib.import_module("sensemem.benchmarks.eval_review")
     source = tmp_path / "samples.jsonl"
     source.write_text(json.dumps(_sample().json()) + "\n", encoding="utf-8")
     output = tmp_path / "review.jsonl"
@@ -365,7 +365,7 @@ def test_review_publication_cannot_overwrite_a_concurrently_created_annotation(
 
 
 def test_review_requires_current_sample_format(tmp_path: Path) -> None:
-    module = importlib.import_module("mindbridge.benchmarks.eval_review")
+    module = importlib.import_module("sensemem.benchmarks.eval_review")
     source = tmp_path / "samples.jsonl"
     row = _sample().json()
     del row["schema_version"]

@@ -7,9 +7,9 @@ this boundary before introducing a semantic verifier into high-risk formation or
 ## Run the scorer
 
 ```bash
-uv run --frozen python -m mindbridge.benchmarks.semantic_support \
+uv run --frozen python -m sensemem.benchmarks.semantic_support \
   --input benchmarks/semantic_support.example.json \
-  --output /tmp/mindbridge-semantic-support.json
+  --output /tmp/sensemem-semantic-support.json
 ```
 
 This offline module reads annotations and observed outcomes. It does not generate judgments,

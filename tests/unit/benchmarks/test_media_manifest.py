@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.eval_adapters import MediaResolver, load_media_manifest
+from sensemem.benchmarks.eval_adapters import MediaResolver, load_media_manifest
 
 
 @pytest.mark.parametrize(

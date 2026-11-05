@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import (
+from sensemem import (
     Blob,
     Memory,
     MemoryConfig,
@@ -24,10 +24,10 @@ from mindbridge import (
     RetrievalMode,
     RetrievalScope,
 )
-from mindbridge._telemetry import MODEL_REQUEST_COUNT
-from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.types import ContentInput, MemoryType, RetrievalCandidateTrace
+from sensemem._telemetry import MODEL_REQUEST_COUNT
+from sensemem.exceptions import ModelError, ValidationError
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.types import ContentInput, MemoryType, RetrievalCandidateTrace
 
 
 class Embedder:
@@ -116,13 +116,13 @@ def test_complete_eligible_pool_is_reranked_before_limit_without_rewriting_score
         spans = [
             span
             for span in exporter.get_finished_spans()
-            if span.name == "mindbridge.model.reranking"
+            if span.name == "sensemem.model.reranking"
         ]
         assert len(spans) == 2
         for span in spans:
             assert span.attributes is not None
             assert span.attributes[MODEL_REQUEST_COUNT] == 1
-            assert span.attributes["mindbridge.reranking.scored_candidates"] == 13
+            assert span.attributes["sensemem.reranking.scored_candidates"] == 13
     assert reranker.closed == 1
 
 

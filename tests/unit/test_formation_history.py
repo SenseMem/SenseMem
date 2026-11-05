@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     Blob,
     EvidenceBasis,
     FormationInput,
@@ -26,8 +26,8 @@ from mindbridge import (
     ObservationContext,
     ValidationError,
 )
-from mindbridge.infrastructure.local.store import records as stored_records
-from mindbridge.models.openai_sdk import _formation_content, _formation_results
+from sensemem.infrastructure.local.store import records as stored_records
+from sensemem.models.openai_sdk import _formation_content, _formation_results
 
 
 class HistoryFormer:

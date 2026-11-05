@@ -20,8 +20,8 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.util.types import AttributeValue
 
-import mindbridge.benchmarks.eval as eval_module
-from mindbridge import (
+import sensemem.benchmarks.eval as eval_module
+from sensemem import (
     AnswerChunk,
     AnswerPolicy,
     AnswerResult,
@@ -30,15 +30,15 @@ from mindbridge import (
     EmbedTask,
     Memory,
     MemoryConfig,
-    MindBridgeConfig,
     Modality,
     ModelError,
     ModelInput,
     SearchHit,
     SearchResult,
+    SenseMemConfig,
     ValidationError,
 )
-from mindbridge._telemetry import (
+from sensemem._telemetry import (
     RECALL_COMPLETE,
     RECALL_EXHAUSTIVE_ROWS,
     RECALL_FALLBACK,
@@ -48,12 +48,12 @@ from mindbridge._telemetry import (
     SPAN_KIND,
     _record_retrieval_results,
 )
-from mindbridge.benchmarks import eval_arms as eval_arms_module
-from mindbridge.benchmarks import eval_config as eval_config_module
-from mindbridge.benchmarks import eval_console as eval_console_module
-from mindbridge.benchmarks import eval_metrics as eval_metrics_module
-from mindbridge.benchmarks import eval_results as eval_results_module
-from mindbridge.benchmarks.eval import (
+from sensemem.benchmarks import eval_arms as eval_arms_module
+from sensemem.benchmarks import eval_config as eval_config_module
+from sensemem.benchmarks import eval_console as eval_console_module
+from sensemem.benchmarks import eval_metrics as eval_metrics_module
+from sensemem.benchmarks import eval_results as eval_results_module
+from sensemem.benchmarks.eval import (
     MemoryFactory,
     _answer_many,
     _full_context,
@@ -61,16 +61,16 @@ from mindbridge.benchmarks.eval import (
     _with_grounding_loss,
     run_loaded_task,
 )
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from mindbridge.benchmarks.eval_arms import (
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_arms import (
     PRODUCT_ARM,
     _Arm,
 )
-from mindbridge.benchmarks.eval_cache import CachedAnswer, ResponseCache
-from mindbridge.benchmarks.eval_config import RETRIEVAL_CANDIDATE_LIMIT
-from mindbridge.benchmarks.eval_metrics import _metrics
-from mindbridge.benchmarks.eval_results import DEFAULT_ARM, SampleResult
-from mindbridge.benchmarks.eval_telemetry import (
+from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
+from sensemem.benchmarks.eval_config import RETRIEVAL_CANDIDATE_LIMIT
+from sensemem.benchmarks.eval_metrics import _metrics
+from sensemem.benchmarks.eval_results import DEFAULT_ARM, SampleResult
+from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ANSWER_SPAN,
     BENCHMARK_SAMPLE,
     BENCHMARK_TASK,
@@ -79,17 +79,17 @@ from mindbridge.benchmarks.eval_telemetry import (
     EvaluationTelemetry,
     SampleGrounding,
 )
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.model_config import DEFAULT_TIMEOUT_SECONDS, ModelConfig
-from mindbridge.benchmarks.official_scorers import metric_is_official, retrieval_gold_ids
-from mindbridge.benchmarks.task_catalog import TaskSpec
-from mindbridge.configuration import OpenAIEmbeddingConfig
-from mindbridge.models.base import (
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.model_config import DEFAULT_TIMEOUT_SECONDS, ModelConfig
+from sensemem.benchmarks.official_scorers import metric_is_official, retrieval_gold_ids
+from sensemem.benchmarks.task_catalog import TaskSpec
+from sensemem.configuration import OpenAIEmbeddingConfig
+from sensemem.models.base import (
     GenerationBackend,
     RecallPlanningBackend,
     StreamingGenerationBackend,
 )
-from mindbridge.models.openai_sdk import OpenAIModels
+from sensemem.models.openai_sdk import OpenAIModels
 
 _ATOMIC_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.AUDIO, Modality.VIDEO})
 
@@ -569,7 +569,7 @@ def test_random_arm_does_not_report_an_answer_latency() -> None:
     assert not isinstance(outcome, BaseException)
     assert outcome.ranked_source_ids == ("gold-1",)
     answer = cast(dict[str, object], performance["answer"])
-    assert answer["span"] == "mindbridge.ask"
+    assert answer["span"] == "sensemem.ask"
     assert answer["count"] == 0
     assert BENCHMARK_ANSWER_SPAN not in cast(dict[str, object], performance["nodes"])
 
@@ -961,9 +961,9 @@ def test_the_product_arm_keeps_asking_on_an_ask_surface_task_even_with_a_generat
 def test_the_generator_is_built_for_the_product_arm_only_when_a_task_needs_the_compile_surface() -> (
     None
 ):
-    assert eval_module._generator_arms(("mindbridge",), ("locomo-refined",)) == frozenset()
-    assert eval_module._generator_arms(("mindbridge",), ("personamem-v3",)) == {"mindbridge"}
-    assert eval_module._generator_arms(("mindbridge", "blind"), ("locomo-refined",)) == {"blind"}
+    assert eval_module._generator_arms(("sensemem",), ("locomo-refined",)) == frozenset()
+    assert eval_module._generator_arms(("sensemem",), ("personamem-v3",)) == {"sensemem"}
+    assert eval_module._generator_arms(("sensemem", "blind"), ("locomo-refined",)) == {"blind"}
     assert eval_module._generator_arms(("compile", "random"), ("personamem-v3",)) == {"compile"}
 
 
@@ -1304,9 +1304,9 @@ def test_budget_loss_is_joined_onto_the_sample_that_lost_it() -> None:
             telemetry.tracer.start_as_current_span(
                 "model",
                 attributes={
-                    "mindbridge.span.kind": "model",
-                    "mindbridge.grounding.dropped_hits": 4,
-                    "mindbridge.grounding.media_elided_hits": 1,
+                    "sensemem.span.kind": "model",
+                    "sensemem.grounding.dropped_hits": 4,
+                    "sensemem.grounding.media_elided_hits": 1,
                 },
             ),
         ):
@@ -1512,7 +1512,7 @@ def test_results_report_each_arm_beside_the_product_arm() -> None:
     arms = cast(dict[str, object], results["arms"])
     table = eval_console_module._table(results)
 
-    assert results["schema_version"] == 22
+    assert results["schema_version"] == 23
     assert "num_fewshot" not in results
     assert [row["arm"] for row in rows] == [DEFAULT_ARM, "blind", "random"]
     assert [row["score"]["mean"] for row in rows] == [1.0, 0.0, None]  # type: ignore[index]
@@ -1584,11 +1584,11 @@ def test_product_budget_provenance_distinguishes_ask_and_compile_tasks(
 
 
 def test_answer_retrieval_candidate_limit_matches_budget_policy() -> None:
-    budgeted = MindBridgeConfig(
+    budgeted = SenseMemConfig(
         embedding=OpenAIEmbeddingConfig(provider="openai"),
         settings=MemoryConfig(evidence_budget_chars=4_242),
     )
-    unbudgeted = MindBridgeConfig(
+    unbudgeted = SenseMemConfig(
         embedding=OpenAIEmbeddingConfig(provider="openai"),
         settings=MemoryConfig(evidence_budget_chars=None),
     )
@@ -1663,7 +1663,7 @@ def test_baseline_generator_uses_the_configured_generation_model(
         ),
         seed=11,
         gen_kwargs="max_tokens=64,enable_thinking=false",
-        generation=MindBridgeConfig.model_validate(
+        generation=SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "generation": {"provider": "openai", "model": model, "extra_body": extra_body},
@@ -1712,7 +1712,7 @@ def test_baseline_generator_uses_the_configured_generation_model(
     assert stuffed_messages[0]["content"] == eval_arms_module._FULL_CONTEXT_SYSTEM_PROMPT
     assert "Ada signed the contract" in stuffed_messages[1]["content"]
     assert requests[3] == requests[2]
-    from mindbridge.models.openai_sdk import _BEST_EFFORT_SYSTEM_PROMPT
+    from sensemem.models.openai_sdk import _BEST_EFFORT_SYSTEM_PROMPT
 
     best_effort_messages = cast(list[dict[str, str]], requests[4]["messages"])
     assert best_effort_messages[0]["content"] == _BEST_EFFORT_SYSTEM_PROMPT
@@ -1733,7 +1733,7 @@ def test_baseline_generator_rejects_explicit_unsupported_controls(
             ModelConfig(generation_model="gpt-5-mini"),
             seed=11,
             gen_kwargs="",
-            generation=MindBridgeConfig.model_validate(
+            generation=SenseMemConfig.model_validate(
                 {
                     "embedding": {"provider": "openai"},
                     "generation": {"provider": "openai", "extra_body": extra_body},
@@ -2043,7 +2043,7 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
             return answered[0]
 
     try:
-        with caplog.at_level(logging.WARNING, logger="mindbridge.memory"):
+        with caplog.at_level(logging.WARNING, logger="sensemem.memory"):
             outcome = asyncio.run(run())
         # The store saw a planner at wiring time, not a proxy it had to fall back around.
         assert not [message for message in caplog.messages if "cannot plan" in message]

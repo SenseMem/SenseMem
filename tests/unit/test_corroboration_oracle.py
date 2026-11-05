@@ -12,7 +12,7 @@ from itertools import combinations, product
 
 import pytest
 
-from mindbridge.kernel.corroboration import (
+from sensemem.kernel.corroboration import (
     Assessment,
     EvidenceNode,
     SupportSummary,

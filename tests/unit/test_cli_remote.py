@@ -21,11 +21,11 @@ import pytest
 from _feature_support import TinyEmbedder
 from fastapi.testclient import TestClient
 
-from mindbridge import Memory, cli
-from mindbridge.api.app import create_app
-from mindbridge.cli import EXIT_CODES, main
-from mindbridge.exceptions import IdentityNotFoundError
-from mindbridge.types import (
+from sensemem import Memory, cli
+from sensemem.api.app import create_app
+from sensemem.cli import EXIT_CODES, main
+from sensemem.exceptions import IdentityNotFoundError
+from sensemem.types import (
     FormationProposal,
     MemoryIntent,
     MemoryKind,

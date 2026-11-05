@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     EvidenceBasis,
     FormationProposal,
@@ -29,7 +29,7 @@ from mindbridge import (
     Modality,
     ModelInput,
 )
-from mindbridge.benchmarks import control_plane
+from sensemem.benchmarks import control_plane
 
 
 class _TinyEmbedder:

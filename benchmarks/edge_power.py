@@ -27,8 +27,8 @@ from pathlib import Path
 from corpora import atm_units, gallery_units, source_id, write_unit
 from support_coverage import _embedder, _env
 
-from mindbridge import Memory, MemoryConfig, OpenAIModels, OpenCVFaceAnalyzer
-from mindbridge.kernel.answering import expansion_ceiling
+from sensemem import Memory, MemoryConfig, OpenAIModels, OpenCVFaceAnalyzer
+from sensemem.kernel.answering import expansion_ceiling
 
 LIMIT = 12
 EDGES = ("capture", "identity", "place", "lineage", "evidence")
@@ -51,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = _env()
-    root = Path(settings["MINDBRIDGE_BENCH_ROOT"])
+    root = Path(settings["SENSEMEM_BENCH_ROOT"])
     if args.corpus == "atm":
         data = root / "atm-bench" / "data"
         units = atm_units(data, args.limit)
@@ -69,8 +69,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return (
             _embedder(settings),
             OpenCVFaceAnalyzer(
-                detector_model=settings["MINDBRIDGE_FACE_DETECTOR"],
-                recognizer_model=settings["MINDBRIDGE_FACE_RECOGNIZER"],
+                detector_model=settings["SENSEMEM_FACE_DETECTOR"],
+                recognizer_model=settings["SENSEMEM_FACE_RECOGNIZER"],
                 score_threshold=FACE_SCORE_THRESHOLD,
             ),
         )

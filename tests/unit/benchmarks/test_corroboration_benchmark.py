@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from mindbridge.benchmarks.corroboration import (
+from sensemem.benchmarks.corroboration import (
     Scenario,
     Step,
     VisibilityResult,

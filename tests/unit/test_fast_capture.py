@@ -17,7 +17,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
     Blob,
     EmbedTask,
@@ -34,8 +34,8 @@ from mindbridge import (
     StreamInput,
     ValidationError,
 )
-from mindbridge._telemetry import CAPTURE_FAILED, CAPTURE_SETTLED, CAPTURE_TIME_TO_SEARCHABLE
-from mindbridge.memory import AsyncMemory
+from sensemem._telemetry import CAPTURE_FAILED, CAPTURE_SETTLED, CAPTURE_TIME_TO_SEARCHABLE
+from sensemem.memory import AsyncMemory
 
 
 class CountingEmbedder:
@@ -409,7 +409,7 @@ def test_the_settle_span_reports_time_to_searchable_separately(tmp_path: Path) -
             memory.settle()
     provider.shutdown()
 
-    (settle,) = [span for span in exporter.get_finished_spans() if span.name == "mindbridge.settle"]
+    (settle,) = [span for span in exporter.get_finished_spans() if span.name == "sensemem.settle"]
     assert settle.attributes is not None
     assert settle.attributes[CAPTURE_SETTLED] == 1
     assert settle.attributes[CAPTURE_FAILED] == 1
@@ -482,7 +482,7 @@ async def test_async_stream_commits_lazily_and_preserves_capture_policy(
 
 
 def test_the_capture_operations_reach_the_command_line(tmp_path: Path) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     assert {"capture", "settle", "pending_captures"} <= set(cli.OPERATIONS)
     assert {"capture", "settle", "pending-captures"} <= set(cli.COMMANDS)
@@ -511,7 +511,7 @@ def test_the_capture_operations_reach_the_command_line(tmp_path: Path) -> None:
 
 
 def test_settle_names_records_on_the_command_line(tmp_path: Path) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     parser = cli._parser()
     embedder = CountingEmbedder()

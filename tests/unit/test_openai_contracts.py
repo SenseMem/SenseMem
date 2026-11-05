@@ -15,8 +15,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from test_openai_sdk import _asset, _sdk_client, _search_hit
 
-import mindbridge.recipes as recipes
-from mindbridge import (
+import sensemem.recipes as recipes
+from sensemem import (
     FormationInput,
     Memory,
     MemoryRecord,
@@ -28,9 +28,9 @@ from mindbridge import (
     OpenAIModels,
     ValidationError,
 )
-from mindbridge._telemetry import model_span
-from mindbridge.api.errors import exception_response
-from mindbridge.recall import parse_recall_plan
+from sensemem._telemetry import model_span
+from sensemem.api.errors import exception_response
+from sensemem.recall import parse_recall_plan
 
 NOW = datetime(2026, 10, 26, tzinfo=timezone.utc)
 
@@ -338,9 +338,9 @@ def test_answer_text_ceiling_matches_emitted_utf8_text(
                 else [part["text"] for part in message["content"] if part["type"] == "text"]
             )
         )
-        monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes)
+        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes)
         assert adapter.answer(ModelInput(text="什么颜色?"), (hit,)).answer == "blue"
-        monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes - 1)
+        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes - 1)
         with pytest.raises(ModelError) as failure:
             adapter.answer(ModelInput(text="什么颜色?"), (hit,))
     assert len(sent) == 2
@@ -374,9 +374,7 @@ def test_trace_keeps_request_id_without_provider_bodies(failed: bool) -> None:
             adapter.answer(ModelInput(text="private question"), (_search_hit(),))
     attrs = dict(exporter.get_finished_spans()[0].attributes or {})
     assert attrs["gen_ai.request.id"] == ("req-failure" if failed else "req-success")
-    assert attrs["mindbridge.model.request_ids"] == (
-        ("req-failure",) if failed else ("req-success",)
-    )
+    assert attrs["sensemem.model.request_ids"] == (("req-failure",) if failed else ("req-success",))
     assert "private" not in str(attrs)
     provider.shutdown()
 
@@ -635,7 +633,7 @@ def test_json_stream_close_failure_preserves_usage_and_primary_refusal(
     assert "private" not in str(failure.value)
     assert stream.closed
     assert (exporter.get_finished_spans()[0].attributes or {})[
-        "mindbridge.token_usage.total_tokens"
+        "sensemem.token_usage.total_tokens"
     ] == 7
     provider.shutdown()
 
@@ -731,6 +729,6 @@ def test_malformed_retry_keeps_all_request_ids() -> None:
         ) == ((),)
     attrs = exporter.get_finished_spans()[0].attributes or {}
     assert attrs["gen_ai.request.id"] == "mixed"
-    assert attrs["mindbridge.model.request_ids"] == ("req-1", "req-2")
-    assert attrs["mindbridge.token_usage.total_tokens"] == 14
+    assert attrs["sensemem.model.request_ids"] == ("req-1", "req-2")
+    assert attrs["sensemem.token_usage.total_tokens"] == 14
     provider.shutdown()

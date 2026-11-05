@@ -1,20 +1,20 @@
 # Benchmarking
 
-MindBridge provides one evaluation runner and focused utilities. Use the evaluation runner for
+SenseMem provides one evaluation runner and focused utilities. Use the evaluation runner for
 quality claims; use the utilities only for their narrower artifact or storage purpose.
 
 | Command | Use it for | Do not infer |
 | --- | --- | --- |
-| `mindbridge-bench eval` | Pinned datasets, official or explicitly identified scorers, confidence intervals, and run comparisons | That a score is leaderboard-comparable without checking its dataset, judge, and validity fields |
-| `mindbridge-bench locomo-refined` | Raw LoCoMo-Refined predictions for another evaluator | An integrated benchmark score |
-| `mindbridge-bench local-index` | SQLite-to-Zvec ingestion, recall, latency, throughput, and disk use | Embedding or answer quality |
-| `mindbridge-bench control-plane` | Slow-loop quality on a seeded synthetic scenario: consolidation precision, contradiction recovery, false retirement, and rollback success | Retrieval or answer quality; the scenario is sized so one deliberation window covers it |
-| `python -m mindbridge.benchmarks.sdk_concurrency` | Local SDK concurrency, successful throughput, latency, and overload rejection with synthetic embeddings | Real model-service capacity or retrieval quality |
+| `sensemem-bench eval` | Pinned datasets, official or explicitly identified scorers, confidence intervals, and run comparisons | That a score is leaderboard-comparable without checking its dataset, judge, and validity fields |
+| `sensemem-bench locomo-refined` | Raw LoCoMo-Refined predictions for another evaluator | An integrated benchmark score |
+| `sensemem-bench local-index` | SQLite-to-Zvec ingestion, recall, latency, throughput, and disk use | Embedding or answer quality |
+| `sensemem-bench control-plane` | Slow-loop quality on a seeded synthetic scenario: consolidation precision, contradiction recovery, false retirement, and rollback success | Retrieval or answer quality; the scenario is sized so one deliberation window covers it |
+| `python -m sensemem.benchmarks.sdk_concurrency` | Local SDK concurrency, successful throughput, latency, and overload rejection with synthetic embeddings | Real model-service capacity or retrieval quality |
 
 Never point a benchmark at an application's live `data_dir`. One physical directory has one live
-MindBridge owner, and each independent benchmark unit needs its own new directory.
+SenseMem owner, and each independent benchmark unit needs its own new directory.
 
-For participant-hosted Add/Search evaluation, use `mindbridge-bench eval serve`. See the
+For participant-hosted Add/Search evaluation, use `sensemem-bench eval serve`. See the
 [Agent Memory Leaderboard adapter](agent-memory-leaderboard.md) for configuration, authentication,
 ordered image content, physical user isolation, and retry behavior.
 
@@ -33,7 +33,7 @@ system tools, not Python dependencies this project manages.
 List the current task groups, pinned revisions, and local-data readiness:
 
 ```bash
-mindbridge-bench eval --list-tasks
+sensemem-bench eval --list-tasks
 ```
 
 The catalog currently covers LoCoMo-Refined, ES-MemEval, M3-Bench, Video-MME-v2, WorldMemArena,
@@ -45,15 +45,15 @@ runner.
 Review each printed repository and revision before downloading data. Upstream terms vary:
 LoCoMo-Refined and PersonaMem-v3 are CC BY-NC 4.0, MM-Lifelong is academic-only and restricts
 redistribution or modification without prior approval, and CL-Bench carries an evaluation-only
-license that forbids training, fine-tuning or distilling on the corpus. MindBridge's license does
+license that forbids training, fine-tuning or distilling on the corpus. SenseMem's license does
 not replace those terms; see the
-[scorer notices](../src/mindbridge/benchmarks/_official/NOTICE.md).
+[scorer notices](../src/sensemem/benchmarks/_official/NOTICE.md).
 
 If inputs are already present, validate their schema and digests without creating a run directory,
 loading a model, or contacting a provider:
 
 ```bash
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --tasks locomo-refined \
   --check-integrity \
   --no-download
@@ -100,7 +100,7 @@ at `aef3b0613ad2909a1355a99201b4a0c48e073836`, with the SHA-256 of
 is pinned independently at `21a46d686302825e85e330c3fa4b64f01df3c9da`.
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config eval.yaml \
   --tasks videozerobench \
   --download \
@@ -168,7 +168,7 @@ the pinned upstream functions, including overlapping evidence, answer tags, miss
 and fenced answers. Synthetic SDK fixtures also check hint boundaries and joint-score denominators.
 No real model revision was evaluated for this integration; full video download and real-service
 quality checks were not run. Dataset terms are CC BY-NC-ND 4.0; do not redistribute modified data.
-See the [scorer notices](../src/mindbridge/benchmarks/_official/NOTICE.md#videozerobench).
+See the [scorer notices](../src/sensemem/benchmarks/_official/NOTICE.md#videozerobench).
 
 ### Committed research recipes
 
@@ -205,7 +205,7 @@ Set credentials for the OpenAI-compatible generation endpoint, then select a tas
 ```bash
 export OPENAI_API_KEY="..."
 
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --config eval.yaml \
   --tasks locomo-refined \
   --output-path .benchmarks/results/locomo
@@ -224,7 +224,7 @@ reproducible run, supply a timezone-aware fallback without changing questions th
 dataset or corpus date:
 
 ```bash
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --config eval.yaml \
   --tasks m3-bench-robot \
   --fallback-reference-at 2026-09-08T00:00:00Z \
@@ -264,7 +264,7 @@ The scorer identity is `atm_bench_scorer_ef4e5dff1a47_minimal_v3`; v2 confused t
 and scored string `true` verdicts zero. Saved responses can be reparsed under v3; runs that did
 not retain responses need both comparison arms rejudged. The configured judge model remains selectable and is recorded independently;
 using another model is still marked non-official. Retrieval and joint metrics remain separate
-MindBridge diagnostics and do not replace the official answer score.
+SenseMem diagnostics and do not replace the official answer score.
 
 Parity fixtures cover unchanged ID-list references, scalar/list dispatch, the exact upstream
 judge prompt, boolean/string verdicts before summary coercion, and the shared query/refusal
@@ -282,7 +282,7 @@ explicit source manifest from a complete local release:
 uv run --frozen python benchmarks/atm_source_manifest.py \
   --inputs .benchmarks/data \
   --output .benchmarks/atm-source-annotations.json
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --config atm-config.yaml \
   --tasks atm-bench-main \
   --media-manifest .benchmarks/atm-source-annotations.json \
@@ -304,7 +304,7 @@ ES-MemEval's QA task is selected through its family name; `--limit 1` means one 
 that seeker's questions:
 
 ```bash
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --config eval.yaml \
   --tasks es-memeval \
   --limit 1 \
@@ -316,9 +316,9 @@ uv run --frozen mindbridge-bench eval \
 Configure an OpenAI-compatible generation endpoint, then start with one task and one memory unit:
 
 ```bash
-export MINDBRIDGE_GENERATION_API_KEY="..."
+export SENSEMEM_GENERATION_API_KEY="..."
 
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --config eval.yaml \
   --tasks locomo-refined \
   --model-args generation_model=gpt-5-mini-2025-08-07 \
@@ -335,11 +335,11 @@ The default generation endpoint is OpenAI-compatible. These environment variable
 
 | Variable | Meaning |
 | --- | --- |
-| `MINDBRIDGE_GENERATION_API_KEY` | API key; falls back to `OPENAI_API_KEY` |
-| `MINDBRIDGE_GENERATION_BASE_URL` | Base URL; falls back to `OPENAI_BASE_URL` |
-| `MINDBRIDGE_GENERATION_MODEL` | Generation model; defaults to `gpt-5-mini-2025-08-07` |
-| `MINDBRIDGE_GENERATION_MODALITIES` | Comma-separated atomic modalities, or `omni` |
-| `MINDBRIDGE_TIMEOUT_SECONDS` | Generation timeout; defaults to 300 seconds |
+| `SENSEMEM_GENERATION_API_KEY` | API key; falls back to `OPENAI_API_KEY` |
+| `SENSEMEM_GENERATION_BASE_URL` | Base URL; falls back to `OPENAI_BASE_URL` |
+| `SENSEMEM_GENERATION_MODEL` | Generation model; defaults to `gpt-5-mini-2025-08-07` |
+| `SENSEMEM_GENERATION_MODALITIES` | Comma-separated atomic modalities, or `omni` |
+| `SENSEMEM_TIMEOUT_SECONDS` | Generation timeout; defaults to 300 seconds |
 
 `--model-args` overrides `generation_model`, `base_url`, `timeout_seconds`, and
 `generation_min_video_seconds`. `--gen-kwargs` accepts generation controls. Temperature defaults
@@ -361,11 +361,11 @@ endpoint. Judge requests follow the same model-capability rules for sampling con
 unsupported automatic settings. Configure an official or deliberately chosen judge independently:
 
 ```bash
-export MINDBRIDGE_JUDGE_MODEL="Qwen/Qwen3-14B"
-export MINDBRIDGE_JUDGE_BASE_URL="https://judge.example/v1"
-export MINDBRIDGE_JUDGE_API_KEY="..."
+export SENSEMEM_JUDGE_MODEL="Qwen/Qwen3-14B"
+export SENSEMEM_JUDGE_BASE_URL="https://judge.example/v1"
+export SENSEMEM_JUDGE_API_KEY="..."
 
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --config eval.yaml \
   --tasks locomo-refined \
   --limit 10 \
@@ -379,7 +379,7 @@ questions. Use the emitted `question_count` when reporting sample size.
 The runner also accepts `--judge-model-args model=...,base_url=...,api_key=...,timeout_seconds=...`.
 Avoid putting a real key on a shared machine's command line. A non-official judge is allowed, but
 the affected metric is recorded with `official_metric: false`.
-`MINDBRIDGE_JUDGE_TIMEOUT_SECONDS` configures the judge timeout when the command-line override is
+`SENSEMEM_JUDGE_TIMEOUT_SECONDS` configures the judge timeout when the command-line override is
 not used.
 
 ## Configure the evaluation
@@ -421,13 +421,13 @@ benchmark:
     youtube_sleep_seconds: 30
   run:
     tasks: locomo-refined
-    arms: mindbridge
+    arms: sensemem
     limit: 10
     seed: 42
     repeat_index: 0
 ```
 
-The `benchmark` mapping carries what `MindBridgeConfig` has no field for: judging, corpus
+The `benchmark` mapping carries what `SenseMemConfig` has no field for: judging, corpus
 acquisition, optional process-global server telemetry, performance budgets, and, under
 `benchmark.run`, run tunables. Model endpoints, credentials, modalities, timeouts, token ceilings,
 and `extra_body` stay in the product block that owns them. See the
@@ -454,14 +454,14 @@ shorthand: `--model-args` writes generation endpoint settings, `--gen-kwargs` wr
 `generation.max_tokens` and `generation.extra_body`, and `--judge-model-args` writes
 `benchmark.judge`.
 
-Evaluation always uses MindBridge and the tasks' zero-shot protocols. CLI long options use
+Evaluation always uses SenseMem and the tasks' zero-shot protocols. CLI long options use
 hyphens and require their complete spelling. Generation overrides accept `generation_model`;
 judge overrides accept `model`. The `--model` selector, `--num-fewshot`/`num_fewshot`,
 `--memory-config`, underscore option aliases, and `pretrained` model aliases are not accepted.
 Results and samples use schema 22; the results document has no `num_fewshot` field.
 
 `--deliberate` and `--fallback-reference-at` also remain command-line-only;
-they are not accepted keys in `benchmark.run`. The product CLI `mindbridge ask` has no
+they are not accepted keys in `benchmark.run`. The product CLI `sensemem ask` has no
 `--answer-policy` flag: this override belongs to the evaluator, while product REST and SDK
 requests carry their own policy. Keep the command used for an experiment with its artifacts.
 
@@ -504,13 +504,13 @@ failure preserves deterministic metrics such as Gallery F1 and is still recorded
 metrics that require the missing verdict receive their documented failure score. Saved
 `JudgeError` predictions can restore local metrics and be rejudged without generating new answers.
 
-Executing the MindBridge arm requires `--config` with an explicit `embedding` section. There is no
+Executing the SenseMem arm requires `--config` with an explicit `embedding` section. There is no
 implicit local embedding model. Task listing, integrity checks, and baseline-only runs can work
 without it. An omitted generation section uses the `openai` provider and the configured environment
 endpoint. The runner always replaces `data_dir` with isolated per-unit directories.
 
 ```bash
-uv run --frozen mindbridge-bench eval \
+uv run --frozen sensemem-bench eval \
   --tasks longmemeval-s \
   --config eval.yaml \
   --limit 10 \
@@ -524,13 +524,13 @@ seconds. The [configuration reference](configuration.md) documents the product s
 [Python SDK construction contract](api/python-sdk.md#construction) describes the composition
 boundary.
 
-Download settings mirror `MINDBRIDGE_BENCH_YOUTUBE_SLEEP_SECONDS`, `HF_HOME`, and `HF_ENDPOINT`.
+Download settings mirror `SENSEMEM_BENCH_YOUTUBE_SLEEP_SECONDS`, `HF_HOME`, and `HF_ENDPOINT`.
 The resolved values are published to the process environment because `huggingface_hub` reads its
 cache and endpoint when first imported.
 
 `--benchmarks-root` defaults to the checkout's `.benchmarks` directory, resolved from the
 repository rather than the process directory; `--data-root` defaults to
-`<benchmarks-root>/data`. Run `mindbridge-bench eval --help` for the full concurrency, cache,
+`<benchmarks-root>/data`. Run `sensemem-bench eval --help` for the full concurrency, cache,
 generation, and comparison options.
 
 `request_concurrency` bounds in-flight requests across units. Within each physical store, the
@@ -572,7 +572,7 @@ run says so immediately and the log always ends on the final count.
 
 `--verbosity` sets the log level for the run and claims the root handler before an imported
 dependency can raise it: `funasr`, `modelscope`, `numba` and others each turn their own logging
-up when imported. It applies to MindBridge's own loggers; a dependency has to reach `WARNING` to
+up when imported. It applies to SenseMem's own loggers; a dependency has to reach `WARNING` to
 be heard, so a successful HTTP request logs nothing and a benchmark run does not carry anyone
 else's INFO. `--verbosity DEBUG` is the exception and opens the whole process, per-request
 transport lines included. The results table is printed regardless; `--quiet` (or
@@ -603,7 +603,7 @@ network/TTFT baseline. Run one independent invocation per repeat:
 
 ```bash
 for repeat in 0 1 2; do
-  uv run --frozen mindbridge-bench eval \
+  uv run --frozen sensemem-bench eval \
     --config docs/examples/baselines/rtx5090-qwen38-wemm9b-text.yaml \
     --repeat-index "$repeat" \
     --run-id "rtx5090-text-r${repeat}" \
@@ -627,29 +627,29 @@ repeat protocol rather than treating one run as noise-free.
 
 ## Baseline arms
 
-A MindBridge score on its own is unattributable: it does not say how much of the answer came from
+A SenseMem score on its own is unattributable: it does not say how much of the answer came from
 memory rather than from the generator's prior, and a retrieval score does not say whether the
 ranking carried any information. `--arms` runs the baselines that answer those questions beside
 the product, sharing one ingest per unit:
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config eval.yaml \
   --tasks atm-bench-easy \
-  --arms mindbridge,blind,full-context,random,compile \
+  --arms sensemem,blind,full-context,random,compile \
   --full-context-chars 24000 \
   --compile-max-items 24 --compile-max-chars 16000
 ```
 
 | Arm | Answers from | Retrieval | Reports |
 | --- | --- | --- | --- |
-| `mindbridge` | `Memory.ask` over retrieved evidence, or -- on the tasks `task_answer_surface` maps to `compile`, today `personamem-v3` -- the generator over `Memory.compile`'s bundle | the product's | every metric |
+| `sensemem` | `Memory.ask` over retrieved evidence, or -- on the tasks `task_answer_surface` maps to `compile`, today `personamem-v3` -- the generator over `Memory.compile`'s bundle | the product's | every metric |
 | `blind` | the generator's prior, with no evidence | none | answer metrics only |
 | `full-context` | the corpus stuffed into one prompt, oldest first, under `--full-context-chars` | none | answer metrics only |
 | `random` | nothing; it generates no answer | a seeded shuffle of an independently fetched top-100 pool for gold-labelled questions (`recall_limit` otherwise) | retrieval metrics only |
 | `compile` | `Memory.compile`'s rendered bundle, under `--compile-max-items`/`--compile-max-chars` | the compiler's own selection | answer metrics, plus `compile_bundle_chars` and `compile_bundle_items` per sample |
 
-The default is `mindbridge` alone. Each arm tags its samples and its task row with `arm`, and
+The default is `sensemem` alone. Each arm tags its samples and its task row with `arm`, and
 `results.jsonl` records every selected arm's definition -- prompt version, budget, and random seed
 -- under `arms`. Sample IDs of a non-default arm are prefixed with its name, so `samples.jsonl`
 stays one row per answered question per arm.
@@ -659,7 +659,7 @@ These properties of the baselines matter when quoting them:
 - **The generating baselines are outside the product path by construction.** `Memory.ask`
   abstains before it reaches the model when no hit survives grounding. These controls call the
   configured generation model directly, with prompt protocols versioned as
-  `mindbridge_blind_v2` and `mindbridge_full_context_v2`, and are scored and judged by the same
+  `sensemem_blind_v2` and `sensemem_full_context_v2`, and are scored and judged by the same
   scorers as the product arm. Full-context and compile reuse the product's base grounded reader
   prompts. All three baselines receive `task_answer_policy`, including `--answer-policy`
   overrides, and record it on samples, task rows, and arm definitions. Strict readers refuse
@@ -696,7 +696,7 @@ subsets separately alongside the unchanged overall official metric.
 renders the bundle with `bundle.render()`, and feeds that rendered text to the same generator call
 the `full-context` arm uses (`compile()` never generates text itself, so a compiled answer has to
 leave the product path the same way the two text baselines do). Reading it beside `blind`,
-`full-context`, and `mindbridge` is exactly the no-memory/full-context/retrieval-only comparison
+`full-context`, and `sensemem` is exactly the no-memory/full-context/retrieval-only comparison
 [Context OS gate 4](context-os.md#evolution-gates) asks for. Its per-sample `compile_bundle_chars`
 and `compile_bundle_items` (in `metrics`) are the bundle's own size, the numerator half of "useful
 evidence per token" -- pair them with the question's answer-quality metric to compute it; a run
@@ -747,14 +747,14 @@ the primary workload; several suites deliberately overlap categories.
 All dataset benchmarks enter through:
 
 ```bash
-uv run --frozen mindbridge-bench eval --tasks <selector>
+uv run --frozen sensemem-bench eval --tasks <selector>
 ```
 
-Every `mindbridge` arm needs a generation provider. The tables name the additional judge required
+Every `sensemem` arm needs a generation provider. The tables name the additional judge required
 for an official primary result; `--predict-only` skips that judge and therefore cannot produce the
 judged primary result. A judge may reuse the generation endpoint, but a publication-comparable
 metric requires the named model. Selectors, variants, source revisions, and local readiness come
-from `mindbridge.benchmarks.task_catalog`; `--list-tasks` remains authoritative.
+from `sensemem.benchmarks.task_catalog`; `--list-tasks` remains authoritative.
 
 ### Behavioral and long-term memory
 
@@ -798,14 +798,14 @@ not add a type-specific format hint. Report the adapter and query versions when 
 
 ### Local storage and retrieval microbenchmark
 
-`uv run --frozen mindbridge-bench local-index` writes synthetic vectors directly to SQLite and
+`uv run --frozen sensemem-bench local-index` writes synthetic vectors directly to SQLite and
 Zvec. It needs no dataset, generation model, or judge and reports exact-search recall, ingestion,
 optimization and query latency, throughput, and disk use. It is the sole direct-adapter exception;
 its result supports local-index claims only, not end-to-end memory, embedding, or answer quality.
 
 ### Control-plane behaviour benchmark
 
-`uv run --frozen mindbridge-bench control-plane --config CONFIG --data-dir DIR` measures the slow
+`uv run --frozen sensemem-bench control-plane --config CONFIG --data-dir DIR` measures the slow
 loop rather than recall. It ingests a seeded synthetic long run through `Memory.add_many` --
 persons with a standing gold fact, one fact observed twice, and a preference stated then flipped
 with a later `occurred_at` -- and then asserts each side of every flip as a host-authored
@@ -847,14 +847,14 @@ derivable from the log alone. A `CORRECT` that retires the claim actually in for
 `apply()` rows are not judged: they are the ground truth, not something the loop proposed. An
 undefined rate is reported as `null`, never as `1.0`.
 
-`--config` is a MindBridge configuration file declaring `embedding` and `consolidation`; a
+`--config` is a SenseMem configuration file declaring `embedding` and `consolidation`; a
 `benchmark:` section, so an `eval` config can be reused verbatim, is ignored. The benchmark pins
 `minimum_relevance=0` and `reinforce_on_answer=False` itself, for the same reproducibility reason
 `eval` does.
 
 ### Running the slow loop during an evaluation
 
-`mindbridge-bench eval --deliberate` runs `consolidate_pending()` after each causal cutoff's ingest and
+`sensemem-bench eval --deliberate` runs `consolidate_pending()` after each causal cutoff's ingest and
 before that cutoff's questions, so "does the loop change QA scores" is measurable on the existing
 tasks. It is off by default and refused when the configuration declares no `consolidation`
 section. The run report carries `deliberation.enabled` and `deliberation.operations_applied`, and
@@ -862,16 +862,16 @@ the flag is part of the response-cache namespace, so a cached run is never reuse
 
 ### Result boundaries
 
-One `eval` result mixes upstream scores with MindBridge-specific diagnostics. Interpret each field
+One `eval` result mixes upstream scores with SenseMem-specific diagnostics. Interpret each field
 at its declared boundary:
 
 | Boundary | What it covers | What the result can establish |
 | --- | --- | --- |
 | Upstream protocol | A catalog task's pinned release, adapter, scorer, and required judge | Only a metric marked `official_metric: true` is an upstream-protocol result |
-| MindBridge behavior | Public-SDK ingest, retrieval, answering, baseline arms, failures, latency, resources, and retrieval diagnostics | Product behavior under the recorded composition; custom diagnostics are not official metrics |
+| SenseMem behavior | Public-SDK ingest, retrieval, answering, baseline arms, failures, latency, resources, and retrieval diagnostics | Product behavior under the recorded composition; custom diagnostics are not official metrics |
 | Dataset and adapter | Download, schema normalization, digest verification, causal cutoffs, and unit/question counts | Input readiness and identity, not memory quality |
 
-`mindbridge-bench locomo-refined` is an artifact utility, not another benchmark category: it emits
+`sensemem-bench locomo-refined` is an artifact utility, not another benchmark category: it emits
 raw LoCoMo-Refined predictions for an external evaluator and does not produce an integrated score.
 Likewise, `--list-tasks` and `--check-integrity` discover and validate inputs; they do not measure
 memory quality.
@@ -886,11 +886,11 @@ Coverage is deliberately asymmetric:
   shifts and sycophancy behavior. LoCoMo-Refined explicitly removed LoCoMo's adversarial category
   5, so it must not be cited as adversarial coverage.
 - **Retrieval versus generation:** every dataset row measures generated answers. Exact
-  MindBridge source-ID recall is available for LoCoMo-Refined, LongMemEval, ATM-Bench, and
+  SenseMem source-ID recall is available for LoCoMo-Refined, LongMemEval, ATM-Bench, and
   Mem-Gallery. WorldMemArena image evidence can be joined exactly, but its `mp_*`
   labels name scorer-authored memory points rather than raw turns and remain unresolved.
   PersonaMem-v3's official candidate-ranking metrics rank answer slates and are not
-  source-ID recall for the MindBridge retriever.
+  source-ID recall for the SenseMem retriever.
 - **Open-ended versus open-domain:** open-ended scoring appears in many rows, while explicit
   cross-domain or world-knowledge breakdowns come from OpenEQA. Do not infer
   open-domain coverage from free-form answer format alone.
@@ -923,12 +923,12 @@ Protocol boundaries that affect interpretation are explicit rather than approxim
   not the active-navigation A-EQA protocol.
 - WorldMemArena support covers its official checkpoint-QA answer protocol. Its separate memory
   snapshot recall/correctness, update-handling, interference, and LLM evidence-coverage calls are
-  reported unavailable because MindBridge does not export the per-session snapshot those scorers
+  reported unavailable because SenseMem does not export the per-session snapshot those scorers
   require. Gold memory-point summaries are never ingested as system memories.
 
 Review the upstream repository and license printed by `--list-tasks` before download. Dataset terms
-remain independent of MindBridge's license; the copied scorer licenses and protocol notes are in
-the [scorer notices](../src/mindbridge/benchmarks/_official/NOTICE.md).
+remain independent of SenseMem's license; the copied scorer licenses and protocol notes are in
+the [scorer notices](../src/sensemem/benchmarks/_official/NOTICE.md).
 
 ## Acquire and prepare data
 
@@ -961,7 +961,7 @@ complete selected coverage, but still reports `score_comparable_to_full_dataset:
 Use `--no-download` for an offline run. Override operator-managed inputs explicitly:
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config eval.yaml \
   --tasks video-mme-v2 \
   --task-data video-mme-v2=/datasets/video-mme-v2/test.parquet \
@@ -990,7 +990,7 @@ location, `.benchmarks/openeqa/data/frames/<split>/`, and the task runs with no 
 otherwise point at them:
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config eval.yaml \
   --tasks openeqa-hm3d \
   --media-root openeqa-hm3d=/datasets/open-eqa/data/frames/hm3d-v0 \
@@ -1096,7 +1096,7 @@ number would measure the generator's prior knowledge of the scripts rather than 
 
 ## Reported performance and resource metrics
 
-Evaluation artifacts use schema version `22` and runner recipe `mindbridge_eval_official_v18`.
+Evaluation artifacts use schema version `23` and runner recipe `sensemem_eval_official_v25`.
 Results include five-layer quality diagnostics, observed answerer evidence, original trace/span
 identifiers, and `grounding_request` for each sample. `--log-samples` retains the original
 `source_question`. Baselines, rejudging inputs, and response caches require the current format.
@@ -1114,7 +1114,7 @@ Use the user-only ICM judge protocol on logged predictions without re-ingestion 
 answer generation:
 
 ```bash
-uv run --locked python -m mindbridge.benchmarks.rejudge_icm \
+uv run --locked python -m sensemem.benchmarks.rejudge_icm \
   --predictions icm-samples.jsonl --annotations icm-questions.jsonl \
   --output icm-rejudged.json --model gpt-4o-mini
 ```
@@ -1148,7 +1148,7 @@ gaps do not inflate the denominator. TTFT and token-per-call distributions also 
 | `ask_retrieval_core` | The complete retrieval prerequisite inside `Memory.ask`: content preparation, temporal/scope handling, query speech, embedding, index lookup, and ranking. |
 | `answer` | Caller end-to-end completion latency and TTFT, plus nested SDK operation latency, generation TTFT, generation first-chunk time, and throughput. |
 | `asr` | Audio duration, inference duration, call success/error counts, standard real-time factor, speedup, and latency distribution. |
-| `capture` | Capture-acknowledgement latency from `mindbridge.capture`; empty unless `--ingest capture` runs. |
+| `capture` | Capture-acknowledgement latency from `sensemem.capture`; empty unless `--ingest capture` runs. |
 | `time_to_searchable_ms` | Elapsed time from capture commit to the `settle()` call that made the record searchable; empty unless `--ingest capture` runs. |
 | `formation` | `settle()` latency for model-dependent enrichment; empty unless `--ingest capture` runs. |
 | `compile` | `Memory.compile` latency and the compiled bundle's character, item, and media-item distributions; empty unless the `compile` arm runs. |
@@ -1176,7 +1176,7 @@ The three first-output clocks are intentionally distinct:
   emitted.
 
 The caller clock is `null` when no non-empty delta was observed. `answer.sdk_operation` exposes the
-nested `mindbridge.ask` service boundary. `AsyncMemory` includes executor queueing in its operation
+nested `sensemem.ask` service boundary. `AsyncMemory` includes executor queueing in its operation
 TTFT; the outer caller metric additionally includes time spent waiting for the harness request
 semaphore. Per-sample `latency_ms` starts after admission and therefore remains response latency.
 
@@ -1280,7 +1280,7 @@ ranker over the same candidate pool, not a shuffled sample, so it adds no varian
 Measured recall and the random-ranker expectation are only available for tasks whose adapter
 carries gold evidence source IDs; when it does not, `retrieval.gold_evidence_key` is `null`,
 `retrieval.unavailable_reason` says so, and the controls are reported as missing rather than
-quietly omitted. `performance.token_usage` also carries a `product` block: the tokens MindBridge
+quietly omitted. `performance.token_usage` also carries a `product` block: the tokens SenseMem
 itself spent (embedding, generation, transcription, description), summed only over modules whose
 usage is complete. The console table prints those with a trailing `*` when the run total is null
 because the judge omitted usage on some requests; the cost axis needs the product number and it is
@@ -1338,10 +1338,10 @@ Produce the blind control with a second run that ingests nothing and answers eve
 through the same public path, then pass it back in:
 
 ```bash
-mindbridge-bench eval --tasks locomo-refined --blind \
+sensemem-bench eval --tasks locomo-refined --blind \
   --output-path .benchmarks/results/blind
 
-mindbridge-bench eval --tasks locomo-refined \
+sensemem-bench eval --tasks locomo-refined \
   --config eval.yaml \
   --blind-baseline .benchmarks/results/blind \
   --output-path .benchmarks/results/memory
@@ -1363,7 +1363,7 @@ than that is inside the run-to-run noise band and is not a result. `--compare` r
 Each sample carries `quality_diagnostics`, joined by `sample_id`, `trace_id` and
 `answer_span_id`. Trace IDs can span several questions; the answer span distinguishes them.
 The task/arm aggregate carries observation counts, coverage denominators, and conditional answer
-scores under the same key. These are MindBridge diagnostics, not upstream benchmark metrics.
+scores under the same key. These are SenseMem diagnostics, not upstream benchmark metrics.
 
 | Layer | Observation | What remains unknown |
 | --- | --- | --- |
@@ -1396,7 +1396,7 @@ call and last prepared request, not a complete causal history of recall rounds o
 For datasets without fact spans, export a deterministic human-review sample:
 
 ```bash
-mindbridge-bench review-samples \
+sensemem-bench review-samples \
   --samples .benchmarks/results/memory/samples.jsonl \
   --output .benchmarks/reviews/memory.jsonl --per-stratum 10 --seed 0
 ```
@@ -1469,7 +1469,7 @@ could not establish a score; rerun after correcting the evaluator or its inputs.
 
 The standard CLI does not persist each question inside one unfinished task. The frozen long-run
 EgoLife protocol adds that narrower behavior with an attempt-owned benchmark source overlay; it
-does not change `mindbridge-bench eval`. Its private `samples.generation.journal.jsonl` writes and
+does not change `sensemem-bench eval`. Its private `samples.generation.journal.jsonl` writes and
 fsyncs one checksum-protected record after each completed question. A record contains the composite
 attempt, run, task, unit, question, and arm identity; raw prediction or structured error; the
 canonical expected choice; released day, question type, and audio-needed strata; and cumulative
@@ -1515,7 +1515,7 @@ Several result fields carry a caveat that decides whether they can be quoted:
   reported 2 of 51 while 14 of 51 answers read as refusals; treat the field as a lower bound and
   read the predictions before drawing a conclusion about refusal rates.
 - **Two benchmarks ask the product for a committed answer rather than a refusal.**
-  `mindbridge.benchmarks.prompts.task_answer_policy` maps each task to the `answer_policy` the
+  `sensemem.benchmarks.prompts.task_answer_policy` maps each task to the `answer_policy` the
   runner passes into `Memory.ask`, and `m3-bench-robot` and the four `mm-lifelong-*` splits are
   `best_effort`. This is protocol alignment on the request side, not a scorer change -- their
   official evaluations give no credit for "unknown" (both are judged against a reference answer
@@ -1533,8 +1533,8 @@ Several result fields carry a caveat that decides whether they can be quoted:
   `benchmark.run.answer_policy`, overrides the whole table for one run when the policy itself is
   what is being measured; the resolved `config.yaml` records it as `answer_policy_override`.
 - **One task answers through `Memory.compile` rather than `Memory.ask`.**
-  `mindbridge.benchmarks.prompts.task_answer_surface` maps each task to the product surface the
-  `mindbridge` arm answers through, and one is `compile`: `personamem-v3`. `Memory.ask` answers
+  `sensemem.benchmarks.prompts.task_answer_surface` maps each task to the product surface the
+  `sensemem` arm answers through, and one is `compile`: `personamem-v3`. `Memory.ask` answers
   only from retrieved hits, uses no outside knowledge, and abstains when they are thin -- the
   contract for a question whose answer is in memory. PersonaMem-v3's chatbot, agentic, and
   proactive families instead ask for an assistant's response -- write a post in the user's
@@ -1545,10 +1545,10 @@ Several result fields carry a caveat that decides whether they can be quoted:
   quirk of that family's rubric, not evidence the surface fits). On a `compile` task the product
   arm calls `Memory.compile` under the `--compile-max-*` budget, renders the bundle, and hands it
   to the configured generator under a harness-owned assistant prompt, versioned
-  `mindbridge_compile_surface_v1`: general knowledge allowed, no facts about the user the
+  `sensemem_compile_surface_v1`: general knowledge allowed, no facts about the user the
   memories do not support. It is the same generator the baselines use, but not the same prompt
   -- the `compile` baseline keeps the full-context wording. Such a task row and its sample rows
-  carry `answer_policy: null`, since no `ask` request was made, and `arms.definitions.mindbridge`
+  carry `answer_policy: null`, since no `ask` request was made, and `arms.definitions.sensemem`
   records the `answer_surface` table for the run's tasks. Retrieval metrics need the ranked list
   `ask` exposes and `Memory.compile` exposes none, so on a `compile` task the product rows carry
   no ranked list and are neither flagged nor scored for retrieval (PersonaMem-v3 carries no gold
@@ -1618,7 +1618,7 @@ measured latency and resource cost. `results.jsonl` records each of those:
 | Dataset and revision | `tasks[].source_repository`, `source_revision`, `dataset_path`, `dataset_sha256`, `input_sha256`, `media_source` |
 | Official split and evaluator | `tasks[].evaluation_sha256`, `primary_metric`, `official_metric`, `scorer_protocol`, `official_judge_model`, `judge_model_official` |
 | Input route | `tasks[].input_modalities` and `performance.token_usage.calls_by_input_modality` |
-| Model and runtime revisions | `model.*`, `environment.mindbridge_version`, `zvec_version`, `runtime_versions`, `python_version`, `platform` |
+| Model and runtime revisions | `model.*`, `environment.sensemem_version`, `zvec_version`, `runtime_versions`, `python_version`, `platform` |
 | Retrieval settings | `recall_limit`, `tasks[].retrieval.ranked_candidate_limit`, and the full `model.memory_config` dump |
 | Hardware | `environment.hardware` and the `resources` block |
 | Latency and resource cost | `tasks[].performance`, `tasks[].answer_latency_ms`, and `resources` |
@@ -1631,7 +1631,7 @@ comparable: LoCoMo has ranged from 28.0 to 92.5 across harnesses on identical da
 harness produced a number, and never place two harnesses' numbers in one column.
 
 The task-family table used for metric breakdowns comes only from
-`mindbridge.benchmarks.official_scorers.task_family`. A second copy in the runner previously
+`sensemem.benchmarks.official_scorers.task_family`. A second copy in the runner previously
 drifted and crashed report generation for four benchmarks; a unit test now pins every declared
 breakdown family against that single table.
 
@@ -1644,14 +1644,14 @@ retain their original summation order. Paired confidence intervals and improveme
 reuse the same draws.
 Partial, failed, or unverified runs remain useful for development but are not leaderboard-comparable.
 
-`--compare` is a regression guard, not a baseline. It pairs the current `mindbridge` arm against a
-prior MindBridge run over identical dataset, scorer, and judge identities, using stable sample IDs;
+`--compare` is a regression guard, not a baseline. It pairs the current `sensemem` arm against a
+prior SenseMem run over identical dataset, scorer, and judge identities, using stable sample IDs;
 it cannot say how much of a score came from memory. Use `--arms` for that.
 
 Compare a candidate with an equivalent baseline using stable sample IDs:
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config eval.yaml \
   --tasks locomo-refined \
   --compare .benchmarks/results/baseline \
@@ -1670,7 +1670,7 @@ is rejected instead of leaving the dropped task's budget unevaluated; and neithe
 response cache or contain a product or retrieval-diagnostic error.
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config docs/examples/baselines/rtx5090-qwen38-wemm9b-text.yaml \
   --compare .benchmarks/results/rtx5090-text-r0 \
   --performance-budget answer_e2e_ttft_p95=0.10 \
@@ -1703,7 +1703,7 @@ A long run that is killed - by an out-of-memory reaper, a lost session, or a Ctr
 halves of its work when it is started with a fixed `--run-id` and a response cache:
 
 ```bash
-mindbridge-bench eval \
+sensemem-bench eval \
   --config eval.yaml \
   --tasks locomo-refined \
   --run-id locomo-sweep-01 \
@@ -1745,7 +1745,7 @@ Use the dedicated command only when another evaluator needs the official predict
 than integrated scores:
 
 ```bash
-uv run --frozen mindbridge-bench locomo-refined \
+uv run --frozen sensemem-bench locomo-refined \
   --config eval.yaml \
   --dataset .benchmarks/locomo-refined/data/raw/locomo_refined.json \
   --output .benchmarks/results/locomo-raw/predictions.jsonl \
@@ -1764,7 +1764,7 @@ existing run requires `--resume`.
 The storage microbenchmark is the narrow exception allowed to call local adapters directly:
 
 ```bash
-uv run --frozen mindbridge-bench local-index \
+uv run --frozen sensemem-bench local-index \
   --data-dir .benchmarks/local-index/trial-001 \
   --rows 1000 \
   --dimension 128 \
@@ -1792,7 +1792,7 @@ embeddings. Each workload, concurrency level, and repetition uses a fresh tempor
 seeds the same corpus, optimizes the index, and warms reads before timing:
 
 ```bash
-uv run --frozen python -m mindbridge.benchmarks.sdk_concurrency \
+uv run --frozen python -m sensemem.benchmarks.sdk_concurrency \
   --workloads get search mixed \
   --concurrency 1 4 8 16 28 32 64 128 \
   --requests 512 --rows 1000 --dimension 128 --repeats 3 \

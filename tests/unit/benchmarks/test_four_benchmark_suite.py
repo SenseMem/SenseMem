@@ -9,7 +9,7 @@ from types import ModuleType
 
 import pytest
 
-from mindbridge.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.isolation import BenchmarkRun
 
 
 @pytest.mark.parametrize("status", ["completed", "completed_with_errors", "unknown"])
@@ -40,16 +40,16 @@ def test_suite_preserves_report_status_and_resumes_early_interruptions(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     support = ModuleType("support_coverage")
     support._env = lambda: {  # type: ignore[attr-defined]
-        "MINDBRIDGE_BENCH_ROOT": str(tmp_path / "original"),
-        "MINDBRIDGE_GENERATION_MODEL": "mock",
-        "MINDBRIDGE_GENERATION_BASE_URL": "http://mock/v1",
-        "MINDBRIDGE_EMBEDDING_MODEL": "mock",
-        "MINDBRIDGE_EMBEDDING_BASE_URL": "http://mock/v1",
+        "SENSEMEM_BENCH_ROOT": str(tmp_path / "original"),
+        "SENSEMEM_GENERATION_MODEL": "mock",
+        "SENSEMEM_GENERATION_BASE_URL": "http://mock/v1",
+        "SENSEMEM_EMBEDDING_MODEL": "mock",
+        "SENSEMEM_EMBEDDING_BASE_URL": "http://mock/v1",
     }
     monkeypatch.setitem(sys.modules, "support_coverage", support)
     monkeypatch.setattr(driver, "acquire_inputs", lambda *args: None)
     monkeypatch.setattr(driver, "acquire_media", lambda *args, **kwargs: None)
-    results = tmp_path / ".local/share/openresearch/benchmark-cache/mindbridge/test-suite/results"
+    results = tmp_path / ".local/share/openresearch/benchmark-cache/sensemem/test-suite/results"
     completed = results / "completed"
     completed.mkdir(parents=True)
     report = completed / "results.jsonl"

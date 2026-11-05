@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from mindbridge.infrastructure.local.zvec_index import IndexHit
-from mindbridge.kernel.ranking import merge_index_hits, merge_temporal_lexical_hits
+from sensemem.infrastructure.local.zvec_index import IndexHit
+from sensemem.kernel.ranking import merge_index_hits, merge_temporal_lexical_hits
 
 
 def test_temporal_merge_preserves_known_global_scores() -> None:

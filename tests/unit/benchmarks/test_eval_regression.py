@@ -7,14 +7,14 @@ from typing import Any
 
 import pytest
 
-from mindbridge.benchmarks.eval_regression import load_result, performance_comparisons
-from mindbridge.benchmarks.eval_results import EVAL_SCHEMA_VERSION
+from sensemem.benchmarks.eval_regression import load_result, performance_comparisons
+from sensemem.benchmarks.eval_results import EVAL_SCHEMA_VERSION
 
 
 def _result() -> dict[str, Any]:
     return {
         "schema_version": EVAL_SCHEMA_VERSION,
-        "runner_version": "mindbridge_eval_official_v18",
+        "runner_version": "sensemem_eval_official_v18",
         "status": "completed",
         "limit": -1,
         "offset": 0,
@@ -25,10 +25,10 @@ def _result() -> dict[str, Any]:
         "predict_only": False,
         "response_cache": None,
         "resume": False,
-        "arms": {"selected": ["mindbridge"], "ingest": "add"},
+        "arms": {"selected": ["sensemem"], "ingest": "add"},
         "measurement_protocol": {"state": "cold", "repeat_index": 0},
         "model": {
-            "adapter": "mindbridge",
+            "adapter": "sensemem",
             "embedding_model": "tencent/WeMM-Embedding-9B",
             "embedding_revision": None,
             "embedding_dimension": 4096,
@@ -71,7 +71,7 @@ def _result() -> dict[str, Any]:
         "tasks": [
             {
                 "task": "fixture",
-                "arm": "mindbridge",
+                "arm": "sensemem",
                 "dataset_sha256": "d" * 64,
                 "input_sha256": {"memory": "m" * 64},
                 "evaluation_sha256": "e" * 64,

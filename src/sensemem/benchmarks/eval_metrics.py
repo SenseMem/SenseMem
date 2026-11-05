@@ -1,0 +1,1247 @@
+"""Task metrics: accuracy, retrieval quality, controls, breakdowns, and baseline comparisons."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import statistics
+from collections import Counter
+from collections.abc import (
+    Mapping,
+    Sequence,
+)
+from pathlib import Path
+from typing import cast
+
+from sensemem import AnswerPolicy, MemoryConfig, SenseMemConfig
+from sensemem.benchmarks.eval_adapters import LoadedTask
+from sensemem.benchmarks.eval_arms import (
+    BLIND_PROMPT_VERSION,
+    _Arm,
+)
+from sensemem.benchmarks.eval_config import (
+    _RESULTS_FILE,
+    _SAMPLES_FILE,
+    RETRIEVAL_CANDIDATE_LIMIT,
+    _Arguments,
+)
+from sensemem.benchmarks.eval_diagnostics import summarize_diagnostics
+from sensemem.benchmarks.eval_results import (
+    DEFAULT_ARM,
+    EVAL_SCHEMA_VERSION,
+    SampleResult,
+)
+from sensemem.benchmarks.eval_statistics import (
+    ScoredValue,
+    paired_comparison,
+    percentile,
+    summarize,
+)
+from sensemem.benchmarks.official_scorers import (
+    GOLD_SOURCE_KEYS,
+    gold_source_groups,
+    judge_model_is_official,
+    metric_is_official,
+    official_judge_model,
+    scorer_protocol,
+    task_family,
+    task_primary_metric,
+)
+from sensemem.benchmarks.prompts import task_answer_policy
+from sensemem.benchmarks.videozerobench import VIDEOZERO_METRICS
+
+# Measured on this harness: a per-benchmark difference under three points is inside the run to
+# run noise band, whose per-question standard deviation is about seventeen points.
+NOISE_FLOOR = 0.03
+
+
+_UNRESOLVED_EVIDENCE_KEY = "unresolved_evidence_ids"
+
+
+_RECALL_CUTOFFS = (1, 5, 10, 20)
+
+
+_MANDATORY_CONTROLS = ("random_ranker", "blind", "recall_at_20")
+
+
+# The question-metadata fields each benchmark family groups its per-question
+# scores by, keyed by family so that one catalog task cannot drift from its
+# siblings. A family absent here reports no breakdown at all, which is
+# invisible in a results document, so `tests/unit/benchmarks/test_eval.py`
+# pins this table against the metadata the adapters actually emit.
+_BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "icm-bench": ("category",),
+    "locomo-refined": ("category",),
+    "m3-bench": ("question_types",),
+    "video-mme-v2": ("group_type", "level", "second_head", "third_head"),
+    "videozerobench": ("category", "language", "evidence_span", "annotation_capabilities"),
+    "worldmemarena": ("question_type", "question_type_abbrev", "difficulty"),
+    "egotempo": ("question_type",),
+    "memlens": ("question_type", "question_subtype"),
+    "mm-lifelong": ("question_type",),
+    "supermemory-vqa": ("skill",),
+    "atm-bench": ("qtype",),
+    "mem-gallery": ("point",),
+    "longmemeval": ("question_type",),
+    "es-memeval": ("capability",),
+    "clbench": ("context_category", "sub_category"),
+    "beam": ("category", "difficulty"),
+    "personamem-v3": ("task_family", "task_type"),
+    "openeqa": ("category",),
+}
+
+
+def _answer_retrieval_candidate_limit(
+    recall_limit: int,
+    memory_config: SenseMemConfig | None,
+) -> int:
+    """Mirror the ranked window ``Memory.ask`` requests from the retrieval kernel."""
+    return (
+        RETRIEVAL_CANDIDATE_LIMIT
+        if _evidence_budget_chars(memory_config) is not None
+        else min(RETRIEVAL_CANDIDATE_LIMIT, recall_limit * 3)
+    )
+
+
+def _metrics(
+    task: LoadedTask,
+    samples: Sequence[SampleResult],
+    arguments: _Arguments,
+    blind: Mapping[str, object] | None = None,
+    *,
+    arm: str = DEFAULT_ARM,
+    retrieval_candidate_limit: int | None = None,
+) -> dict[str, object]:
+    seed = _task_seed(arguments.seed, task.spec.name)
+
+    def official(metric_name: str, *, uses_judge: bool = False) -> bool:
+        # A baseline arm answers outside the pinned protocol, so none of its numbers are
+        # upstream-comparable however faithful the scorer was.
+        return arm == DEFAULT_ARM and metric_is_official(
+            task.spec.name, metric_name, judge_model, uses_judge=uses_judge
+        )
+
+    primary_name = task_primary_metric(task.spec.name)
+    primary_samples = tuple(
+        sample
+        for sample in samples
+        if task.spec.name != "videozerobench" or sample.metadata["level"] == 3
+    )
+    scored = tuple(
+        ScoredValue(sample.sample_id, sample.unit_id, sample.score)
+        for sample in primary_samples
+        if sample.score is not None
+    )
+    primary = summarize(
+        scored,
+        seed=seed,
+        bootstrap_samples=arguments.bootstrap_samples,
+    )
+    metric_rows: dict[str, dict[str, object]] = {}
+    metric_names = sorted({name for sample in samples for name in sample.metrics})
+    judge_models = sorted(
+        {sample.judge_model for sample in samples if sample.judge_model is not None}
+    )
+    judge_model = judge_models[0] if len(judge_models) == 1 else ""
+    for metric_name in metric_names:
+        metric_values = tuple(
+            ScoredValue(sample.sample_id, sample.unit_id, sample.metrics[metric_name])
+            for sample in (primary_samples if metric_name == primary_name else samples)
+            if metric_name in sample.metrics
+        )
+        uses_judge = any(
+            sample.judge_model is not None and metric_name in sample.metrics for sample in samples
+        )
+        clamp = (
+            (0.0, 5.0)
+            if metric_name == "judge_score_0_5"
+            else (0.0, 2.0)
+            if metric_name == "judge_score_0_2"
+            else (1.0, 5.0)
+            if metric_name == "llm_match_score_1_5"
+            else (0.0, 100.0)
+            if metric_name == "llm_match"
+            else (0.0, 1.0)
+        )
+        metric_rows[metric_name] = {
+            "official_metric": official(metric_name, uses_judge=uses_judge),
+            **summarize(
+                metric_values,
+                seed=_task_seed(seed, metric_name),
+                bootstrap_samples=arguments.bootstrap_samples,
+                clamp=clamp,
+            ),
+        }
+    latencies = sorted(sample.latency_ms for sample in samples if sample.latency_ms > 0)
+    retrieval = (
+        _retrieval_quality(
+            samples,
+            seed=seed,
+            bootstrap_samples=arguments.bootstrap_samples,
+            recall_limit=arguments.recall_limit,
+            retrieval_candidate_limit=retrieval_candidate_limit,
+        )
+        if _Arm(arm).retrieves
+        else {"unavailable_reason": f"the {arm} arm does not run ranked retrieval"}
+    )
+    error_count = sum(sample.error_code is not None for sample in samples)
+    retrieval_diagnostic_error_count = sum(
+        sample.retrieval_diagnostic_error is not None for sample in samples
+    )
+    ingest_failure_count = sum(
+        max(sample.ingest_failure_count for sample in samples if sample.unit_id == unit_id)
+        for unit_id in {sample.unit_id for sample in samples}
+    )
+    unavailable_units = dict(task.unavailable_units)
+    evaluated_unit_count = len(task.units)
+    full_dataset_selected = arguments.offset == 0 and arguments.limit in (None, -1)
+    result: dict[str, object] = {
+        "arm": arm,
+        "primary_metric": primary_name,
+        "official_metric": bool(
+            primary_name in metric_rows and metric_rows[primary_name]["official_metric"]
+        ),
+        "scorer_protocol": scorer_protocol(task.spec.name),
+        "official_judge_model": official_judge_model(task.spec.name),
+        "judge_model": judge_models[0] if len(judge_models) == 1 else judge_models or None,
+        "judge_model_official": (
+            None
+            if not judge_models or official_judge_model(task.spec.name) is None
+            else len(judge_models) == 1 and judge_model_is_official(task.spec.name, judge_models[0])
+        ),
+        "score": primary,
+        # An answer or judge failure scores zero and stays in the mean; only a store that
+        # lost writes, a retrieval diagnostic that failed, or a unit the dataset could not
+        # supply makes the score something other than the system's result on the task.
+        "score_valid": (
+            ingest_failure_count == 0
+            and retrieval_diagnostic_error_count == 0
+            and not unavailable_units
+        ),
+        "dataset_coverage": {
+            "complete": not unavailable_units,
+            "evaluated_unit_count": evaluated_unit_count,
+            "unavailable_unit_count": len(unavailable_units),
+            "unavailable_units": unavailable_units,
+            "score_comparable_to_full_dataset": (full_dataset_selected and not unavailable_units),
+        },
+        "metrics": metric_rows,
+        "exact_match": metric_rows.get("exact_match"),
+        "question_count": len(samples),
+        "quality_diagnostics": summarize_diagnostics(samples),
+        "scored_question_count": len(scored),
+        "error_count": error_count,
+        "retrieval_diagnostic_error_count": retrieval_diagnostic_error_count,
+        "ingest_failure_count": ingest_failure_count,
+        "abstentions": _abstentions(samples),
+        "answer_latency_ms": {
+            "measures": (
+                "memory.ask wall clock per question, timed after concurrency admission so it "
+                "is response latency and not queue depth"
+            ),
+            "count": len(latencies),
+            "p50": percentile(latencies, 0.50, presorted=True),
+            "p95": percentile(latencies, 0.95, presorted=True),
+            "p99": percentile(latencies, 0.99, presorted=True),
+        },
+        "retrieval": retrieval,
+        "controls": _controls(
+            task.spec.name,
+            retrieval,
+            blind,
+            is_blind_run=arguments.blind,
+            retrieves=_Arm(arm).retrieves,
+        ),
+        "noise_floor": _noise_floor(scored, primary),
+        "cross_harness_comparable": False,
+        "comparability_note": (
+            "scores are comparable only against runs of this harness at the same runner "
+            "version, dataset revision, and scorer protocol. LoCoMo has ranged from 28.0 to "
+            "92.5 across harnesses on identical data"
+        ),
+        "breakdowns": _metric_breakdowns(task, primary_samples, arguments),
+    }
+    if task.spec.name == "video-mme-v2" and scored:
+        rating = _video_mme_v2_rating(
+            samples,
+            seed=seed,
+            bootstrap_samples=arguments.bootstrap_samples,
+        )
+        accuracy = _video_mme_v2_accuracy(
+            samples,
+            seed=seed,
+            bootstrap_samples=arguments.bootstrap_samples,
+            official_metric=official("accuracy"),
+        )
+        result.update(
+            {
+                "primary_metric": "rating",
+                "official_metric": official("rating"),
+                "score": rating,
+                "accuracy": accuracy,
+            }
+        )
+        metric_rows["rating"] = {"official_metric": official("rating"), **rating}
+        metric_rows["accuracy"] = {
+            "official_metric": official("accuracy"),
+            **cast(Mapping[str, object], accuracy["overall"]),
+        }
+    if task.spec.name == "personamem-v3":
+        from sensemem.benchmarks._official.personamem_v3_scoring import (
+            COMPLETE_HEADLINE_COVERAGE,
+        )
+
+        scored_rows = tuple(sample for sample in samples if sample.score is not None)
+        score_coverage_complete = COMPLETE_HEADLINE_COVERAGE and len(scored_rows) == len(samples)
+        supported_subset_accuracy = summarize(
+            tuple(
+                ScoredValue(sample.sample_id, sample.unit_id, 100.0 * cast(float, sample.score))
+                for sample in scored_rows
+            ),
+            seed=seed,
+            bootstrap_samples=arguments.bootstrap_samples,
+            clamp=(0.0, 100.0),
+        )
+        accuracy = (
+            supported_subset_accuracy
+            if score_coverage_complete
+            else summarize(
+                (),
+                seed=seed,
+                bootstrap_samples=arguments.bootstrap_samples,
+                clamp=(0.0, 100.0),
+            )
+        )
+        accuracy_official = score_coverage_complete and official(
+            "accuracy_pct_micro", uses_judge=bool(judge_models)
+        )
+        metric_rows["accuracy_pct_micro"] = {
+            "official_metric": accuracy_official,
+            **accuracy,
+        }
+        result.update(
+            {
+                "primary_metric": "accuracy_pct_micro",
+                "official_metric": accuracy_official,
+                "score": accuracy,
+                "score_valid": bool(result["score_valid"]) and score_coverage_complete,
+                "score_coverage": {
+                    "complete": score_coverage_complete,
+                    "scored_question_count": len(scored_rows),
+                    "unscored_question_count": len(samples) - len(scored_rows),
+                    "supported_subset_accuracy_pct_micro": supported_subset_accuracy,
+                },
+            }
+        )
+        if not score_coverage_complete:
+            result["unavailable_metrics"] = {
+                "accuracy_pct_micro": (
+                    "the official PersonaMem-v3 micro score requires every selected task family; "
+                    "structured-action, threaded-cluster, and paired-row protocols are unavailable"
+                )
+            }
+    if task.spec.name == "supermemory-vqa" and scored:
+        result["answerability"] = {
+            "official_metric": official("answerability"),
+            **_answerability(samples),
+        }
+        result["unavailable_metrics"] = {
+            "qa_mrr": "answer-option scores are not exposed by the SenseMem answer backend"
+        }
+    if task.spec.name == "worldmemarena":
+        result["unavailable_metrics"] = {
+            "memory_snapshot": (
+                "the unified runner has no per-session memory-snapshot export required by the "
+                "official recall/correctness, update-handling, and interference protocols"
+            ),
+            "retrieval_coverage": (
+                "the official semantic evidence-coverage judge is not part of checkpoint QA; "
+                "the generic exact-ID retrieval block remains a SenseMem diagnostic"
+            ),
+            "retrieval_ranking": (
+                "the official fuzzy memory/session/content matching protocol cannot be reproduced "
+                "from SenseMem source IDs"
+            ),
+        }
+    if (
+        task.spec.name == "videozerobench"
+        and any(sample.metrics for sample in samples)
+        and _Arm(arm).generates
+    ):
+        result["protocol_notes"] = (
+            "Five-level queries and upstream scoring through the public memory SDK. "
+            "accuracy is Level-3 accuracy on 0-1; named Level-* metrics use 0-100. "
+            "Media uses the configured memory transport, not the upstream fixed-frame vLLM "
+            "sampler or Level-5 priority keyframe injection; cross-harness scores are not comparable."
+        )
+        metric_rows.update(
+            {
+                name: {"official_metric": official(name), **summary}
+                for name, summary in _videozerobench_metrics(
+                    task, samples, seed=seed, bootstrap_samples=arguments.bootstrap_samples
+                ).items()
+            }
+        )
+    reference_scores = tuple(
+        ScoredValue(sample.sample_id, sample.unit_id, sample.ref_at_300)
+        for sample in samples
+        if sample.ref_at_300 is not None
+    )
+    if reference_scores:
+        ref_summary = {
+            "official_metric": official("ref_at_300"),
+            **summarize(
+                reference_scores,
+                seed=seed,
+                bootstrap_samples=arguments.bootstrap_samples,
+                clamp=(0.0, 1.0),
+            ),
+        }
+        result["ref_at_300"] = ref_summary
+        metric_rows["ref_at_300"] = ref_summary
+    return result
+
+
+def _videozerobench_metrics(
+    task: LoadedTask,
+    samples: Sequence[SampleResult],
+    *,
+    seed: int,
+    bootstrap_samples: int,
+) -> dict[str, dict[str, object]]:
+    predictions = {(sample.unit_id, sample.question_id): sample.metrics for sample in samples}
+    return {
+        name: {
+            **summarize(
+                rows,
+                seed=_task_seed(seed, name),
+                bootstrap_samples=bootstrap_samples,
+                clamp=(0, 100),
+            ),
+            **({"mean": 0.0} if not rows else {}),
+        }
+        for name, rows in _videozerobench_values(task, predictions).items()
+    }
+
+
+def _videozerobench_values(
+    task: LoadedTask,
+    predictions: Mapping[tuple[str, str], Mapping[str, float]],
+) -> dict[str, list[ScoredValue]]:
+    """Join requests by original question for both reporting and paired comparisons."""
+    values: dict[str, list[ScoredValue]] = {name: [] for name in VIDEOZERO_METRICS}
+    for unit in task.units:
+        for question in unit.questions:
+            if question.metadata["level"] != 3:
+                continue
+            source_id = str(question.metadata["source_question_id"])
+            answers = {
+                level: predictions.get((unit.unit_id, f"{source_id}/level-{level}"), {})
+                for level in range(1, 6)
+            }
+            accuracy = answers[3].get("accuracy", 0.0)
+            temporal = answers[4].get("temporal_iou", 0.0)
+            spatial = answers[5].get("spatial_iou", 0.0)
+            scores = {
+                **{
+                    f"Level-{level}_acc": answers[level].get("accuracy", 0.0) for level in (1, 2, 3)
+                },
+                "Level-4_score": float(accuracy > 0 and temporal > 0.3),
+                "Level-5_score": float(accuracy > 0 and temporal > 0.3 and spatial > 0.3),
+            }
+            # Zero-length windows do not establish temporal evidence. Joint scores divide by
+            # all original questions, while mean tIoU uses only questions with valid intervals.
+            windows = cast(Sequence[Mapping[str, float]], question.metadata["evidence_windows"])
+            if any(window["end"] > window["start"] for window in windows):
+                scores["Level-4_mean_tIoU"] = temporal
+            if question.metadata["evidence_boxes"]:
+                scores["Level-5_mean_vIoU"] = spatial
+            for name, score in scores.items():
+                values[name].append(
+                    ScoredValue(f"{unit.unit_id}/{source_id}", unit.unit_id, score * 100)
+                )
+    return values
+
+
+def _metadata_ids(metadata: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = metadata.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return ()
+    return tuple(str(item) for item in value if str(item).strip())
+
+
+def _retrieved_sources(sample: SampleResult) -> tuple[str, ...]:
+    """Return the retriever's ranked source IDs in rank order, deduplicated.
+
+    This is the ranked list observed inside ``Memory.ask``, not ``sample.evidence``. Evidence is
+    narrowed to the hits the generator saw, so scoring it would report grounding behaviour under
+    the name of retrieval recall.
+    """
+    return tuple(dict.fromkeys(source for source in sample.ranked_source_ids if source))
+
+
+def _support_class(
+    gold: Sequence[Sequence[str]],
+    retrieved: Sequence[str],
+    *,
+    window_size: int,
+) -> str:
+    """Say where one question's support sits relative to the window the reader is grounded on.
+
+    Four populations, because they fail differently and are fixed differently. Complete support
+    inside the window is a reader problem. Partial support is the failure a ranking cannot see:
+    the turn that shares words with the question is found and its partner is not, so the answer
+    is missing evidence the store holds and ranked. Support beyond the window is a budget or
+    depth problem, and support outside the candidate list entirely is a retrieval problem.
+    """
+    window = set(retrieved[:window_size])
+    pool = set(retrieved)
+    inside = sum(1 for group in gold if window.intersection(group))
+    reachable = sum(1 for group in gold if pool.intersection(group))
+    if inside == len(gold):
+        return "complete_in_window"
+    if inside:
+        return "partial_in_window"
+    if reachable:
+        return "beyond_window"
+    return "outside_candidates"
+
+
+def _retrieval_quality(
+    samples: Sequence[SampleResult],
+    *,
+    seed: int,
+    bootstrap_samples: int,
+    recall_limit: int,
+    retrieval_candidate_limit: int | None = None,
+) -> dict[str, object]:
+    """Report recall at every cutoff next to the random-ranker expectation.
+
+    R@20 is the measured retrieval ceiling on this harness and a perfect reranker buys only a
+    few points, so R@1 is never reported without it. The random-ranker row is the exact
+    expectation for a uniform ranker over the same candidate pool, which is what makes a high
+    recall interpretable: a pool of ten candidates already gives R@10 = 1.0 by chance.
+    """
+    ranked_limit = (
+        min(RETRIEVAL_CANDIDATE_LIMIT, recall_limit * 3)
+        if retrieval_candidate_limit is None
+        else retrieval_candidate_limit
+    )
+    key = next(
+        (
+            name
+            for name in GOLD_SOURCE_KEYS
+            if any(gold_source_groups(sample.metadata, name) for sample in samples)
+        ),
+        None,
+    )
+    # A published evidence ID that named no stored memory. An adapter that joins a
+    # separate label list onto its own source IDs reports what did not match, so a
+    # release whose label vocabulary is not the source-ID vocabulary shows up here
+    # instead of as a plausible recall number over the handful that happened to join.
+    unresolved = sum(
+        len(_metadata_ids(sample.metadata, _UNRESOLVED_EVIDENCE_KEY)) for sample in samples
+    )
+    if key is None:
+        return {
+            "gold_evidence_key": None,
+            "recall_limit": recall_limit,
+            "retrieval_candidate_limit": ranked_limit,
+            "labelled_question_count": 0,
+            "unranked_labelled_question_count": 0,
+            "recall_at_k": {},
+            "complete_support_at_k": {},
+            "support_decomposition": {},
+            "random_ranker_recall_at_k": {},
+            "unresolved_gold_evidence_ids": unresolved,
+            "unavailable_reason": (
+                "this task adapter carries no gold evidence source IDs, so retrieval quality "
+                "cannot be measured at these retrieval settings"
+            ),
+        }
+    labelled_all = tuple(sample for sample in samples if gold_source_groups(sample.metadata, key))
+    # A labelled question whose run never completed the ranked query is excluded and counted.
+    # A completed query with zero hits is measured recall zero, not mistaken for missing data.
+    labelled = tuple(sample for sample in labelled_all if sample.ranked_source_ids_complete)
+    unranked = len(labelled_all) - len(labelled)
+    if not labelled:
+        return {
+            "gold_evidence_key": key,
+            "recall_limit": recall_limit,
+            "retrieval_candidate_limit": ranked_limit,
+            "labelled_question_count": 0,
+            "unranked_labelled_question_count": unranked,
+            "recall_at_k": {},
+            "complete_support_at_k": {},
+            "support_decomposition": {},
+            "random_ranker_recall_at_k": {},
+            "unresolved_gold_evidence_ids": unresolved,
+            "unavailable_reason": (
+                "no labelled question carries the retriever's ranked source list, so retrieval "
+                "quality cannot be measured from this run"
+            ),
+        }
+    measured: dict[int, list[ScoredValue]] = {cutoff: [] for cutoff in _RECALL_CUTOFFS}
+    complete: dict[int, list[ScoredValue]] = {cutoff: [] for cutoff in _RECALL_CUTOFFS}
+    random_ranker: dict[int, list[ScoredValue]] = {cutoff: [] for cutoff in _RECALL_CUTOFFS}
+    decomposition = Counter[str]()
+    pool_sizes = []
+    for sample in labelled:
+        gold = gold_source_groups(sample.metadata, key)
+        retrieved = _retrieved_sources(sample)
+        pool = sample.candidate_count
+        pool_sizes.append(pool)
+        decomposition[_support_class(gold, retrieved, window_size=recall_limit)] += 1
+        for cutoff in _RECALL_CUTOFFS:
+            window = set(retrieved[:cutoff])
+            hit_groups = sum(1 for group in gold if window.intersection(group))
+            measured[cutoff].append(
+                ScoredValue(sample.sample_id, sample.unit_id, hit_groups / len(gold))
+            )
+            # Mean group recall and complete support are different questions, and the second is
+            # the one that predicts whether an answer is possible: a question whose support is
+            # half present scored 0.40 on the run this metric was added for, against 0.83 with
+            # all of it present. A mean cannot separate those two populations.
+            complete[cutoff].append(
+                ScoredValue(
+                    sample.sample_id,
+                    sample.unit_id,
+                    1.0 if hit_groups == len(gold) else 0.0,
+                )
+            )
+            if pool > 0:
+                random_ranker[cutoff].append(
+                    ScoredValue(
+                        sample.sample_id,
+                        sample.unit_id,
+                        statistics.fmean(
+                            _random_group_hit(pool, len(group), cutoff) for group in gold
+                        ),
+                    )
+                )
+
+    def rows(values: Mapping[int, Sequence[ScoredValue]]) -> dict[str, object]:
+        return {
+            str(cutoff): summarize(
+                tuple(values[cutoff]),
+                seed=_task_seed(seed, f"recall@{cutoff}"),
+                bootstrap_samples=bootstrap_samples,
+                clamp=(0.0, 1.0),
+            )
+            for cutoff in _RECALL_CUTOFFS
+            if values[cutoff]
+        }
+
+    return {
+        "gold_evidence_key": key,
+        "recall_limit": recall_limit,
+        "retrieval_candidate_limit": ranked_limit,
+        "labelled_question_count": len(labelled),
+        "unranked_labelled_question_count": unranked,
+        "unresolved_gold_evidence_ids": unresolved,
+        "recall_at_k": rows(measured),
+        "complete_support_at_k": rows(complete),
+        "support_decomposition": {
+            "window_size": recall_limit,
+            "pool_size": ranked_limit,
+            "counts": dict(decomposition),
+            "shares": {
+                name: count / len(labelled) for name, count in sorted(decomposition.items())
+            },
+            "method": (
+                "where each labelled question's gold support sits relative to the ranked window "
+                "the reader is grounded on: complete inside it, partly inside it, wholly beyond "
+                "it but inside the ranked candidate list, or absent from that list entirely"
+            ),
+        },
+        "random_ranker_recall_at_k": rows(random_ranker),
+        "random_ranker_method": (
+            "exact expectation for a uniformly random ranker: min(1, k / candidate_pool_size) "
+            "per gold source, or the hypergeometric chance of ranking any member of a gold "
+            "group in the top k, averaged over a question's groups"
+        ),
+        "candidate_pool_size": {
+            "min": min(pool_sizes, default=None),
+            "max": max(pool_sizes, default=None),
+            "mean": statistics.fmean(pool_sizes) if pool_sizes else None,
+        },
+        "truncated_cutoffs": [cutoff for cutoff in _RECALL_CUTOFFS if cutoff > ranked_limit],
+    }
+
+
+def _noise_floor(scored: Sequence[ScoredValue], primary: Mapping[str, object]) -> dict[str, object]:
+    """Report the smallest difference this run size can resolve."""
+    values = tuple(value.value for value in scored)
+    error = primary.get("cluster_standard_error")
+    standard_error = error if isinstance(error, float) else None
+    resolvable = NOISE_FLOOR
+    if standard_error is not None:
+        resolvable = max(NOISE_FLOOR, 1.959963984540054 * standard_error * math.sqrt(2))
+    return {
+        "floor": NOISE_FLOOR,
+        "per_question_standard_deviation": (statistics.stdev(values) if len(values) > 1 else None),
+        "cluster_standard_error": standard_error,
+        "minimum_meaningful_difference": resolvable,
+        "note": (
+            "a difference smaller than minimum_meaningful_difference is inside this run's "
+            "noise band and is not a result"
+        ),
+    }
+
+
+def _controls(
+    task_name: str,
+    retrieval: Mapping[str, object],
+    blind: Mapping[str, object] | None,
+    *,
+    is_blind_run: bool,
+    retrieves: bool = True,
+) -> dict[str, object]:
+    """Report the three controls that make a score interpretable, and which are absent.
+
+    Each of these has independently invalidated a conclusion on this project: a random ranker
+    reached R@10 = 0.9941 on one benchmark, blind answering already scores 0.383 on another,
+    and R@1 moving without R@20 moving is noise.
+
+    An arm that never retrieves (blind, full-context) has no retrieval to control for, so the two
+    retrieval controls do not apply to it rather than being missing. Requiring them turned
+    `controls_complete` false on every run that carried a blind arm, which hid the difference
+    between a task with no gold labels and a healthy one.
+    """
+    recall = retrieval.get("recall_at_k")
+    random_ranker = retrieval.get("random_ranker_recall_at_k")
+    recall_rows = recall if isinstance(recall, Mapping) else {}
+    random_rows = random_ranker if isinstance(random_ranker, Mapping) else {}
+    present = {
+        "random_ranker": not retrieves or bool(random_rows),
+        "recall_at_20": not retrieves or ("20" in recall_rows and "1" in recall_rows),
+        "blind": is_blind_run or blind is not None,
+    }
+    missing = tuple(name for name in _MANDATORY_CONTROLS if not present[name])
+    return {
+        "random_ranker": {str(k): v for k, v in random_rows.items()} or None,
+        "recall_at_1": recall_rows.get("1"),
+        "recall_at_20": recall_rows.get("20"),
+        "blind": None if blind is None else dict(blind),
+        "is_blind_run": is_blind_run,
+        "retrieval_controls_applicable": retrieves,
+        "missing": list(missing),
+        "interpretable": not missing,
+        "reason": (
+            None
+            if not missing
+            else (
+                f"{task_name} reports a score without "
+                + ", ".join(missing)
+                + "; the score is not interpretable as a memory-quality result"
+            )
+        ),
+    }
+
+
+def _in_run_blind_rows(
+    arguments: _Arguments,
+    tasks: Sequence[LoadedTask],
+    samples: Sequence[SampleResult],
+) -> dict[str, dict[str, object]]:
+    """Report this run's own blind arm as the blind control, when it was one of the arms."""
+    if "blind" not in arguments.arms:
+        return {}
+    rows: dict[str, dict[str, object]] = {}
+    for task in tasks:
+        scores = [
+            sample.score
+            for sample in samples
+            if sample.task == task.spec.name and sample.arm == "blind" and sample.score is not None
+        ]
+        if not scores:
+            continue
+        rows[task.spec.name] = {
+            "run_id": arguments.run_id,
+            "primary_metric": task_primary_metric(task.spec.name),
+            "mean": statistics.fmean(scores),
+            "question_count": len(scores),
+            "source": f"blind arm of this run, prompt {BLIND_PROMPT_VERSION}",
+        }
+    return rows
+
+
+def _validate_blind_protocol(document: Mapping[str, object]) -> None:
+    if document.get("blind") is not True:
+        raise ValueError("blind baseline must come from a run started with --blind")
+    if document.get("schema_version") != EVAL_SCHEMA_VERSION:
+        raise ValueError("blind baseline schema version is unsupported")
+    arms = document.get("arms")
+    definitions = arms.get("definitions") if isinstance(arms, Mapping) else None
+    blind = definitions.get("blind") if isinstance(definitions, Mapping) else None
+    prompt = blind.get("prompt") if isinstance(blind, Mapping) else None
+    if prompt != BLIND_PROMPT_VERSION:
+        raise ValueError("blind baseline prompt differs; rerun the control with this harness")
+
+
+def _blind_baseline_rows(
+    path: Path | None,
+    tasks: Sequence[LoadedTask],
+    *,
+    answer_policy: AnswerPolicy | None = None,
+) -> dict[str, dict[str, object]]:
+    """Load per-task scores from a prior --blind run of the same evaluation inputs."""
+    if path is None:
+        return {}
+    resolved = path.expanduser().resolve()
+    document_path = resolved / _RESULTS_FILE if resolved.is_dir() else resolved
+    if not document_path.is_file():
+        raise FileNotFoundError(f"blind baseline does not exist: {document_path}")
+    document = json.loads(document_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError("blind baseline must be a results.jsonl document")
+    _validate_blind_protocol(document)
+    digests = {task.spec.name: task.evaluation_sha256 for task in tasks}
+    rows: dict[str, dict[str, object]] = {}
+    for row in document.get("tasks", ()):
+        name = row.get("task") if isinstance(row, Mapping) else None
+        if not isinstance(name, str) or name not in digests:
+            continue
+        if row.get("evaluation_sha256") != digests[name]:
+            raise ValueError(f"blind baseline evaluation inputs differ for {name}")
+        if row.get("answer_policy") != task_answer_policy(name, answer_policy):
+            raise ValueError(f"blind baseline answer policy differs for {name}")
+        score = row.get("score")
+        rows[name] = {
+            "run_id": document.get("run_id"),
+            "primary_metric": row.get("primary_metric"),
+            "mean": score.get("mean") if isinstance(score, Mapping) else None,
+            "question_count": row.get("question_count"),
+        }
+    return rows
+
+
+def _abstentions(samples: Sequence[SampleResult]) -> dict[str, object]:
+    count = sum(sample.abstained for sample in samples)
+    reasons = {
+        reason: sum(sample.abstention_reason == reason for sample in samples)
+        for reason in sorted(
+            {sample.abstention_reason for sample in samples if sample.abstention_reason is not None}
+        )
+    }
+    return {
+        "count": count,
+        "rate": 0.0 if not samples else count / len(samples),
+        "reasons": reasons,
+    }
+
+
+def _metric_breakdowns(
+    task: LoadedTask,
+    samples: Sequence[SampleResult],
+    arguments: _Arguments,
+) -> dict[str, object]:
+    family = task_family(task.spec.name)
+    fields = _BREAKDOWN_FIELDS.get(family or "", ())
+    result: dict[str, object] = {}
+    for field_name in fields:
+        grouped: dict[str, list[ScoredValue]] = {}
+        for sample in samples:
+            if sample.score is None:
+                continue
+            raw = sample.metadata.get(field_name)
+            labels = (
+                tuple(str(value) for value in raw)
+                if isinstance(raw, Sequence) and not isinstance(raw, str | bytes)
+                else (str(raw),)
+            )
+            for label in labels:
+                if label and label != "None":
+                    grouped.setdefault(label, []).append(
+                        ScoredValue(sample.sample_id, sample.unit_id, sample.score)
+                    )
+        if grouped:
+            result[field_name] = {
+                label: summarize(
+                    tuple(rows),
+                    seed=_task_seed(arguments.seed, f"{task.spec.name}:{field_name}:{label}"),
+                    bootstrap_samples=arguments.bootstrap_samples,
+                )
+                for label, rows in sorted(grouped.items())
+            }
+    return result
+
+
+def _video_mme_v2_rating(
+    samples: Sequence[SampleResult], *, seed: int, bootstrap_samples: int
+) -> dict[str, object]:
+    return summarize(
+        _video_mme_v2_group_values(
+            tuple(
+                {
+                    "unit_id": sample.unit_id,
+                    "score": sample.score,
+                    "metadata": sample.metadata,
+                }
+                for sample in samples
+            )
+        ),
+        seed=seed,
+        bootstrap_samples=bootstrap_samples,
+        clamp=(0.0, 100.0),
+    )
+
+
+def _video_mme_v2_accuracy(
+    samples: Sequence[SampleResult],
+    *,
+    seed: int,
+    bootstrap_samples: int,
+    official_metric: bool,
+) -> dict[str, object]:
+    """Reproduce the released `_acc.json` scale, denominator, and taxonomy cells."""
+
+    def summary(selected: Sequence[SampleResult], suffix: str) -> dict[str, object]:
+        return summarize(
+            tuple(
+                ScoredValue(sample.sample_id, sample.unit_id, 100.0 * float(sample.score or 0.0))
+                for sample in selected
+            ),
+            seed=_task_seed(seed, suffix),
+            bootstrap_samples=bootstrap_samples,
+            clamp=(0.0, 100.0),
+        )
+
+    answered = tuple(sample for sample in samples if sample.parsed_choice is not None)
+    taxonomy_fields = ("group_type", "level", "second_head", "third_head")
+    cells: dict[str, object] = {}
+    for taxonomy_field in taxonomy_fields:
+        labels = sorted({str(sample.metadata.get(taxonomy_field, "")) for sample in samples})
+        cells[f"by_{taxonomy_field}"] = {
+            (f"level_{label}" if taxonomy_field == "level" else label): summary(
+                tuple(
+                    sample
+                    for sample in samples
+                    if str(sample.metadata.get(taxonomy_field, "")) == label
+                ),
+                f"accuracy:{taxonomy_field}:{label}",
+            )
+            for label in labels
+            if label
+        }
+    return {
+        "official_metric": official_metric,
+        "overall": summary(samples, "accuracy"),
+        "answered_accuracy": (
+            summary(answered, "answered_accuracy")
+            if answered
+            else {
+                **summary((), "answered_accuracy"),
+                "mean": 0.0,
+            }
+        ),
+        "question_count": len(samples),
+        "answered_count": len(answered),
+        "correct_count": sum(sample.score == 1.0 for sample in samples),
+        "error_count": sum(sample.error_code is not None for sample in samples),
+        **cells,
+    }
+
+
+def _video_mme_v2_group_values(
+    rows: Sequence[Mapping[str, object]],
+) -> tuple[ScoredValue, ...]:
+    from sensemem.benchmarks.video_mme_v2 import score_group_answers
+
+    groups: dict[str, list[tuple[int, float, Mapping[str, object]]]] = {}
+    for row in rows:
+        unit_id, score, metadata = row.get("unit_id"), row.get("score"), row.get("metadata")
+        if not isinstance(unit_id, str) or not unit_id:
+            raise ValueError("Video-MME-v2 sample unit ID must be a non-empty string")
+        if isinstance(score, bool) or not isinstance(score, int | float):
+            raise ValueError("Video-MME-v2 sample score must be numeric")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("Video-MME-v2 sample metadata must be an object")
+        position = metadata.get("position")
+        if isinstance(position, bool) or not isinstance(position, int):
+            raise ValueError("Video-MME-v2 sample position must be an integer")
+        groups.setdefault(unit_id, []).append((position, float(score), metadata))
+
+    ratings = []
+    for unit_id in sorted(groups):
+        group = sorted(groups[unit_id], key=lambda item: item[0])
+        if tuple(item[0] for item in group) != (1, 2, 3, 4):
+            raise ValueError(f"Video-MME-v2 group {unit_id} must hold positions 1 to 4")
+        metadata = group[0][2]
+        rating = score_group_answers(
+            str(metadata["group_type"]),
+            str(metadata.get("group_structure", "")),
+            tuple(item[1] == 1.0 for item in group),
+        )
+        ratings.append(ScoredValue(unit_id, unit_id, rating))
+    return tuple(ratings)
+
+
+def _answerability(samples: Sequence[SampleResult]) -> dict[str, object]:
+    true_positive = false_positive = false_negative = 0
+    for sample in samples:
+        actual = bool(sample.metadata["is_answerable"])
+        predicted = (
+            sample.parsed_choice is not None
+            and sample.parsed_choice != sample.metadata["unanswerable_choice"]
+        )
+        true_positive += actual and predicted
+        false_positive += not actual and predicted
+        false_negative += actual and not predicted
+    precision = (
+        true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+    )
+    recall = (
+        true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+    )
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
+    }
+
+
+def _comparisons(
+    arguments: _Arguments,
+    tasks: Sequence[LoadedTask],
+    samples: Sequence[SampleResult],
+) -> list[dict[str, object]]:
+    if arguments.compare is None:
+        return []
+    baseline = _baseline_samples(arguments.compare)
+    rows = []
+    for task in tasks:
+        # A regression guard compares like with like: only the product arm, on both sides.
+        task_samples = tuple(
+            sample
+            for sample in samples
+            if sample.task == task.spec.name and sample.arm == DEFAULT_ARM
+        )
+        previous_rows = tuple(
+            row
+            for row in baseline
+            if row.get("task") == task.spec.name and row.get("arm", DEFAULT_ARM) == DEFAULT_ARM
+        )
+        digests = {row.get("evaluation_sha256") for row in previous_rows}
+        if previous_rows and digests != {task.evaluation_sha256}:
+            raise ValueError(f"baseline evaluation inputs differ for {task.spec.name}")
+        current_protocols = {sample.scorer_protocol for sample in task_samples}
+        previous_protocols = {row.get("scorer_protocol") for row in previous_rows}
+        if previous_rows and previous_protocols != current_protocols:
+            raise ValueError(f"baseline scorer protocol differs for {task.spec.name}")
+        current_judges = {
+            sample.judge_model for sample in task_samples if sample.judge_model is not None
+        }
+        previous_judges = {
+            model for row in previous_rows if isinstance((model := row.get("judge_model")), str)
+        }
+        if current_judges and previous_judges and current_judges != previous_judges:
+            raise ValueError(f"baseline judge model differs for {task.spec.name}")
+        if task.spec.name == "videozerobench":
+            rows.extend(_videozerobench_comparisons(arguments, task, task_samples, previous_rows))
+            continue
+        current_scored = tuple(sample for sample in task_samples if sample.score is not None)
+        previous_scored = tuple(row for row in previous_rows if _has_score(row))
+        if task.spec.name == "video-mme-v2":
+            current_ids = tuple(sample.sample_id for sample in current_scored)
+            previous_ids = tuple(
+                sample_id
+                for row in previous_scored
+                if isinstance((sample_id := row.get("sample_id")), str)
+            )
+            if (
+                len(previous_ids) != len(previous_scored)
+                or len(set(previous_ids)) != len(previous_ids)
+                or set(current_ids) != set(previous_ids)
+            ):
+                raise ValueError("candidate and baseline must contain identical scored samples")
+            current = _video_mme_v2_group_values(
+                tuple(
+                    {
+                        "unit_id": sample.unit_id,
+                        "score": sample.score,
+                        "metadata": sample.metadata,
+                    }
+                    for sample in current_scored
+                )
+            )
+            previous = _video_mme_v2_group_values(previous_scored)
+        else:
+            current = tuple(
+                ScoredValue(sample.sample_id, sample.unit_id, cast(float, sample.score))
+                for sample in current_scored
+            )
+            previous = tuple(_baseline_value(row) for row in previous_scored)
+        if not current:
+            continue
+        rows.append(
+            _comparison_row(
+                arguments,
+                task.spec.name,
+                task_primary_metric(task.spec.name),
+                current,
+                previous,
+                score_scale=100.0 if task.spec.name == "video-mme-v2" else 1.0,
+            )
+        )
+    return rows
+
+
+def _videozerobench_comparisons(
+    arguments: _Arguments,
+    task: LoadedTask,
+    samples: Sequence[SampleResult],
+    baseline: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    current = {(sample.unit_id, sample.question_id): sample.metrics for sample in samples}
+    if not any(current.values()):
+        return []
+    previous: dict[tuple[str, str], dict[str, float]] = {}
+    for row in baseline:
+        unit_id, question_id, metrics = (
+            row.get("unit_id"),
+            row.get("question_id"),
+            row.get("metrics"),
+        )
+        if (
+            not isinstance(unit_id, str)
+            or not isinstance(question_id, str)
+            or not isinstance(metrics, Mapping)
+        ):
+            raise ValueError("VideoZeroBench baseline requests need IDs and metric objects")
+        if (unit_id, question_id) in previous:
+            raise ValueError("VideoZeroBench baseline requests must be unique")
+        values: dict[str, float] = {}
+        for name, value in metrics.items():
+            if (
+                not isinstance(name, str)
+                or isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+            ):
+                raise ValueError("VideoZeroBench baseline metrics must be finite numbers")
+            values[name] = float(value)
+        previous[(unit_id, question_id)] = values
+    expected = {
+        (unit.unit_id, question.question_id) for unit in task.units for question in unit.questions
+    }
+    if current.keys() != expected or previous.keys() != expected:
+        raise ValueError("VideoZeroBench comparisons require identical complete level requests")
+    if not any(previous.values()):
+        raise ValueError(f"baseline has no scored samples for {task.spec.name}")
+    candidate_values = _videozerobench_values(task, current)
+    baseline_values = _videozerobench_values(task, previous)
+    return [
+        _comparison_row(
+            arguments,
+            task.spec.name,
+            name,
+            candidate_values[name],
+            baseline_values[name],
+            score_scale=100.0,
+        )
+        for name in VIDEOZERO_METRICS
+    ]
+
+
+def _comparison_row(
+    arguments: _Arguments,
+    task_name: str,
+    metric: str,
+    current: Sequence[ScoredValue],
+    previous: Sequence[ScoredValue],
+    *,
+    score_scale: float,
+) -> dict[str, object]:
+    noise_floor = NOISE_FLOOR * score_scale
+    row: dict[str, object] = {
+        "task": task_name,
+        "metric": metric,
+        "score_scale": score_scale,
+        "noise_floor": noise_floor,
+    }
+    if not current:
+        return {
+            **row,
+            "mean": None,
+            "paired_sample_count": 0,
+            "confidence_interval_95": None,
+            "below_noise_floor": None,
+            "unavailable_reason": "no questions have applicable evidence",
+        }
+    if not previous:
+        raise ValueError(f"baseline has no scored samples for {task_name}")
+    comparison = paired_comparison(
+        current,
+        previous,
+        seed=_task_seed(arguments.seed, task_name),
+        bootstrap_samples=arguments.bootstrap_samples,
+    )
+    return {
+        **row,
+        **comparison,
+        "below_noise_floor": abs(cast(float, comparison["mean"])) < noise_floor,
+    }
+
+
+def _has_score(row: Mapping[str, object]) -> bool:
+    value = row.get("score")
+    return not isinstance(value, bool) and isinstance(value, int | float)
+
+
+def _baseline_value(row: Mapping[str, object]) -> ScoredValue:
+    value = row["score"]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("baseline score must be numeric")
+    sample_id, unit_id = row.get("sample_id"), row.get("unit_id")
+    if not isinstance(sample_id, str) or not isinstance(unit_id, str):
+        raise ValueError("baseline sample and unit IDs must be strings")
+    return ScoredValue(sample_id, unit_id, float(value))
+
+
+def _baseline_samples(path: Path) -> tuple[dict[str, object], ...]:
+    resolved = path.expanduser().resolve()
+    sample_path = resolved / _SAMPLES_FILE if resolved.is_dir() else resolved
+    if sample_path.name == _RESULTS_FILE:
+        sample_path = sample_path.with_name(_SAMPLES_FILE)
+    if not sample_path.is_file():
+        raise FileNotFoundError(f"baseline samples do not exist: {sample_path}")
+    rows = []
+    for line in sample_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError("baseline sample rows must be JSON objects")
+        if row.get("schema_version") != EVAL_SCHEMA_VERSION:
+            raise ValueError("baseline sample schema version is unsupported")
+        rows.append(row)
+    return tuple(rows)
+
+
+def _task_seed(seed: int, task: str) -> int:
+    digest = hashlib.sha256(f"{seed}:{task}".encode()).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _evidence_budget_chars(memory_config: SenseMemConfig | None) -> int | None:
+    """The budget the product arm grounds with, which is the product default when no file set it.
+
+    A run without a config file builds its `Memory` from `MemoryConfig()` plus the harness's own
+    two overrides, so the default budget applies there too; reading `None` for that case made
+    the reported candidate limit disagree with the window `ask` actually ranked.
+    """
+    settings = MemoryConfig() if memory_config is None else memory_config.settings
+    return settings.evidence_budget_chars
+
+
+def _random_group_hit(pool: int, size: int, cutoff: int) -> float:
+    """Exact chance a uniform ranker over `pool` puts any of `size` gold items in its top `cutoff`.
+
+    One gold item reduces to `min(1, cutoff / pool)`, the row published before groups existed,
+    so singleton labels keep the number they always had. `comb(pool - size, cutoff)` is zero once
+    the window is wider than the non-gold pool, which is the certain hit.
+    """
+    size, cutoff = min(size, pool), min(cutoff, pool)
+    return 1.0 - math.comb(pool - size, cutoff) / math.comb(pool, cutoff)

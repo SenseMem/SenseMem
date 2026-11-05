@@ -1,6 +1,6 @@
 # Context OS direction
 
-This page defines MindBridge's long-term product and architecture direction. It does not claim
+This page defines SenseMem's long-term product and architecture direction. It does not claim
 that every behavior below is implemented or public. [Architecture](architecture.md) owns current
 implementation invariants, and the API references own current contracts.
 
@@ -9,11 +9,11 @@ consolidator does not start a loop. A host may call `consolidate()` explicitly o
 [serving-process timer](configuration.md#running-the-loop-inside-a-server-process). That timer
 does not add a network control-plane route or settle captured records.
 
-> MindBridge is an embodied-native, agentic context operating system. It turns continuous
+> SenseMem is an embodied-native, agentic context operating system. It turns continuous
 > multimodal experience into governed, task-ready context for agents.
 
 `Embodied-native` describes where context comes from and which semantics survive ingestion.
-`Agentic` describes how slow memory is managed. `Context OS` describes MindBridge's position
+`Agentic` describes how slow memory is managed. `Context OS` describes SenseMem's position
 between perception and action.
 
 ## Why an operating system
@@ -27,8 +27,8 @@ A memory runtime stores and retrieves records. A Context OS additionally owns:
 - selection and compilation of context for a downstream task; and
 - stable interfaces through which applications, models, and agents consume those capabilities.
 
-The term does not mean that MindBridge is a host operating system or a general AgentOS. The host
-agent still owns user goals, planning, tool selection, and action. MindBridge owns the narrower
+The term does not mean that SenseMem is a host operating system or a general AgentOS. The host
+agent still owns user goals, planning, tool selection, and action. SenseMem owns the narrower
 goal of managing context well.
 
 ## Product boundary
@@ -56,12 +56,12 @@ flowchart LR
 Governance crosses every layer. Model output is a proposal at a trust boundary, never authority to
 rewrite evidence or bypass policy.
 
-MindBridge owns the lifecycle and meaning of context. It does not own camera or microphone drivers,
+SenseMem owns the lifecycle and meaning of context. It does not own camera or microphone drivers,
 VAD, SLAM, general task planning, GPU scheduling, or the final action taken by an agent.
 
 ## Consumers and authority
 
-Developers and agents both consume MindBridge, but they are not the same kind of consumer. A human
+Developers and agents both consume SenseMem, but they are not the same kind of consumer. A human
 whose life is observed is also a first-class participant even when they never call an API.
 
 | Participant | Role | Authority |
@@ -205,7 +205,7 @@ change without changing that vocabulary.
 | --- | --- | --- |
 | Cognitive forgetting | Exclude or downrank context in ordinary recall while retaining auditability and recovery. | Policy may act automatically within configured bounds. |
 | Consolidation forgetting | Prefer a compact derived memory and move detailed evidence out of the normal recall path. | The memory loop may propose it; the kernel preserves lineage. |
-| Physical forgetting | Delete records and media so they cannot be recovered by MindBridge. | Explicit human or deterministic retention policy. |
+| Physical forgetting | Delete records and media so they cannot be recovered by SenseMem. | Explicit human or deterministic retention policy. |
 
 Decay is cognitive ranking only, and `forget()` is cognitive forgetting: a forgotten record leaves
 recall, stays readable through `get()` and `list()` with its `forgotten_at`, and returns through
@@ -352,13 +352,13 @@ context utility under the target device's latency, resource, and privacy constra
 | Real-time behavior | Capture acknowledgement and search p50, p95, and p99; time to searchable; speculative first-hit latency; CPU, memory, and disk. |
 | Context utility | Downstream task success against no-memory, full-context, and retrieval-only baselines; useful evidence per token and per millisecond. |
 | Embodied quality | Multimodal, temporal, and spatial recall; identity false merge and fragmentation; affect attribution and trait false positives. |
-| Slow-loop quality | Consolidation precision, contradiction recovery, false retirement, rollback success, model cost, and formation lag. `mindbridge-bench control-plane` measures the first five; formation lag is still unmeasured. |
+| Slow-loop quality | Consolidation precision, contradiction recovery, false retirement, rollback success, model cost, and formation lag. `sensemem-bench control-plane` measures the first five; formation lag is still unmeasured. |
 | Trust | Crash recovery, replay determinism, provenance coverage, permission enforcement, and deletion completeness. |
 | Developer and agent experience | Time to first memory, integration code, tool-call success, context size, and correction effort. |
 
 The existing [benchmark harness](benchmarking.md) measures many retrieval and task-quality axes.
 Context OS claims additionally require end-to-end companion scenarios and measurements on named
-deployment hardware. External results guide hypotheses; only reproducible MindBridge runs select
+deployment hardware. External results guide hypotheses; only reproducible SenseMem runs select
 defaults or justify superiority claims.
 
 ## Evolution gates
@@ -367,7 +367,7 @@ defaults or justify superiority claims.
    hardware before setting latency objectives. Open: no named-hardware measurement exists yet.
    The [benchmark harness](benchmarking.md#reported-performance-and-resource-metrics) can now
    produce most of these numbers from a real run: capture acknowledgement, time to searchable,
-   and formation lag from `mindbridge-bench eval --ingest capture`, search and answer latency
+   and formation lag from `sensemem-bench eval --ingest capture`, search and answer latency
    from any run, and CPU, memory, and disk for the whole run. Speculative first-hit latency stays unmeasured:
    the streaming prefetch path issues an ordinary `Memory.search()`, indistinguishable in
    telemetry from any other search, and the harness does not exercise streaming ingest. Running
@@ -390,7 +390,7 @@ defaults or justify superiority claims.
    without a Python app loader, kernel rejection of proposals that name records the backend was
    not shown, of partial multi-target operations, and of proposals whose targets moved before the
    commit, and native media in the bundled consolidation backend's input. The loop is now an
-   entity rather than two primitives a host joins: `consolidate_pending()` and `mindbridge consolidate-pending`
+   entity rather than two primitives a host joins: `consolidate_pending()` and `sensemem consolidate-pending`
    run candidates through consolidation to a fixed point, all six triggers are produced from
    committed state rather than named in an enum -- `QUERY_FAILURE` from recorded empty recalls,
    `PRESSURE` from a declared record budget, `IDLE` from an operator-declared window -- and every
@@ -415,13 +415,13 @@ defaults or justify superiority claims.
    a downstream-task measurement against the no-memory, full-context, and retrieval-only
    baselines. The [benchmark harness's `compile` arm](benchmarking.md#baseline-arms) can now
    produce that comparison -- it answers from `compile()`'s rendered bundle beside `blind`,
-   `full-context`, and the product's own `mindbridge` (retrieval-only) arm on the same questions,
+   `full-context`, and the product's own `sensemem` (retrieval-only) arm on the same questions,
    and reports each answered question's bundle chars and item count as the numerator half of
    useful evidence per token. Running it across the benchmark suite and publishing the result is
    still what closes the gate.
 5. Extend REST or MCP only after the Python contract and authority model are stable. Done: the
    compiler; one capability document rendered by `/healthz`, the MCP server instructions, and
-   `mindbridge doctor` -- the same document, narrowed on each network surface to the operations
+   `sensemem doctor` -- the same document, narrowed on each network surface to the operations
    it serves; and the three switches
    `build_mcp_server(identity_operations=, embodied_operations=, write_operations=)`, which
    withhold naming and erasing a person, the two analysis tools -- and with them the

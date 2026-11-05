@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.top1_ambiguity import (
+from sensemem.benchmarks.top1_ambiguity import (
     CASES,
     Candidate,
     Observation,

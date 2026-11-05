@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import IndexQuantization, Memory, MemoryConfig, Modality, RetrievalMode
-from mindbridge.infrastructure.local.zvec_index import IndexHit
-from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.types import RetrievalRejection
+from sensemem import IndexQuantization, Memory, MemoryConfig, Modality, RetrievalMode
+from sensemem.infrastructure.local.zvec_index import IndexHit
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.types import RetrievalRejection
 
 
 class _Embedder:

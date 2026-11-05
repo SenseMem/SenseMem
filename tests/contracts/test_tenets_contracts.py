@@ -9,8 +9,8 @@ from typing import cast
 
 import pytest
 
-import mindbridge.models
-from mindbridge import (
+import sensemem.models
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -28,7 +28,7 @@ from mindbridge import (
     SearchHit,
     ValidationError,
 )
-from mindbridge.api.mcp import PerceptionResult as WirePerception
+from sensemem.api.mcp import PerceptionResult as WirePerception
 
 TEXT = frozenset({Modality.TEXT})
 ALL = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
@@ -163,15 +163,15 @@ def test_expert_policy_is_one_configuration_value(tmp_path: Path) -> None:
 
 
 def test_model_clients_do_not_import_kernel_implementation() -> None:
-    directory = Path(mindbridge.models.__file__).parent
+    directory = Path(sensemem.models.__file__).parent
     for path in directory.glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom):
-                assert not (node.module or "").startswith("mindbridge.kernel"), path
+                assert not (node.module or "").startswith("sensemem.kernel"), path
             elif isinstance(node, ast.Import):
-                assert not any(
-                    alias.name.startswith("mindbridge.kernel") for alias in node.names
-                ), path
+                assert not any(alias.name.startswith("sensemem.kernel") for alias in node.names), (
+                    path
+                )
 
 
 @pytest.mark.parametrize("route", ("text", frozenset({"text"}), frozenset({Modality.IMAGE})))

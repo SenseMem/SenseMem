@@ -10,13 +10,13 @@ from random import Random
 
 import pytest
 
-from mindbridge import Memory, MemoryConfig, RetrievalScope
-from mindbridge.exceptions import StorageError
-from mindbridge.infrastructure.local.scoring import max_cosine_scores
-from mindbridge.infrastructure.local.store import IndexDocument, StoredEmbedding
-from mindbridge.infrastructure.local.zvec_index import IndexHit, ZvecIndex
-from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.types import MemoryType, Modality, RetrievalMode
+from sensemem import Memory, MemoryConfig, RetrievalScope
+from sensemem.exceptions import StorageError
+from sensemem.infrastructure.local.scoring import max_cosine_scores
+from sensemem.infrastructure.local.store import IndexDocument, StoredEmbedding
+from sensemem.infrastructure.local.zvec_index import IndexHit, ZvecIndex
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.types import MemoryType, Modality, RetrievalMode
 
 
 class _DirectionalEmbedder:

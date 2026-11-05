@@ -12,16 +12,16 @@ from typing import ClassVar, cast
 
 import pytest
 
-from mindbridge import AnswerResult, AsyncMemory, MemoryRecord, MindBridgeConfig, SearchHit
-from mindbridge.benchmarks import locomo_refined_cli
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.locomo_refined import (
+from sensemem import AnswerResult, AsyncMemory, MemoryRecord, SearchHit, SenseMemConfig
+from sensemem.benchmarks import locomo_refined_cli
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.locomo_refined import (
     LoCoMoRefinedConversation,
     LoCoMoRefinedQuestion,
     LoCoMoRefinedTurn,
 )
-from mindbridge.benchmarks.locomo_refined_cli import _Arguments
-from mindbridge.benchmarks.locomo_refined_runner import LoCoMoRefinedPrediction
+from sensemem.benchmarks.locomo_refined_cli import _Arguments
+from sensemem.benchmarks.locomo_refined_runner import LoCoMoRefinedPrediction
 
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -101,7 +101,7 @@ class _FakePool:
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.closed = False
-        self.config = cast(MindBridgeConfig, _kwargs["memory_config"])
+        self.config = cast(SenseMemConfig, _kwargs["memory_config"])
         self.instances.append(self)
 
     def memory(self, data_dir: Path) -> _FakeAsyncMemory:
@@ -117,8 +117,8 @@ async def test_environment_generation_controls_reach_the_configured_backend(
     _FakeAsyncMemory.reset()
     _FakePool.instances = []
     monkeypatch.setattr(locomo_refined_cli, "_BackendPool", _FakePool)
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_MODEL", "configured-model")
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_API_KEY", "fixture-environment-key")
+    monkeypatch.setenv("SENSEMEM_GENERATION_MODEL", "configured-model")
+    monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "fixture-environment-key")
     arguments = _arguments(tmp_path)
     run = BenchmarkRun(arguments.data_root, "locomo-refined", arguments.run_id)
 
@@ -202,9 +202,9 @@ def test_artifacts_are_official_reproducible_and_protected_by_default(tmp_path: 
     prediction = LoCoMoRefinedPrediction(
         qa_id="sample#q0000",
         predicted_answer="Hello",
-        mindbridge_answered=True,
-        mindbridge_confidence=0.8,
-        mindbridge_prediction_context=("D1:1",),
+        sensemem_answered=True,
+        sensemem_confidence=0.8,
+        sensemem_prediction_context=("D1:1",),
     )
     first = _arguments(tmp_path / "first", dataset=dataset)
     second = _arguments(tmp_path / "second", dataset=dataset)
@@ -231,7 +231,7 @@ def test_artifacts_are_official_reproducible_and_protected_by_default(tmp_path: 
     )
     assert row["qa_id"] == "sample#q0000"
     assert row["predicted_answer"] == "Hello"
-    assert "mindbridge_trace_id" not in row
+    assert "sensemem_trace_id" not in row
     assert manifest["dataset_sha256"] == hashlib.sha256(dataset.read_bytes()).hexdigest()
     assert manifest["predictions_sha256"] == hashlib.sha256(first.output.read_bytes()).hexdigest()
     assert manifest["run_id"] == "run-01"
@@ -239,8 +239,7 @@ def test_artifacts_are_official_reproducible_and_protected_by_default(tmp_path: 
     assert manifest["turn_count"] == 1
     assert manifest["embedding_dimension"] > 0
     assert all(
-        manifest[key]
-        for key in ("mindbridge_version", "zvec_version", "python_version", "platform")
+        manifest[key] for key in ("sensemem_version", "zvec_version", "python_version", "platform")
     )
     assert str(tmp_path) not in json.dumps(manifest)
     assert manifest["relative_layout"]["run"] == first_run.relative_layout.as_posix()

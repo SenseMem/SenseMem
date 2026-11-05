@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 
-from mindbridge.models._openai_schemas import response_schema
+from sensemem.models._openai_schemas import response_schema
 
 
 def test_answer_schema_has_a_closed_object_envelope_and_six_closed_variants() -> None:

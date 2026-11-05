@@ -16,7 +16,7 @@ import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
 from test_memory_control_plane import ScriptedConsolidator
 
-from mindbridge import (
+from sensemem import (
     AffectCue,
     AnswerPolicy,
     AnswerResult,
@@ -46,8 +46,8 @@ from mindbridge import (
     SpatialContext,
     ValidationError,
 )
-from mindbridge.cli import _LOCAL, _parser
-from mindbridge.context import (
+from sensemem.cli import _LOCAL, _parser
+from sensemem.context import (
     EvidenceClosure,
     _frame_cost,
     _heading_cost,
@@ -57,8 +57,8 @@ from mindbridge.context import (
     named_actor_cost,
     provisional_actor_cost,
 )
-from mindbridge.infrastructure.local.store import StoredAsset
-from mindbridge.kernel.content import PreparedContent
+from sensemem.infrastructure.local.store import StoredAsset
+from sensemem.kernel.content import PreparedContent
 
 REFERENCE = datetime(2026, 9, 3, 12, tzinfo=timezone.utc)
 DAYS_10 = timedelta(days=10)
@@ -840,7 +840,7 @@ def test_the_deadline_skips_optional_enrichment_and_says_so(
     )
     # Two readings: the checkpoint before optional enrichment, then the reported elapsed time.
     clock = iter((0.5, 0.75))
-    monkeypatch.setattr("mindbridge.context.perf_counter", lambda: next(clock))
+    monkeypatch.setattr("sensemem.context.perf_counter", lambda: next(clock))
 
     bundle = compile_context(
         "what is going on",
@@ -869,7 +869,7 @@ def test_a_deadline_that_holds_changes_nothing(monkeypatch: pytest.MonkeyPatch) 
         _hit("second", score=0.8, kind=MemoryKind.STATE, lineage_id="lineage-1", value="paris"),
     )
     clock = iter((0.01, 0.02))
-    monkeypatch.setattr("mindbridge.context.perf_counter", lambda: next(clock))
+    monkeypatch.setattr("sensemem.context.perf_counter", lambda: next(clock))
 
     bundle = compile_context(
         "what is going on",
@@ -1890,7 +1890,7 @@ def test_a_type_only_budget_reaches_past_the_window_the_common_types_fill(
     window, and the bundle came back empty with only a `candidates_exhausted` unknown to explain
     it. The narrowed rerank window here is what a real store reaches with more records.
     """
-    monkeypatch.setattr("mindbridge.kernel.retrieval.RERANK_CANDIDATES", 4)
+    monkeypatch.setattr("sensemem.kernel.retrieval.RERANK_CANDIDATES", 4)
     with _memory(tmp_path) as memory:
         memory.add_many(
             [f"we walked to the harbour on day {index}" for index in range(60)],
@@ -2403,7 +2403,7 @@ def test_the_hop_is_skipped_once_the_deadline_has_passed(
     """Optional work, like conflict detection: not started rather than started and dropped."""
     asked, resolver = _hop_spy()
     clock = iter((0.5, 0.75))
-    monkeypatch.setattr("mindbridge.context.perf_counter", lambda: next(clock))
+    monkeypatch.setattr("sensemem.context.perf_counter", lambda: next(clock))
 
     bundle = compile_context(
         "how did that land",

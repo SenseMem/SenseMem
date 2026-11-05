@@ -1,11 +1,11 @@
 # Use a local WeMM embedding service
 
-MindBridge can use an OpenAI-compatible local WeMM embedding service through the same public
+SenseMem can use an OpenAI-compatible local WeMM embedding service through the same public
 configuration used for hosted providers. Keep the embedding service local and configure generation
 separately when a remote Qwen endpoint answers questions.
 
 ```yaml
-data_dir: /absolute/path/to/a-new-mindbridge-store
+data_dir: /absolute/path/to/a-new-sensemem-store
 
 embedding:
   provider: openai
@@ -40,7 +40,7 @@ settings:
 Save the YAML as `config.yaml`. Install the SDK surfaces and the host's YAML parser:
 
 ```bash
-uv add "mindbridge[openai,local]" pyyaml
+uv add "sensemem[openai,local]" pyyaml
 ```
 
 Decode the file before opening the configuration with the public SDK:
@@ -50,7 +50,7 @@ from pathlib import Path
 
 import yaml
 
-from mindbridge import Memory
+from sensemem import Memory
 
 config = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 with Memory.from_config(config) as memory:
@@ -68,15 +68,15 @@ audio into searchable text, then keep `index_speech` enabled. This adds ASR work
 The research service used with this recipe limits one request to 128 samples and 64 MiB, each
 inline media object to 20 MiB, and native video input to at least two real frames. It internally
 microbatches eight samples. These are deployment-specific service limits, not guarantees of the
-WeMM model or MindBridge. Verify them against your server. Use
+WeMM model or SenseMem. Verify them against your server. Use
 the direct service URL above for normal deployments; an experiment cache proxy is not part of the
 public SDK configuration.
 
 The local server runtime, model checkpoint, and service script are machine-managed dependencies;
-they are not installed by MindBridge. Use the official
+they are not installed by SenseMem. Use the official
 [WeMM-Embedding-2B model card](https://huggingface.co/tencent/WeMM-Embedding-2B) to obtain the
 checkpoint and its serving prerequisites, then configure the service to expose the `messages`,
-2048-dimension contract shown above. Keep its runtime and model files outside the MindBridge
+2048-dimension contract shown above. Keep its runtime and model files outside the SenseMem
 environment, and keep the service's logs and cache in a fresh deployment directory when restarting
 it.
 
@@ -107,7 +107,7 @@ formation:
 needs smaller requests, choose that application-level batch size before calling the public method:
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 # Reuse the decoded config above after adding its optional formation section.
 with Memory.from_config(config) as memory:
@@ -124,7 +124,7 @@ with Memory.from_config(config) as memory:
     memory.settle(memory_ids=[item.memory_id for item in pending])
 ```
 
-MindBridge does not impose a formation batch size. Set the batch size and token limit for the
+SenseMem does not impose a formation batch size. Set the batch size and token limit for the
 endpoint you operate. A source is committed before its formation call, so a formation failure does
 not discard the source. Inspect `memory.pending_captures()` and, after addressing the failure,
 resume the returned memory IDs with `memory.settle`. Settlement can retry model work; its attempt

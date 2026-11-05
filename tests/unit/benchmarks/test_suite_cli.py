@@ -7,7 +7,7 @@ from types import ModuleType
 
 import pytest
 
-from mindbridge.benchmarks import cli
+from sensemem.benchmarks import cli
 
 
 def test_global_help_lists_only_supported_runners_without_importing_them(
@@ -82,14 +82,14 @@ def test_dispatch_lazily_calls_each_supported_runner(
     assert cli.main(["eval", "--tasks", "video-mme-v2"]) == 0
     assert cli.main(["review-samples", "--samples", "samples.jsonl"]) == 0
     assert calls == [
-        ("local-index", ("--rows", "10"), "mindbridge-bench local-index"),
+        ("local-index", ("--rows", "10"), "sensemem-bench local-index"),
         (
             "locomo-refined",
             ("--limit", "2"),
-            "mindbridge-bench locomo-refined",
+            "sensemem-bench locomo-refined",
         ),
-        ("eval", ("--tasks", "video-mme-v2"), "mindbridge-bench eval"),
-        ("review-samples", ("--samples", "samples.jsonl"), "mindbridge-bench review-samples"),
+        ("eval", ("--tasks", "video-mme-v2"), "sensemem-bench eval"),
+        ("review-samples", ("--samples", "samples.jsonl"), "sensemem-bench review-samples"),
     ]
 
 
@@ -108,7 +108,7 @@ def test_dispatch_has_stable_usage_failure_and_interrupt_codes(
 
     assert cli.main(["local-index"]) == 1
     assert capsys.readouterr().err == (
-        "mindbridge-bench local-index: error: first line second line\n"
+        "sensemem-bench local-index: error: first line second line\n"
     )
 
     def interrupt(_argv: Sequence[str], *, prog: str | None = None) -> None:
@@ -117,7 +117,7 @@ def test_dispatch_has_stable_usage_failure_and_interrupt_codes(
 
     module.main = interrupt  # type: ignore[attr-defined]
     assert cli.main(["local-index"]) == cli.INTERRUPT_EXIT_CODE
-    assert capsys.readouterr().err == "mindbridge-bench local-index: interrupted\n"
+    assert capsys.readouterr().err == "sensemem-bench local-index: interrupted\n"
 
     assert cli.main(["removed"]) == cli.USAGE_EXIT_CODE
     assert "unknown benchmark: removed" in capsys.readouterr().err
@@ -130,4 +130,4 @@ def test_global_version(
     monkeypatch.setattr(cli, "installed_version", lambda: "9.8.7")
 
     assert cli.main([flag]) == 0
-    assert capsys.readouterr().out == "mindbridge 9.8.7\n"
+    assert capsys.readouterr().out == "sensemem 9.8.7\n"

@@ -10,7 +10,7 @@ from threading import Event, Lock
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AsyncMemory,
@@ -22,19 +22,19 @@ from mindbridge import (
     ModelInput,
     SearchHit,
 )
-from mindbridge.benchmarks import eval as eval_module
-from mindbridge.benchmarks.eval import (
+from sensemem.benchmarks import eval as eval_module
+from sensemem.benchmarks.eval import (
     _answer_many,
     _measure_standalone_searches,
     _model_operation,
     run_loaded_task,
 )
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from mindbridge.benchmarks.eval_arms import PRODUCT_ARM, _Arm
-from mindbridge.benchmarks.eval_results import SampleResult, _AnswerOutcome
-from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_arms import PRODUCT_ARM, _Arm
+from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
+from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.task_catalog import TaskSpec
 
 
 @pytest.mark.asyncio

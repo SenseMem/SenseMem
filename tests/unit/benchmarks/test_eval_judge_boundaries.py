@@ -13,11 +13,11 @@ import pytest
 from openai import APIConnectionError, AsyncOpenAI
 from opentelemetry import trace
 
-from mindbridge.benchmarks import eval_judge, eval_results
-from mindbridge.benchmarks.eval_cache import ResponseCache
-from mindbridge.benchmarks.eval_config import _JudgeConfig
-from mindbridge.benchmarks.eval_results import SampleResult
-from mindbridge.benchmarks.official_scorers import finalize_scores, judge_plan
+from sensemem.benchmarks import eval_judge, eval_results
+from sensemem.benchmarks.eval_cache import ResponseCache
+from sensemem.benchmarks.eval_config import _JudgeConfig
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.official_scorers import finalize_scores, judge_plan
 
 
 def _sample() -> SampleResult:

@@ -1,12 +1,12 @@
 # Product goals and design principles
 
-MindBridge's product direction is an **Agentic Native Embodied Omni-Modal Memory System**: a memory
+SenseMem's product direction is an **Agentic Native Embodied Omni-Modal Memory System**: a memory
 layer designed as a native part of intelligent systems that perceive, reason, and act. Its
 reference product is an emotional companion robot. The same memory contract should also serve
 desktop robots, personal work assistants, chatbots, and voice agents without requiring a separate
 architecture.
 
-MindBridge is the memory system, not the robot, agent framework, sensor stack, or foundation model.
+SenseMem is the memory system, not the robot, agent framework, sensor stack, or foundation model.
 It turns ordered text, image, video, and audio observations into durable memory that an agent can
 search, question, and trace back to evidence.
 
@@ -24,14 +24,14 @@ search, question, and trace back to evidence.
 | Agentic Native | Memory semantics are a first-class agent capability, not a thin wrapper over a vector database. |
 | Embodied | Time, source media, identity signals, and other evidence from the physical world remain meaningful throughout storage and retrieval. |
 | Omni-Modal | Every supported modality works independently or in an arbitrary ordered combination under one memory contract. |
-| Memory System | MindBridge owns memory semantics, retrieval orchestration, and durable local consistency while models and transports remain replaceable. |
+| Memory System | SenseMem owns memory semantics, retrieval orchestration, and durable local consistency while models and transports remain replaceable. |
 
 The household companion is the reference product because it exercises the hardest requirements:
 long-lived personal context, mixed sensory input, low perceived latency, intermittent connectivity,
 sensitive data, and heterogeneous hardware. Other product forms are supported by generalizing this
 same path, not by adding product-specific forks.
 
-MindBridge pursues four product outcomes:
+SenseMem pursues four product outcomes:
 
 | Outcome | Commitment |
 | --- | --- |
@@ -62,14 +62,14 @@ execution coverage even when detections are empty. Contract tests enforce the sa
 transport values. This follows consistent interfaces without pretending all backends accept
 every combination in the union of their modalities.
 
-MindBridge retains the repository's current policy allowing breaking API changes and removal of
+SenseMem retains the repository's current policy allowing breaking API changes and removal of
 obsolete interfaces. Adopting these design tenets does not silently adopt Transformers' separate
 backwards-compatibility promise.
 
 ### One memory surface for every supported modality
 
 Applications should use the same memory operations regardless of which modalities are present.
-Users control the input composition and ordering; MindBridge chooses a route from the actual atomic
+Users control the input composition and ordering; SenseMem chooses a route from the actual atomic
 modalities and the configured backend capabilities.
 
 | Available input | Intended route |
@@ -86,7 +86,7 @@ request should remain on the text path, and absent modalities must not add work.
 must never be discarded silently.
 
 Input form belongs to the user: capture formats, sensor records, interaction events, and application
-objects may be defined freely outside MindBridge. They normalize into canonical content at an
+objects may be defined freely outside SenseMem. They normalize into canonical content at an
 adapter boundary so the core API remains small, typed, and validatable instead of accepting
 unvalidated `Any` values.
 
@@ -111,7 +111,7 @@ runtimes are tools to apply after the end-to-end trace identifies the limiting s
 
 ### Portable deployment, stable semantics
 
-MindBridge targets device classes rather than one vendor or accelerator. Representative targets
+SenseMem targets device classes rather than one vendor or accelerator. Representative targets
 include RK3588-class systems, NVIDIA Jetson Orin, Intel/OpenVINO devices, Apple silicon Macs,
 RTX 4090/5090 workstations, and L20-class servers.
 
@@ -128,7 +128,7 @@ controls remain overrideable.
 
 ### State-of-the-art quality across modality routes
 
-MindBridge aims for state-of-the-art memory quality in text, image-text, video-text, audio-text, and
+SenseMem aims for state-of-the-art memory quality in text, image-text, video-text, audio-text, and
 omni settings. This is a research and engineering target, not an unqualified release claim. A strong
 text score cannot stand in for multimodal quality, and a model demo cannot stand in for memory-system
 quality.
@@ -142,12 +142,12 @@ the current harness and reporting rules.
 ### Developer- and agent-friendly interfaces
 
 A developer should reach the first durable add/search loop in minutes. An agent should be able to
-choose and call a MindBridge operation from its schema without interpreting prose or scraping
+choose and call a SenseMem operation from its schema without interpreting prose or scraping
 terminal output. Both consumers use the same memory semantics.
 
 The [Mem0 open-source documentation](https://docs.mem0.ai/open-source/overview) is a developer
 experience reference: it demonstrates a short add/search path, consistent memory verbs,
-progressive component configuration, and dedicated agent integrations. MindBridge should match that
+progressive component configuration, and dedicated agent integrations. SenseMem should match that
 time-to-first-success while retaining its own boundaries. In particular, it does not copy hidden
 provider construction, logical `user_id` scoping, or metadata-based isolation; model clients remain
 explicit and one physical `data_dir` remains one memory domain.
@@ -204,8 +204,8 @@ For agents:
   differ, but capability, side effects, defaults, and results remain aligned. Today the CLI reaches
   every SDK operation and MCP reaches a documented subset; see
   [current release and direction](#current-release-and-direction).
-- The CLI surface is two console scripts, not one command tree: `mindbridge` for product
-  operations and `mindbridge-bench` for benchmarks. Product commands dispatch to `Memory`;
+- The CLI surface is two console scripts, not one command tree: `sensemem` for product
+  operations and `sensemem-bench` for benchmarks. Product commands dispatch to `Memory`;
   benchmark commands exercise the public SDK and never define an alternate product path. The split
   is required, not stylistic: the packaging guard scans string constants, so a single dispatcher
   could not name the benchmark package even to import it lazily, and product modules must not
@@ -218,7 +218,7 @@ and store outcomes afterward. Such automation must make writes observable, prese
 between user statements and agent-generated conclusions, and remain outside the core memory
 semantics. `AsyncOmniPrefetch` implements the narrow Python-side speculative-recall lifecycle;
 capture, turn detection, derived-memory extraction, and agent prompting remain application work.
-MCP and the `mindbridge` CLI are the implemented transport-facing agent surfaces.
+MCP and the `sensemem` CLI are the implemented transport-facing agent surfaces.
 
 ### Developer-friendly extensibility
 
@@ -242,7 +242,7 @@ future analysis.
 
 Fallbacks must preserve information. For example, when audio is transcribed for a text-only
 operation, supported image or video evidence stays on its native route. If no valid route remains,
-MindBridge fails before inference.
+SenseMem fails before inference.
 
 ### Keep memory semantics independent of inference runtimes
 
@@ -255,11 +255,11 @@ Fun-ASR-Nano illustrates the desired runtime range: the upstream ecosystem docum
 [llama.cpp/GGUF edge runtime](https://github.com/modelscope/FunASR/tree/main/runtime/llama.cpp).
 The current `FunASRTranscriber` uses `funasr.AutoModel` only. Supporting another runtime requires a
 separate, tested adapter behind the same speech contract; upstream availability alone is not a
-MindBridge support claim.
+SenseMem support claim.
 
 ### Prefer explicit configuration and observable automation
 
-Applications own provider clients, credentials, and deployment policy. MindBridge accepts explicit
+Applications own provider clients, credentials, and deployment policy. SenseMem accepts explicit
 backend objects and validates their capabilities and durable identities. Future automatic selection
 is a policy over the same explicit candidates, not a hidden provider registry.
 
@@ -280,7 +280,7 @@ this order:
 
 This is why OpenAI-compatible calls use the official OpenAI SDK, local embedding uses Sentence
 Transformers, FunASR execution stays behind the upstream runtime, and benchmark datasets use
-`huggingface_hub` where the dataset is published there. MindBridge should innovate in memory
+`huggingface_hub` where the dataset is published there. SenseMem should innovate in memory
 semantics, routing, retrieval, and consistency, not in another HTTP client, downloader, codec, model
 loader, or generic queue.
 
@@ -332,7 +332,7 @@ revisions must be reproducible before a result guides a default.
 
 ## Current release and direction
 
-The status table describes this checkout's `0.2.0` surface. Earlier design proposals and
+The status table describes this checkout's `0.3.0` surface. Earlier design proposals and
 structural scores do not establish that every proposed path ships today.
 
 Every "current release" cell below is a statement about code that exists today, and each defers to
@@ -347,8 +347,8 @@ an owning reference for detail. A cell that stops being true is a defect in this
 | Extensions | The explicit model protocols in [architecture](architecture.md#model-boundary), including `ConsolidationBackend` for the memory control plane, one of them optional; no registry. Declarative configuration builds a subset of the slots; the rest are object injection only | Optional domain capabilities after a real implementation establishes the contract |
 | Hardware | Runs where Python, dependencies, and the selected models are supported | Verified device-class matrix with published quality, latency, and resource evidence |
 | Developer interfaces | Typed Python API, OpenAPI-documented REST adapter, and a JSON-only product CLI over the same composition | Same small vocabulary and time-to-first-success across supported transports |
-| Execution plane | Python SDK, REST, MCP, and the `mindbridge` CLI all dispatch to one `Memory`; none of them implements its own routing, persistence, or defaults | Every surface reaches the operations the SDK publishes, with no transport gap left undocumented |
-| Agent interfaces | Typed MCP tools and a `mindbridge` CLI whose commands are the SDK operations kebab-cased plus `doctor`. The common path — `add_memory`, `search_memories`, `ask_memory`, `compile_context`, `get_memory`, `list_memories`, `delete_memory` — plus the embodied and identity operations an agent driving a robot needs: `perceive_memory`, `register_identity`, `get_identity`, `unlink_identity`, `forget_identity`, `reinforce_memories`. Erasure is exposed, so a privacy request reaches an agent surface, and the composition's capability view is the server instructions rather than a tool. What MCP still does not expose is batching, streaming, index maintenance, deferred capture, and the memory control plane; each is listed with its reason in [the MCP reference](api/mcp.md#operations-without-a-tool) | SDK-derived MCP and CLI capability parity, machine-readable schemas, and lifecycle integrations |
+| Execution plane | Python SDK, REST, MCP, and the `sensemem` CLI all dispatch to one `Memory`; none of them implements its own routing, persistence, or defaults | Every surface reaches the operations the SDK publishes, with no transport gap left undocumented |
+| Agent interfaces | Typed MCP tools and a `sensemem` CLI whose commands are the SDK operations kebab-cased plus `doctor`. The common path — `add_memory`, `search_memories`, `ask_memory`, `compile_context`, `get_memory`, `list_memories`, `delete_memory` — plus the embodied and identity operations an agent driving a robot needs: `perceive_memory`, `register_identity`, `get_identity`, `unlink_identity`, `forget_identity`, `reinforce_memories`. Erasure is exposed, so a privacy request reaches an agent surface, and the composition's capability view is the server instructions rather than a tool. What MCP still does not expose is batching, streaming, index maintenance, deferred capture, and the memory control plane; each is listed with its reason in [the MCP reference](api/mcp.md#operations-without-a-tool) | SDK-derived MCP and CLI capability parity, machine-readable schemas, and lifecycle integrations |
 
 This distinction is deliberate: goals guide what to build next, while current API and deployment
 documentation remain the source of truth for what users can run now.

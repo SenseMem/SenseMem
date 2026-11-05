@@ -16,7 +16,7 @@ from typing import cast
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
     AsyncMemory,
     EmbedTask,
@@ -26,14 +26,14 @@ from mindbridge import (
     Modality,
     ModelInput,
 )
-from mindbridge.benchmarks import eval as runner
-from mindbridge.benchmarks import eval_config
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from mindbridge.benchmarks.eval_cache import DescriptionCache
-from mindbridge.benchmarks.eval_results import FailureDetail
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.model_config import HarnessOverrides, ModelConfig
-from mindbridge.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks import eval as runner
+from sensemem.benchmarks import eval_config
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_cache import DescriptionCache
+from sensemem.benchmarks.eval_results import FailureDetail
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.model_config import HarnessOverrides, ModelConfig
+from sensemem.benchmarks.task_catalog import TaskSpec
 
 DAY = datetime(2024, 1, 1, tzinfo=timezone.utc)
 

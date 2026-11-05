@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,
@@ -30,7 +30,7 @@ from mindbridge import (
     RetrievalMode,
     SearchHit,
 )
-from mindbridge.context import evidence_cost
+from sensemem.context import evidence_cost
 
 _QUESTION = "Which bridge did my colleague recommend and what is its span?"
 _REWRITE = "span of the recommended bridge"

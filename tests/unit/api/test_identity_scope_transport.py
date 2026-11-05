@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from mcp import Client
 from mcp.types import CallToolResult, TextContent
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -31,8 +31,8 @@ from mindbridge import (
     ModelInput,
     SearchHit,
 )
-from mindbridge.api.app import create_app
-from mindbridge.api.mcp import build_mcp_server
+from sensemem.api.app import create_app
+from sensemem.api.mcp import build_mcp_server
 
 
 class _Embedder:

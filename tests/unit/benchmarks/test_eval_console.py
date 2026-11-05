@@ -30,7 +30,7 @@ def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> No
         def report():
             _announce("fixture")
             _configure_logging("INFO")
-            logging.getLogger("mindbridge.fixture").warning("fixture log")
+            logging.getLogger("sensemem.fixture").warning("fixture log")
             with _progress("fixture", "sample", total=1) as progress:
                 progress(1, 1)
 
@@ -50,7 +50,7 @@ def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> No
 
         resource_tracker.register = tracked_register
 
-        from mindbridge.benchmarks.eval_console import (
+        from sensemem.benchmarks.eval_console import (
             _announce, _configure_logging, _progress,
         )
 
@@ -68,7 +68,7 @@ def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> No
             try:
                 with _progress("terminal fixture", "sample", total=1) as progress:
                     _announce("live fixture")
-                    logging.getLogger("mindbridge.fixture").warning("live fixture log")
+                    logging.getLogger("sensemem.fixture").warning("live fixture log")
                     progress(1, 1)
             finally:
                 sys.stderr = original_stderr

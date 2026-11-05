@@ -7,25 +7,25 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     IndexQuantization,
     ModelInput,
     PrefetchResult,
     StreamInput,
     VisualRetrievalMatch,
 )
-from mindbridge.exceptions import (
+from sensemem.exceptions import (
     RETRYABLE_REASONS,
     IdentityNotFoundError,
     IndexUnavailableError,
     MemoryNotFoundError,
-    MindBridgeError,
     ModelError,
     ModelOutputTruncatedError,
+    SenseMemError,
     StorageError,
     ValidationError,
 )
-from mindbridge.types import (
+from sensemem.types import (
     AbstentionReason,
     AnswerChunk,
     AnswerResult,
@@ -320,9 +320,9 @@ def test_a_context_unknown_states_one_typed_reason() -> None:
 
 
 def test_public_exceptions_have_stable_categories() -> None:
-    assert issubclass(ValidationError, MindBridgeError)
+    assert issubclass(ValidationError, SenseMemError)
     assert issubclass(ValidationError, ValueError)
-    assert issubclass(MemoryNotFoundError, MindBridgeError)
+    assert issubclass(MemoryNotFoundError, SenseMemError)
     assert issubclass(MemoryNotFoundError, LookupError)
     assert issubclass(IndexUnavailableError, StorageError)
     assert issubclass(ModelOutputTruncatedError, ModelError)

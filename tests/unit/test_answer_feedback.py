@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,

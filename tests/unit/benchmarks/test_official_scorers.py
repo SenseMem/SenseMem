@@ -10,15 +10,15 @@ from typing import Any, cast
 
 import pytest
 
-from mindbridge.benchmarks import eval_config as eval_config_module
-from mindbridge.benchmarks import eval_judge as eval_judge_module
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask
-from mindbridge.benchmarks.eval_cache import CachedAnswer
-from mindbridge.benchmarks.eval_judge import _apply_judges
-from mindbridge.benchmarks.eval_metrics import _metrics
-from mindbridge.benchmarks.eval_results import SampleResult
-from mindbridge.benchmarks.eval_telemetry import BENCHMARK_JUDGE_SPAN, EvaluationTelemetry
-from mindbridge.benchmarks.official_scorers import (
+from sensemem.benchmarks import eval_config as eval_config_module
+from sensemem.benchmarks import eval_judge as eval_judge_module
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask
+from sensemem.benchmarks.eval_cache import CachedAnswer
+from sensemem.benchmarks.eval_judge import _apply_judges
+from sensemem.benchmarks.eval_metrics import _metrics
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.eval_telemetry import BENCHMARK_JUDGE_SPAN, EvaluationTelemetry
+from sensemem.benchmarks.official_scorers import (
     JudgeMessage,
     JudgePlan,
     combine_judge_scores,
@@ -34,7 +34,7 @@ from mindbridge.benchmarks.official_scorers import (
     task_family,
     task_primary_metric,
 )
-from mindbridge.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks.task_catalog import TaskSpec
 
 
 def _scores(
@@ -159,7 +159,7 @@ def test_atm_id_lists_use_only_the_pinned_official_score(separator: str) -> None
         reference,
         {"qtype": "list_recall"},
     )
-    from mindbridge.benchmarks._official.atm_score import list_jaccard_score
+    from sensemem.benchmarks._official.atm_score import list_jaccard_score
 
     assert scores == {
         "accuracy": list_jaccard_score(
@@ -457,7 +457,7 @@ def test_locomo_uses_all_metrics_from_the_llm_selected_reference() -> None:
         {"llm_judge": 0.0},
     )
 
-    from mindbridge.benchmarks.official_scorers import combine_judge_scores
+    from sensemem.benchmarks.official_scorers import combine_judge_scores
 
     assert combine_judge_scores(plan, scores) == {
         "llm_judge": 1.0,
@@ -949,7 +949,7 @@ def test_personamem_leaves_families_it_cannot_reproduce_unscored(task_type: str)
 
 def test_personamem_scores_exactly_the_reproducible_task_types() -> None:
     """The judged set is EVAL.md's headline table, not the applicability map."""
-    from mindbridge.benchmarks._official.personamem_v3_scoring import (
+    from sensemem.benchmarks._official.personamem_v3_scoring import (
         APPLICABILITY,
         OWN_JUDGE_TASK_TYPES,
         RUBRIC_HEADLINE_TASK_TYPES,

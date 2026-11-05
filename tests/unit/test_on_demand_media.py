@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from test_openai_sdk import _asset, _sdk_client, _search_hit
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     EvidenceGeneration,
     ModelError,
@@ -20,8 +20,8 @@ from mindbridge import (
     OpenAIModels,
     ValidationError,
 )
-from mindbridge._telemetry import MODEL_REQUEST_COUNT, TOKEN_TOTAL, model_span, operation_span
-from mindbridge.types import EvidenceBasis, MemoryContext, MemoryKind, Modality
+from sensemem._telemetry import MODEL_REQUEST_COUNT, TOKEN_TOTAL, model_span, operation_span
+from sensemem.types import EvidenceBasis, MemoryContext, MemoryKind, Modality
 
 
 def _selected(
@@ -65,6 +65,89 @@ def test_unselected_media_only_evidence_remains_insufficient(tmp_path: Path, str
         else:
             result = model.answer(ModelInput(text="what is shown?"), (hit,))
     assert result.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("selected", [False, True])
+def test_media_selection_preserves_an_assertion_only_with_its_source(
+    tmp_path: Path, stream: bool, selected: bool
+) -> None:
+    source = replace(
+        _search_hit(),
+        id="source",
+        content="",
+        modality=Modality.IMAGE,
+        assets=(_asset(tmp_path, "source", Modality.IMAGE, "image/png", b"png"),),
+    )
+    assertion = replace(
+        _search_hit(),
+        id="assertion",
+        content="The key in the photo is amber.",
+        context=MemoryContext(
+            kind=MemoryKind.RELATION,
+            basis=EvidenceBasis.MODEL_INFERENCE,
+            confidence=0.9,
+            valid_from=None,
+            valid_until=None,
+            recorded_at=source.created_at,
+            evidence_ids=(source.id,),
+        ),
+    )
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            diagnosis = (
+                '{"requests":[{"media_index":0,"reason":"detail_missing"}]}'
+                if selected
+                else '{"requests":[]}'
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"index": 0, "message": {"content": diagnosis}, "finish_reason": "stop"}
+                    ]
+                },
+            )
+        assert selected
+        assert b"The key in the photo is amber" in request.content
+        assert b"data:image/png;base64," in request.content
+        if stream:
+            chunk = {
+                "choices": [{"index": 0, "delta": {"content": "Amber."}, "finish_reason": "stop"}]
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"index": 0, "message": {"content": "Amber."}, "finish_reason": "stop"}]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = _selected(
+            _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
+        )
+        if stream:
+            generator = model.stream_answer(ModelInput(text="What color?"), (assertion, source))
+            while True:
+                try:
+                    next(generator)
+                except StopIteration as complete:
+                    result = complete.value
+                    break
+        else:
+            result = model.answer(ModelInput(text="What color?"), (assertion, source))
+    assert calls == (2 if selected else 1)
+    assert result.abstained is not selected
+    assert {hit.id for hit in result.hits} == ({source.id, assertion.id} if selected else set())
 
 
 @pytest.mark.parametrize(
@@ -150,11 +233,9 @@ def test_diagnosis_is_bounded_and_keeps_text_omissions_and_request_cost(
     assert len(sent) == 2
     assert attributes["operation"] is not None and attributes["operation"][MODEL_REQUEST_COUNT] == 2
     assert attributes["operation"][TOKEN_TOTAL] == 30
-    assert attributes["mindbridge.model.media_diagnosis"] is not None
+    assert attributes["sensemem.model.media_diagnosis"] is not None
     assert (
-        attributes["mindbridge.model.media_diagnosis"][
-            "mindbridge.grounding.media_diagnosis.selected"
-        ]
+        attributes["sensemem.model.media_diagnosis"]["sensemem.grounding.media_diagnosis.selected"]
         == expected
     )
 
@@ -181,8 +262,8 @@ def test_diagnosis_text_ceiling_includes_system_prompt_before_http(
 ) -> None:
     image = _asset(tmp_path, "image", Modality.IMAGE, "image/png", b"pixels")
     hit = replace(_search_hit(), assets=(image,), modality=Modality.IMAGE)
-    monkeypatch.setattr("mindbridge.models.openai_sdk._MEDIA_DIAGNOSTIC_PROMPT", "界" * 500)
-    monkeypatch.setattr("mindbridge.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", 1_000)
+    monkeypatch.setattr("sensemem.models.openai_sdk._MEDIA_DIAGNOSTIC_PROMPT", "界" * 500)
+    monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", 1_000)
 
     def unexpected_request(_request: httpx.Request) -> httpx.Response:
         pytest.fail("oversized diagnosis text reached the provider")

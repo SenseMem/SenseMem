@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from mindbridge.benchmarks.eval_adapters import MediaResolver, load_media_manifest
+from sensemem.benchmarks.eval_adapters import MediaResolver, load_media_manifest
 
 
 @pytest.mark.parametrize("extra_raw_source", [False, True])

@@ -1,6 +1,6 @@
 """The symbolic place axis: one nullable `place_id` and an indexed equality over it.
 
-MindBridge already stores metric pose -- a frame id, a position, a quaternion and an uncertainty --
+SenseMem already stores metric pose -- a frame id, a position, a quaternion and an uncertainty --
 and already scopes by radius. What it cannot express is the predicate a household query actually
 uses ("in the kitchen"), which is also the only spatial label a robot can supply when it cannot
 localise metrically. That is a symbolic equality, and an equality is the one spatial predicate
@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
-from mindbridge.infrastructure.local.store._connections import Connections
+from sensemem.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store._connections import Connections
 
 _NOW = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
 _SPACE = "place-probe:2"

@@ -7,7 +7,7 @@ are reported, and what `render()` emits.
 never resolves a conflict. It is not a pure read: it runs the same retrieval path `search()` runs
 and makes the same single write that path can make, caching a transcript for spoken query media.
 That cache is a cache of the caller's own input, never a new memory, and repeating the call adds
-nothing to the store. `ask()` is unchanged and remains the grounded-generation surface; see
+nothing to the store. `ask()` remains the grounded-generation surface; see
 [the Python SDK reference](api/python-sdk.md#memory-operations).
 
 ## Contract
@@ -59,6 +59,12 @@ excluded. The default delivery closes the full flattened audit union rather than
 SQLite's OR-of-AND assessments. Dependencies receive score `0.0`, which means supporting evidence rather
 than an independently query-ranked result. Their rendered lines retain basis and bounded evidence
 IDs; an evidence pointer is provenance, not semantic entailment.
+
+`ask()` and `ask_stream()` use this same full source-closure traversal before generation. Their
+evidence allowance charges complete closures atomically while preserving mandatory raw
+observations; they withhold assertions whose sources are unavailable or cannot fit. Their
+`limit` controls ranked anchors rather than the number of supporting records. See the
+[Python SDK](api/python-sdk.md) for the answering budget semantics.
 
 Consent remains enforced for named actor assertions and resolved actor links. Current formation
 does not create a derived claim whose required raw observation is removed by consent: withholding
@@ -479,7 +485,7 @@ Omitted: 4 lower-ranked candidates
 ```python
 from datetime import timedelta
 
-from mindbridge import ContextBudget, Memory, MemoryType
+from sensemem import ContextBudget, Memory, MemoryType
 
 config = {
     "data_dir": "./data/compile-example",
@@ -517,7 +523,7 @@ set naming which optional operations those backends can serve (`ask`, `perceive`
 
 `MemoryCapabilities.document()` renders that value as one JSON-ready document, and it is the only
 renderer: `GET /healthz` serves it, the MCP server embeds it in its instructions, and
-`mindbridge doctor` prints it under `capabilities`. The three surfaces cannot describe one
+`sensemem doctor` prints it under `capabilities`. The three surfaces cannot describe one
 composition differently -- it is the same document, narrowed on each network surface to the
 operations it serves, while the SDK and `doctor` publish the full derivation.
 
@@ -527,7 +533,7 @@ if memory.capabilities.generation:
 ```
 
 `AsyncMemory` mirrors `compile()`. The command line exposes the partial-source opt-in as
-`mindbridge compile --allow-partial-sources`, locally and against `--url`; see the
+`sensemem compile --allow-partial-sources`, locally and against `--url`; see the
 [CLI reference](api/cli.md). Agents reach the same explicit opt-in as `POST /v1/context` on
 [REST](api/rest.md#endpoints) and as the `compile_context` tool on [MCP](api/mcp.md#tools), which
 also publishes the capability view as its server instructions. REST publishes the same view from

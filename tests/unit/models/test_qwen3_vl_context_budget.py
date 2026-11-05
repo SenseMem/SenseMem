@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import mindbridge.models.qwen3_vl_reranking as reranking
-from mindbridge import AssetRef, Modality, ModelInput, Qwen3VLReranker
-from mindbridge.exceptions import ModelError
+import sensemem.models.qwen3_vl_reranking as reranking
+from sensemem import AssetRef, Modality, ModelInput, Qwen3VLReranker
+from sensemem.exceptions import ModelError
 
 REVISION = "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
 

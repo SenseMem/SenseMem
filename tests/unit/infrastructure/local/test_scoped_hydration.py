@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.infrastructure.local import LocalStore, StoredAsset, StoredMemory
+from sensemem.infrastructure.local import LocalStore, StoredAsset, StoredMemory
 
 
 @pytest.mark.parametrize("place_id", (None, "selected", "absent"))

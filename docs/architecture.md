@@ -1,6 +1,6 @@
 # Architecture
 
-MindBridge is an embedded Python runtime. The host application constructs one `Memory`, supplies
+SenseMem is an embedded Python runtime. The host application constructs one `Memory`, supplies
 model backends, and owns process and transport policy. `Memory` owns validation, durable state,
 retrieval, and resource lifecycle.
 
@@ -12,7 +12,7 @@ This page defines implementation invariants. See [core concepts](concepts.md) fo
 | Component | Responsibility |
 | --- | --- |
 | `Memory` | Validate policy and backend contracts once, open storage in order, wire the kernel planes, and forward every public operation to the plane that owns it. |
-| Kernel planes (`mindbridge.kernel`) | One object per concern -- write, retrieval, answering, compilation, identity, control, records, perception, projection -- each constructed with exactly the store, index, backends, settings, and sibling planes it uses. |
+| Kernel planes (`sensemem.kernel`) | One object per concern -- write, retrieval, answering, compilation, identity, control, records, perception, projection -- each constructed with exactly the store, index, backends, settings, and sibling planes it uses. |
 | Model backends | Embed, generate, transcribe or analyze speech, analyze faces, describe images, propose typed formations, or propose memory-control-plane operations. |
 | `LocalStore` | Persist authoritative records, FP32 embeddings, analysis and identity state, store identities and settings, and the index outbox in SQLite, one table family per attribute over one connection pool. |
 | `AssetStore` | Persist immutable image, video, and audio bytes by SHA-256. |
@@ -87,7 +87,7 @@ temporal predicate before applying their row bound. Metric distance remains a hy
 | `state.sqlite3` | Authoritative | Records, FP32 embeddings, model and index identity markers, cached analyses, identities, typed semantics with evidence, bitemporal versions, durable formation completion, forgetting state, deferred capture work, the memory-operation log, and pending index operations. |
 | `assets/` | Authoritative | Original media bytes, stored by digest. SQLite cannot recreate a missing asset. |
 | `zvec/` | Derived | Disposable search projection. It may be deleted while stopped; startup rebuilds it from SQLite without re-embedding stored content. |
-| `.mindbridge.lock` | Coordination only | Operating-system lock target; the file normally remains after shutdown, so its presence says nothing about a live owner. |
+| `.sensemem.lock` | Coordination only | Operating-system lock target; the file normally remains after shutdown, so its presence says nothing about a live owner. |
 | `.asset-staging/` | Transient | In-progress content-addressed writes, cleaned when the store opens. |
 
 SQLite uses WAL, foreign keys, `synchronous=FULL`, and `BEGIN IMMEDIATE` for writes. The asset
@@ -99,7 +99,7 @@ The pure `kernel/predicates.py` registry resolves reviewed exact aliases before 
 a claim key. Registered scalar claims retain kind, subject or bound identity, spatial frame and
 anchor, value type, and cardinality policy in that key. STATE is functional, RELATION accumulates,
 and TRAIT retains its existing basis-dependent override rule. Naming and consent are outside the
-registry. Unknown predicates and compound objects retain literal keys. SQLite schema 20 preserves
+registry. Unknown predicates and compound objects retain literal keys. SQLite schema 21 preserves
 the original predicate alongside its key, registry revision, and match method. Only the current
 schema is accepted; opening a directory never upgrades an older schema.
 
@@ -131,7 +131,7 @@ flowchart LR
 ```
 
 Media is copied to the content-addressed store before any model receives it. SQLite triggers
-enqueue an upsert or delete for each embedding mutation. MindBridge commits that transaction
+enqueue an upsert or delete for each embedding mutation. SenseMem commits that transaction
 before changing Zvec, and acknowledges outbox rows only after the Zvec flush that made them
 durable. Zvec answers dense and full-text queries from applied but unflushed writes, so a write is
 searchable as soon as its rows are applied, and the flush itself is batched: it runs once 256
@@ -406,7 +406,7 @@ edge that links to a fifth of the corpus is dropped whole and a selective edge b
 The rows are admitted after the budget's ranked tail, so expansion can only spend what the ranking
 left unspent, their media rows stop at the same `2 * limit` cap `_budgeted_recall` puts on a plan's,
 and the read reports which edge produced each row so a run can say why the store could answer. `RelatedRead` carries that attribution; the trace carries it as
-`mindbridge.expansion.edges`.
+`sensemem.expansion.edges`.
 
 `search(..., explain=True)` exposes bounded ranking signals and terminal rejection reasons without
 copying memory content or metadata into the trace. `ask()` uses the same retrieval path, applies
@@ -547,7 +547,7 @@ supplies a usable representation. Programming errors are not relabelled as stora
 
 ## Public and trust boundaries
 
-Supported SDK values are imported from `mindbridge`. The `Memory` SDK exposes 33 product operations.
+Supported SDK values are imported from `sensemem`. The `Memory` SDK exposes 33 product operations.
 REST exposes thirteen `/v1` routes: add, batch add, list, search, reinforce, get,
 delete, answer, streamed answer, compile context, capture, settle, and pending captures. Nine more -- perception,
 register identity, get identity, unlink identity, forget identity, record consent, read consent,
@@ -569,7 +569,7 @@ can audit and reverse an operation through its log. `export()` is the one read t
 line, because a data subject's right of access covers the log rows that moved their records; it
 proposes and reverses nothing, and rides the `identity_operations` switch.
 
-Python callers may intentionally pass regular local `Path` values; MindBridge opens only regular
+Python callers may intentionally pass regular local `Path` values; SenseMem opens only regular
 files and avoids following the final symlink where the platform supports it. REST and MCP accept
 inline bytes or existing asset IDs, and reject server paths and remote URLs. No transport
 serializes provider exception bodies or credentials. REST also withholds subjects naming storage,

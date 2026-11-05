@@ -18,15 +18,15 @@ from _feature_support import TinyEmbedder
 from mcp import Client
 from starlette.types import Message, Scope
 
-import mindbridge.api.app as app_module
-import mindbridge.infrastructure.local.store._connections as connections_module
-import mindbridge.infrastructure.local.store._outbox as outbox_module
-import mindbridge.kernel.lifecycle as lifecycle_module
-from mindbridge import AsyncMemory, Memory, StorageError, ValidationError
-from mindbridge.api.app import create_app
-from mindbridge.api.mcp import build_mcp_server
-from mindbridge.infrastructure.local._capacity import Capacity
-from mindbridge.models.base import EmbedTask, ModelInput
+import sensemem.api.app as app_module
+import sensemem.infrastructure.local.store._connections as connections_module
+import sensemem.infrastructure.local.store._outbox as outbox_module
+import sensemem.kernel.lifecycle as lifecycle_module
+from sensemem import AsyncMemory, Memory, StorageError, ValidationError
+from sensemem.api.app import create_app
+from sensemem.api.mcp import build_mcp_server
+from sensemem.infrastructure.local._capacity import Capacity
+from sensemem.models.base import EmbedTask, ModelInput
 
 
 def test_model_budget_keeps_lightweight_reads_available_across_directories(tmp_path: Path) -> None:
@@ -314,8 +314,8 @@ def test_sqlite_refuses_before_real_process_descriptor_exhaustion() -> None:
 import os, resource, tempfile
 from contextlib import ExitStack
 from pathlib import Path
-from mindbridge import Memory, Modality, StorageError
-from mindbridge.infrastructure.local.store.errors import LocalStoreCapacityError
+from sensemem import Memory, Modality, StorageError
+from sensemem.infrastructure.local.store.errors import LocalStoreCapacityError
 class Embedder:
     embedding_capabilities = frozenset({Modality.TEXT})
     embedding_model = "descriptor-fixture-v1"

@@ -23,10 +23,10 @@ import yaml
 from opentelemetry.sdk.trace import ReadableSpan
 from pydantic import BaseModel, ConfigDict, Field
 
-from mindbridge import Memory, MindBridgeConfig
-from mindbridge.benchmarks import eval as runner
-from mindbridge.benchmarks.eval_adapters import LoadedTask, _memory_digest, load_task
-from mindbridge.benchmarks.eval_config import (
+from sensemem import Memory, SenseMemConfig
+from sensemem.benchmarks import eval as runner
+from sensemem.benchmarks.eval_adapters import LoadedTask, _memory_digest, load_task
+from sensemem.benchmarks.eval_config import (
     _Arguments,
     _arguments,
     _batch_size,
@@ -36,12 +36,12 @@ from mindbridge.benchmarks.eval_config import (
     _load_memory_config,
     _model_config,
 )
-from mindbridge.benchmarks.eval_results import FailureDetail
-from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.model_config import DownloadSettings
-from mindbridge.benchmarks.task_catalog import TASKS
-from mindbridge.infrastructure.local._lock import DataDirectoryLock
+from sensemem.benchmarks.eval_results import FailureDetail
+from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.model_config import DownloadSettings
+from sensemem.benchmarks.task_catalog import TASKS
+from sensemem.infrastructure.local._lock import DataDirectoryLock
 
 
 class ExecutionTelemetry(EvaluationTelemetry):
@@ -59,16 +59,16 @@ class ExecutionTelemetry(EvaluationTelemetry):
         with self._execution_lock:
             self._span_counts[span.name] += 1
             for name in (
-                "mindbridge.grounding.gazetteer.index_sha256",
-                "mindbridge.grounding.gazetteer.added_chars",
-                "mindbridge.grounding.gazetteer.available_candidates",
-                "mindbridge.grounding.gazetteer.omitted_candidates",
-                "mindbridge.reranking.scored_candidates",
-                "mindbridge.grounding.request_bytes",
-                "mindbridge.grounding.request_max_bytes",
-                "mindbridge.grounding.budget_omitted_assets",
-                "mindbridge.grounding.budget_transcoded_images",
-                "mindbridge.grounding.budget_sampled_videos",
+                "sensemem.grounding.gazetteer.index_sha256",
+                "sensemem.grounding.gazetteer.added_chars",
+                "sensemem.grounding.gazetteer.available_candidates",
+                "sensemem.grounding.gazetteer.omitted_candidates",
+                "sensemem.reranking.scored_candidates",
+                "sensemem.grounding.request_bytes",
+                "sensemem.grounding.request_max_bytes",
+                "sensemem.grounding.budget_omitted_assets",
+                "sensemem.grounding.budget_transcoded_images",
+                "sensemem.grounding.budget_sampled_videos",
             ):
                 value = attributes.get(name)
                 if name.endswith(".index_sha256"):
@@ -154,7 +154,7 @@ def attach_raw_media(task: LoadedTask, raw: LoadedTask) -> LoadedTask:
 
 
 def verify_store(  # noqa: C901 - one contiguous preservation check before copying a whole corpus
-    store: Path, config: MindBridgeConfig, task: LoadedTask
+    store: Path, config: SenseMemConfig, task: LoadedTask
 ) -> dict[str, object]:
     """Verify source text, timestamps and asset bytes through the public SDK before reuse."""
     if any(getattr(config, slot) is not None for slot in ("formation", "speech", "face", "vision")):
@@ -216,7 +216,7 @@ def verify_store(  # noqa: C901 - one contiguous preservation check before copyi
     }
 
 
-def embedding_contract(config: MindBridgeConfig) -> str:
+def embedding_contract(config: SenseMemConfig) -> str:
     """Exclude credentials and answer policy from the reusable embedding contract."""
     payload = {
         "embedding": config.embedding.model_dump(mode="json", exclude={"api_key"}),
@@ -277,7 +277,7 @@ def embedding_fingerprint(  # noqa: C901 - one SQLite snapshot includes each typ
     }
 
 
-def _prepare(path: Path) -> tuple[_Arguments, MindBridgeConfig, LoadedTask]:
+def _prepare(path: Path) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
     parser = _build_parser(None)
     parsed = parser.parse_args(["--config", str(path), "--resume"])
     config, overrides = _load_memory_config(path)
@@ -299,7 +299,7 @@ def _prepare(path: Path) -> tuple[_Arguments, MindBridgeConfig, LoadedTask]:
 
 
 async def _ingest(
-    arguments: _Arguments, config: MindBridgeConfig, task: LoadedTask, run: BenchmarkRun
+    arguments: _Arguments, config: SenseMemConfig, task: LoadedTask, run: BenchmarkRun
 ) -> Path:
     model = _evaluation_config(_model_config(arguments.model_args, memory_config=config), (task,))
     pool = runner._BackendPool(model, memory_config=config)
@@ -375,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
     run_settings.update(
         {
             "tasks": "atm-bench-main-sgm",
-            "arms": "mindbridge",
+            "arms": "sensemem",
             "limit": "all",
             "offset": 0,
             "run_id": recipe.variant,

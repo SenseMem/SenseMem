@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import mindbridge.kernel.temporal as temporal_module
-from mindbridge import SearchHit
+import sensemem.kernel.temporal as temporal_module
+from sensemem import SearchHit
 
 
 def test_rolling_spans_resolve_in_every_calendar_unit() -> None:

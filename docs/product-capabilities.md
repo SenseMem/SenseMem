@@ -1,12 +1,12 @@
 # Product capabilities
 
-MindBridge 0.2 is an embedded, local-first implementation of an **Agentic Native Embodied
+SenseMem 0.2 is an embedded, local-first implementation of an **Agentic Native Embodied
 Omni-Modal Memory System**. Its reference product is an emotional companion robot; the same memory
 contract extends to desktop robots, personal work assistants, chatbots, voice agents, and other
 long-lived intelligent products.
 
 Omni-modal means that text, image, video, and audio can be remembered independently or in arbitrary
-ordered combinations. MindBridge turns those observations into durable records that an agent can
+ordered combinations. SenseMem turns those observations into durable records that an agent can
 retrieve, inspect as evidence, and optionally use for grounded answers. Persistent state stays in
 one local memory domain; inference may stay local or use explicitly configured remote model
 backends.
@@ -20,7 +20,7 @@ principles](design-principles.md). To run the shortest working path, start with 
 
 ## Positioning and suitable use cases
 
-MindBridge fits applications that need memory to survive beyond one prompt or process session and
+SenseMem fits applications that need memory to survive beyond one prompt or process session and
 need more structure than an unqualified nearest-neighbour lookup. The emotional companion robot is
 the reference case because it combines long-lived personal context, continuous multimodal
 perception, identity, low latency, privacy, and constrained hardware. Representative uses include:
@@ -36,13 +36,13 @@ perception, identity, low latency, privacy, and constrained hardware. Representa
 - Edge or private deployments that want local authoritative state while choosing local and remote
   inference capabilities independently.
 
-MindBridge pursues **stronger**, **faster**, and **leaner** memory than competing stacks: SOTA-level
+SenseMem pursues **stronger**, **faster**, and **leaner** memory than competing stacks: SOTA-level
 quality for every supported modality route, lower end-to-end latency, and lower model, memory,
 storage, and operational cost. These are measured product targets. A release may claim an advantage
 only with a reproducible benchmark that reports quality, latency, resources, model, runtime,
 hardware, and dataset identity together.
 
-MindBridge adds the following product properties beyond a raw vector-search component:
+SenseMem adds the following product properties beyond a raw vector-search component:
 
 | Product choice | Implemented behavior | Why it matters |
 | --- | --- | --- |
@@ -118,7 +118,7 @@ application JSON and is never an isolation, authorization, or retrieval-filter b
 
 ### 2. Capability routing and multimodal preparation
 
-Every backend declares the atomic modalities it accepts. MindBridge builds aggregate and focused
+Every backend declares the atomic modalities it accepts. SenseMem builds aggregate and focused
 model inputs from the content actually present, then selects a supported route. Mixed content keeps
 its supported native media. Source-labelled captions or transcripts can supply text when a
 consumer lacks native support, consistently across writes, query embedding, answers and formation.
@@ -138,7 +138,7 @@ The raw source commits before formation begins. When a `FormationBackend` is pre
 support for the source modalities, it may propose `entity`, `event`, `state`, `relation`, `affect`,
 or `trait` records. A `response_policy` is refused whatever proposes it: standing guidance about
 how to behave toward somebody is a grant only the host makes, through `apply()`, on the basis
-`response_feedback`. MindBridge validates the proposal's source binding, modality, confidence,
+`response_feedback`. SenseMem validates the proposal's source binding, modality, confidence,
 validity interval, spatial frame, and kind-specific fields. The source record is never replaced.
 
 Accepted derived records carry their source memory in `evidence_ids`, the model and recipe identity,
@@ -157,7 +157,7 @@ One `data_dir` contains:
 state.sqlite3       authoritative records, FP32 embeddings, identities, evidence, and outbox
 assets/             authoritative immutable media, addressed by SHA-256
 zvec/               disposable dense and lexical search projection
-.mindbridge.lock    operating-system ownership lock target
+.sensemem.lock    operating-system ownership lock target
 ```
 
 A durable write commits SQLite before applying Zvec changes. Zvec work is acknowledged only after
@@ -211,7 +211,7 @@ matches local voice exemplars to stable speaker IDs; speech indexing is enabled 
 that capability is configured. Face recognition analyzes stored images and video into normalized bounding
 boxes and local identity IDs. Results are cached under stable model-space recipes.
 
-When one asset contains exactly one eligible voice and one eligible face, MindBridge records
+When one asset contains exactly one eligible voice and one eligible face, SenseMem records
 co-occurrence evidence. A face/voice merge requires corroboration across distinct assets (two by
 default), preserves the merged-away ID as an alias, and can be reversed with `unlink_identity`.
 Reversing a merge restores the alias as an unnamed identity and repaints the indexed transcript
@@ -268,7 +268,7 @@ The table is a navigation map, not a signature reference. Follow the [Python
 SDK](api/python-sdk.md), [REST](api/rest.md), [MCP](api/mcp.md), and [CLI](api/cli.md) references for
 arguments, schemas, limits, and errors.
 
-| Capability | Python `Memory` | REST | MCP | `mindbridge` CLI |
+| Capability | Python `Memory` | REST | MCP | `sensemem` CLI |
 | --- | --- | --- | --- | --- |
 | Add one | `add` | `POST /v1/memories` | `add_memory` | `add` |
 | Add atomic batch | `add_many` | `POST /v1/memories/batch` | — | `add-many` |
@@ -314,12 +314,12 @@ requires synchronous `Memory`, and adds async stream consumption.
 
 ## Deployment and isolation model
 
-MindBridge supports three practical topologies, all with one owner for one physical data directory:
+SenseMem supports three practical topologies, all with one owner for one physical data directory:
 
 | Topology | Use | Boundary |
 | --- | --- | --- |
 | Embedded Python | One application process owns memory directly | Keep one long-lived `Memory` or `AsyncMemory` and close it on shutdown. |
-| REST owner | Other processes need HTTP access | Construct one caller-owned `Memory`, run one ASGI worker, and add network security outside MindBridge. |
+| REST owner | Other processes need HTTP access | Construct one caller-owned `Memory`, run one ASGI worker, and add network security outside SenseMem. |
 | MCP owner | An agent host needs typed tools | Prefer stdio; secure SSE or streamable HTTP as a network service. |
 
 The operating-system lock is non-blocking: a second live owner of the same directory fails
@@ -338,7 +338,7 @@ lifecycle guidance is in [deployment](deployment.md), with backup and repair pro
 
 ## Generality and extensibility
 
-MindBridge keeps a stable memory kernel and varies computation at typed capability boundaries:
+SenseMem keeps a stable memory kernel and varies computation at typed capability boundaries:
 `EmbeddingBackend`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`,
 `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, and
 `ConsolidationBackend`. Routing reads declared modalities and stable model-space identities, while
@@ -368,7 +368,7 @@ capability.
 
 ## Limits and non-goals
 
-- MindBridge is an embedded runtime, not a hosted memory service, distributed database, or
+- SenseMem is an embedded runtime, not a hosted memory service, distributed database, or
   multi-writer synchronization layer.
 - It does not provide tenants, accounts, authorization, authentication, TLS, rate limiting, quotas,
   or an audit service. A `data_dir`, not metadata, is the isolation unit.
@@ -387,9 +387,9 @@ capability.
   [security model](../SECURITY.md#storage-deletion-and-backups).
 - Typed lineage and evidence are a SQLite projection, not a graph database, relationship query
   language, or traversal service.
-- Procedural and response-policy memories are evidence for an agent. MindBridge never executes them
+- Procedural and response-policy memories are evidence for an agent. SenseMem never executes them
   as code or robot actions.
-- MindBridge is not an agent framework, planner, skill runner, sensor stack, robot controller,
+- SenseMem is not an agent framework, planner, skill runner, sensor stack, robot controller,
   foundation model, model trainer, GPU scheduler, or automatic edge/cloud router.
 - `AsyncMemory` is a thread-delegating facade over the same synchronous consistency core; it does
   not make synchronous provider SDKs natively asynchronous.

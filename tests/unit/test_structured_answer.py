@@ -11,11 +11,11 @@ import httpx2 as httpx
 import pytest
 from test_openai_sdk import _sdk_client
 
-from mindbridge import OpenAIModels
-from mindbridge.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
-from mindbridge.models import openai_sdk as adapter
-from mindbridge.models.base import ModelInput
-from mindbridge.types import AnswerResult, SearchHit
+from sensemem import OpenAIModels
+from sensemem.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
+from sensemem.models import openai_sdk as adapter
+from sensemem.models.base import ModelInput
+from sensemem.types import AnswerResult, SearchHit
 
 NOW = datetime(2026, 4, 9, 11, 24, 35, tzinfo=timezone.utc)
 

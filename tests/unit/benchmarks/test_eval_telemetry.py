@@ -9,8 +9,8 @@ import pytest
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.trace import StatusCode
 
-import mindbridge.benchmarks.eval_telemetry as eval_telemetry
-from mindbridge._telemetry import (
+import sensemem.benchmarks.eval_telemetry as eval_telemetry
+from sensemem._telemetry import (
     GEN_AI_TTFC,
     GROUNDING_ASSET_IDS,
     GROUNDING_HITS_DROPPED,
@@ -30,7 +30,7 @@ from mindbridge._telemetry import (
     mark_model_requests,
     record_model_usage,
 )
-from mindbridge.benchmarks.eval_telemetry import (
+from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ANSWER_SPAN,
     BENCHMARK_ARM_SPAN,
     BENCHMARK_DIAGNOSTIC_SPAN,
@@ -57,7 +57,7 @@ def test_grounding_request_tracks_final_fallback_without_guessing_cached_input()
                 },
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={
                     SPAN_KIND: "model",
                     MODEL_MODULE: "generation",
@@ -145,7 +145,7 @@ def test_telemetry_distributions_retain_every_observation() -> None:
     duration_seconds = cast(
         dict[str, object], eval_telemetry._TaskTelemetry(run=durations).json(3)["duration_seconds"]
     )
-    assert duration_seconds["mindbridge"] == pytest.approx(15 / 1_000_000_000)
+    assert duration_seconds["sensemem"] == pytest.approx(15 / 1_000_000_000)
     assert duration_seconds["total"] == pytest.approx(15 / 1_000_000_000)
     assert cast(dict[str, object], durations.ttft_json())["average"] == 2.0
     assert cast(dict[str, object], durations.ttfc_json())["average"] == 2.0
@@ -180,11 +180,11 @@ def test_evaluation_telemetry_aggregates_nodes_ttft_and_modal_tokens() -> None:
                 attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.ask",
+                "sensemem.ask",
                 attributes={SPAN_KIND: "operation"},
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
             ) as span,
         ):
@@ -206,7 +206,7 @@ def test_evaluation_telemetry_aggregates_nodes_ttft_and_modal_tokens() -> None:
     assert duration["total"] >= 0
     assert duration["average"] == pytest.approx(duration["total"] / 2)
     nodes = cast(dict[str, dict[str, object]], result["nodes"])
-    generation = nodes["mindbridge.model.generation"]
+    generation = nodes["sensemem.model.generation"]
     assert generation["count"] == 1
     assert cast(dict[str, float], generation["ttft_ms"])["average"] == pytest.approx(25)
     usage = cast(dict[str, object], result["token_usage"])
@@ -227,7 +227,7 @@ def test_evaluation_telemetry_does_not_turn_missing_usage_into_zero() -> None:
                 attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
             ),
         ):
@@ -264,7 +264,7 @@ def test_component_tokens_and_incomplete_per_call_average_stay_unknown() -> None
             attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
         ):
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
             ):
                 record_model_usage(
@@ -275,7 +275,7 @@ def test_component_tokens_and_incomplete_per_call_average_stay_unknown() -> None
                     reported_requests=1,
                 )
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
             ):
                 mark_model_requests(1)
@@ -313,7 +313,7 @@ def test_product_token_cost_survives_an_incomplete_judge() -> None:
             attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
         ):
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
             ):
                 mark_model_requests(1)
@@ -325,7 +325,7 @@ def test_product_token_cost_survives_an_incomplete_judge() -> None:
                     reported_requests=1,
                 )
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.model.judge",
+                "sensemem.model.judge",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "judge"},
             ):
                 mark_model_requests(1)
@@ -365,11 +365,11 @@ def test_evaluation_telemetry_sums_failed_description_batches_per_task() -> None
             for failures in (1, 1):
                 with (
                     telemetry.tracer.start_as_current_span(
-                        "mindbridge.add",
+                        "sensemem.add",
                         attributes={SPAN_KIND: "operation"},
                     ),
                     telemetry.tracer.start_as_current_span(
-                        "mindbridge.model.vision",
+                        "sensemem.model.vision",
                         attributes={SPAN_KIND: "model", MODEL_MODULE: "vision"},
                     ) as span,
                 ):
@@ -377,11 +377,11 @@ def test_evaluation_telemetry_sums_failed_description_batches_per_task() -> None
             # One batch that succeeded records no counter and must not be counted as a loss.
             with (
                 telemetry.tracer.start_as_current_span(
-                    "mindbridge.add",
+                    "sensemem.add",
                     attributes={SPAN_KIND: "operation"},
                 ),
                 telemetry.tracer.start_as_current_span(
-                    "mindbridge.model.vision",
+                    "sensemem.model.vision",
                     attributes={SPAN_KIND: "model", MODEL_MODULE: "vision"},
                 ),
             ):
@@ -390,7 +390,7 @@ def test_evaluation_telemetry_sums_failed_description_batches_per_task() -> None
             # not add to the total: that is what would silently double-count every failure if the
             # counter were ever published one level up.
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.add",
+                "sensemem.add",
                 attributes={SPAN_KIND: "operation", VISION_BATCHES_FAILED: 7},
             ):
                 pass
@@ -454,11 +454,11 @@ def test_diagnostic_search_has_caller_latency_and_separate_tokens() -> None:
                 },
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.search",
+                "sensemem.search",
                 attributes={SPAN_KIND: "operation"},
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.model.embedding",
+                "sensemem.model.embedding",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "embedding"},
             ),
         ):
@@ -480,7 +480,7 @@ def test_diagnostic_search_has_caller_latency_and_separate_tokens() -> None:
     product_search = cast(dict[str, object], result["search_e2e"])
     assert caller["span"] == BENCHMARK_DIAGNOSTIC_SPAN
     assert caller["attempt_count"] == caller["count"] == 1
-    assert sdk["span"] == "mindbridge.search"
+    assert sdk["span"] == "sensemem.search"
     assert sdk["attempt_count"] == sdk["count"] == 1
     assert product_search["measurement"] == "post_answer_warm_store_replay"
     assert product_search["planned_count"] == product_search["success_count"] == 1
@@ -502,7 +502,7 @@ def test_zero_request_model_span_is_not_an_inference_node() -> None:
                 attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
             ),
             telemetry.tracer.start_as_current_span(
-                "mindbridge.model.generation",
+                "sensemem.model.generation",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
             ),
         ):
@@ -511,7 +511,7 @@ def test_zero_request_model_span_is_not_an_inference_node() -> None:
     finally:
         telemetry.close()
 
-    assert "mindbridge.model.generation" not in cast(dict[str, object], result["nodes"])
+    assert "sensemem.model.generation" not in cast(dict[str, object], result["nodes"])
     assert cast(dict[str, object], result["token_usage"])["request_count"] == 0
 
 
@@ -523,7 +523,7 @@ def test_asr_ratios_use_matching_successful_call_sets() -> None:
             attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
         ):
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.model.transcription",
+                "sensemem.model.transcription",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "transcription"},
             ):
                 record_model_usage(
@@ -533,7 +533,7 @@ def test_asr_ratios_use_matching_successful_call_sets() -> None:
                     audio_seconds=2.0,
                 )
             with telemetry.tracer.start_as_current_span(
-                "mindbridge.model.transcription",
+                "sensemem.model.transcription",
                 attributes={SPAN_KIND: "model", MODEL_MODULE: "transcription"},
             ) as failed:
                 record_model_usage(
@@ -577,7 +577,7 @@ def test_cached_product_and_uncached_judges_share_the_union_denominator() -> Non
                     },
                 ),
                 telemetry.tracer.start_as_current_span(
-                    "mindbridge.model.generation",
+                    "sensemem.model.generation",
                     attributes={SPAN_KIND: "model", MODEL_MODULE: "generation"},
                 ),
             ):

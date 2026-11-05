@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     FormationInput,
     FormationProposal,
@@ -20,7 +20,7 @@ from mindbridge import (
     Modality,
     ModelInput,
 )
-from mindbridge.infrastructure.local import LocalStore, UnsupportedSchemaError
+from sensemem.infrastructure.local import LocalStore, UnsupportedSchemaError
 
 
 class PredicateFormer:
@@ -132,7 +132,7 @@ def test_current_predicate_provenance_and_history_survive_reopening(tmp_path: Pa
         assert provenance == (
             "favorite_beverage",
             "preferred_drink",
-            "mindbridge-predicates-v1",
+            "sensemem-predicates-v1",
             "alias",
         )
     with Memory(tmp_path, embedder=TinyEmbedder(), former=PredicateFormer()) as memory:

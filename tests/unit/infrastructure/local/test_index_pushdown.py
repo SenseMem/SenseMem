@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     Memory,
     MemoryConfig,
@@ -25,8 +25,8 @@ from mindbridge import (
     ObservationContext,
     RetrievalScope,
 )
-from mindbridge.infrastructure.local import IndexDocument, StoredEmbedding
-from mindbridge.infrastructure.local.zvec_index import ZvecIndex
+from sensemem.infrastructure.local import IndexDocument, StoredEmbedding
+from sensemem.infrastructure.local.zvec_index import ZvecIndex
 
 _NOW = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
 _SPACE = "pushdown-probe:2"

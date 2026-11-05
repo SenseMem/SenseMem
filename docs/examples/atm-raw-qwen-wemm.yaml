@@ -1,5 +1,5 @@
 # Replace localhost endpoints and configure credentials outside this committed example.
-# Run: mindbridge-bench eval --config docs/examples/atm-raw-qwen-wemm.yaml --gen-kwargs temperature=0.7
+# Run: sensemem-bench eval --config docs/examples/atm-raw-qwen-wemm.yaml --gen-kwargs temperature=0.7
 # Historical recipe; see docs/research/2026-10-29-grounded-recall-quality.md for limits.
 embedding:
   provider: openai

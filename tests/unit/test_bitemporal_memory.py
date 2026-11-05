@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     ContextBudget,
     ContextUnknownKind,
     EvidenceBasis,

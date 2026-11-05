@@ -12,24 +12,24 @@ from _feature_support import TinyEmbedder
 from openai import OpenAI
 from pydantic import ValidationError as PydanticValidationError
 
-import mindbridge.configuration as configuration
-import mindbridge.recipes as recipes
-from mindbridge import (
+import sensemem.configuration as configuration
+import sensemem.recipes as recipes
+from sensemem import (
     Memory,
-    MindBridgeConfig,
     Modality,
     ModelInput,
     OpenAIModels,
     SearchHit,
+    SenseMemConfig,
     ValidationError,
 )
-from mindbridge.models.base import GenerationBackend
+from sensemem.models.base import GenerationBackend
 
 
 @pytest.mark.parametrize("value", [0, 33, True, "6"])
 def test_investigation_query_limit_is_strict_and_bounded(value: object) -> None:
     with pytest.raises(PydanticValidationError):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {"embedding": {"provider": "openai"}, "settings": {"recall_max_queries": value}}
         )
 
@@ -162,7 +162,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
         if provider == "qwen3-vl":
             reranking["gpu_memory_utilization"] = 0.7
             reranking.update(image_limit=3, video_limit=1, image_max_pixels=131072, video_frames=4)
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "data_dir": tmp_path,
             "embedding": {"provider": "openai"},
@@ -210,7 +210,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
 )
 def test_qwen3_vl_runtime_controls_are_strict(controls: dict[str, object]) -> None:
     with pytest.raises(PydanticValidationError):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "reranking": {"provider": "qwen3-vl", "model": "org/reranker", **controls},
@@ -233,10 +233,10 @@ def test_reranking_validation_reports_the_public_field_path(provider: str) -> No
 def test_native_benchmark_overrides_preserve_the_reranking_provider(
     provider: Literal["sentence-transformers", "qwen3-vl"],
 ) -> None:
-    from mindbridge.benchmarks.eval_config import _evaluation_memory_config
-    from mindbridge.benchmarks.model_config import ModelConfig
+    from sensemem.benchmarks.eval_config import _evaluation_memory_config
+    from sensemem.benchmarks.model_config import ModelConfig
 
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai"},

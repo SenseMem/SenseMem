@@ -21,10 +21,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import ValidationError as PydanticValidationError
 
-import mindbridge.configuration as configuration
-import mindbridge.models.openai_sdk as openai_sdk
-import mindbridge.recipes as recipes_module
-from mindbridge import (
+import sensemem.configuration as configuration
+import sensemem.models.openai_sdk as openai_sdk
+import sensemem.recipes as recipes_module
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Blob,
@@ -40,37 +40,54 @@ from mindbridge import (
     MemoryPlugins,
     MemoryRecord,
     MemoryTrigger,
-    MindBridgeConfig,
     Modality,
     ObservationContext,
     RetrievalMode,
     SearchHit,
+    SenseMemConfig,
 )
-from mindbridge._telemetry import MODEL_MODULE, TOKEN_TOTAL, VISION_BATCHES_FAILED
-from mindbridge.configuration import resolve_memory_config
-from mindbridge.exceptions import ValidationError
-from mindbridge.kernel.contracts import declared_capabilities
-from mindbridge.models.base import (
+from sensemem._telemetry import MODEL_MODULE, TOKEN_TOTAL, VISION_BATCHES_FAILED
+from sensemem.configuration import resolve_memory_config
+from sensemem.exceptions import ValidationError
+from sensemem.kernel.contracts import declared_capabilities
+from sensemem.models.base import (
     FormationBackend,
     GenerationBackend,
     ModelInput,
     VisionDescriptionBackend,
 )
-from mindbridge.types import IndexQuantization
+from sensemem.types import IndexQuantization
 
 
 def test_sentence_transformers_config_allows_omitting_revision() -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {"embedding": {"provider": "sentence-transformers", "model": "org/text"}}
     )
     assert isinstance(config.embedding, configuration.SentenceTransformersEmbeddingConfig)
     assert config.embedding.revision is None
 
 
+def test_conflicting_retention_is_rejected_before_constructing_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_build(_config: configuration.EmbeddingProviderConfig) -> TinyEmbedder:
+        pytest.fail("invalid configuration must not allocate a backend")
+
+    monkeypatch.setattr(configuration, "_build_embedding", unexpected_build)
+    with pytest.raises(ValidationError, match="declared both"):
+        resolve_memory_config(
+            {
+                "embedding": {"provider": "openai"},
+                "retention": {"media_days": 7},
+                "settings": {"retention": {"forgotten_days": 1}},
+            }
+        )
+
+
 def test_declarative_config_is_typed_strict_and_keeps_local_policy_separate(
     tmp_path: Path,
 ) -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "data_dir": tmp_path,
             "embedding": {
@@ -107,7 +124,7 @@ def test_declarative_config_is_typed_strict_and_keeps_local_policy_separate(
         retrieval_mode=RetrievalMode.LEXICAL,
     )
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "openai", "unexpected": True},
             }
@@ -140,7 +157,7 @@ def test_declarative_config_does_not_coerce_boolean_or_numeric_fields(
     config: dict[str, object],
 ) -> None:
     with pytest.raises(PydanticValidationError):
-        MindBridgeConfig.model_validate(config)
+        SenseMemConfig.model_validate(config)
 
 
 @pytest.mark.parametrize(
@@ -157,7 +174,7 @@ def test_declarative_config_does_not_coerce_boolean_or_numeric_fields(
 )
 def test_openai_base_url_requires_an_absolute_http_url(base_url: str) -> None:
     with pytest.raises(PydanticValidationError, match="absolute HTTP or HTTPS URL"):
-        MindBridgeConfig.model_validate({"embedding": {"provider": "openai", "base_url": base_url}})
+        SenseMemConfig.model_validate({"embedding": {"provider": "openai", "base_url": base_url}})
 
 
 def test_declarative_memory_settings_validate_every_range() -> None:
@@ -172,7 +189,7 @@ def test_declarative_memory_settings_validate_every_range() -> None:
     }
 
     with pytest.raises(PydanticValidationError) as failure:
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "settings": invalid,
@@ -208,7 +225,7 @@ def test_local_policy_defaults_stay_pinned_to_their_recorded_provenance() -> Non
     # The kernel and the declarative path must read the same defaults; a divergence would make
     # `Memory(...)` and `Memory.from_config({})` two different products.
     assert (
-        MindBridgeConfig.model_validate({"embedding": {"provider": "openai"}}).settings
+        SenseMemConfig.model_validate({"embedding": {"provider": "openai"}}).settings
         == MemoryConfig()
     )
 
@@ -224,7 +241,7 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
         generation_capabilities = frozenset({Modality.TEXT})
         formation_capabilities = frozenset({Modality.TEXT})
         formation_model = "gpt-5-mini"
-        formation_space = "gpt-5-mini:mindbridge-formation-v1:test"
+        formation_space = "gpt-5-mini:sensemem-formation-v1:test"
 
         def answer(
             self,
@@ -251,7 +268,7 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
 
     # Configuring generation must not enable formation: a former is a model call per observation on
     # the write path, so it stays opt-in even when a bundled generation backend is already present.
-    assert MindBridgeConfig.model_validate(base).formation is None
+    assert SenseMemConfig.model_validate(base).formation is None
     with_generation = configuration.resolve_memory_config(
         {**base, "generation": {"provider": "openai"}}
     )
@@ -283,13 +300,13 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
     }
     # `video_limit` shapes an answer, not a formation proposal, so it is not part of this slot.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {**base, "formation": {"provider": "openai", "video_limit": 4}}
         )
     # The declarative name for the describer slot is `vision`, matching `generation` and
     # `formation`; the plugin field name is not a configuration key.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        MindBridgeConfig.model_validate({**base, "vision_describer": {"provider": "openai"}})
+        SenseMemConfig.model_validate({**base, "vision_describer": {"provider": "openai"}})
 
 
 # One reply carrying the two capabilities the audit said only a former can supply: a bitemporal
@@ -657,7 +674,7 @@ def test_declarative_openai_embedding_rejects_a_model_that_declares_no_modality(
     # An empty set builds a Memory whose every write fails with "does not support: text". The
     # value is out of range, so it is refused here rather than at the first add.
     with pytest.raises(PydanticValidationError, match="too_short"):
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {
                     "provider": "openai",
@@ -1192,23 +1209,21 @@ def test_the_vision_slot_accepts_only_visual_modalities(tmp_path: Path) -> None:
 
     for modalities in (["text", "image"], ["audio"], []):
         with pytest.raises(PydanticValidationError):
-            MindBridgeConfig.model_validate(
+            SenseMemConfig.model_validate(
                 {**base, "vision": {"provider": "openai", "modalities": modalities}}
             )
 
     # `video_limit` shapes an answer, not a caption, so it is not part of this slot either.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        MindBridgeConfig.model_validate(
-            {**base, "vision": {"provider": "openai", "video_limit": 4}}
-        )
+        SenseMemConfig.model_validate({**base, "vision": {"provider": "openai", "video_limit": 4}})
 
-    described = MindBridgeConfig.model_validate(
+    described = SenseMemConfig.model_validate(
         {**base, "vision": {"provider": "openai", "modalities": ["image", "video"]}}
     ).vision
     assert described is not None
     assert described.modalities == frozenset({Modality.IMAGE, Modality.VIDEO})
     # Image alone by default: a video costs four sampled stills, so it is opted into.
-    assert MindBridgeConfig.model_validate(
+    assert SenseMemConfig.model_validate(
         {**base, "vision": {"provider": "openai"}}
     ).vision.modalities == frozenset({Modality.IMAGE})  # type: ignore[union-attr]
 

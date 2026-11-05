@@ -13,7 +13,7 @@ from threading import BoundedSemaphore, Condition, Event
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import AnswerChunk, AnswerResult, AsyncMemory, Memory, StorageError
+from sensemem import AnswerChunk, AnswerResult, AsyncMemory, Memory, StorageError
 
 
 def test_operations_reject_overload_and_recover_after_release(tmp_path: Path) -> None:

@@ -63,8 +63,8 @@ created or downloaded by this recipe.
 
 Do not put credentials in either file. The embedding client uses the SDK's `OPENAI_API_KEY` when
 its `api_key` is omitted. The benchmark generation client uses
-`MINDBRIDGE_GENERATION_API_KEY`, falling back to `OPENAI_API_KEY`; the judge uses
-`MINDBRIDGE_JUDGE_API_KEY`, falling back to the generation key. Supply these through your existing
+`SENSEMEM_GENERATION_API_KEY`, falling back to `OPENAI_API_KEY`; the judge uses
+`SENSEMEM_JUDGE_API_KEY`, falling back to the generation key. Supply these through your existing
 private shell environment. A service that ignores credentials can receive its required dummy
 value through the same environment. Explicit YAML URLs take precedence over URL environment
 defaults. The configuration does not interpolate `${ENV}` or support an `api_key_env` field.

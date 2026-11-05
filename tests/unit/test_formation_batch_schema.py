@@ -7,8 +7,8 @@ import httpx2 as httpx
 import pytest
 from test_openai_sdk import _sdk_client
 
-from mindbridge import FormationInput, ModelError, ModelInput, ObservationContext, OpenAIModels
-from mindbridge.models._openai_schemas import response_schema
+from sensemem import FormationInput, ModelError, ModelInput, ObservationContext, OpenAIModels
+from sensemem.models._openai_schemas import response_schema
 
 
 def _inputs(count: int) -> tuple[FormationInput, ...]:

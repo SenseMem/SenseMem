@@ -8,7 +8,7 @@ assignees: ''
 
 ## The problem
 
-<!-- What you are trying to do and where MindBridge gets in the way. Describe the problem rather
+<!-- What you are trying to do and where SenseMem gets in the way. Describe the problem rather
 than a solution — the best fix is often not the one that first comes to mind. -->
 
 ## What you do today

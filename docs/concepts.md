@@ -1,6 +1,6 @@
 # Core concepts
 
-MindBridge is an embedded memory library. The host application supplies content and model
+SenseMem is an embedded memory library. The host application supplies content and model
 capabilities; one local `Memory` owns persistence, retrieval, and grounded-answer orchestration.
 This page gives the mental model. Start with [product capabilities](product-capabilities.md) for the
 implemented use-case map. [Architecture](architecture.md) owns implementation invariants, and the
@@ -38,7 +38,7 @@ Python accepts one content atom or an ordered sequence of atoms:
 
 `add`, `search`, and `ask` share this `ContentInput` shape. `add_stream` also accepts `StreamInput`,
 so each completed observation can supply event time, metadata, memory type, transcript or visual
-description, and an `ObservationContext`. A URL-shaped `str` remains text; MindBridge never
+description, and an `ObservationContext`. A URL-shaped `str` remains text; SenseMem never
 downloads it. Fetch remote media in the application, then pass a `Blob` or local `Path`. REST and
 MCP accept neither remote URLs nor server filesystem paths.
 
@@ -57,7 +57,7 @@ media remains until no record or active lease references it. API deletion is not
 from SQLite free pages, WAL files, snapshots, or backups; see the
 [security model](../SECURITY.md#storage-deletion-and-backups).
 
-**Contract:** Metadata is JSON application payload. MindBridge stores and returns it but does not
+**Contract:** Metadata is JSON application payload. SenseMem stores and returns it but does not
 interpret it as a retrieval filter, tenant identifier, authorization rule, or isolation boundary.
 
 ## A data directory is one memory domain
@@ -66,7 +66,7 @@ interpret it as a retrieval filter, tenant identifier, authorization rule, or is
 data_dir/
 ├── state.sqlite3
 ├── assets/
-├── .mindbridge.lock
+├── .sensemem.lock
 └── zvec/
 ```
 
@@ -75,7 +75,7 @@ data_dir/
 | `state.sqlite3` | Authoritative records, embeddings, metadata, and durable index outbox |
 | `assets/` | Authoritative immutable media bytes |
 | `zvec/` | Rebuildable search projection |
-| `.mindbridge.lock` | Operating-system lock target; its presence does not imply a live owner |
+| `.sensemem.lock` | Operating-system lock target; its presence does not imply a live owner |
 
 **Contract:** Exactly one live `Memory` may own a physical directory. Different live owners must
 use different directories.
@@ -113,7 +113,7 @@ the three paths, formation controls, and ownership rules.
 ## Retrieval can return no evidence
 
 `search()` returns `tuple[SearchHit, ...]`. An empty tuple is normal when no candidate clears
-`minimum_relevance`. With `limit=1`, MindBridge may also withhold an unresolved top-two tie. A score
+`minimum_relevance`. With `limit=1`, SenseMem may also withhold an unresolved top-two tie. A score
 ranks hits against one query and does not move with the `limit` you ask for; it is not a global
 probability.
 

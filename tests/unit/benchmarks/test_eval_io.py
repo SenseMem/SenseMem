@@ -19,37 +19,37 @@ from typing import Any, cast
 
 import pytest
 
-import mindbridge.benchmarks.eval as eval_module
-import mindbridge.benchmarks.eval_adapters as eval_adapters
-from mindbridge import MemoryConfig, MemoryPlugins, MindBridgeConfig, Modality
-from mindbridge._telemetry import MODEL_MODULE, SPAN_KIND, mark_model_requests, model_span
-from mindbridge.benchmarks import eval_arms as eval_arms_module
-from mindbridge.benchmarks import eval_config as eval_config_module
-from mindbridge.benchmarks import eval_results as eval_results_module
-from mindbridge.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
-from mindbridge.benchmarks.download import _snapshot, acquire_media
-from mindbridge.benchmarks.eval import _cache_task
-from mindbridge.benchmarks.eval_adapters import (
+import sensemem.benchmarks.eval as eval_module
+import sensemem.benchmarks.eval_adapters as eval_adapters
+from sensemem import MemoryConfig, MemoryPlugins, Modality, SenseMemConfig
+from sensemem._telemetry import MODEL_MODULE, SPAN_KIND, mark_model_requests, model_span
+from sensemem.benchmarks import eval_arms as eval_arms_module
+from sensemem.benchmarks import eval_config as eval_config_module
+from sensemem.benchmarks import eval_results as eval_results_module
+from sensemem.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
+from sensemem.benchmarks.download import _snapshot, acquire_media
+from sensemem.benchmarks.eval import _cache_task
+from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     MediaResolver,
     MemoryItem,
     load_task,
 )
-from mindbridge.benchmarks.eval_cache import (
+from sensemem.benchmarks.eval_cache import (
     CachedAnswer,
     DescriptionCache,
     EvidenceInterval,
     ResponseCache,
     _answer,
 )
-from mindbridge.benchmarks.eval_telemetry import (
+from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_TASK,
     BENCHMARK_TASK_SPAN,
     EvaluationTelemetry,
 )
-from mindbridge.benchmarks.model_config import ModelConfig
-from mindbridge.benchmarks.prepare_media import (
+from sensemem.benchmarks.model_config import ModelConfig
+from sensemem.benchmarks.prepare_media import (
     _OPENEQA_FRAME_RATE,
     _cached_segments,
     _has_preprocessable_video,
@@ -62,9 +62,9 @@ from mindbridge.benchmarks.prepare_media import (
     _selected_patterns,
     prepare_task_media,
 )
-from mindbridge.benchmarks.task_catalog import TASKS, MediaSource, TaskSpec
-from mindbridge.models.base import ModelInput
-from mindbridge.types import AssetRef
+from sensemem.benchmarks.task_catalog import TASKS, MediaSource, TaskSpec
+from sensemem.models.base import ModelInput
+from sensemem.types import AssetRef
 
 
 def _media_spec() -> TaskSpec:
@@ -93,7 +93,7 @@ def test_archive_download_is_resumable_and_rejects_traversal(
         with zipfile.ZipFile(destination / "part.zip", "w") as volume:
             volume.writestr("videos/example.mp4", b"video")
 
-    monkeypatch.setattr("mindbridge.benchmarks.download._snapshot", snapshot)
+    monkeypatch.setattr("sensemem.benchmarks.download._snapshot", snapshot)
     acquire_media(_media_spec(), tmp_path)
     assert (release / "videos" / "example.mp4").read_bytes() == b"video"
 
@@ -170,7 +170,7 @@ def test_m3_timestamp_drives_preparation_without_before_clip(
     (media / "room.mp4").write_bytes(b"video")
     observed: list[float] = []
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._duration", lambda _path: 60.0)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._duration", lambda _path: 60.0)
 
     def segment(
         _source: Path, boundaries: tuple[float, ...], cache: Path, _announce: object
@@ -178,7 +178,7 @@ def test_m3_timestamp_drives_preparation_without_before_clip(
         observed.extend(boundaries)
         return ((0.0, boundaries[-1], cache / "segment.mp4"),)
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._segment_video", segment)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._segment_video", segment)
     _m3_manifest(dataset, media, tmp_path / "cache", None, 0, None)
 
     assert observed == [10.0]
@@ -224,10 +224,10 @@ def test_m3_manifest_reuses_one_lazy_nested_media_index(
         return original_rglob(path, pattern)
 
     monkeypatch.setattr(Path, "rglob", rglob)
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._PREPARATION_WORKERS", 2)
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._duration", lambda _path: 10.0)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._PREPARATION_WORKERS", 2)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._duration", lambda _path: 10.0)
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._segment_video",
+        "sensemem.benchmarks.prepare_media._segment_video",
         lambda _source, boundaries, cache, _announce: (
             (0.0, boundaries[-1], cache / "segment.mp4"),
         ),
@@ -373,7 +373,7 @@ def test_atm_raw_media_filename_supplies_capture_time(tmp_path: Path, stem: str)
 
 
 def test_atm_query_does_not_expose_answer_type_or_labels(tmp_path: Path) -> None:
-    from mindbridge.benchmarks.eval_adapters import MediaResolver, _atm
+    from sensemem.benchmarks.eval_adapters import MediaResolver, _atm
 
     question = "When is the pickup scheduled?"
     dataset = tmp_path / "questions.json"
@@ -547,8 +547,8 @@ def test_lifelong_preparation_builds_one_ordered_segment_timeline(
             second_finished.set()
         return ((0.0, duration, cache / source.name),)
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._PREPARATION_WORKERS", 2)
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._segments", segments)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._PREPARATION_WORKERS", 2)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._segments", segments)
     spec = TaskSpec(
         "mm-lifelong-fixture",
         "MM-Lifelong",
@@ -595,7 +595,7 @@ def test_media_preparation_reports_sources_without_duplicate_segment_announcemen
         assert announce is None
         return ((0.0, 1.0, cache / source.name),)
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._segments", segments)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._segments", segments)
     spec = TaskSpec(
         "mm-lifelong-fixture",
         "MM-Lifelong",
@@ -714,10 +714,10 @@ def test_single_boundary_segmentation_avoids_the_segment_muxer(
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.stat().st_size > 0,
     )
     commands: list[tuple[str, ...]] = []
@@ -729,7 +729,7 @@ def test_single_boundary_segmentation_avoids_the_segment_muxer(
         for index in range(expected_segments[0]):
             Path(str(output).replace("%05d", f"{index:05d}")).write_bytes(b"segment")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     # Asked for one whole clip, ffmpeg must write one named output. Handing this to the segment
     # muxer without `-segment_times` makes it split at every keyframe instead, which turned one
@@ -757,10 +757,10 @@ def test_video_segment_cache_repairs_an_interrupted_entry(
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.stat().st_size > 0,
     )
 
@@ -772,7 +772,7 @@ def test_video_segment_cache_repairs_an_interrupted_entry(
         for index in range(2):
             Path(str(output).replace("%05d", f"{index:05d}")).write_bytes(b"segment")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
     prepared = _segment_video(source, (1.0, 2.0), tmp_path / "cache", None)
     prepared[1][2].write_bytes(b"")
 
@@ -786,14 +786,14 @@ def test_video_segment_cache_rebuilds_a_nonempty_entry_without_video(
 ) -> None:
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.read_bytes() == b"video",
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_structural_video",
+        "sensemem.benchmarks.prepare_media._has_structural_video",
         lambda path: path.is_file() and path.read_bytes() == b"video",
     )
     calls = 0
@@ -803,7 +803,7 @@ def test_video_segment_cache_rebuilds_a_nonempty_entry_without_video(
         calls += 1
         Path(command[-1]).write_bytes(b"video")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
     prepared = _segment_video(source, (1.0,), tmp_path / "cache", None)
     prepared[0][2].write_bytes(b"audio-only-but-nonempty")
     # A completed entry is trusted by its marker; an entry whose completion never landed is
@@ -821,10 +821,10 @@ def test_video_segment_retries_only_an_invalid_normal_fps_result(
 ) -> None:
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.read_bytes() == b"video",
     )
     filters: list[str] = []
@@ -834,7 +834,7 @@ def test_video_segment_retries_only_an_invalid_normal_fps_result(
         filters.append(video_filter)
         Path(command[-1]).write_bytes(b"video" if not video_filter.startswith("fps=") else b"audio")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     prepared = _segment_video(source, (1.0,), tmp_path / "cache", None)
 
@@ -849,10 +849,10 @@ def test_video_segment_native_retry_keeps_valid_normal_segments_byte_identical(
 ) -> None:
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.read_bytes() in {b"normal", b"native"},
     )
     commands: list[tuple[str, ...]] = []
@@ -867,7 +867,7 @@ def test_video_segment_native_retry_keeps_valid_normal_segments_byte_identical(
             Path(str(output).replace("%05d", "00000")).write_bytes(b"native")
             Path(str(output).replace("%05d", "00001")).write_bytes(b"native")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     prepared = _segment_video(source, (1.0, 2.0), tmp_path / "cache", None)
 
@@ -886,11 +886,11 @@ def test_partial_cache_repair_does_not_replace_a_valid_sibling(
     (target / "segment-00000.mp4").write_bytes(b"valid-sibling")
     (target / "segment-00001.mp4").write_bytes(b"audio-only")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.read_bytes() in {b"valid-sibling", b"replacement"},
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_structural_video",
+        "sensemem.benchmarks.prepare_media._has_structural_video",
         lambda path: path.is_file() and path.read_bytes() in {b"valid-sibling", b"replacement"},
     )
 
@@ -899,7 +899,7 @@ def test_partial_cache_repair_does_not_replace_a_valid_sibling(
         Path(str(output).replace("%05d", "00000")).write_bytes(b"replacement")
         Path(str(output).replace("%05d", "00001")).write_bytes(b"replacement")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     prepared = _cached_segments(
         source,
@@ -920,11 +920,11 @@ def test_native_frame_fallback_is_cached_and_current_one_frame_cache_is_reused(
     source.write_bytes(b"source")
     cache = tmp_path / ".prepared" / "ffmpeg-v2" / "fixture"
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_structural_video",
+        "sensemem.benchmarks.prepare_media._has_structural_video",
         lambda path: path.is_file() and path.read_bytes() in {b"normal-one", b"native"},
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.read_bytes() == b"native",
     )
     filters: list[str] = []
@@ -933,7 +933,7 @@ def test_native_frame_fallback_is_cached_and_current_one_frame_cache_is_reused(
         filters.append(command[command.index("-vf") + 1])
         Path(command[-1]).write_bytes(b"normal-one" if len(filters) == 1 else b"native")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     prepared = _cached_segments(
         source,
@@ -955,7 +955,7 @@ def test_native_frame_fallback_is_cached_and_current_one_frame_cache_is_reused(
 
     prepared[0][2].write_bytes(b"new-v2-one-frame")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_structural_video",
+        "sensemem.benchmarks.prepare_media._has_structural_video",
         lambda path: path.is_file() and path.read_bytes() == b"new-v2-one-frame",
     )
     _cached_segments(
@@ -978,8 +978,8 @@ def test_has_preprocessable_video_requires_two_real_frames(
     def probe(_command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(returncode=0, stdout=next(counts))
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media.subprocess.run", probe)
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffprobe")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media.subprocess.run", probe)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffprobe")
 
     assert not _has_preprocessable_video(clip)
     assert _has_preprocessable_video(clip)
@@ -994,8 +994,8 @@ def test_has_structural_video_accepts_one_real_frame(
     def probe(_command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(returncode=0, stdout="1\n")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media.subprocess.run", probe)
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffprobe")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media.subprocess.run", probe)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffprobe")
 
     assert _has_structural_video(clip)
 
@@ -1057,10 +1057,10 @@ def test_openeqa_encodes_episode_frames_directly_into_causal_segments(
     )
     (episode / "00001-depth.png").write_bytes(b"depth")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.stat().st_size > 0,
     )
     commands: list[tuple[str, ...]] = []
@@ -1071,7 +1071,7 @@ def test_openeqa_encodes_episode_frames_directly_into_causal_segments(
         listings.append(Path(command[command.index("-i") + 1]).read_text(encoding="utf-8"))
         Path(command[-1]).write_bytes(b"segment")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     segments = _openeqa_segments(episode, tmp_path / "cache", None)
 
@@ -1130,10 +1130,10 @@ def test_openeqa_segments_keep_every_frame_at_thirty_second_boundaries(
     for index in range(frame_count):
         (episode / f"{index:05d}-rgb.png").write_bytes(b"frame")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.stat().st_size > 0,
     )
 
@@ -1146,7 +1146,7 @@ def test_openeqa_segments_keep_every_frame_at_thirty_second_boundaries(
         for index in range(len(ends)):
             Path(str(output).replace("%05d", f"{index:05d}")).write_bytes(b"segment")
 
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._run_ffmpeg", run)
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     segments = _openeqa_segments(episode, tmp_path / "cache", None)
 
@@ -1170,8 +1170,8 @@ def test_openeqa_refuses_frame_paths_it_cannot_quote(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     episode = _openeqa_episode_frames(tmp_path / "it's-a-scene", "00001")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
 
     # An operator-supplied media root reaches ffmpeg's concat list verbatim, so
     # a quote there would silently truncate the frame list.
@@ -1303,14 +1303,14 @@ def test_openeqa_accepts_episode_histories_already_in_the_managed_root(
         prepare()
 
     _openeqa_episode_frames(frames / episodes[1], "00001", "00002")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
-    monkeypatch.setattr("mindbridge.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._ffmpeg_id", lambda: "ffmpeg")
+    monkeypatch.setattr("sensemem.benchmarks.prepare_media._executable", lambda _name: "ffmpeg")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._has_preprocessable_video",
+        "sensemem.benchmarks.prepare_media._has_preprocessable_video",
         lambda path: path.is_file() and path.stat().st_size > 0,
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.prepare_media._run_ffmpeg",
+        "sensemem.benchmarks.prepare_media._run_ffmpeg",
         lambda command, _source: Path(command[-1]).write_bytes(b"episode"),
     )
 
@@ -1407,12 +1407,12 @@ def test_description_cache_tracks_only_actual_model_misses(tmp_path: Path) -> No
         ):
             with model_span(
                 telemetry.tracer,
-                "mindbridge.model.vision",
+                "sensemem.model.vision",
                 attributes={
                     SPAN_KIND: "model",
                     MODEL_MODULE: "vision",
-                    "mindbridge.model.batch_size": 2,
-                    "mindbridge.input.modalities": ("image",),
+                    "sensemem.model.batch_size": 2,
+                    "sensemem.input.modalities": ("image",),
                 },
             ):
                 mark_model_requests(1)
@@ -1422,12 +1422,12 @@ def test_description_cache_tracks_only_actual_model_misses(tmp_path: Path) -> No
                 )
             with model_span(
                 telemetry.tracer,
-                "mindbridge.model.vision",
+                "sensemem.model.vision",
                 attributes={
                     SPAN_KIND: "model",
                     MODEL_MODULE: "vision",
-                    "mindbridge.model.batch_size": 2,
-                    "mindbridge.input.modalities": ("image",),
+                    "sensemem.model.batch_size": 2,
+                    "sensemem.input.modalities": ("image",),
                 },
             ):
                 mark_model_requests(1)
@@ -1438,7 +1438,7 @@ def test_description_cache_tracks_only_actual_model_misses(tmp_path: Path) -> No
         cache.close()
 
     vision = cast(
-        dict[str, object], cast(dict[str, object], performance["nodes"])["mindbridge.model.vision"]
+        dict[str, object], cast(dict[str, object], performance["nodes"])["sensemem.model.vision"]
     )
     breakdown = cast(list[dict[str, object]], vision["breakdown"])
     assert vision["count"] == 1
@@ -1534,8 +1534,8 @@ def test_the_description_cache_is_opened_only_for_a_configured_vision_slot(
         ),
     )
     embedding = {"provider": "openai", "model": "tiny-test", "dimension": 4}
-    without = MindBridgeConfig.model_validate({"data_dir": tmp_path, "embedding": embedding})
-    described = MindBridgeConfig.model_validate(
+    without = SenseMemConfig.model_validate({"data_dir": tmp_path, "embedding": embedding})
+    described = SenseMemConfig.model_validate(
         {"data_dir": tmp_path, "embedding": embedding, "vision": {"provider": "openai"}}
     )
 
@@ -1582,7 +1582,7 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
         monkeypatch.setattr(eval_module, "resolve_memory_config", lambda _config: resolved)
         return eval_module._BackendPool(
             ModelConfig(),
-            memory_config=MindBridgeConfig.model_validate({"embedding": {"provider": "openai"}}),
+            memory_config=SenseMemConfig.model_validate({"embedding": {"provider": "openai"}}),
             description_cache=cache_path,
         )
 

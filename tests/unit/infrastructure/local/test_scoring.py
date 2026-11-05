@@ -5,8 +5,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from mindbridge.infrastructure.local import scoring
-from mindbridge.infrastructure.local.scoring import max_cosine_scores
+from sensemem.infrastructure.local import scoring
+from sensemem.infrastructure.local.scoring import max_cosine_scores
 
 
 def test_exact_part_scores_preserve_the_winner_and_prefer_an_equal_existing_match() -> None:

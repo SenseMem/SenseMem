@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-import mindbridge.benchmarks.prepare_media as prepare_media
-from mindbridge.benchmarks.eval_adapters import load_task, parse_media_manifest
-from mindbridge.benchmarks.task_catalog import TASKS
+import sensemem.benchmarks.prepare_media as prepare_media
+from sensemem.benchmarks.eval_adapters import load_task, parse_media_manifest
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 def _m3_annotations(path: Path) -> None:

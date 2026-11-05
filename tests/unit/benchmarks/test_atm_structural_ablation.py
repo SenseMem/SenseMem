@@ -19,17 +19,17 @@ from typing import Protocol, cast
 import pytest
 from PIL import Image
 
-from mindbridge import EmbedTask, Memory, MindBridgeConfig, Modality, ModelInput
-from mindbridge.benchmarks import eval as runner
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from mindbridge.benchmarks.eval_config import (
+from sensemem import EmbedTask, Memory, Modality, ModelInput, SenseMemConfig
+from sensemem.benchmarks import eval as runner
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_config import (
     _Arguments,
     _judge_config,
     _load_memory_config,
     _model_config,
 )
-from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
-from mindbridge.benchmarks.task_catalog import TASKS, TaskSpec
+from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
+from sensemem.benchmarks.task_catalog import TASKS, TaskSpec
 
 
 class _ExecutionResult(Protocol):
@@ -55,8 +55,8 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     (tmp_path / recipe_path).write_text(json.dumps(recipe))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-embedding-key")
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_API_KEY", "fixture-generation-key")
-    monkeypatch.setenv("MINDBRIDGE_JUDGE_API_KEY", "fixture-judge-key")
+    monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "fixture-generation-key")
+    monkeypatch.setenv("SENSEMEM_JUDGE_API_KEY", "fixture-judge-key")
 
     def denied(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("portable example preflight must not open models, network or storage")
@@ -69,11 +69,11 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     functions = runpy.run_path(str(repository / "benchmarks/atm_structural_ablation.py"))
     main = cast(Callable[[list[str]], int], functions["main"])
     prepare = cast(
-        Callable[[Path], tuple[_Arguments, MindBridgeConfig, LoadedTask]], functions["_prepare"]
+        Callable[[Path], tuple[_Arguments, SenseMemConfig, LoadedTask]], functions["_prepare"]
     )
-    prepared: list[tuple[_Arguments, MindBridgeConfig, LoadedTask]] = []
+    prepared: list[tuple[_Arguments, SenseMemConfig, LoadedTask]] = []
 
-    def observe_prepare(path: Path) -> tuple[_Arguments, MindBridgeConfig, LoadedTask]:
+    def observe_prepare(path: Path) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
         result = prepare(path)
         prepared.append(result)
         return result
@@ -255,7 +255,7 @@ def test_store_reuse_verifies_authoritative_content_and_media_without_reembeddin
         str(Path(__file__).parents[3] / "benchmarks/atm_structural_ablation.py")
     )
     verify = cast(
-        Callable[[Path, MindBridgeConfig, LoadedTask], dict[str, object]],
+        Callable[[Path, SenseMemConfig, LoadedTask], dict[str, object]],
         functions["verify_store"],
     )
     monkeypatch.setitem(
@@ -263,7 +263,7 @@ def test_store_reuse_verifies_authoritative_content_and_media_without_reembeddin
         "Memory",
         SimpleNamespace(from_config=lambda _config: Memory(store, embedder=embedder)),
     )
-    config = MindBridgeConfig.model_validate({"embedding": {"provider": "openai"}})
+    config = SenseMemConfig.model_validate({"embedding": {"provider": "openai"}})
     assert verify(store, config, task)["asset_count"] == 1
     assert embedder.calls == calls_after_ingestion
     changed = replace(item, content=("Changed description", image))
@@ -289,21 +289,21 @@ def test_execution_audit_retains_only_counts_and_allowlisted_attributes() -> Non
     )
     collector = cast(Callable[[], EvaluationTelemetry], functions["ExecutionTelemetry"])()
     try:
-        with collector.tracer.start_as_current_span("mindbridge.reranking") as span:
-            span.set_attribute("mindbridge.reranking.scored_candidates", 12)
-            span.set_attribute("mindbridge.grounding.gazetteer.index_sha256", "a" * 64)
-            span.set_attribute("mindbridge.grounding.gazetteer.added_chars", 200)
-            span.set_attribute("mindbridge.grounding.request_bytes", 1024)
-            span.set_attribute("mindbridge.grounding.request_max_bytes", "DO_NOT_RETAIN_BODY")
+        with collector.tracer.start_as_current_span("sensemem.reranking") as span:
+            span.set_attribute("sensemem.reranking.scored_candidates", 12)
+            span.set_attribute("sensemem.grounding.gazetteer.index_sha256", "a" * 64)
+            span.set_attribute("sensemem.grounding.gazetteer.added_chars", 200)
+            span.set_attribute("sensemem.grounding.request_bytes", 1024)
+            span.set_attribute("sensemem.grounding.request_max_bytes", "DO_NOT_RETAIN_BODY")
             span.set_attribute("private.query", "DO_NOT_RETAIN_QUERY")
             span.set_attribute("provider.body", "DO_NOT_RETAIN_PROVIDER_BODY")
         result = cast(_ExecutionResult, collector).execution_result()
-        assert result["span_counts"] == {"mindbridge.reranking": 1}
+        assert result["span_counts"] == {"sensemem.reranking": 1}
         assert result["attribute_distributions"] == {
-            "mindbridge.reranking.scored_candidates": {"12": 1},
-            "mindbridge.grounding.gazetteer.index_sha256": {"a" * 64: 1},
-            "mindbridge.grounding.gazetteer.added_chars": {"200": 1},
-            "mindbridge.grounding.request_bytes": {"1024": 1},
+            "sensemem.reranking.scored_candidates": {"12": 1},
+            "sensemem.grounding.gazetteer.index_sha256": {"a" * 64: 1},
+            "sensemem.grounding.gazetteer.added_chars": {"200": 1},
+            "sensemem.grounding.request_bytes": {"1024": 1},
         }
         assert "DO_NOT_RETAIN" not in str(result)
     finally:

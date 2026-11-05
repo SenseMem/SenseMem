@@ -1,10 +1,11 @@
 """Public composition values, structured visual proposals, and declarative routes."""
 
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     EmbeddingBackend,
     EmbeddingInputSupport,
     EmbeddingRouter,
@@ -14,15 +15,23 @@ from mindbridge import (
     GenerationRoutingBackend,
     MediaSelectionBackend,
     MemoryPlugins,
-    MindBridgeConfig,
     Modality,
     ModelInput,
     OpenAIModels,
+    SenseMemConfig,
+    SenseMemError,
     SpeakerName,
     ValidationError,
     VisionAnalysisBackend,
     VisualDescription,
 )
+
+
+def test_branded_public_values_use_the_sensemem_namespace() -> None:
+    config = SenseMemConfig.model_validate({"embedding": {"provider": "openai"}})
+    assert config.data_dir == Path(".sensemem")
+    assert config.model_json_schema()["title"] == "SenseMemConfig"
+    assert SenseMemError.code == "sensemem_error"
 
 
 def test_composed_backends_implement_the_public_protocols() -> None:
@@ -39,7 +48,7 @@ def test_composed_backends_implement_the_public_protocols() -> None:
 
 
 def test_declared_generation_routes_have_independent_modalities_and_controls() -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {

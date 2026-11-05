@@ -17,7 +17,7 @@ from typing import Any, cast
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     AcousticBoundary,
     ASRPartial,
     AsyncAudioStream,
@@ -54,7 +54,7 @@ from mindbridge import (
     VisionPartial,
     VisionStreamPacket,
 )
-from mindbridge.infrastructure.local.zvec_index import ZvecIndex
+from sensemem.infrastructure.local.zvec_index import ZvecIndex
 
 
 async def _events(*values: StreamEvent) -> AsyncIterator[StreamEvent]:
@@ -754,7 +754,7 @@ def _stream_then_die(data_dir: str, sender: Connection) -> None:
     Both group bounds are pushed out of reach so the kill lands in the window the test is
     about: after SQLite committed and before the deferred Zvec flush.
     """
-    import mindbridge.kernel.ingestion as ingestion_module
+    import sensemem.kernel.ingestion as ingestion_module
 
     ingestion_module.STREAM_GROUP_ITEMS = 1_000
     ingestion_module.STREAM_GROUP_SECONDS = 1e9
@@ -900,7 +900,7 @@ async def test_a_captured_audio_final_settles_into_the_record_add_would_have_wri
 
 def test_a_captured_stream_input_keys_its_folded_transcript_like_add(tmp_path: Path) -> None:
     """A folded transcript keys as its own part, not merged into the caller's text."""
-    from mindbridge import Memory
+    from sensemem import Memory
 
     def commit_one(directory: Path, *, capture: bool) -> tuple[str, set[tuple[str, int]]]:
         with Memory(
@@ -953,7 +953,7 @@ async def test_a_captured_vision_final_reports_its_pending_settlement(tmp_path: 
 
 
 def test_add_stream_can_capture_instead_of_adding(tmp_path: Path) -> None:
-    from mindbridge import Memory
+    from sensemem import Memory
 
     with Memory(
         tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)

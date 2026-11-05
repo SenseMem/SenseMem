@@ -3,11 +3,11 @@
 Diagnose the stable error fields before reading the message:
 
 ```python
-from mindbridge import MindBridgeError
+from sensemem import SenseMemError
 
 try:
     result = memory.ask("What happened yesterday?")
-except MindBridgeError as error:
+except SenseMemError as error:
     print(error.code, error.reason, error.stage, error.subject, error.retryable)
 ```
 
@@ -17,7 +17,7 @@ request can succeed later. CLI, REST, and MCP envelopes return the same classifi
 add a `trace_id`; preserve it with request metadata. See the
 [REST error contract](api/rest.md#codes-and-reasons).
 
-For composition failures, run the same selection with `mindbridge ... doctor`. Bundled recipes
+For composition failures, run the same selection with `sensemem ... doctor`. Bundled recipes
 exercise their loaders, `--app` verifies the import without calling a factory that could open the
 store, and `--url` checks `/healthz`.
 
@@ -40,7 +40,7 @@ Retry only when `retryable` is true. The closed retryable reasons are `connectio
 
 ### A configuration filename is rejected
 
-`Memory.from_config()` accepts a mapping or `MindBridgeConfig`, not a path. Decode JSON with
+`Memory.from_config()` accepts a mapping or `SenseMemConfig`, not a path. Decode JSON with
 `json.loads()` or YAML with the host's `yaml.safe_load()` before passing it. Unknown fields,
 providers, and invalid numeric or Boolean values are rejected at this boundary. See
 [file loading](configuration.md#loading-a-configuration-file).
@@ -49,7 +49,7 @@ providers, and invalid numeric or Boolean values are rejected at this boundary. 
 
 `reason="data_dir_in_use"` means a live `Memory` owns the physical directory. Close that owner,
 call its REST interface, or choose a different directory. Do not add a tenant field to share one
-directory: physical directories are the isolation boundary. Do not delete `.mindbridge.lock`
+directory: physical directories are the isolation boundary. Do not delete `.sensemem.lock`
 either; the file is only the operating-system lock target and deleting it does not release an
 owner.
 
@@ -59,7 +59,7 @@ envelopes when the host uses a network transport.
 
 ### The schema is unsupported
 
-`reason="schema_unsupported"` means this MindBridge version cannot read the SQLite schema or its
+`reason="schema_unsupported"` means this SenseMem version cannot read the SQLite schema or its
 required tables. Use a version that supports the store, or reopen a backup with one. Do not edit
 `state.sqlite3` or its `PRAGMA user_version` by hand.
 
@@ -83,7 +83,7 @@ until a known search succeeds. Never move `state.sqlite3` or `assets/`; they are
 
 ## A write returned an index error
 
-MindBridge commits SQLite before applying Zvec changes, and flushes Zvec in batches behind them.
+SenseMem commits SQLite before applying Zvec changes, and flushes Zvec in batches behind them.
 An `index_unavailable` response can therefore mean the record or deletion is durable even though
 the call failed, and a flush failure surfaces in the call that took the flush -- a later write,
 `optimize()`, `reindex()`, or `close()` -- rather than in the write that enqueued the row. The
@@ -162,13 +162,13 @@ the `server` and `mcp` extras. See the
 ### Modality is unsupported
 
 Select a backend that declares the required modality. Audio may use transcript fallback only when
-a configured transcription backend supports it. MindBridge does not silently discard unsupported
+a configured transcription backend supports it. SenseMem does not silently discard unsupported
 image or video evidence.
 
 ### Provider request or output fails
 
 Inspect `reason` and `stage`, then check credentials, base URL, proxy, timeout, rate limit,
-provider status, and response shape. MindBridge preserves the provider exception as the Python
+provider status, and response shape. SenseMem preserves the provider exception as the Python
 `__cause__` and classifies known SDK failures in `reason`, but REST and MCP never serialize
 provider bodies. Configure credentials, base URL, timeout, proxy, and provider retry policy on the
 provider SDK or the declarative OpenAI slot.
@@ -184,7 +184,7 @@ token limits. Answer overflow is not retried with evidence silently removed.
 
 For `code="model_output_truncated"`, generation reached its output-token limit: raise the adapter's
 generation limit or reduce the `ask()` evidence limit. Retrying the identical request is not a fix.
-For `reason="payload_too_large"`, check both MindBridge's byte ceilings and the provider or proxy
+For `reason="payload_too_large"`, check both SenseMem's byte ceilings and the provider or proxy
 upload limit. An upstream HTTP 413 has this reason even when the proxy returns HTML. Reduce the
 request or choose sufficient serving capacity; the adapter does not silently remove evidence
 and retry. This classification does not increase the provider's upload limit.
@@ -194,7 +194,7 @@ Provider-specific controls and media limits are in the
 
 ## Content is rejected or not fetched
 
-MindBridge never fetches HTTP(S) content. In Python, a URL-shaped string is application text.
+SenseMem never fetches HTTP(S) content. In Python, a URL-shaped string is application text.
 Download media with the application's HTTP client, then pass a `Blob` or a regular local `Path`.
 REST and MCP reject remote URLs and server filesystem paths; use inline bytes or an existing asset
 ID.
@@ -210,18 +210,18 @@ adapters around one constructed `Memory`, call the running REST owner, or alloca
 separate memory domains. REST has thirteen product routes under `/v1`, or twenty-two with both
 opt-in switches enabled; MCP has thirteen tools.
 
-Neither network adapter adds MindBridge authentication, and stdio MCP inherits the host process
+Neither network adapter adds SenseMem authentication, and stdio MCP inherits the host process
 principal. Apply the controls in [deployment](deployment.md#choose-a-topology).
 
 ## Latency or telemetry looks wrong
 
 `/healthz` is liveness, not a model or retrieval probe. Compare operation, stage, and model spans
 to separate model latency from SQLite, index synchronization, search, and ranking. If token totals
-look low, check `mindbridge.token_usage.complete`, the expected request count, and the reported
-request count; MindBridge does not estimate missing usage.
+look low, check `sensemem.token_usage.complete`, the expected request count, and the reported
+request count; SenseMem does not estimate missing usage.
 
-For face or speaker recognition, read the `mindbridge.identity.faces` and
-`mindbridge.identity.speakers` spans and compare `mindbridge.identity.observations`,
+For face or speaker recognition, read the `sensemem.identity.faces` and
+`sensemem.identity.speakers` spans and compare `sensemem.identity.observations`,
 `.matched_existing`, and `.created`. Zero observations means the analyzer ran and detected none.
 Many creations with few existing matches indicate identity fragmentation; changing a similarity
 threshold cannot fix an embedding model that does not separate the deployed material. See

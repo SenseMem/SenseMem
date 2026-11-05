@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from threading import Barrier, Lock
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AsyncMemory,
@@ -17,13 +17,13 @@ from mindbridge import (
     ModelInput,
     SearchHit,
 )
-from mindbridge.benchmarks import eval_config
-from mindbridge.benchmarks.eval import run_loaded_task
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from mindbridge.benchmarks.eval_config import _arguments, _build_parser
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.model_config import HarnessOverrides, RunOverrides
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks import eval_config
+from sensemem.benchmarks.eval import run_loaded_task
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_config import _arguments, _build_parser
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.model_config import HarnessOverrides, RunOverrides
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 def test_buffered_answer_cli_overrides_the_default() -> None:

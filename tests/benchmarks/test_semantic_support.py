@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     FormationInput,
     FormationProposal,
@@ -37,7 +37,7 @@ class _FixtureEmbedder:
 
 
 def _audit(claims: list[dict[str, Any]], **fields: object) -> dict[str, Any]:
-    from mindbridge.benchmarks.semantic_support import AuditRun, score_audit
+    from sensemem.benchmarks.semantic_support import AuditRun, score_audit
 
     return score_audit(
         AuditRun.model_validate(
@@ -221,7 +221,7 @@ def test_partial_usage_keeps_unknown_measurements_and_counts_shared_requests_onc
 def test_cli_scores_without_echoing_private_content(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from mindbridge.benchmarks.semantic_support import main
+    from sensemem.benchmarks.semantic_support import main
 
     source = tmp_path / "audit.json"
     output = tmp_path / "report.json"

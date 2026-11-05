@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     ConsentClaim,
     ConsentState,
     FormationProposal,
@@ -17,7 +17,7 @@ from mindbridge import (
     SpatialContext,
     StorageError,
 )
-from mindbridge.control import dump_operation, load_operation
+from sensemem.control import dump_operation, load_operation
 
 
 @pytest.mark.parametrize(

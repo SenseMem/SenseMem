@@ -8,11 +8,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from mindbridge.evidence import answer_constraint_payloads, answer_evidence_payloads
-from mindbridge.models import openai_sdk as openai_backend
-from mindbridge.types import AssetRef, EvidenceBasis, MemoryContext, MemoryKind, Modality, SearchHit
+from sensemem.evidence import (
+    answer_constraint_payloads,
+    answer_evidence_payloads,
+    retain_source_complete_hits,
+)
+from sensemem.models import openai_sdk as openai_backend
+from sensemem.types import AssetRef, EvidenceBasis, MemoryContext, MemoryKind, Modality, SearchHit
 
 NOW = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+
+def test_transport_closure_preserves_shared_sources_and_direct_partial_pool_labels() -> None:
+    source = _hit("source")
+    first = _hit("first", evidence_ids=(source.id,))
+    second = _hit("second", evidence_ids=(source.id,))
+    external = _hit("external", evidence_ids=("not-supplied",))
+    hits = (first, second, source, external)
+    assert retain_source_complete_hits(hits, hits) == hits
+    assert retain_source_complete_hits((first, second, external), hits) == (external,)
+    payload = answer_evidence_payloads((external,))[0]
+    assert cast(dict[str, object], payload["context"])["sources_not_in_context"] == ["S1"]
 
 
 def test_constraint_candidates_preserve_scope_and_report_competing_values() -> None:

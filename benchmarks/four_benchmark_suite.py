@@ -9,9 +9,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from mindbridge.benchmarks.download import acquire_inputs, acquire_media
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks.download import acquire_inputs, acquire_media
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 def main() -> int:
@@ -20,11 +20,11 @@ def main() -> int:
     recipe = json.loads(Path(__file__).with_suffix(".json").read_text())
     env = dict(_env())
     workspace = (
-        Path.home() / ".local/share/openresearch/benchmark-cache/mindbridge" / recipe["suite_id"]
+        Path.home() / ".local/share/openresearch/benchmark-cache/sensemem" / recipe["suite_id"]
     )
     root = workspace / "datasets"
     root.mkdir(parents=True, exist_ok=True)
-    original = Path(env["MINDBRIDGE_BENCH_ROOT"])
+    original = Path(env["SENSEMEM_BENCH_ROOT"])
     for name in ("longmemeval", "atm-bench", "mem-gallery"):
         target = root / name
         if not target.exists():
@@ -39,9 +39,9 @@ def main() -> int:
     acquire_media(icm, root, announce=lambda line: print(line, flush=True))
     generation = {
         "provider": "openai",
-        "model": env["MINDBRIDGE_GENERATION_MODEL"],
-        "base_url": env["MINDBRIDGE_GENERATION_BASE_URL"],
-        "api_key": env.get("MINDBRIDGE_GENERATION_API_KEY", "EMPTY"),
+        "model": env["SENSEMEM_GENERATION_MODEL"],
+        "base_url": env["SENSEMEM_GENERATION_BASE_URL"],
+        "api_key": env.get("SENSEMEM_GENERATION_API_KEY", "EMPTY"),
         "modalities": ["text", "image", "video"],
         "timeout": 180.0,
         "max_retries": 2,
@@ -50,9 +50,9 @@ def main() -> int:
     config = {
         "embedding": {
             "provider": "openai",
-            "model": env["MINDBRIDGE_EMBEDDING_MODEL"],
-            "base_url": env["MINDBRIDGE_EMBEDDING_BASE_URL"],
-            "api_key": env.get("MINDBRIDGE_EMBEDDING_API_KEY", "EMPTY"),
+            "model": env["SENSEMEM_EMBEDDING_MODEL"],
+            "base_url": env["SENSEMEM_EMBEDDING_BASE_URL"],
+            "api_key": env.get("SENSEMEM_EMBEDDING_API_KEY", "EMPTY"),
             "dimension": 2048,
             "modalities": ["text", "image", "video"],
             "request_format": "messages",
@@ -78,7 +78,7 @@ def main() -> int:
                 "timeout_seconds": 180.0,
             },
             "run": {
-                "arms": "mindbridge",
+                "arms": "sensemem",
                 "limit": recipe["limit"],
                 "batch_size": "auto",
                 "max_batch_size": 64,
@@ -94,7 +94,7 @@ def main() -> int:
         },
     }
     results = []
-    with tempfile.TemporaryDirectory(prefix="mindbridge-eval-config-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="sensemem-eval-config-") as temporary:
         path = Path(temporary) / "config.json"
         path.write_text(json.dumps(config))
         path.chmod(0o600)
@@ -118,7 +118,7 @@ def main() -> int:
             command = [
                 sys.executable,
                 "-m",
-                "mindbridge.benchmarks.eval",
+                "sensemem.benchmarks.eval",
                 "--config",
                 str(path),
                 "--tasks",

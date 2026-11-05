@@ -9,7 +9,7 @@ from typing import cast
 import pytest
 from test_eval_metrics import _arguments
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AsyncMemory,
@@ -20,16 +20,16 @@ from mindbridge import (
     ModelInput,
     SearchHit,
 )
-from mindbridge.benchmarks import prepare_media
-from mindbridge.benchmarks.eval import _regressed, run_loaded_task
-from mindbridge.benchmarks.eval_adapters import LoadedTask, load_task
-from mindbridge.benchmarks.eval_console import _table
-from mindbridge.benchmarks.eval_metrics import _comparisons, _metrics, _videozerobench_metrics
-from mindbridge.benchmarks.eval_results import SampleResult
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.official_scorers import judge_plan, metric_is_official
-from mindbridge.benchmarks.task_catalog import TASKS, expand
-from mindbridge.benchmarks.videozerobench import (
+from sensemem.benchmarks import prepare_media
+from sensemem.benchmarks.eval import _regressed, run_loaded_task
+from sensemem.benchmarks.eval_adapters import LoadedTask, load_task
+from sensemem.benchmarks.eval_console import _table
+from sensemem.benchmarks.eval_metrics import _comparisons, _metrics, _videozerobench_metrics
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.official_scorers import judge_plan, metric_is_official
+from sensemem.benchmarks.task_catalog import TASKS, expand
+from sensemem.benchmarks.videozerobench import (
     VIDEOZERO_METRICS,
     SpatialEvidence,
     TemporalEvidence,

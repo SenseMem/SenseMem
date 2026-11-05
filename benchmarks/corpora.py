@@ -13,14 +13,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from mindbridge import Memory, MemoryType, ObservationContext
-from mindbridge.benchmarks.atm_bench import (
+from sensemem import Memory, MemoryType, ObservationContext
+from sensemem.benchmarks.atm_bench import (
     atm_capture_time,
     atm_email_block,
     load_atm_bench,
     load_atm_emails,
 )
-from mindbridge.benchmarks.mem_gallery import load_mem_gallery
+from sensemem.benchmarks.mem_gallery import load_mem_gallery
 
 # The provider adapter refuses an inline media item over 20 MiB base64-encoded, about 15 MiB of
 # bytes, and refuses it before the request rather than after -- so the video-sampling retry that

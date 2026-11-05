@@ -13,7 +13,7 @@ from _feature_support import TinyEmbedder
 from fastapi.testclient import TestClient
 from starlette.types import Message, Scope
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AsyncMemory,
@@ -22,7 +22,7 @@ from mindbridge import (
     ModelInput,
     SearchHit,
 )
-from mindbridge.api.app import create_app
+from sensemem.api.app import create_app
 
 
 @pytest.mark.asyncio

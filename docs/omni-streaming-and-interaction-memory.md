@@ -1,6 +1,6 @@
 # Omni streaming and interaction memory
 
-MindBridge separates changing capture state from durable memory. `StreamEvent` is the explicit form
+SenseMem separates changing capture state from durable memory. `StreamEvent` is the explicit form
 of that separation:
 
 1. An `UPDATE` is a complete current snapshot used only for speculative search.
@@ -51,7 +51,7 @@ transcript, or visual description:
 ```python
 from datetime import datetime, timedelta, timezone
 
-from mindbridge import Blob, MemoryType, StreamInput
+from sensemem import Blob, MemoryType, StreamInput
 
 started = datetime(2026, 8, 31, 9, tzinfo=timezone.utc)
 observation = StreamInput(
@@ -111,7 +111,7 @@ without storing its partial input. Every submission is the complete current quer
 delta:
 
 ```python
-from mindbridge import AsyncOmniPrefetch
+from sensemem import AsyncOmniPrefetch
 
 prefetch = AsyncOmniPrefetch(async_memory, limit=8)
 prefetch.submit((partial_text, latest_frame, current_audio_window))
@@ -151,7 +151,7 @@ keep independent speculative state. The same ID comes back on the resulting `Str
 | EOF before `FINAL` | — | Every open stream is discarded and drained | Never |
 
 ```python
-from mindbridge import AsyncCaptureStream, StreamEvent, StreamPhase
+from sensemem import AsyncCaptureStream, StreamEvent, StreamPhase
 
 
 async def camera_events():
@@ -213,7 +213,7 @@ belongs to that durable observation. Speculative updates do not persist the samp
 - `AcousticBoundary`: explicit `START`, `END`, or `CANCEL` finality.
 
 ```python
-from mindbridge import (
+from sensemem import (
     ASRPartial,
     AcousticBoundary,
     AsyncAudioStream,
@@ -258,7 +258,7 @@ packet schemas.
 - `SceneBoundary`: explicit `START`, `END`, or `CANCEL` finality.
 
 ```python
-from mindbridge import (
+from sensemem import (
     AsyncVisionStream,
     Blob,
     SceneBoundary,
@@ -312,7 +312,7 @@ Store the completed source observation first. Continuing with the `source_record
 application analysis can then add an ordinary record whose metadata cites the source:
 
 ```python
-from mindbridge import MemoryType
+from sensemem import MemoryType
 
 guidance = memory.add(
     "When deadline pressure is present, acknowledge it before proposing steps.",
@@ -325,7 +325,7 @@ guidance = memory.add(
 )
 ```
 
-On this manual path MindBridge stores that metadata but does not interpret its provenance,
+On this manual path SenseMem stores that metadata but does not interpret its provenance,
 confidence, or evidence IDs; emotion, trait, and policy inference remain application work.
 Configuring a `FormationBackend` instead moves the same information into typed, kernel-validated
 records, as described next.
@@ -341,7 +341,7 @@ episodic = memory.search(query, memory_type=MemoryType.EPISODIC, limit=2).hits
 procedural = memory.search(query, memory_type=MemoryType.PROCEDURAL, limit=1).hits
 ```
 
-Procedural records are evidence for the application; MindBridge never executes their text.
+Procedural records are evidence for the application; SenseMem never executes their text.
 Metadata and evidence IDs do not create an authorization or isolation boundary.
 
 ## Automatic memory formation
@@ -351,7 +351,7 @@ proposals. The former cannot write storage and is not trusted to choose IDs, evi
 semantics:
 
 ```python
-from mindbridge import Memory, OpenAIModels
+from sensemem import Memory, OpenAIModels
 
 models = OpenAIModels(
     embedding_client=embedding_client,
@@ -404,8 +404,8 @@ would have to pass is in the [benchmark protocol](benchmarking.md#mandatory-cont
 
 ## Observability
 
-Every completed stream item emits an ordinary `mindbridge.add` operation span. Every speculative
-search that starts emits an ordinary `mindbridge.search` span. This keeps model request, token,
+Every completed stream item emits an ordinary `sensemem.add` operation span. Every speculative
+search that starts emits an ordinary `sensemem.search` span. This keeps model request, token,
 latency, and failure accounting comparable with non-streaming calls. See
 [operations](operations.md#telemetry) for the attribute contract.
 

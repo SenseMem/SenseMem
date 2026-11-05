@@ -11,9 +11,9 @@ from typing import cast
 
 import pytest
 
-from mindbridge import Blob, Memory, MemoryConfig, Modality, RetrievalMode
-from mindbridge.exceptions import ModelError
-from mindbridge.models.base import EmbedTask, ModelInput
+from sensemem import Blob, Memory, MemoryConfig, Modality, RetrievalMode
+from sensemem.exceptions import ModelError
+from sensemem.models.base import EmbedTask, ModelInput
 
 
 class _Embedder:

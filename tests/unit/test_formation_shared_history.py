@@ -13,8 +13,8 @@ import pytest
 from test_formation_history import _history_input
 from test_openai_sdk import _sdk_client
 
-import mindbridge.models.openai_sdk as backend
-from mindbridge import AssetRef, FormationInput, Modality, ModelInput, OpenAIModels
+import sensemem.models.openai_sdk as backend
+from sensemem import AssetRef, FormationInput, Modality, ModelInput, OpenAIModels
 
 
 def _response(witnesses: list[list[str]]) -> str:

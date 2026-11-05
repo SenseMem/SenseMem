@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mindbridge import SearchHit
-from mindbridge.benchmarks.complementary import parse_plan, select_evidence, selector_payload
+from sensemem import SearchHit
+from sensemem.benchmarks.complementary import parse_plan, select_evidence, selector_payload
 
 
 def _hit(content: str, identifier: str = "memory") -> SearchHit:

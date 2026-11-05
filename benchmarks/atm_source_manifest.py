@@ -7,9 +7,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from mindbridge.benchmarks.atm_bench import atm_sgm_block, load_atm_sgm
-from mindbridge.benchmarks.eval_adapters import MediaResolver, parse_media_manifest
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks.atm_bench import atm_sgm_block, load_atm_sgm
+from sensemem.benchmarks.eval_adapters import MediaResolver, parse_media_manifest
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 def build(inputs: Path, destination: Path) -> dict[str, object]:

@@ -67,12 +67,12 @@ Install the MCP extra together with the extras required by the chosen backends, 
 server in the application that owns `Memory`:
 
 ```bash
-uv add "mindbridge[local,mcp]"
+uv add "sensemem[local,mcp]"
 ```
 
 ```python
-from mindbridge import Memory
-from mindbridge.api.mcp import build_mcp_server
+from sensemem import Memory
+from sensemem.api.mcp import build_mcp_server
 
 with Memory.from_config(
     {
@@ -131,7 +131,7 @@ alive for the server lifetime and close it during shutdown. Do not run another `
 MCP owner against the same physical `data_dir`. Composition and process ownership are defined in
 [architecture](../architecture.md) and [configuration](../configuration.md).
 
-MindBridge adds no authentication to any MCP transport. Stdio inherits local process permissions;
+SenseMem adds no authentication to any MCP transport. Stdio inherits local process permissions;
 an SSE or streamable-HTTP host must add authentication, authorization, TLS, request limits, and
 rate limits. MCP error `subject` is unredacted and may contain an owner-local path. See
 [deployment](../deployment.md) for process and transport boundaries.
@@ -169,7 +169,7 @@ rejected. The MCP-specific media bounds are listed below.
 All timestamps must be timezone-aware. An event end requires a start and must be later than it.
 
 MCP tool calls have one finite response and therefore expose completion latency, not TTFT. The
-adapter emits a `mindbridge.mcp.request` server span with the method, tool name, error status and
+adapter emits a `sensemem.mcp.request` server span with the method, tool name, error status and
 total server time. Use Python `ask_stream` or REST `POST /v1/answers/stream` when first-token
 delivery is part of the performance contract.
 Search event bounds are a half-open overlap filter; two bounds require
@@ -348,7 +348,7 @@ succeeds for every failure, including `memory_not_found`, `model_error`, and `st
 }
 ```
 
-Stable SDK codes are `mindbridge_error`, `validation_error`, `memory_not_found`,
+Stable SDK codes are `sensemem_error`, `validation_error`, `memory_not_found`,
 `identity_not_found`, `model_error`, `model_output_truncated`,
 `storage_error`, and `index_unavailable`; unexpected failures use `internal_error`. Reasons and
 retryability use the [shared vocabulary](rest.md#codes-and-reasons).

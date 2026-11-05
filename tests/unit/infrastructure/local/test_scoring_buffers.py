@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
-from mindbridge.infrastructure.local.scoring import max_cosine_part_scores
+from sensemem.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.scoring import max_cosine_part_scores
 
 
 @pytest.mark.parametrize("query_count", (1, 3, 4, 8))

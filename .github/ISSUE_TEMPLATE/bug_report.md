@@ -24,7 +24,7 @@ assignees: ''
 
 ## Environment
 
-- MindBridge version or commit:
+- SenseMem version or commit:
 - Python version:
 - Operating system and architecture:
 - Installed extras (for example `local`, `openai`, `server`, or `mcp`):

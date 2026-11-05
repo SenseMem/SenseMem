@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
-from mindbridge import (
+from sensemem import (
     EvidenceBasis,
     FormationInput,
     FormationProposal,
@@ -55,7 +55,7 @@ def test_a_refused_formation_proposal_is_logged_with_its_reason(
 ) -> None:
     with (
         Memory(tmp_path, embedder=TinyEmbedder(), former=_AudibleAffectFormer()) as memory,
-        caplog.at_level(logging.WARNING, logger="mindbridge.kernel.formation"),
+        caplog.at_level(logging.WARNING, logger="sensemem.kernel.formation"),
     ):
         record = memory.add("I waited for the call")
 

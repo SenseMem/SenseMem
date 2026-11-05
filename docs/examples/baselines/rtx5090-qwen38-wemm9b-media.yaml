@@ -68,7 +68,7 @@ benchmark:
     data_root: .benchmarks/data
   run:
     tasks: atm-bench-main,video-mme-v2
-    arms: mindbridge
+    arms: sensemem
     limit: all
     batch_size: "1"
     max_batch_size: 1

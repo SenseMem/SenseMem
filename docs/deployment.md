@@ -7,12 +7,38 @@ This page chooses and configures a topology. See [architecture](architecture.md)
 [operations](operations.md) for runbooks, and [troubleshooting](troubleshooting.md) when startup or
 traffic fails.
 
+## Upgrading to SenseMem
+
+SenseMem 0.3.0 uses the `sensemem` distribution and Python import package. Install the extras you
+need, update imports to `from sensemem import Memory`, and replace branded configuration and error
+classes with `SenseMemConfig` and `SenseMemError`. The commands are `sensemem` and `sensemem-bench`;
+benchmark environment variables use `SENSEMEM_*`. Provider-standard variables such as
+`OPENAI_API_KEY` keep their names. Repository links point to
+[SenseMem/SenseMem](https://github.com/SenseMem/SenseMem).
+
+The default data directory is `.sensemem` with ownership lock `.sensemem.lock`. SQLite schema 21
+and derived identifiers use the new namespace. Earlier schemas are refused without migrating or
+rewriting stored records. Start with a fresh physical directory and re-ingest source observations;
+renaming an existing directory does not convert its format.
+
+Keep running experiments on their original checkout or frozen snapshot, Python environment,
+configuration, data directory, output directory, and environment variables until they finish.
+Prepare the rename in a separate checkout and virtual environment. Do not rename, overwrite,
+reinstall, or synchronize an active experiment's files, even when its Python process is already
+running: lazy imports and subprocesses may still need them. Different runtime versions must never
+share a data directory because their lock filenames differ.
+
+New evaluations use schema 23, `sensemem` arm names and `sensemem_version`. Existing result and cache
+files remain evidence of their original run; do not rewrite them to adopt the new branding or pass
+them to the new runner as current-format inputs. Keep source snapshots, commit IDs and manifests
+with those results. Prompts, model settings and scoring policies are unchanged by the rename.
+
 ## Choose a topology
 
 | Need | Topology | Constraint |
 | --- | --- | --- |
 | One Python application owns memory | Embed `Memory` in that process | Keep one instance open and close it during shutdown. |
-| Other processes need HTTP | Expose the owner with `create_app()` | Run one ASGI worker for that directory and supply network controls outside MindBridge. |
+| Other processes need HTTP | Expose the owner with `create_app()` | Run one ASGI worker for that directory and supply network controls outside SenseMem. |
 | One agent host needs tools | Run `build_mcp_server()` in the owner process | Prefer stdio; secure SSE or streamable HTTP as a network service. |
 | Independent workers need independent state | Give each worker a distinct directory | The directories are separate memory domains; they do not synchronize. |
 
@@ -40,7 +66,7 @@ Before starting the owner, verify:
 - A shutdown hook calls `Memory.close()` and closes caller-owned provider clients.
 
 Network filesystems and shared-volume multi-writer deployments are unsupported. On POSIX,
-MindBridge sets the top-level directory to `0700` and its SQLite, lock, staging, and asset files to
+SenseMem sets the top-level directory to `0700` and its SQLite, lock, staging, and asset files to
 restrictive modes. The operator still owns parent permissions, service accounts, disk encryption,
 backup access, and retention.
 
@@ -50,18 +76,18 @@ Install only the optional surfaces used by the application. This example uses th
 embedder and OpenAI generation adapter:
 
 ```bash
-uv add "mindbridge[local,openai]"
+uv add "sensemem[local,openai]"
 ```
 
 ```python
 from openai import OpenAI
 
-from mindbridge import SentenceTransformersEmbedder, Memory, OpenAIModels
+from sensemem import SentenceTransformersEmbedder, Memory, OpenAIModels
 
 client = OpenAI(timeout=30.0, max_retries=3)
 try:
     with Memory(
-        "/var/lib/mindbridge/assistant",
+        "/var/lib/sensemem/assistant",
         embedder=SentenceTransformersEmbedder(
             model_id="google/embeddinggemma-2",
             revision="f9972ac22e696a105c482202646979e33e4b5a1e",
@@ -90,7 +116,7 @@ trace IDs for production diagnosis. Local storage does not imply that inference 
 
 ## EmbeddingGemma 2 model server
 
-Run vLLM separately from the MindBridge owner, with a version containing
+Run vLLM separately from the SenseMem owner, with a version containing
 [EmbeddingGemma 2 support](https://github.com/vllm-project/vllm/pull/60254). Obtain access to the
 model checkpoint and install the model runtime dependencies required by that vLLM version in its
 own environment. Start a pooling server with the checkpoint's bundled chat template:
@@ -105,14 +131,14 @@ vllm serve google/embeddinggemma-2 \
 
 Keep text, image, audio, and video enabled for full multimodal support. The 8,192-token limit is
 shared by text and media in each input; split larger inputs before ingestion. Do not substitute
-a generative Gemma chat template or rename the served model: MindBridge selects its retrieval
+a generative Gemma chat template or rename the served model: SenseMem selects its retrieval
 recipe using the exact model name. Use vLLM's `--revision` option to pin an immutable checkpoint
 commit in deployments that need reproducibility.
 
-Install `mindbridge[openai]` in the application environment and use the
+Install `sensemem[openai]` in the application environment and use the
 [EmbeddingGemma 2 vLLM configuration](configuration.md#embeddinggemma-2-through-vllm), which sends
 requests to `http://127.0.0.1:8000/v1/embeddings`. The `EMPTY` key is a placeholder for this local
-server; configure the actual key when server authentication is enabled. Keep one MindBridge
+server; configure the actual key when server authentication is enabled. Keep one SenseMem
 owner per physical data directory even when several owners share the model server.
 
 ## REST owner
@@ -120,7 +146,7 @@ owner per physical data directory even when several owners share the model serve
 Install the server surface with the selected model extras:
 
 ```bash
-uv add "mindbridge[local,openai,server]" uvicorn
+uv add "sensemem[local,openai,server]" uvicorn
 ```
 
 Keep the owner and caller-owned client open around the ASGI server in `my_application.py`:
@@ -129,14 +155,14 @@ Keep the owner and caller-owned client open around the ASGI server in `my_applic
 from openai import OpenAI
 import uvicorn
 
-from mindbridge import SentenceTransformersEmbedder, Memory, OpenAIModels
-from mindbridge.api import create_app
+from sensemem import SentenceTransformersEmbedder, Memory, OpenAIModels
+from sensemem.api import create_app
 
 
 def main() -> None:
     with OpenAI(timeout=30.0, max_retries=3) as client:
         with Memory(
-            "/var/lib/mindbridge/assistant",
+            "/var/lib/sensemem/assistant",
             embedder=SentenceTransformersEmbedder(
                 model_id="google/embeddinggemma-2",
                 revision="f9972ac22e696a105c482202646979e33e4b5a1e",
@@ -158,7 +184,7 @@ uv run python my_application.py
 ```
 
 `create_app()` does not own or close either resource. For an importable ASGI app, arrange the same
-cleanup in the host's lifespan and run one worker. MindBridge does not depend on Uvicorn; it is the
+cleanup in the host's lifespan and run one worker. SenseMem does not depend on Uvicorn; it is the
 host-selected server in this example. The adapter adds no authentication,
 authorization, TLS, rate limiting, quota, or access audit log. Bind to a trusted interface or put the app
 behind the deployment's existing gateway or middleware. Keep `/healthz` protected consistently; it
@@ -174,16 +200,16 @@ precede a transport timeout or index failure; preserve or recover the stable ret
 Install the MCP surface and pass it the same process-owned instance:
 
 ```bash
-uv add "mindbridge[local,mcp]"
+uv add "sensemem[local,mcp]"
 ```
 
 ```python
-from mindbridge import Memory
-from mindbridge.api.mcp import build_mcp_server
+from sensemem import Memory
+from sensemem.api.mcp import build_mcp_server
 
 with Memory.from_config(
     {
-        "data_dir": "/var/lib/mindbridge/assistant",
+        "data_dir": "/var/lib/sensemem/assistant",
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
@@ -208,9 +234,9 @@ same data directory. REST and MCP accept inline data or stored asset IDs, never 
 HTTP(S) URLs. Fetch remote media in application code so redirects, SSRF controls, credentials,
 timeouts, retries, download limits, and telemetry remain in the application's network policy.
 
-After a successful add, MindBridge owns an immutable copy under `assets/`; the source file is no
+After a successful add, SenseMem owns an immutable copy under `assets/`; the source file is no
 longer required. Keep SQLite and `assets/` together through backup and restore.
 
 Model placement is explicit. Local adapters accept or delegate device selection; custom backends
-may use local or remote inference. MindBridge does not schedule GPUs, select quantization for
+may use local or remote inference. SenseMem does not schedule GPUs, select quantization for
 models, or move work between edge and cloud.

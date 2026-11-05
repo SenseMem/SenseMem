@@ -3,8 +3,8 @@
 import json
 import re
 
-from mindbridge.models._answer_output import parse_answer_draft
-from mindbridge.models.openai_sdk import _STRUCTURED_ANSWER_PROMPT
+from sensemem.models._answer_output import parse_answer_draft
+from sensemem.models.openai_sdk import _STRUCTURED_ANSWER_PROMPT
 
 
 def test_all_structured_answer_examples_are_complete_valid_envelopes() -> None:

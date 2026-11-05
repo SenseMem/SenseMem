@@ -7,17 +7,17 @@ from types import SimpleNamespace
 import pytest
 from test_independent_evidence import _derive, _open, _root
 
-from mindbridge import ContextBudget, ContextProof, ContextProofNode, ValidationError
-from mindbridge.api.app import ContextBundleResponse
-from mindbridge.api.content import ContextBudgetInput, context_budget
-from mindbridge.api.mcp import ContextBundleResult
-from mindbridge.kernel.corroboration import (
+from sensemem import ContextBudget, ContextProof, ContextProofNode, ValidationError
+from sensemem.api.app import ContextBundleResponse
+from sensemem.api.content import ContextBudgetInput, context_budget
+from sensemem.api.mcp import ContextBundleResult
+from sensemem.kernel.corroboration import (
     Assessment,
     EvidenceNode,
     SupportSummary,
     independent_support,
 )
-from mindbridge.kernel.proofs import certificates, proof_support, select_certificates
+from sensemem.kernel.proofs import certificates, proof_support, select_certificates
 
 
 def test_count_and_confidence_can_require_three_separate_witnesses() -> None:

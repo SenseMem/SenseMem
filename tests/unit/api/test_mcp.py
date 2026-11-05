@@ -31,11 +31,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, StatusCode
 
-from mindbridge import Memory
-from mindbridge.api import content
-from mindbridge.api import mcp as mcp_adapter
-from mindbridge.api.mcp import build_mcp_server
-from mindbridge.exceptions import (
+from sensemem import Memory
+from sensemem.api import content
+from sensemem.api import mcp as mcp_adapter
+from sensemem.api.mcp import build_mcp_server
+from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
     MemoryNotFoundError,
@@ -44,7 +44,7 @@ from mindbridge.exceptions import (
     StorageError,
     ValidationError,
 )
-from mindbridge.types import (
+from sensemem.types import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -788,13 +788,13 @@ async def test_mcp_records_buffered_completion_latency_without_claiming_ttft() -
     spans = [
         span
         for span in exporter.get_finished_spans()
-        if span.name == "mindbridge.mcp.request"
+        if span.name == "sensemem.mcp.request"
         and (span.attributes or {}).get("rpc.service") == "ask_memory"
     ]
     assert len(spans) == 1
     attributes = spans[0].attributes or {}
-    assert attributes["mindbridge.transport.response_mode"] == "buffered"
-    assert cast(float, attributes["mindbridge.transport.server_total_ms"]) >= 0
+    assert attributes["sensemem.transport.response_mode"] == "buffered"
+    assert cast(float, attributes["sensemem.transport.server_total_ms"]) >= 0
     assert all("first" not in name or "token" not in name for name in attributes)
 
 
@@ -827,7 +827,7 @@ async def test_mcp_emits_one_server_span_for_a_tool_request(
             or (span.attributes or {}).get("gen_ai.tool.name") == "ask_memory"
         )
     ]
-    assert [span.name for span in tool_spans] == ["mindbridge.mcp.request"]
+    assert [span.name for span in tool_spans] == ["sensemem.mcp.request"]
 
 
 async def test_mcp_traces_invalid_request_state_before_rejecting_it() -> None:
@@ -853,7 +853,7 @@ async def test_mcp_traces_invalid_request_state_before_rejecting_it() -> None:
         for span in exporter.get_finished_spans()
         if (span.attributes or {}).get("rpc.method") == "tools/call"
     ]
-    assert [span.name for span in spans] == ["mindbridge.mcp.request"]
+    assert [span.name for span in spans] == ["sensemem.mcp.request"]
     assert spans[0].status.status_code is StatusCode.ERROR
 
 
@@ -877,7 +877,7 @@ async def test_mcp_marks_tool_error_results_without_recording_exception_details(
     span = next(
         span
         for span in exporter.get_finished_spans()
-        if span.name == "mindbridge.mcp.request"
+        if span.name == "sensemem.mcp.request"
         and (span.attributes or {}).get("rpc.service") == "ask_memory"
     )
     assert span.status.status_code is StatusCode.ERROR
@@ -903,7 +903,7 @@ async def test_mcp_transport_trace_does_not_record_an_unknown_tool_name() -> Non
     span = next(
         span
         for span in exporter.get_finished_spans()
-        if span.name == "mindbridge.mcp.request"
+        if span.name == "sensemem.mcp.request"
         and (span.attributes or {}).get("rpc.method") == "tools/call"
     )
     assert "rpc.service" not in (span.attributes or {})
@@ -1140,7 +1140,7 @@ async def test_the_compile_tool_returns_the_whole_bundle_without_local_asset_pat
             "name": "frame.png",
         }
     ]
-    assert "/private/mindbridge/assets" not in json.dumps(bundle)
+    assert "/private/sensemem/assets" not in json.dumps(bundle)
     assert defaulted.structured_content is not None
     assert defaulted.structured_content["budget"] == {
         "selected_proofs": False,

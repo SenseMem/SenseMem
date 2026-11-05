@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from mindbridge.benchmarks.eval_server_metrics import (
+from sensemem.benchmarks.eval_server_metrics import (
     MetricsSnapshot,
     metrics_window,
     parse_prometheus,
@@ -62,7 +62,7 @@ def test_metrics_window_reports_counter_histogram_and_gauge_deltas(
         {"vllm:num_requests_running": 2},
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_server_metrics.capture_metrics",
+        "sensemem.benchmarks.eval_server_metrics.capture_metrics",
         lambda *_args, **_kwargs: after,
     )
 
@@ -87,7 +87,7 @@ def test_metrics_window_marks_counter_resets_partial(monkeypatch: pytest.MonkeyP
         "end", {"vllm:request_success_total": 2.0}, {"vllm:request_success_total": 1}
     )
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_server_metrics.capture_metrics",
+        "sensemem.benchmarks.eval_server_metrics.capture_metrics",
         lambda *_args, **_kwargs: after,
     )
 
@@ -118,7 +118,7 @@ def test_metrics_window_subtracts_interleaved_judge_counters(
     judge_end = snapshot("judge-end", 15, 180)
     after = snapshot("end", 19, 260)
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_server_metrics.capture_metrics",
+        "sensemem.benchmarks.eval_server_metrics.capture_metrics",
         lambda *_args, **_kwargs: after,
     )
 
@@ -145,7 +145,7 @@ def test_metrics_window_preserves_snapshot_failure_without_aborting(
     before = MetricsSnapshot("start", {}, {}, "TimeoutError")
     after = MetricsSnapshot("end", {}, {}, "URLError")
     monkeypatch.setattr(
-        "mindbridge.benchmarks.eval_server_metrics.capture_metrics",
+        "sensemem.benchmarks.eval_server_metrics.capture_metrics",
         lambda *_args, **_kwargs: after,
     )
 

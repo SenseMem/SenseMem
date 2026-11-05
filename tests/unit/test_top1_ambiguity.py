@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     Memory,
     MemoryConfig,

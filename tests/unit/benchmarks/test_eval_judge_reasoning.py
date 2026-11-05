@@ -15,12 +15,12 @@ import pytest
 from openai import AsyncOpenAI
 from opentelemetry import trace
 
-from mindbridge.benchmarks import eval_judge
-from mindbridge.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask
-from mindbridge.benchmarks.eval_config import _Arguments, _JudgeConfig
-from mindbridge.benchmarks.eval_results import SampleResult
-from mindbridge.benchmarks.official_scorers import JudgePlan, judge_failure_scores, judge_plan
-from mindbridge.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks import eval_judge
+from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask
+from sensemem.benchmarks.eval_config import _Arguments, _JudgeConfig
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.official_scorers import JudgePlan, judge_failure_scores, judge_plan
+from sensemem.benchmarks.task_catalog import TaskSpec
 
 
 def _sample() -> SampleResult:

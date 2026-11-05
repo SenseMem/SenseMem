@@ -12,7 +12,7 @@ import pytest
 from _feature_support import TinyEmbedder
 from openai import OpenAI
 
-from mindbridge import (
+from sensemem import (
     Blob,
     FormationInput,
     FormationProposal,
@@ -21,7 +21,7 @@ from mindbridge import (
     ObservationContext,
     OpenAIModels,
 )
-from mindbridge.models.openai_sdk import _formation_content
+from sensemem.models.openai_sdk import _formation_content
 
 OBSERVED_AT = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 

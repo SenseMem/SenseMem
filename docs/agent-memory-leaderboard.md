@@ -1,6 +1,6 @@
 # Agent Memory Leaderboard
 
-`mindbridge-bench eval serve` exposes MindBridge in the
+`sensemem-bench eval serve` exposes SenseMem in the
 [Agent Memory Leaderboard (AML) Add/Search format](https://agentmemoryleaderboard.ai/api-guide).
 It is a participant-hosted benchmark adapter. AML calls these endpoints and runs its own Answer
 and Eval stages; this command does not generate final answers or publish local evaluation scores.
@@ -32,9 +32,9 @@ Set the participant's Memory System Key in the environment and start the adapter
 extra includes Uvicorn for this launch command:
 
 ```bash
-export MINDBRIDGE_AML_API_KEY="..."
+export SENSEMEM_AML_API_KEY="..."
 
-uv run --frozen mindbridge-bench eval serve \
+uv run --frozen sensemem-bench eval serve \
   --config .benchmarks/configs/aml.yaml \
   --data-root .benchmarks/aml \
   --host 127.0.0.1 \
@@ -133,7 +133,7 @@ readiness.
 
 ## Isolation and data lifecycle
 
-Each exact `user_id` maps to `users/<sha256(user_id)>`, a separate physical MindBridge directory.
+Each exact `user_id` maps to `users/<sha256(user_id)>`, a separate physical SenseMem directory.
 Requests for the same user are serialized; different users can operate concurrently. The data
 root has exclusive ownership, so a second process using it fails immediately. Hashing also keeps
 external identifiers out of filesystem paths. No `user_id` field or scope is added to the product

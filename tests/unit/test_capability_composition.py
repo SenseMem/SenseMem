@@ -8,7 +8,7 @@ from threading import Barrier, Lock
 import pytest
 from test_automatic_routing import ALL, TEXT, Answerer, Describer, Embedder, Speech
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,

@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from mindbridge import Memory, StorageError
-from mindbridge.benchmarks import sdk_concurrency as benchmark
+from sensemem import Memory, StorageError
+from sensemem.benchmarks import sdk_concurrency as benchmark
 
 
 @pytest.mark.parametrize("workload", ("get", "search", "add", "mixed"))

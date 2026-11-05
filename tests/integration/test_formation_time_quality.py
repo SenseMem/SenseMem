@@ -1,4 +1,4 @@
-"""Opt-in real-model fixtures: mindbridge-formation-time-v1 (no private data)."""
+"""Opt-in real-model fixtures: sensemem-formation-time-v1 (no private data)."""
 
 import json
 import os
@@ -10,16 +10,16 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import FormationInput, MemoryKind, ModelInput, ObservationContext, OpenAIModels
+from sensemem import FormationInput, MemoryKind, ModelInput, ObservationContext, OpenAIModels
 
 MODEL_SNAPSHOT = "gpt-5-mini-2025-08-07"
 REFERENCE_AT = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.environ.get("MINDBRIDGE_FORMATION_TIME_EVAL") != "1"
+        os.environ.get("SENSEMEM_FORMATION_TIME_EVAL") != "1"
         or not os.environ.get("OPENAI_API_KEY"),
-        reason="requires opt-in MINDBRIDGE_FORMATION_TIME_EVAL=1 and OPENAI_API_KEY",
+        reason="requires opt-in SENSEMEM_FORMATION_TIME_EVAL=1 and OPENAI_API_KEY",
     ),
 ]
 
@@ -69,7 +69,7 @@ def test_relative_date_formation_quality(case: str, repeat: int) -> None:
         print(
             json.dumps(
                 {
-                    "fixture": "mindbridge-formation-time-v1",
+                    "fixture": "sensemem-formation-time-v1",
                     "case": case,
                     "repeat": repeat,
                     "configured_model": MODEL_SNAPSHOT,

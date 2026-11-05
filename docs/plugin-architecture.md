@@ -2,7 +2,7 @@
 
 ## Decision
 
-MindBridge uses a stable memory kernel with explicit, typed computation plugins. It does not use a
+SenseMem uses a stable memory kernel with explicit, typed computation plugins. It does not use a
 global registry, arbitrary pipeline hooks, automatic package installation, or a second execution
 plane.
 
@@ -22,7 +22,7 @@ the rules for adding to it. The declarative entry point constructs bundled imple
 exposing runtime details:
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 with Memory.from_config(
     {
@@ -186,13 +186,13 @@ improvements require separate evaluation.
 
 ## Embodied integration boundary
 
-MindBridge may improve embodied memory representation, retrieval, provenance, temporal validity,
+SenseMem may improve embodied memory representation, retrieval, provenance, temporal validity,
 and failure diagnosis without becoming a robot AgentOS. Planner, skill-runner, verifier,
 edge/cloud routing, robot-control, benchmark harness, and model-training contracts remain outside
 the product boundary. Procedural memory is evidence and is never executed as code.
 
 New entity, relation, or spatial projections must remain additive to authoritative records and earn
-their complexity through MindBridge's own measured retrieval results. A paper's architecture or
+their complexity through SenseMem's own measured retrieval results. A paper's architecture or
 benchmark score is not by itself a reason to replace the flat durable representation.
 
 Interaction memory uses the existing semantic, episodic, and procedural roles. Any

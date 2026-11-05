@@ -19,12 +19,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import mindbridge.models.openai_sdk as backend
-from mindbridge import Memory, Modality, ModelInput, SearchHit
-from mindbridge.evidence import answer_evidence_payloads
-from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.models.openai_sdk import OpenAIModels
-from mindbridge.types import AssetRef
+import sensemem.models.openai_sdk as backend
+from sensemem import Memory, Modality, ModelInput, SearchHit
+from sensemem.evidence import answer_evidence_payloads
+from sensemem.exceptions import ModelError, ValidationError
+from sensemem.models.openai_sdk import OpenAIModels
+from sensemem.types import AssetRef
 
 
 def _video(tmp_path: Path, *, name: str = "clip", oversized: bool = False) -> AssetRef:
@@ -266,7 +266,7 @@ def test_large_video_answer_prices_frames_reuses_decode_and_keeps_source_ids(
     assert calls == 1
     attributes = exporter.get_finished_spans()[0].attributes
     assert attributes is not None
-    assert attributes["mindbridge.grounding.video_sampled_assets"] == 1
+    assert attributes["sensemem.grounding.video_sampled_assets"] == 1
     provider.shutdown()
 
 

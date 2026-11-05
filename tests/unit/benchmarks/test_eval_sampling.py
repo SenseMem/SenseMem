@@ -11,17 +11,17 @@ from typing import cast
 import openai
 import pytest
 
-import mindbridge.configuration as configuration_module
-from mindbridge import EmbedTask, MindBridgeConfig, Modality, ModelInput, SearchHit
-from mindbridge.benchmarks import eval as eval_module
-from mindbridge.benchmarks.eval_arms import _BaselineGenerator
-from mindbridge.benchmarks.eval_config import (
+import sensemem.configuration as configuration_module
+from sensemem import EmbedTask, Modality, ModelInput, SearchHit, SenseMemConfig
+from sensemem.benchmarks import eval as eval_module
+from sensemem.benchmarks.eval_arms import _BaselineGenerator
+from sensemem.benchmarks.eval_config import (
     _Arguments,
     _evaluation_memory_config,
     _generation_kwargs,
     _generation_temperature,
 )
-from mindbridge.benchmarks.model_config import ModelConfig
+from sensemem.benchmarks.model_config import ModelConfig
 
 
 @pytest.mark.parametrize("configured_style", ["default", "concise"], ids=["configured", "concise"])
@@ -87,7 +87,7 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
     arguments = cast(_Arguments, SimpleNamespace(gen_kwargs=options, seed=7, device=None))
     model = ModelConfig(generation_model="qwen3.8-27b")
     declared = (
-        MindBridgeConfig.model_validate(
+        SenseMemConfig.model_validate(
             {
                 "embedding": {"provider": "sentence-transformers", "model": "fixture"},
                 "generation": {

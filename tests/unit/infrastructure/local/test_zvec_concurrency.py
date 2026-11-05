@@ -13,9 +13,9 @@ from threading import Barrier, Event
 
 import pytest
 
-import mindbridge.infrastructure.local.zvec_index as zvec_index_module
-from mindbridge.infrastructure.local.store import IndexDocument, StoredEmbedding
-from mindbridge.infrastructure.local.zvec_index import ZvecIndex
+import sensemem.infrastructure.local.zvec_index as zvec_index_module
+from sensemem.infrastructure.local.store import IndexDocument, StoredEmbedding
+from sensemem.infrastructure.local.zvec_index import ZvecIndex
 
 
 def _document(number: int) -> IndexDocument:

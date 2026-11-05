@@ -7,8 +7,8 @@ from typing import cast
 
 import pytest
 
-from mindbridge.infrastructure.local.store import RECALL_MAX_TERM_CHARS
-from mindbridge.recall import (
+from sensemem.infrastructure.local.store import RECALL_MAX_TERM_CHARS
+from sensemem.recall import (
     _MAX_NEIGHBOR_ANCHORS,
     DEFAULT_MAX_ROWS,
     RecallPlan,
@@ -21,7 +21,7 @@ from mindbridge.recall import (
     parse_recall_plan,
     recall_note,
 )
-from mindbridge.types import MemoryType, Modality, SearchHit
+from sensemem.types import MemoryType, Modality, SearchHit
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 
@@ -219,7 +219,7 @@ def test_a_full_plan_parses_every_op_with_its_own_fields() -> None:
 def test_an_unrunnable_plan_falls_back_instead_of_running_something_else(
     document: dict[str, object],
 ) -> None:
-    """A plan MindBridge cannot run exactly as written is not run at all.
+    """A plan SenseMem cannot run exactly as written is not run at all.
 
     The alternative -- dropping the part that did not parse -- would answer a set question from
     a silently smaller set and still report it as complete.

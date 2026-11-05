@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from mindbridge import FormationInput, ModelInput, ObservationContext, ValidationError
+from sensemem import FormationInput, ModelInput, ObservationContext, ValidationError
 
 OBSERVED_AT = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 

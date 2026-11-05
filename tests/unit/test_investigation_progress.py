@@ -10,7 +10,7 @@ from typing import TypedDict
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,
@@ -21,7 +21,7 @@ from mindbridge import (
     RetrievalMode,
     SearchHit,
 )
-from mindbridge.models.base import EmbedTask
+from sensemem.models.base import EmbedTask
 
 _CLOCK = datetime(2026, 1, 10, tzinfo=timezone.utc)
 

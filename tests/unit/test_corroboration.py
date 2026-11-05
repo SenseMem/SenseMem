@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from mindbridge.kernel.corroboration import (
+from sensemem.kernel.corroboration import (
     Assessment,
     EvidenceNode,
     SupportSummary,

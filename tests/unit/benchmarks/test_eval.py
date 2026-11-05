@@ -28,9 +28,9 @@ from opentelemetry import trace
 from opentelemetry.trace import Tracer
 from pydantic import ValidationError
 
-import mindbridge.benchmarks.eval as eval_module
-import mindbridge.models.base as base_module
-from mindbridge import (
+import sensemem.benchmarks.eval as eval_module
+import sensemem.models.base as base_module
+from sensemem import (
     AbstentionReason,
     AnswerChunk,
     AnswerPolicy,
@@ -44,21 +44,21 @@ from mindbridge import (
     MemoryConfig,
     MemoryPlugins,
     MemoryType,
-    MindBridgeConfig,
     Modality,
     ModelError,
     SearchHit,
+    SenseMemConfig,
     StorageError,
 )
-from mindbridge._telemetry import _record_retrieval_results
-from mindbridge.benchmarks import eval_arms as eval_arms_module
-from mindbridge.benchmarks import eval_artifacts as eval_artifacts_module
-from mindbridge.benchmarks import eval_config as eval_config_module
-from mindbridge.benchmarks import eval_console as eval_console_module
-from mindbridge.benchmarks import eval_judge as eval_judge_module
-from mindbridge.benchmarks import eval_metrics as eval_metrics_module
-from mindbridge.benchmarks import eval_results as eval_results_module
-from mindbridge.benchmarks.eval import (
+from sensemem._telemetry import _record_retrieval_results
+from sensemem.benchmarks import eval_arms as eval_arms_module
+from sensemem.benchmarks import eval_artifacts as eval_artifacts_module
+from sensemem.benchmarks import eval_config as eval_config_module
+from sensemem.benchmarks import eval_console as eval_console_module
+from sensemem.benchmarks import eval_judge as eval_judge_module
+from sensemem.benchmarks import eval_metrics as eval_metrics_module
+from sensemem.benchmarks import eval_results as eval_results_module
+from sensemem.benchmarks.eval import (
     MemoryFactory,
     _answer_many,
     _BorrowedFaceBackend,
@@ -70,7 +70,7 @@ from mindbridge.benchmarks.eval import (
     main,
     run_loaded_task,
 )
-from mindbridge.benchmarks.eval_adapters import (
+from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     LoadedTask,
@@ -85,8 +85,8 @@ from mindbridge.benchmarks.eval_adapters import (
     load_task,
     parse_media_manifest,
 )
-from mindbridge.benchmarks.eval_cache import CachedAnswer, ResponseCache
-from mindbridge.benchmarks.eval_config import (
+from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
+from sensemem.benchmarks.eval_config import (
     _fallback_reference_at,
     _generation_kwargs,
     _load_memory_config,
@@ -94,25 +94,25 @@ from mindbridge.benchmarks.eval_config import (
     _run_identifier,
     _seed_values,
 )
-from mindbridge.benchmarks.eval_metrics import (
+from sensemem.benchmarks.eval_metrics import (
     _video_mme_v2_accuracy,
     _video_mme_v2_rating,
 )
-from mindbridge.benchmarks.eval_results import SampleResult
-from mindbridge.benchmarks.eval_statistics import (
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.eval_statistics import (
     ScoredValue,
     paired_comparison,
     parse_choice,
     summarize,
 )
-from mindbridge.benchmarks.eval_telemetry import EvaluationTelemetry
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.mem_gallery import (
+from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.mem_gallery import (
     MemGalleryQuestion,
     MemGalleryRound,
     MemGallerySession,
 )
-from mindbridge.benchmarks.model_config import (
+from sensemem.benchmarks.model_config import (
     DEFAULT_HF_ENDPOINT,
     DownloadOverrides,
     DownloadSettings,
@@ -120,11 +120,11 @@ from mindbridge.benchmarks.model_config import (
     ModelConfig,
     default_benchmarks_root,
 )
-from mindbridge.benchmarks.official_scorers import scorer_protocol, task_family
-from mindbridge.benchmarks.task_catalog import TASKS, TaskSpec, expand
-from mindbridge.benchmarks.video_mme_v2 import score_group_answers
-from mindbridge.configuration import OpenAIEmbeddingConfig, OpenAIGenerationConfig
-from mindbridge.models.base import (
+from sensemem.benchmarks.official_scorers import scorer_protocol, task_family
+from sensemem.benchmarks.task_catalog import TASKS, TaskSpec, expand
+from sensemem.benchmarks.video_mme_v2 import score_group_answers
+from sensemem.configuration import OpenAIEmbeddingConfig, OpenAIGenerationConfig
+from sensemem.models.base import (
     SpeechAnalysis,
     SpeechBackend,
     SpeechTurn,
@@ -212,7 +212,7 @@ def test_query_parts_and_gallery_image_id_preserve_retrieval_evidence(tmp_path: 
 def test_gallery_keeps_the_question_in_its_official_template_position(
     tmp_path: Path, point: str
 ) -> None:
-    from mindbridge.benchmarks.prompts import (
+    from sensemem.benchmarks.prompts import (
         MEM_GALLERY_QUERY_PROMPT,
         mem_gallery_format_constraint,
         mem_gallery_refusal,
@@ -710,8 +710,8 @@ def test_mm_lifelong_memories_carry_their_media_offset_as_event_time(tmp_path: P
     across a batch and says nothing about the video. Anchoring the offsets on one fixed epoch
     gives the store a real chronology and `_with_corpus_reference` a real corpus end.
     """
-    from mindbridge.benchmarks.eval_adapters import _MEDIA_EPOCH, _mm_lifelong
-    from mindbridge.benchmarks.task_catalog import MediaSource, TaskSpec
+    from sensemem.benchmarks.eval_adapters import _MEDIA_EPOCH, _mm_lifelong
+    from sensemem.benchmarks.task_catalog import MediaSource, TaskSpec
 
     dataset = tmp_path / "test.json"
     dataset.write_text(
@@ -939,7 +939,7 @@ def test_response_cache_namespace_changes_with_the_answer_policy(
     baseline's refusal rate as its own. The resolved per-task policy is in there too, so widening
     `BEST_EFFORT_TASKS` cannot replay a task's older strict answers under its new default.
     """
-    from mindbridge.benchmarks import prompts
+    from sensemem.benchmarks import prompts
 
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
@@ -973,7 +973,7 @@ def test_response_cache_namespace_changes_with_the_answer_surface(
 ) -> None:
     """Widening `COMPILE_SURFACE_TASKS` must not replay a task's cached `ask` answers as answers
     from the compiled bundle."""
-    from mindbridge.benchmarks import prompts
+    from sensemem.benchmarks import prompts
 
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
@@ -986,8 +986,8 @@ def test_response_cache_namespace_changes_with_the_answer_surface(
 def test_response_cache_namespace_changes_with_runner_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert eval_results_module.EVAL_SCHEMA_VERSION == 22
-    assert eval_module.EVAL_RUNNER_VERSION == "mindbridge_eval_official_v23"
+    assert eval_results_module.EVAL_SCHEMA_VERSION == 23
+    assert eval_module.EVAL_RUNNER_VERSION == "sensemem_eval_official_v25"
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
 
@@ -1077,7 +1077,7 @@ def test_backend_pool_forwards_every_memory_setting_and_plugin(
 def test_implementation_identity_tracks_editable_source_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    package = tmp_path / "mindbridge"
+    package = tmp_path / "sensemem"
     benchmark = package / "benchmarks" / "eval.py"
     benchmark.parent.mkdir(parents=True)
     benchmark.write_text("RUNNER = 1\n", encoding="utf-8")
@@ -1096,7 +1096,7 @@ def test_benchmark_device_lock_serializes_separate_processes(tmp_path: Path) -> 
     script = """
 import sys
 from pathlib import Path
-from mindbridge.benchmarks.eval import _benchmark_device_lock
+from sensemem.benchmarks.eval import _benchmark_device_lock
 
 print("waiting", flush=True)
 with _benchmark_device_lock("cuda", enabled=True, quiet=True, lock_root=Path(sys.argv[1])):
@@ -1154,7 +1154,7 @@ def test_benchmark_device_lock_can_be_disabled_for_manual_scheduling(tmp_path: P
 def test_configured_devices_are_locked_in_physical_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "embedding": {
                 "provider": "sentence-transformers",
@@ -1176,7 +1176,7 @@ def test_configured_devices_are_locked_in_physical_order(
 
 
 def test_text_only_runs_do_not_lock_the_speech_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = MindBridgeConfig.model_validate(
+    config = SenseMemConfig.model_validate(
         {
             "embedding": {"provider": "openai", "model": "embed", "dimension": 4},
             "speech": {"provider": "funasr", "device": "cuda:1"},
@@ -1191,7 +1191,7 @@ def test_text_only_runs_do_not_lock_the_speech_device(monkeypatch: pytest.Monkey
 def test_model_base_url_override_replaces_environment_operation_urls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_BASE_URL", "https://old.example/v1")
+    monkeypatch.setenv("SENSEMEM_GENERATION_BASE_URL", "https://old.example/v1")
 
     config = _model_config("base_url=https://new.example/v1")
 
@@ -1370,14 +1370,14 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
         settings=settings,
         close=lambda: closed.append(True),
     )
-    configured: list[MindBridgeConfig] = []
+    configured: list[SenseMemConfig] = []
 
-    def resolve(config: MindBridgeConfig) -> object:
+    def resolve(config: SenseMemConfig) -> object:
         configured.append(config)
         return resolved
 
     monkeypatch.setattr(eval_module, "resolve_memory_config", resolve)
-    memory_config = MindBridgeConfig.model_validate(
+    memory_config = SenseMemConfig.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai"},
@@ -1437,7 +1437,7 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
     monkeypatch.setattr(eval_module, "AsyncMemory", lambda memory: memory)
     pool = eval_module._BackendPool(
         ModelConfig(),
-        memory_config=MindBridgeConfig.model_validate({"embedding": {"provider": "openai"}}),
+        memory_config=SenseMemConfig.model_validate({"embedding": {"provider": "openai"}}),
     )
 
     pool.memory(tmp_path)
@@ -1513,7 +1513,7 @@ def _protocol_members(protocol: type) -> set[str]:
 def test_every_lent_backend_declares_each_method_only_capability_its_pool_has() -> None:
     """A `runtime_checkable` protocol with no properties is an optional capability that `Memory`
     probes with `isinstance`, and the proxies have now hidden one of those twice. The expected
-    set is derived from `mindbridge.models.base`, so the next capability protocol, or a method
+    set is derived from `sensemem.models.base`, so the next capability protocol, or a method
     added to one, fails here instead of measuring the default policy under the harness. A
     protocol with properties describes a slot and needs its own explicit proxy, as above."""
     optional = [
@@ -2322,9 +2322,9 @@ def test_progress_throttles_a_non_interactive_run_by_elapsed_time(
 
     lines = capsys.readouterr().err.splitlines()
     assert [line.split(" (")[0] for line in lines] == [
-        "mindbridge-bench eval: running fixture: 1/20",
-        "mindbridge-bench eval: running fixture: 3/20",
-        "mindbridge-bench eval: running fixture: 20/20",
+        "sensemem-bench eval: running fixture: 1/20",
+        "sensemem-bench eval: running fixture: 3/20",
+        "sensemem-bench eval: running fixture: 20/20",
     ]
     # tqdm formats the meter, so the log line carries the same elapsed/ETA a bar would show.
     assert re.search(r"\( 15%\) \[01:01<\d\d:\d\d, +\d+", lines[1]) is not None
@@ -2357,9 +2357,9 @@ def test_deferred_progress_starts_when_media_total_is_discovered(
         report(2, 2)
 
     assert [line.split(" (")[0] for line in capsys.readouterr().err.splitlines()] == [
-        "mindbridge-bench eval: preparing fixture media: 0/2",
-        "mindbridge-bench eval: preparing fixture media: 1/2",
-        "mindbridge-bench eval: preparing fixture media: 2/2",
+        "sensemem-bench eval: preparing fixture media: 0/2",
+        "sensemem-bench eval: preparing fixture media: 1/2",
+        "sensemem-bench eval: preparing fixture media: 2/2",
     ]
 
 
@@ -2425,7 +2425,7 @@ async def test_a_judge_that_still_fails_after_the_wait_scores_the_answer_wrong(
     import httpx2 as httpx
     from openai import AsyncOpenAI
 
-    from mindbridge.benchmarks.official_scorers import judge_plan
+    from sensemem.benchmarks.official_scorers import judge_plan
 
     sample = replace(
         _sample_fixture(1, answer="yes"),
@@ -3066,7 +3066,7 @@ async def test_resume_leaves_a_store_another_run_owns_alone(tmp_path: Path) -> N
     def occupied(path: Path) -> _FakeContext:
         # What `Memory` raises when another live instance owns the directory.
         raise StorageError(
-            "the data directory is already in use by another live MindBridge instance",
+            "the data directory is already in use by another live SenseMem instance",
             reason="data_dir_in_use",
             stage="open",
             subject=str(path),
@@ -3108,7 +3108,7 @@ def test_ingest_digest_ignores_the_answer_model(tmp_path: Path) -> None:
         ),
     )
     embedding = OpenAIEmbeddingConfig(provider="openai", model="embed-1")
-    config = MindBridgeConfig(
+    config = SenseMemConfig(
         embedding=embedding,
         generation=OpenAIGenerationConfig(provider="openai", model="answer-1"),
     )
@@ -4496,7 +4496,7 @@ def test_memlens_questions_declare_the_refusal_their_own_prompt_mandates(tmp_pat
     # Loading the real task, not the helper in isolation: a declaration the loader never attaches
     # returns the reported refusal rate to zero while the model keeps refusing, and a test of the
     # helper alone stays green through exactly that.
-    from mindbridge.benchmarks.prompts import MEMLENS_QUERY_PROMPT
+    from sensemem.benchmarks.prompts import MEMLENS_QUERY_PROMPT
 
     dataset = tmp_path / "memlens.json"
     dataset.write_text(
@@ -4539,7 +4539,7 @@ def test_mem_gallery_refusal_questions_declare_the_wording_their_constraint_mand
     # Loading the real task, for the same reason the MemLens case does: `AR` is the only one of
     # the nine task types whose constraint overrides the refusal wording, so a declaration the
     # loader never attaches reports zero refusals for it while the model keeps refusing.
-    from mindbridge.benchmarks.prompts import MEM_GALLERY_REFUSAL_PROMPT
+    from sensemem.benchmarks.prompts import MEM_GALLERY_REFUSAL_PROMPT
 
     dialog = tmp_path / "dialog"
     dialog.mkdir()
@@ -4771,7 +4771,7 @@ benchmark:
     assert b"secret" not in artifact
     assert b"api_key" not in artifact
     assert document["artifact"] == {
-        "kind": "mindbridge-bench-effective-config",
+        "kind": "sensemem-bench-effective-config",
         "schema_version": 1,
         "credentials": "omitted",
     }
@@ -4850,7 +4850,7 @@ def test_download_settings_prefer_the_flag_then_the_file_then_the_environment(
     environ = {
         "HF_HOME": str(tmp_path / "env-hf"),
         "HF_ENDPOINT": "https://env.example",
-        "MINDBRIDGE_BENCH_YOUTUBE_SLEEP_SECONDS": "99",
+        "SENSEMEM_BENCH_YOUTUBE_SLEEP_SECONDS": "99",
     }
 
     from_file = DownloadSettings.resolve(declared, environ=environ)
@@ -4888,14 +4888,14 @@ def test_download_settings_publish_the_addresses_acquisition_actually_reads(
 
     assert published["HF_HOME"] == str(tmp_path / "hf")
     assert published["HF_ENDPOINT"] == "https://mirror.example"
-    assert float(published["MINDBRIDGE_BENCH_YOUTUBE_SLEEP_SECONDS"]) == 30.0
+    assert float(published["SENSEMEM_BENCH_YOUTUBE_SLEEP_SECONDS"]) == 30.0
 
 
 def test_eval_generation_credential_prefers_the_file_over_the_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_API_KEY", "environment-key")
+    monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "environment-key")
     declared = tmp_path / "declared.yaml"
     declared.write_text(
         "embedding: {provider: openai}\n"
@@ -4973,10 +4973,10 @@ generation:
 def test_eval_judge_prefers_the_file_then_the_environment_then_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("MINDBRIDGE_JUDGE_MODEL", "environment-judge")
-    monkeypatch.setenv("MINDBRIDGE_JUDGE_BASE_URL", "https://environment.example/v1")
-    monkeypatch.setenv("MINDBRIDGE_JUDGE_API_KEY", "environment-judge-key")
-    monkeypatch.setenv("MINDBRIDGE_JUDGE_TIMEOUT_SECONDS", "11")
+    monkeypatch.setenv("SENSEMEM_JUDGE_MODEL", "environment-judge")
+    monkeypatch.setenv("SENSEMEM_JUDGE_BASE_URL", "https://environment.example/v1")
+    monkeypatch.setenv("SENSEMEM_JUDGE_API_KEY", "environment-judge-key")
+    monkeypatch.setenv("SENSEMEM_JUDGE_TIMEOUT_SECONDS", "11")
     generation = ModelConfig(
         generation_api_key="generation-key",
         generation_base_url="https://generation.example/v1",
@@ -5016,10 +5016,10 @@ def test_eval_judge_prefers_the_file_then_the_environment_then_generation(
     assert from_environment.timeout_seconds == 11.0
 
     for name in (
-        "MINDBRIDGE_JUDGE_MODEL",
-        "MINDBRIDGE_JUDGE_BASE_URL",
-        "MINDBRIDGE_JUDGE_API_KEY",
-        "MINDBRIDGE_JUDGE_TIMEOUT_SECONDS",
+        "SENSEMEM_JUDGE_MODEL",
+        "SENSEMEM_JUDGE_BASE_URL",
+        "SENSEMEM_JUDGE_API_KEY",
+        "SENSEMEM_JUDGE_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(name)
     from_generation = eval_config_module._judge_config(generation, arguments)
@@ -5067,7 +5067,7 @@ def test_eval_memory_config_pins_reinforcement_off_without_a_generation_section(
     """
     # The file loader fills a default generation block, so the section-less shape is the one a
     # host composes directly, which `resolve_memory_config` accepts.
-    config = MindBridgeConfig(
+    config = SenseMemConfig(
         data_dir=tmp_path,
         embedding=OpenAIEmbeddingConfig(provider="openai"),
         generation=None,
@@ -5169,8 +5169,8 @@ def test_eval_model_config_keeps_env_model_when_file_omits_it(
     schema default and prefers it. This regressed the "config file beats environment, but only
     for what it actually declares" contract for exactly these two fields.
     """
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_MODEL", "environment-model")
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_MODALITIES", "text,image,video")
+    monkeypatch.setenv("SENSEMEM_GENERATION_MODEL", "environment-model")
+    monkeypatch.setenv("SENSEMEM_GENERATION_MODALITIES", "text,image,video")
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
@@ -5192,8 +5192,8 @@ def test_eval_model_config_keeps_env_model_when_file_omits_it(
 def test_eval_model_config_still_prefers_a_declared_model_and_modalities(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_MODEL", "environment-model")
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_MODALITIES", "text,image,video")
+    monkeypatch.setenv("SENSEMEM_GENERATION_MODEL", "environment-model")
+    monkeypatch.setenv("SENSEMEM_GENERATION_MODALITIES", "text,image,video")
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
@@ -5218,7 +5218,7 @@ def test_eval_resolved_generation_keeps_an_env_only_credential(
     named there is silently dropped, and the real client falls back to whatever `OPENAI_API_KEY`
     happens to be (or to no credential at all).
     """
-    monkeypatch.setenv("MINDBRIDGE_GENERATION_API_KEY", "environment-key")
+    monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "environment-key")
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n" + "generation:\n  provider: openai\n", encoding="utf-8"
@@ -5407,14 +5407,14 @@ def test_backend_pool_hands_the_configured_video_floor_to_the_resolved_models(
     file-driven run takes. A floor recorded on `ModelConfig` alone would be reported in
     `results.jsonl` while short videos still went to the endpoint whole.
     """
-    configured: list[MindBridgeConfig] = []
+    configured: list[SenseMemConfig] = []
 
-    def resolve(config: MindBridgeConfig) -> object:
+    def resolve(config: SenseMemConfig) -> object:
         configured.append(config)
         raise _StopResolving
 
     monkeypatch.setattr(eval_module, "resolve_memory_config", resolve)
-    memory_config = MindBridgeConfig.model_validate(
+    memory_config = SenseMemConfig.model_validate(
         {"embedding": {"provider": "openai"}, "generation": {"provider": "openai"}}
     )
 
@@ -5431,14 +5431,14 @@ def test_backend_pool_leaves_an_unset_video_floor_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An absent harness floor must not overwrite one the memory document declares itself."""
-    configured: list[MindBridgeConfig] = []
+    configured: list[SenseMemConfig] = []
 
-    def resolve(config: MindBridgeConfig) -> object:
+    def resolve(config: SenseMemConfig) -> object:
         configured.append(config)
         raise _StopResolving
 
     monkeypatch.setattr(eval_module, "resolve_memory_config", resolve)
-    memory_config = MindBridgeConfig.model_validate(
+    memory_config = SenseMemConfig.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai", "min_video_seconds": 4.0},
@@ -5457,7 +5457,7 @@ def test_eval_run_section_selects_the_baseline_arms(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    arms: mindbridge,full-context\n"
+        + "benchmark:\n  run:\n    tasks: clbench\n    arms: sensemem,full-context\n"
         "    full_context_chars: 4096\n",
         encoding="utf-8",
     )
@@ -5467,7 +5467,7 @@ def test_eval_run_section_selects_the_baseline_arms(tmp_path: Path) -> None:
 
     arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
 
-    assert arguments.arms == ("mindbridge", "full-context")
+    assert arguments.arms == ("sensemem", "full-context")
     assert arguments.full_context_chars == 4096
 
 
@@ -5496,7 +5496,7 @@ def test_eval_blind_rejects_a_configured_arm_selection(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    arms: mindbridge,full-context\n",
+        + "benchmark:\n  run:\n    tasks: clbench\n    arms: sensemem,full-context\n",
         encoding="utf-8",
     )
     _, overrides = _load_memory_config(path)
@@ -5649,13 +5649,13 @@ def _emit_from_every_source() -> None:
     logging.getLogger("jieba").setLevel(logging.DEBUG)
     logging.getLogger("jieba").debug("building prefix dict")
     logging.getLogger("httpx").warning("connection reset, retrying")
-    logging.getLogger("mindbridge.benchmarks.eval").info("ingest finished")
+    logging.getLogger("sensemem.benchmarks.eval").info("ingest finished")
 
 
 def test_configure_logging_keeps_dependency_info_out_of_the_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Only MindBridge is verbose at INFO; a dependency has to reach WARNING to be heard."""
+    """Only SenseMem is verbose at INFO; a dependency has to reach WARNING to be heard."""
     eval_console_module._configure_logging("INFO")
     # What `import funasr` does at module scope. It must not lift anything back up.
     logging.basicConfig(level=logging.INFO)
@@ -5663,7 +5663,7 @@ def test_configure_logging_keeps_dependency_info_out_of_the_run(
 
     assert [line.split(": ", 1)[0] for line in capsys.readouterr().err.splitlines()] == [
         "WARNING httpx",
-        "INFO mindbridge.benchmarks.eval",
+        "INFO sensemem.benchmarks.eval",
     ]
 
 
@@ -5679,7 +5679,7 @@ def test_configure_logging_opens_the_whole_process_for_debug(
         "INFO modelscope",
         "DEBUG jieba",
         "WARNING httpx",
-        "INFO mindbridge.benchmarks.eval",
+        "INFO sensemem.benchmarks.eval",
     ]
 
 
@@ -5710,19 +5710,19 @@ def test_configure_logging_still_filters_while_a_bar_is_live(
     assert "HTTP Request" not in drawn
     assert "loading model configuration" not in drawn
     assert "WARNING httpx: connection reset, retrying" in drawn
-    assert "INFO mindbridge.benchmarks.eval: ingest finished" in drawn
+    assert "INFO sensemem.benchmarks.eval: ingest finished" in drawn
 
 
-def test_configure_logging_silences_mindbridge_too_at_error(
+def test_configure_logging_silences_sensemem_too_at_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A raised floor applies to the harness as well, not just to its dependencies."""
     eval_console_module._configure_logging("ERROR")
     _emit_from_every_source()
-    logging.getLogger("mindbridge.benchmarks.eval").error("run failed")
+    logging.getLogger("sensemem.benchmarks.eval").error("run failed")
 
     assert [line.split(": ", 1)[0] for line in capsys.readouterr().err.splitlines()] == [
-        "ERROR mindbridge.benchmarks.eval",
+        "ERROR sensemem.benchmarks.eval",
     ]
 
 
@@ -5749,7 +5749,7 @@ def test_configure_logging_turns_down_a_dependency_that_owns_its_handler(
 
 def _streaming_arguments(output_path: Path, **overrides: object) -> eval_config_module._Arguments:
     values: dict[str, object] = {
-        "arms": ("mindbridge",),
+        "arms": ("sensemem",),
         "benchmarks_root": output_path.parent / "corpus",
         "blind": False,
         "blind_baseline": None,
@@ -5935,7 +5935,7 @@ def test_the_crash_copy_survives_a_judging_failure(
     )
 
     async def unavailable(*_args: object, **_kwargs: object) -> tuple[SampleResult, ...]:
-        raise RuntimeError("official LLM scorers require mindbridge[openai]")
+        raise RuntimeError("official LLM scorers require sensemem[openai]")
 
     monkeypatch.setattr(eval_module, "_apply_judges", unavailable)
     telemetry = EvaluationTelemetry()
@@ -5948,7 +5948,7 @@ def test_the_crash_copy_survives_a_judging_failure(
             memory_config=None,
             streamed=set(),
         )
-        with pytest.raises(RuntimeError, match="mindbridge\\[openai\\]"):
+        with pytest.raises(RuntimeError, match="sensemem\\[openai\\]"):
             asyncio.run(_completion(completed, task, (sample,)))
     finally:
         telemetry.close()
@@ -6070,7 +6070,7 @@ def test_run_arms_hands_every_task_to_the_completion_callback(tmp_path: Path) ->
             eval_module._run_arms(
                 (first, second),
                 arguments,
-                arms=(eval_arms_module._Arm("mindbridge"),),
+                arms=(eval_arms_module._Arm("sensemem"),),
                 batch_sizes={"atm-bench": 1, "locomo-refined": 1},
                 memory_factory=cast(
                     MemoryFactory,
@@ -6105,8 +6105,8 @@ def test_only_the_tasks_whose_protocol_credits_no_abstention_ask_for_a_guess() -
     `task_answer_policy` with its own frozenset here would pass with the harness wired to
     nothing.
     """
-    from mindbridge.benchmarks.prompts import BEST_EFFORT_TASKS
-    from mindbridge.benchmarks.task_catalog import TASKS
+    from sensemem.benchmarks.prompts import BEST_EFFORT_TASKS
+    from sensemem.benchmarks.task_catalog import TASKS
 
     assert {
         "icm-bench",
@@ -6127,8 +6127,8 @@ def test_only_personamem_answers_through_the_compile_surface() -> None:
     and chatbot rows refused, every one scored zero. Every other task asks for something its
     memories contain, and its abstentions are part of what it measures.
     """
-    from mindbridge.benchmarks.prompts import COMPILE_SURFACE_TASKS, task_answer_surface
-    from mindbridge.benchmarks.task_catalog import TASKS
+    from sensemem.benchmarks.prompts import COMPILE_SURFACE_TASKS, task_answer_surface
+    from sensemem.benchmarks.task_catalog import TASKS
 
     assert {"personamem-v3"} == COMPILE_SURFACE_TASKS
     assert set(TASKS) >= COMPILE_SURFACE_TASKS

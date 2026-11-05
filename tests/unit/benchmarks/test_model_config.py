@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from mindbridge.benchmarks.model_config import HarnessOverrides, ModelConfig
+from sensemem.benchmarks.model_config import HarnessOverrides, ModelConfig
 
 
 def test_benchmark_default_pins_the_generation_snapshot() -> None:

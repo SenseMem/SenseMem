@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AffectCue,
     ContextBudget,
     ContextBundle,

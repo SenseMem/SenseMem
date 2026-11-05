@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass
-from importlib.metadata import distributions
+from importlib.metadata import distribution, distributions
 from pathlib import Path
 from typing import cast
 
@@ -17,7 +17,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).parents[2]
-SOURCE = ROOT / "src" / "mindbridge"
+SOURCE = ROOT / "src" / "sensemem"
 DOCUMENT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 PROJECT = cast(dict[str, object], DOCUMENT["project"])
 DEPENDENCIES = cast(list[str], PROJECT["dependencies"])
@@ -27,7 +27,7 @@ SCRIPTS = cast(dict[str, str], PROJECT["scripts"])
 
 def test_base_import_does_not_load_optional_protocols() -> None:
     code = (
-        "import json, sys; import mindbridge; "
+        "import json, sys; import sensemem; "
         "blocked = {'cv2', 'fastapi', 'mcp', 'openai', 'sentence_transformers', 'torch', "
         "'transformers', 'uvicorn', 'vllm'}; "
         "print(json.dumps(sorted(blocked.intersection(sys.modules))))"
@@ -43,7 +43,7 @@ def test_base_import_does_not_load_optional_protocols() -> None:
 
 
 def test_full_modal_contract_is_exported_from_the_package_root() -> None:
-    package = importlib.import_module("mindbridge")
+    package = importlib.import_module("sensemem")
     names = {
         "ASRPartial",
         "AcousticBoundary",
@@ -60,7 +60,8 @@ def test_full_modal_contract_is_exported_from_the_package_root() -> None:
         "MemoryType",
         "MemoryConfig",
         "MemoryComposition",
-        "MindBridgeConfig",
+        "SenseMemConfig",
+        "SenseMemError",
         "MemoryPlugins",
         "Modality",
         "PrefetchResult",
@@ -135,12 +136,12 @@ def _installed_roots() -> dict[str, frozenset[str]]:
     supported interpreter.
     """
     roots: dict[str, set[str]] = {}
-    for distribution in distributions():
-        name = distribution.metadata["Name"]
+    for installed in distributions():
+        name = installed.metadata["Name"]
         if not name:
             continue
         canonical = canonicalize_name(name)
-        for recorded in distribution.files or ():
+        for recorded in installed.files or ():
             root = recorded.parts[0]
             if root.startswith((".", "_distutils_hack")) or root.endswith(".dist-info"):
                 continue
@@ -158,7 +159,7 @@ def test_deferred_and_conditional_imports_are_classified(tmp_path: Path) -> None
     module.write_text(
         "import os\n"
         "from . import sibling\n"
-        "from mindbridge.types import Modality\n"
+        "from sensemem.types import Modality\n"
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
         "    import lazyquiet\n"
@@ -179,7 +180,7 @@ def _benchmark_references(path: Path) -> set[str]:
     return {
         name
         for name in _imports(path).names
-        if name == "benchmarks" or name.startswith(("benchmarks.", "mindbridge.benchmarks"))
+        if name == "benchmarks" or name.startswith(("benchmarks.", "sensemem.benchmarks"))
     }
 
 
@@ -191,7 +192,7 @@ class _Imports:
     third_party: frozenset[tuple[str, int]]
 
 
-_FIRST_PARTY = frozenset({"mindbridge", *sys.stdlib_module_names})
+_FIRST_PARTY = frozenset({"sensemem", *sys.stdlib_module_names})
 
 
 def _imports(path: Path) -> _Imports:
@@ -242,7 +243,15 @@ def _loader_argument(node: ast.Call) -> str | None:
 
 
 def test_console_script_targets_exist() -> None:
-    assert set(SCRIPTS) == {"mindbridge", "mindbridge-bench"}
+    assert set(SCRIPTS) == {"sensemem", "sensemem-bench"}
+    installed = distribution("sensemem")
+    assert installed.metadata["Name"] == PROJECT["name"]
+    assert installed.version == PROJECT["version"]
+    assert {
+        entry.name: entry.value
+        for entry in installed.entry_points
+        if entry.group == "console_scripts"
+    } == SCRIPTS
     for target in SCRIPTS.values():
         module_name, attribute = target.split(":", 1)
         assert callable(getattr(importlib.import_module(module_name), attribute))
@@ -253,10 +262,10 @@ def test_benchmark_reference_scan_detects_a_lazy_import(tmp_path: Path) -> None:
     dispatcher.write_text(
         "from importlib import import_module\n"
         "def main() -> int:\n"
-        "    return import_module('mindbridge.benchmarks.cli').main()\n",
+        "    return import_module('sensemem.benchmarks.cli').main()\n",
         encoding="utf-8",
     )
-    assert _benchmark_references(dispatcher) == {"mindbridge.benchmarks.cli"}
+    assert _benchmark_references(dispatcher) == {"sensemem.benchmarks.cli"}
 
 
 def test_all_extra_contains_each_optional_dependency() -> None:
@@ -266,7 +275,7 @@ def test_all_extra_contains_each_optional_dependency() -> None:
 
 
 def test_funasr_runtime_and_cache_identity_use_the_same_immutable_source() -> None:
-    from mindbridge.models.funasr import _FUNASR_REVISION
+    from sensemem.models.funasr import _FUNASR_REVISION
 
     assert len(_FUNASR_REVISION) == 40
     int(_FUNASR_REVISION, 16)

@@ -1,4 +1,4 @@
-"""`mindbridge-bench eval --deliberate`: the harness actually running the loop it configured.
+"""`sensemem-bench eval --deliberate`: the harness actually running the loop it configured.
 
 A configuration file's `consolidation` section already built a consolidator, registered it for
 close, and never called it. These pin the flag that calls it, where in the unit lifecycle it
@@ -14,7 +14,7 @@ from typing import cast
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AnswerChunk,
     AnswerPolicy,
     AnswerResult,
@@ -25,19 +25,19 @@ from mindbridge import (
     MemoryOperationRecord,
     MemoryTrigger,
 )
-from mindbridge.benchmarks import eval as eval_module
-from mindbridge.benchmarks.eval import (
+from sensemem.benchmarks import eval as eval_module
+from sensemem.benchmarks.eval import (
     MemoryFactory,
     run_loaded_task,
 )
-from mindbridge.benchmarks.eval_adapters import (
+from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     LoadedTask,
     MemoryItem,
 )
-from mindbridge.benchmarks.isolation import BenchmarkRun
-from mindbridge.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks.isolation import BenchmarkRun
+from sensemem.benchmarks.task_catalog import TaskSpec
 
 _CONFIG = """
 embedding: {provider: openai}

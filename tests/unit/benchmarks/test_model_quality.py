@@ -14,7 +14,7 @@ import pytest
 from openai import OpenAI
 from opentelemetry import trace
 
-from mindbridge import (
+from sensemem import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,
@@ -23,7 +23,7 @@ from mindbridge import (
     ModelInput,
     SearchHit,
 )
-from mindbridge.benchmarks import model_quality
+from sensemem.benchmarks import model_quality
 
 
 class _GroundedAnswerer:

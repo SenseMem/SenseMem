@@ -2,41 +2,41 @@
 
 ## Surface
 
-`mindbridge` provides 32 SDK operation commands plus `doctor`; each invocation runs one command in
+`sensemem` provides 32 SDK operation commands plus `doctor`; each invocation runs one command in
 one process and emits one JSON result. Local commands dispatch to the corresponding `Memory`
 method, except for the diagnostic `doctor`; remote commands forward to a running owner's `/v1`
 route. The CLI owns argument decoding, composition selection, JSON projection, and exit-code
 mapping, not storage or retrieval policy.
 
-Benchmark commands belong to the separate `mindbridge-bench` surface documented in
+Benchmark commands belong to the separate `sensemem-bench` surface documented in
 [benchmarking](../benchmarking.md).
 
 ## Invoke the CLI
 
 ```text
-mindbridge [GLOBAL_OPTIONS] COMMAND [COMMAND_OPTIONS]
+sensemem [GLOBAL_OPTIONS] COMMAND [COMMAND_OPTIONS]
 ```
 
 The console entry point calls
-`mindbridge.cli.main(argv: Sequence[str] | None = None) -> int`.
+`sensemem.cli.main(argv: Sequence[str] | None = None) -> int`.
 
 Choose exactly one composition on every invocation:
 
 ```bash
-mindbridge --app my_application:build_memory search "where is the spare key"
-mindbridge --embedder openai add "The spare key is in the blue toolbox."
-mindbridge --url http://127.0.0.1:8000 list
+sensemem --app my_application:build_memory search "where is the spare key"
+sensemem --embedder openai add "The spare key is in the blue toolbox."
+sensemem --url http://127.0.0.1:8000 list
 ```
 
 Global options precede the command.
-Use `mindbridge COMMAND --help` for the command-specific flags summarized below.
+Use `sensemem COMMAND --help` for the command-specific flags summarized below.
 
 | Option | Meaning |
 | --- | --- |
 | `--app MODULE:ATTR` | `Memory` instance or zero-argument callable returning one |
 | `--embedder NAME` | construct a bundled embedding recipe |
 | `--url URL` | address a running owner over `/v1` |
-| `--data-dir PATH` | local directory for `--embedder`; default `.mindbridge` |
+| `--data-dir PATH` | local directory for `--embedder`; default `.sensemem` |
 | `--timeout SECONDS` | positive finite remote timeout for `--url`; default `30` |
 | `--answerer NAME` | generation recipe for `--embedder` |
 | `--former NAME` | formation recipe for `--embedder`; omit it to disable formation |
@@ -93,7 +93,7 @@ Recipe names form a closed table; use `--app` for other backends. Provider trust
 identity, and credential behavior live in [configuration](../configuration.md).
 
 ```bash
-mindbridge --embedder openai --former openai --vision openai add @panel.png
+sensemem --embedder openai --former openai --vision openai add @panel.png
 ```
 
 ### Commands
@@ -273,10 +273,10 @@ and `spatial`; its scope decoder accepts `valid_at`, `known_at`, `near`, `radius
 and `identity_id`, which is the whole of [`RetrievalScope`](python-sdk.md#public-values).
 
 ```bash
-mindbridge --app my_application:build_memory add "The mug is on the table" \
+sensemem --app my_application:build_memory add "The mug is on the table" \
   --context '{"basis":"observation","source_id":"camera-1:42","confidence":0.94}'
 
-mindbridge --app my_application:build_memory search "Where is the mug?" \
+sensemem --app my_application:build_memory search "Where is the mug?" \
   --scope '{"near":{"frame_id":"home/map","anchor":"subject","x":2,"y":1},"radius_m":0.75}'
 ```
 
@@ -336,7 +336,7 @@ remote envelopes, including `trace_id`, are forwarded unchanged. Local CLI and M
 `--explain` resolves and prints the selected composition without running the command. A command is
 still syntactically required.
 
-`doctor` returns the installed MindBridge and Python versions plus composition-specific checks:
+`doctor` returns the installed SenseMem and Python versions plus composition-specific checks:
 
 - `--embedder` constructs each configured recipe, exercises its published loader probe, and
   reports the data-directory state without writing memory data. The probed backends also fill
@@ -403,7 +403,7 @@ search, answer, or page limits from 1 through 100. `--url` applies the REST boun
 content parts and the 8 MiB request body. Local JSONL has no separate item-count cap; remote
 `add-many` is capped at 100 items by REST.
 
-There is no configuration file, `MINDBRIDGE_*` composition variable, plugin registry, interactive
+There is no configuration file, `SENSEMEM_*` composition variable, plugin registry, interactive
 prompt, streaming stdout, output-format switch, `serve` command, capture-event reducer, or
 coordinate-frame transform. Use the Python configuration boundary and an ASGI server instead of a
 second CLI configuration or server implementation. `add-stream` is for finite finalized JSONL;

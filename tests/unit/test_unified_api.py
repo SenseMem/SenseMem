@@ -10,7 +10,7 @@ import pytest
 from _feature_support import TinyEmbedder
 from test_memory_api import _FakeFace, _FakeSpeech
 
-from mindbridge import (
+from sensemem import (
     AssetRef,
     AsyncMemory,
     Blob,

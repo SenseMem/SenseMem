@@ -40,10 +40,10 @@ from opentelemetry.trace import StatusCode
 from starlette.requests import Request
 from starlette.types import Message, Scope
 
-import mindbridge
-from mindbridge.api import app as app_module
-from mindbridge.api.app import create_app
-from mindbridge.exceptions import (
+import sensemem
+from sensemem.api import app as app_module
+from sensemem.api.app import create_app
+from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
     MemoryNotFoundError,
@@ -52,7 +52,7 @@ from mindbridge.exceptions import (
     StorageError,
     ValidationError,
 )
-from mindbridge.types import (
+from sensemem.types import (
     AnswerChunk,
     AnswerPolicy,
     AnswerResult,
@@ -548,15 +548,15 @@ def test_answer_stream_sends_deltas_then_one_grounded_result_with_transport_timi
     assert memory.calls == [("ask_stream", "What color is it?", 4, None, None, False, "strict")]
 
     span = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.http.request"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.http.request"
     )
     attributes = span.attributes or {}
     assert attributes["http.route"] == "/v1/answers/stream"
-    assert attributes["mindbridge.transport.response_mode"] == "streaming"
+    assert attributes["sensemem.transport.response_mode"] == "streaming"
     assert attributes["http.response.status_code"] == 200
-    time_to_headers = cast(float, attributes["mindbridge.transport.server_time_to_headers_ms"])
-    time_to_body = cast(float, attributes["mindbridge.transport.server_time_to_first_body_byte_ms"])
-    total = cast(float, attributes["mindbridge.transport.server_total_ms"])
+    time_to_headers = cast(float, attributes["sensemem.transport.server_time_to_headers_ms"])
+    time_to_body = cast(float, attributes["sensemem.transport.server_time_to_first_body_byte_ms"])
+    total = cast(float, attributes["sensemem.transport.server_total_ms"])
     assert time_to_headers >= 0
     assert time_to_headers <= time_to_body <= total
 
@@ -578,7 +578,7 @@ def test_answer_stream_failure_before_first_delta_keeps_the_json_error_contract(
     assert response.json()["reason"] == "rate_limited"
     assert response.json()["stage"] == "generate"
     span = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.http.request"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.http.request"
     )
     assert span.status.status_code is StatusCode.ERROR
     assert not span.events
@@ -621,7 +621,7 @@ def test_answer_stream_failure_after_a_delta_ends_with_an_error_event() -> None:
     assert '"reason":"rate_limited"' in response.text
     assert "private provider detail" not in response.text
     span = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.http.request"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.http.request"
     )
     assert span.status.status_code is StatusCode.ERROR
     assert not span.events
@@ -795,7 +795,7 @@ def test_transport_trace_uses_the_route_template_instead_of_a_memory_id() -> Non
     provider.shutdown()
 
     span = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.http.request"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.http.request"
     )
     attributes = span.attributes or {}
     assert attributes["http.route"] == "/v1/memories/{memory_id}"
@@ -968,7 +968,7 @@ def test_the_documented_v1_route_counts_are_the_real_ones() -> None:
     always_on = v1_route_count()
     gated = v1_route_count(identity_operations=True, embodied_operations=True)
 
-    page = (Path(mindbridge.__file__).parents[2] / "docs" / "api" / "rest.md").read_text(
+    page = (Path(sensemem.__file__).parents[2] / "docs" / "api" / "rest.md").read_text(
         encoding="utf-8"
     )
     match = re.search(r"exposes (\w+) `Memory` operations under `/v1`, or ([\w-]+) when", page)
@@ -1199,16 +1199,16 @@ def test_error_envelope_reports_reason_stage_and_subject() -> None:
 
 def test_storage_subjects_stay_out_of_unauthenticated_responses() -> None:
     failure = StorageError(
-        "the data directory is already in use by another live MindBridge instance",
+        "the data directory is already in use by another live SenseMem instance",
         reason="data_dir_in_use",
         stage="open",
-        subject="/srv/private/mindbridge",
+        subject="/srv/private/sensemem",
     )
     with TestClient(create_app(memory=FakeMemory(failure))) as client:
         response = client.get("/v1/memories/memory_1")
 
     assert response.json()["subject"] is None
-    assert "/srv/private/mindbridge" not in response.text
+    assert "/srv/private/sensemem" not in response.text
 
 
 def test_list_default_page_size_matches_the_sdk() -> None:
@@ -1359,7 +1359,7 @@ def test_the_context_route_returns_the_whole_bundle_without_local_asset_paths() 
             "name": "frame.png",
         }
     ]
-    assert "/private/mindbridge/assets" not in response.text
+    assert "/private/sensemem/assets" not in response.text
 
 
 @pytest.mark.parametrize("value", (1, "true"))

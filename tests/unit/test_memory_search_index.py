@@ -23,38 +23,38 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import Memory, MemoryConfig, RetrievalScope
-from mindbridge._telemetry import (
+from sensemem import Memory, MemoryConfig, RetrievalScope
+from sensemem._telemetry import (
     IDENTITY_NAMES_BOUND,
     IDENTITY_NAMES_REFUSED,
     VISION_BATCHES_FAILED,
 )
-from mindbridge.exceptions import IndexUnavailableError, ModelError
-from mindbridge.infrastructure.local.store.index import IndexOutbox
-from mindbridge.infrastructure.local.zvec_index import ZvecIndex
-from mindbridge.kernel.derived import (
+from sensemem.exceptions import IndexUnavailableError, ModelError
+from sensemem.infrastructure.local.store.index import IndexOutbox
+from sensemem.infrastructure.local.zvec_index import ZvecIndex
+from sensemem.kernel.derived import (
     MAX_DESCRIBE_CONTEXT_CHARACTERS,
     speaker_labels,
     speech_evidence,
     speech_retrieval_text,
 )
-from mindbridge.kernel.ranking import (
+from sensemem.kernel.ranking import (
     LEXICAL_FULL_COVERAGE,
     LEXICAL_FULL_COVERAGE_RELEVANCE,
     lexical_query_terms,
     lexical_relevance,
 )
-from mindbridge.kernel.validation import MAX_TEXT_CHARACTERS
-from mindbridge.models.base import (
+from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
+from sensemem.models.base import (
     EmbedTask,
     ModelInput,
     SpeakerEmbedding,
     SpeechAnalysis,
     SpeechTurn,
 )
-from mindbridge.models.openai_sdk import _visual_description
-from mindbridge.perception import VisualDescription
-from mindbridge.types import (
+from sensemem.models.openai_sdk import _visual_description
+from sensemem.perception import VisualDescription
+from sensemem.types import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -591,7 +591,7 @@ def test_only_a_store_with_embeddings_announces_a_rebuild(
     store: only embeddings that have to be projected again are a rebuild.
     """
     with (
-        caplog.at_level(logging.INFO, logger="mindbridge.kernel.recovery"),
+        caplog.at_level(logging.INFO, logger="sensemem.kernel.recovery"),
         Memory(tmp_path, embedder=_Embedder()) as memory,
     ):
         record = memory.add("a kite over the harbour")
@@ -600,7 +600,7 @@ def test_only_a_store_with_embeddings_announces_a_rebuild(
     shutil.rmtree(tmp_path / "zvec")
     caplog.clear()
     with (
-        caplog.at_level(logging.INFO, logger="mindbridge.kernel.recovery"),
+        caplog.at_level(logging.INFO, logger="sensemem.kernel.recovery"),
         Memory(tmp_path, embedder=_Embedder()) as memory,
     ):
         assert [hit.id for hit in memory.search("kite over the harbour").hits] == [record.id]
@@ -661,7 +661,7 @@ def test_close_does_not_optimize_a_session_that_flushed_once(
 def _segment_files(data_dir: Path) -> dict[str, int]:
     """The durable segments by name and size; a merge rewrites this map, a read must not.
 
-    Not every file under `zvec/`: MindBridge has no read-only open, so the embedded RocksDB stores
+    Not every file under `zvec/`: SenseMem has no read-only open, so the embedded RocksDB stores
     behind the scalar, full-text and id-map fields write a fresh log, MANIFEST and OPTIONS whenever
     the collection is opened at all. That churn belongs to the open, not the close, and no policy
     here can remove it. The three suffixes below are the durable segments -- exactly what
@@ -1066,7 +1066,7 @@ def test_temporal_factor_boosts_overlap_and_never_penalises() -> None:
     under merely well-timed ones and, inside the gate, could delete it; replay showed the penalty
     recovered no gold on 810 paired questions while the boost alone won or tied on all of them.
     """
-    from mindbridge.kernel.ranking import RANK_CEILING, temporal_relevance
+    from sensemem.kernel.ranking import RANK_CEILING, temporal_relevance
 
     start = datetime(2024, 3, 1, tzinfo=timezone.utc)
     until = datetime(2024, 4, 1, tzinfo=timezone.utc)
@@ -1142,9 +1142,9 @@ import math
 import sys
 from pathlib import Path
 
-from mindbridge import Memory
-from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.types import Modality
+from sensemem import Memory
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.types import Modality
 
 
 class _Sha256Embedder:
@@ -1230,8 +1230,8 @@ def test_the_candidate_trace_order_does_not_depend_on_the_process_hash_seed(
 
 def test_the_modality_floor_never_evicts_the_top_hit(tmp_path: Path) -> None:
     """A floor promotes into spare slots; it does not rebuild the window out of last places."""
-    from mindbridge.kernel.grounding import grounding_hits
-    from mindbridge.types import SearchHit
+    from sensemem.kernel.grounding import grounding_hits
+    from sensemem.types import SearchHit
 
     created = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
     media_types = {
@@ -1298,9 +1298,9 @@ def test_the_modality_floor_never_evicts_the_top_hit(tmp_path: Path) -> None:
 
 def test_evidence_budget_skips_an_oversized_extra_and_keeps_a_later_fit() -> None:
     """The optional budget extension is not closed by one expensive lower-ranked record."""
-    from mindbridge.context import evidence_cost
-    from mindbridge.kernel.grounding import grounding_hits
-    from mindbridge.types import SearchHit
+    from sensemem.context import evidence_cost
+    from sensemem.kernel.grounding import grounding_hits
+    from sensemem.types import SearchHit
 
     created = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
     ranking = tuple(
@@ -1783,7 +1783,7 @@ def test_a_fact_naming_a_label_nobody_produced_is_counted_not_silently_dropped(
     provider.shutdown()
 
     spans = [
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.identity.names"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.identity.names"
     ]
     assert len(spans) == 1
     attributes = spans[0].attributes or {}

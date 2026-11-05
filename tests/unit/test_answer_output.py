@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mindbridge.exceptions import ModelError
-from mindbridge.models._answer_output import (
+from sensemem.exceptions import ModelError
+from sensemem.models._answer_output import (
     evidence_aliases,
     parse_answer_draft,
     render_answer_draft,
 )
-from mindbridge.types import AbstentionReason, AnswerResult, SearchHit
+from sensemem.types import AbstentionReason, AnswerResult, SearchHit
 
 NOW = datetime(2026, 2, 14, 16, 35, 47, tzinfo=timezone.utc)
 

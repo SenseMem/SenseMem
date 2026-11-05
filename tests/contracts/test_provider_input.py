@@ -2,8 +2,8 @@
 
 import json
 
-from mindbridge import ModelError
-from mindbridge.api.errors import exception_response
+from sensemem import ModelError
+from sensemem.api.errors import exception_response
 
 
 def test_provider_context_overflow_is_a_permanent_input_size_error() -> None:

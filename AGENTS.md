@@ -2,7 +2,7 @@
 
 ## Project structure
 
-MindBridge is a Python package under `src/mindbridge/`.
+SenseMem is a Python package under `src/sensemem/`.
 
 - Keep public values and exceptions in small top-level modules such as `types.py` and
   `exceptions.py`.
@@ -14,7 +14,7 @@ MindBridge is a Python package under `src/mindbridge/`.
 - Keep durable local storage and search adapters in `infrastructure/local/`; `store/` is one
   `LocalStore` over one connection pool with one attribute per table family.
 - Keep model clients in `models/` and protocol adapters in `api/`.
-- Keep benchmark harnesses in `benchmarks/` or `src/mindbridge/benchmarks/`.
+- Keep benchmark harnesses in `benchmarks/` or `src/sensemem/benchmarks/`.
 - Keep tests in `tests/unit/`, `tests/contracts/`, `tests/integration/`, and
   `tests/benchmarks/`.
 - Keep user documentation in `docs/`, indexed by `docs/README.md`.
@@ -27,7 +27,7 @@ to measure SQLite or Zvec directly; do not let that exception become an alternat
 
 ## Build and test
 
-MindBridge supports Python 3.11 through 3.14 and uses `uv` with `pyproject.toml` and `uv.lock`.
+SenseMem supports Python 3.11 through 3.14 and uses `uv` with `pyproject.toml` and `uv.lock`.
 Install every development group and optional surface with:
 
 ```bash
@@ -58,7 +58,7 @@ of the formatting gate.
 
 ## Storage and isolation rules
 
-One physical `data_dir` is one running MindBridge instance. Never introduce logical account,
+One physical `data_dir` is one running SenseMem instance. Never introduce logical account,
 request, or benchmark scope into the product contract as a substitute for physical isolation.
 Parallel tests and benchmark cases must each allocate a distinct temporary directory.
 
@@ -115,8 +115,8 @@ stored content.
 
 ## Public contracts
 
-The supported Python imports come from `mindbridge`; the supported HTTP surface is under `/v1`,
-and the supported MCP surface is the thirteen tools in `mindbridge.api.mcp`. Changing a
+The supported Python imports come from `sensemem`; the supported HTTP surface is under `/v1`,
+and the supported MCP surface is the thirteen tools in `sensemem.api.mcp`. Changing a
 signature,
 response type, exception, endpoint, tool schema, error code, on-disk schema, or console entry point
 is a breaking change and needs tests and documentation in the same patch.

@@ -14,10 +14,10 @@ from typing import cast
 
 import pytest
 
-import mindbridge.infrastructure.local.store.index as index_module
-import mindbridge.kernel.ranking as ranking_module
-import mindbridge.kernel.retrieval as retrieval_module
-from mindbridge import (
+import sensemem.infrastructure.local.store.index as index_module
+import sensemem.kernel.ranking as ranking_module
+import sensemem.kernel.retrieval as retrieval_module
+from sensemem import (
     Blob,
     IndexQuantization,
     Memory,
@@ -27,9 +27,9 @@ from mindbridge import (
     SearchHit,
     StorageError,
 )
-from mindbridge.kernel.embedding import DOCUMENT_TASK
-from mindbridge.kernel.ranking import parent_index_signals
-from mindbridge.models.base import EmbedTask, ModelInput
+from sensemem.kernel.embedding import DOCUMENT_TASK
+from sensemem.kernel.ranking import parent_index_signals
+from sensemem.models.base import EmbedTask, ModelInput
 
 
 class _Embedder:

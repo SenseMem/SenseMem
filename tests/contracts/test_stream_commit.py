@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mindbridge import MemoryRecord, PrefetchResult, StreamCommit, ValidationError
+from sensemem import MemoryRecord, PrefetchResult, StreamCommit, ValidationError
 
 
 @pytest.mark.parametrize("pending_settlement", [False, True])

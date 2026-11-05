@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
@@ -21,8 +21,8 @@ from mindbridge import (
     RetrievalMode,
     RetrievalScope,
 )
-from mindbridge.infrastructure.local import IndexDocument, StoredEmbedding
-from mindbridge.infrastructure.local.zvec_index import IndexHit, ZvecIndex
+from sensemem.infrastructure.local import IndexDocument, StoredEmbedding
+from sensemem.infrastructure.local.zvec_index import IndexHit, ZvecIndex
 
 _REFERENCE = datetime(2026, 10, 27, tzinfo=timezone.utc)
 _TARGET_TIME = datetime(2024, 6, 1, tzinfo=timezone.utc)

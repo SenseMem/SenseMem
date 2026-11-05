@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import mindbridge.models.sentence_transformers as sentence_transformers
-from mindbridge.exceptions import ModelError, ValidationError
-from mindbridge.models.base import EmbeddingBackend, EmbedTask, ModelInput
-from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
-from mindbridge.types import AssetRef, Modality
+import sensemem.models.sentence_transformers as sentence_transformers
+from sensemem.exceptions import ModelError, ValidationError
+from sensemem.models.base import EmbeddingBackend, EmbedTask, ModelInput
+from sensemem.models.sentence_transformers import SentenceTransformersEmbedder
+from sensemem.types import AssetRef, Modality
 
 REVISION = "a" * 40
 

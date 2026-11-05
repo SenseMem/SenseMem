@@ -3,10 +3,10 @@ name: Model quality
 on:
   pull_request:
     paths:
-      - 'src/mindbridge/**'
-      - '!src/mindbridge/benchmarks/**'
-      - 'src/mindbridge/benchmarks/model_quality.py'
-      - 'src/mindbridge/benchmarks/workflow_quality.py'
+      - 'src/sensemem/**'
+      - '!src/sensemem/benchmarks/**'
+      - 'src/sensemem/benchmarks/model_quality.py'
+      - 'src/sensemem/benchmarks/workflow_quality.py'
       - 'tests/integration/**'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -78,7 +78,7 @@ jobs:
       - name: Evaluate public SDK behavior
         id: reader
         run: >-
-          uv run --no-sync --frozen python -m mindbridge.benchmarks.model_quality
+          uv run --no-sync --frozen python -m sensemem.benchmarks.model_quality
           --model "$QUALITY_MODEL"
           --response-format "$QUALITY_FORMAT"
           --repeats "$QUALITY_REPEATS"
@@ -87,7 +87,7 @@ jobs:
       - name: Evaluate formation, planning, vision, and policy boundaries
         if: success() || steps.reader.outcome == 'failure'
         run: >-
-          uv run --no-sync --frozen python -m mindbridge.benchmarks.workflow_quality
+          uv run --no-sync --frozen python -m sensemem.benchmarks.workflow_quality
           --model "$QUALITY_MODEL"
           --response-format "$QUALITY_FORMAT"
           --repeats "$QUALITY_REPEATS"

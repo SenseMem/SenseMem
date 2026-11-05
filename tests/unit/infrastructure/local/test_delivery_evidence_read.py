@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-import mindbridge.infrastructure.local.store.semantics as semantics_module
-from mindbridge.infrastructure.local import LocalStore, StoredMemory
-from mindbridge.infrastructure.local.store._corroboration import _load_nodes
-from mindbridge.kernel.corroboration import EvidenceNode
+import sensemem.infrastructure.local.store.semantics as semantics_module
+from sensemem.infrastructure.local import LocalStore, StoredMemory
+from sensemem.infrastructure.local.store._corroboration import _load_nodes
+from sensemem.kernel.corroboration import EvidenceNode
 
 
 def test_delivery_evidence_keeps_snapshot_during_concurrent_delete(

@@ -20,9 +20,9 @@ from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 from test_openai_sdk import _sdk_client
 
-import mindbridge.configuration as configuration
-import mindbridge.recipes as recipes
-from mindbridge import (
+import sensemem.configuration as configuration
+import sensemem.recipes as recipes
+from sensemem import (
     AssetRef,
     EvidenceGeneration,
     GazetteerEnricher,
@@ -35,9 +35,9 @@ from mindbridge import (
     OpenAIModels,
     SearchHit,
 )
-from mindbridge.evidence import answer_evidence_payloads
-from mindbridge.models import openai_sdk as backend
-from mindbridge.models.base import GenerationBackend
+from sensemem.evidence import answer_evidence_payloads
+from sensemem.models import openai_sdk as backend
+from sensemem.models.base import GenerationBackend
 
 
 def _answer_text_parts(

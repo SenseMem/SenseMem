@@ -1,16 +1,29 @@
 # Changelog
 
 Notable release changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-MindBridge is pre-1.0; backward compatibility is not maintained.
+SenseMem is pre-1.0; backward compatibility is not maintained.
 
 ## Unreleased
 
-This tree targets `0.2.0` and replaces the unreleased service-oriented `0.1.0` design.
+This tree targets `0.3.0` and replaces the unreleased service-oriented `0.1.0` design.
 The [documentation index](docs/README.md) describes the current contracts.
+
+### Breaking changes
+
+- Rename the project, Python distribution and import package to SenseMem (`sensemem`), with
+  `SenseMemConfig`, `SenseMemError`, `sensemem` and `sensemem-bench` commands, `SENSEMEM_*`
+  environment variables, and `sensemem.*` telemetry names. The canonical repository is
+  [SenseMem/SenseMem](https://github.com/SenseMem/SenseMem).
+- Use SQLite schema 21 and new derived identifier and recipe namespaces. Earlier data directories
+  are rejected; use a fresh directory and re-ingest. The default directory is `.sensemem` and its
+  ownership lock is `.sensemem.lock`. Different runtime versions must use different directories.
+- Evaluation artifacts use schema 23, `sensemem` arm names and the `sensemem_version` field.
+  Existing experiment snapshots, environments, configurations and result files remain unchanged.
+  See [the upgrade and experiment instructions](docs/deployment.md#upgrading-to-sensemem).
 
 ### Added
 
-- `mindbridge-bench eval --tasks videozerobench` downloads pinned VideoZeroBench inputs, reuses
+- `sensemem-bench eval --tasks videozerobench` downloads pinned VideoZeroBench inputs, reuses
   per-video memory and media preparation, and runs five diagnostic levels with deterministic
   bilingual answer, temporal and spatial scoring. Primary accuracy uses Level-3; terminal output
   and paired comparisons cover all seven named metrics across Level-1 through Level-5. Named
@@ -65,11 +78,11 @@ The [documentation index](docs/README.md) describes the current contracts.
   and accepts `ModelInput` pairs; the separate media interface and manual modality switch are removed.
   Install the `reranking` extra; the shared lock uses CUDA 13 PyTorch builds. See
   [semantic reranking](docs/configuration.md#semantic-reranking) for runtime controls and limits.
-- REST under `/v1`, typed MCP tools, and the `mindbridge` product CLI over the shared SDK.
+- REST under `/v1`, typed MCP tools, and the `sensemem` product CLI over the shared SDK.
   Capability documents describe the operations and modalities available on each surface.
 - OpenTelemetry stage spans, provider request IDs, token usage, streamed time to first token,
   retrieval explanations, and classified retryable errors without ordinary content logging.
-- The `mindbridge-bench` CLI with pinned dataset adapters and official scoring protocols,
+- The `sensemem-bench` CLI with pinned dataset adapters and official scoring protocols,
   physically isolated stores, response caches, resume support, per-task artifacts, diagnostics,
   rejudging, and local storage measurements. See [benchmarking](docs/benchmarking.md).
 - A real-model quality gate over fixed answering fixtures, isolated optional-dependency checks,
@@ -137,7 +150,7 @@ The [documentation index](docs/README.md) describes the current contracts.
 - Require Python 3.11–3.14 and Pillow 13; update HTTPX2, Pydantic, MCP and the server/telemetry
   dependency chains. Remove CairoSVG and the CI system-library installation it needed.
 - Remove the Jina-specific Sentence Transformers adaptation and `jina-omni` recipe. Local models
-  use the standard Sentence Transformers loader with remote code disabled. MindBridge evaluation
+  use the standard Sentence Transformers loader with remote code disabled. SenseMem evaluation
   and serving require an explicit embedding configuration; existing stores keep their original vector-space
   identity and need a fresh directory when changing models.
 - Operation-log decoding requires the complete current payload. Removed missing-field defaults,
@@ -200,6 +213,12 @@ The [documentation index](docs/README.md) describes the current contracts.
 
 ### Fixed
 
+- `ask()` and `ask_stream()` deliver derived assertions only with their complete scoped sources;
+  unavailable or over-budget provenance withholds the assertion before generation. Media
+  selection, transport limits and provider fallbacks preserve this source requirement. Hydrated
+  source files stay leased during generation, and recall completeness reflects the final packed
+  set. Evaluation runner recipe `sensemem_eval_official_v25` invalidates earlier answer caches.
+- Conflicting retention settings are rejected before allocating model backends.
 - Mem-Gallery queries keep the question inside the official template instead of leaving its
   question heading followed only by a format constraint. Adapter v3 invalidates old answer caches.
 - ATM judge verdicts follow the official pre-summary conversion, accepting boolean and string
@@ -250,9 +269,9 @@ The [documentation index](docs/README.md) describes the current contracts.
 - Schema migrations, historical Jina embedding spaces and index recipes, automatic re-embedding,
   pending migration state, and the pre-place content-ID fallback.
 - Old result readers, permissive cache formats, task-name and CLI underscore aliases,
-  `--memory-config`, `pretrained` aliases, `--model mindbridge`, and `num_fewshot`.
+  `--memory-config`, `pretrained` aliases, `--model sensemem`, and `num_fewshot`.
   Evaluation uses hyphenated options, `generation_model` overrides, and judge `model` overrides.
-- `MemorySettings`, `mindbridge.sdk`, the combined `ModelBackend`, provider credential
+- `MemorySettings`, `sensemem.sdk`, the combined `ModelBackend`, provider credential
   configuration, the custom OpenAI HTTP client, and older-SDK transport probing.
 - Video-MME, EgoLifeQA, EgoMemReason, and MemEye tasks, their unused adapters and submission
   artifacts, duplicate scoring runners, the unused evaluation journal, and unused registries.

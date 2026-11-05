@@ -1,17 +1,17 @@
-# MindBridge documentation
+# SenseMem documentation
 
 Use the shortest path that matches your task. Each page owns one subject so contracts and examples
 have one place to stay current.
 
-The guides and API references describe this checkout's `0.2.0` package and Python 3.11–3.14
+The guides and API references describe this checkout's `0.3.0` package and Python 3.11–3.14
 contract.
 
 ## Choose a path
 
 | Goal | Start here | Continue with |
 | --- | --- | --- |
-| Understand what MindBridge can do | [Product capabilities](product-capabilities.md) | [Design principles](design-principles.md) |
-| Try MindBridge end to end | [Quick start](quickstart.md) | [Core concepts](concepts.md) |
+| Understand what SenseMem can do | [Product capabilities](product-capabilities.md) | [Design principles](design-principles.md) |
+| Try SenseMem end to end | [Quick start](quickstart.md) | [Core concepts](concepts.md) |
 | Build a Python integration | [Configuration](configuration.md) | [Python SDK](api/python-sdk.md) |
 | Rerank text, images and videos | [Semantic reranking](configuration.md#semantic-reranking) | [Python SDK](api/python-sdk.md) |
 | Use a local WeMM embedding service | [Local WeMM deployment](use-local-wemm.md) | [Configuration](configuration.md) |
@@ -27,7 +27,7 @@ contract.
 
 1. [Product capabilities](product-capabilities.md) — see the implemented product surface, use
    cases, boundaries, and extension model.
-2. [Quick start](quickstart.md) — install MindBridge and exercise its core capabilities.
+2. [Quick start](quickstart.md) — install SenseMem and exercise its core capabilities.
 3. [Core concepts](concepts.md) — understand records, content, retrieval, and directory ownership.
 4. [Configuration](configuration.md) — select bundled adapters or inject application backends.
 5. [Memory types, time, and decay](memory-types-time-and-decay.md) — control cognitive role and
@@ -39,7 +39,7 @@ contract.
 
 ## Integrate
 
-- [Python SDK](api/python-sdk.md) — complete `mindbridge` root-import contract.
+- [Python SDK](api/python-sdk.md) — complete `sensemem` root-import contract.
 - [REST API](api/rest.md) — `/v1` requests, responses, errors, and limits.
 - [MCP tools](api/mcp.md) — the tool schemas and transport boundary.
 - [Command line](api/cli.md) — commands, input forms, JSON output, and exit codes.
@@ -90,7 +90,7 @@ changes, update its owning page and link to it elsewhere instead of copying it.
 
 ## Maintain these documents
 
-Verify Python contracts against `src/mindbridge/__init__.py`, `memory.py`, `types.py`, and
+Verify Python contracts against `src/sensemem/__init__.py`, `memory.py`, `types.py`, and
 `exceptions.py`; configuration against `configuration.py` and `plugins.py`; transport contracts
 against `api/` and `cli.py`; evaluation behavior against `benchmarks/`. Tests are executable
 contracts. Update the owning reference when behavior changes.

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mindbridge.benchmarks import eval_environment
+from sensemem.benchmarks import eval_environment
 
 
 def test_hardware_metadata_records_reproducible_gpu_facts(
@@ -62,7 +62,7 @@ def test_hardware_metadata_handles_missing_nvidia_smi(monkeypatch: pytest.Monkey
 def test_source_metadata_distinguishes_clean_dirty_and_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    outputs = iter(("a" * 40, " M src/mindbridge/memory.py"))
+    outputs = iter(("a" * 40, " M src/sensemem/memory.py"))
     monkeypatch.setattr(eval_environment, "_git", lambda *_args: next(outputs))
 
     assert eval_environment.source_metadata(tmp_path) == {

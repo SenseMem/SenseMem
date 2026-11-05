@@ -11,12 +11,12 @@ from typing import cast
 
 import pytest
 
-from mindbridge.benchmarks.local_index_benchmark import (
+from sensemem.benchmarks.local_index_benchmark import (
     _normalized_fp32,
     main,
     run_benchmark,
 )
-from mindbridge.infrastructure.local import LocalStore
+from sensemem.infrastructure.local import LocalStore
 
 
 def test_fp32_vectors_are_deterministic_and_normalized() -> None:
@@ -56,7 +56,7 @@ def test_small_benchmark_reports_valid_metrics(tmp_path: Path) -> None:
     assert result["seed"] == 7
     assert result["quantization"] == "none"
     # The microbenchmark must label itself so its numbers cannot be read as product ingest
-    # or search latency; the SDK-path figures come from ``mindbridge-bench eval``.
+    # or search latency; the SDK-path figures come from ``sensemem-bench eval``.
     assert result["scope"] == "storage_microbenchmark"
     assert "the public Memory API" in cast(tuple[str, ...], result["excludes"])
     assert cast(float, result["ingest_seconds"]) > 0.0

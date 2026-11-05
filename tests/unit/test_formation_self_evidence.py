@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from mindbridge import (
+from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
@@ -128,7 +128,7 @@ def test_automatic_self_evidence_refuses_whole_proposal_without_losing_valid_fac
             assert memory.get(current.id).content == current.content
     finally:
         provider.shutdown()
-    adds = [span for span in exporter.get_finished_spans() if span.name == "mindbridge.add"]
+    adds = [span for span in exporter.get_finished_spans() if span.name == "sensemem.add"]
     assert [
-        (span.attributes or {}).get("mindbridge.formation.refused_proposals") for span in adds
+        (span.attributes or {}).get("sensemem.formation.refused_proposals") for span in adds
     ] == [0, 1]

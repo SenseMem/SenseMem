@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Blob,

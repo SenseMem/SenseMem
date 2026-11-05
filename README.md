@@ -1,18 +1,18 @@
-# MindBridge
+# SenseMem
 
-[![CI](https://github.com/EventHorizon-Lab/MindBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/EventHorizon-Lab/MindBridge/actions/workflows/ci.yml)
+[![CI](https://github.com/SenseMem/SenseMem/actions/workflows/ci.yml/badge.svg)](https://github.com/SenseMem/SenseMem/actions/workflows/ci.yml)
 [![Python 3.11–3.14](https://img.shields.io/badge/Python-3.11%E2%80%933.14-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-3DA639.svg)](LICENSE)
 
 **Agentic Native Embodied Omni-Modal Memory System.**
 
-MindBridge is an **Agentic Native Embodied Omni-Modal Memory System** built first for emotional
+SenseMem is an **Agentic Native Embodied Omni-Modal Memory System** built first for emotional
 companion robots. The same memory system extends to desktop robots, personal work assistants,
 chatbots, voice agents, and other long-lived intelligent products.
 
 Omni-modal means any supported modality can stand alone or combine with the others: text-only,
 image-text, video, audio, or an arbitrary ordered mixture. Applications own their input and capture
-forms, then normalize them into one content contract. MindBridge preserves that evidence as durable
+forms, then normalize them into one content contract. SenseMem preserves that evidence as durable
 memory an agent can search, question, and trace—not merely a nearest-neighbor result.
 
 Authoritative records and source media are stored locally. Inference is explicit: use bundled local
@@ -20,16 +20,16 @@ adapters, an OpenAI-compatible endpoint, or your own typed backend. A remote bac
 inputs required for its configured operation. The same `Memory` kernel powers the Python SDK,
 REST, MCP, and command-line interfaces.
 
-> MindBridge is a memory system, not an agent framework, robot runtime, sensor stack, or hosted
+> SenseMem is a memory system, not an agent framework, robot runtime, sensor stack, or hosted
 > multi-tenant service. The current release is an embedded library with Python, REST, MCP, and CLI
 > interfaces; the product itself is not defined by one integration language.
 
-This checkout declares package version `0.2.0`. Start with the
+This checkout declares package version `0.3.0`. Start with the
 [documentation index](docs/README.md) for current guides and API contracts.
 
-## Why MindBridge
+## Why SenseMem
 
-MindBridge pursues three measurable advantages over alternative memory stacks:
+SenseMem pursues three measurable advantages over alternative memory stacks:
 
 | Goal | Product standard |
 | --- | --- |
@@ -74,18 +74,18 @@ reproduced.
 
 ### Where it fits
 
-| Need | MindBridge's choice | Consequence |
+| Need | SenseMem's choice | Consequence |
 | --- | --- | --- |
 | Embedded memory | One `Memory` in the host process | No database, cache, queue, or object-store service |
 | Local data control | SQLite and media under `data_dir` | The application owns filesystem, backup, and encryption policy |
 | Omni-modal evidence | Native ordered text, image, video, and audio, alone or combined | Retrieval and grounding retain source modalities |
 | Portable inference | Explicit capabilities and durable model identities | Local and remote backends share memory semantics |
 | Explainable retrieval | Stable evidence IDs, abstention, and traces | Callers can inspect why evidence was used or rejected |
-| Framework neutrality | SDK, REST, MCP, and CLI | MindBridge can sit below different agents and applications |
+| Framework neutrality | SDK, REST, MCP, and CLI | SenseMem can sit below different agents and applications |
 
 ### How it differs from common alternatives
 
-| Alternative | MindBridge adds | Prefer the alternative when |
+| Alternative | SenseMem adds | Prefer the alternative when |
 | --- | --- | --- |
 | A vector database alone | Canonical multimodal records, cognitive roles, time and space semantics, grounded answers, and a recoverable index projection | Similarity search is the complete requirement |
 | A hosted memory service | In-process execution, local authoritative state, and application-selected model boundaries | You want a vendor to operate storage, tenancy, and access control |
@@ -93,7 +93,7 @@ reproduced.
 | Custom SQLite plus a vector index | Content identity, media lifecycle, durable index outbox, stale-ID filtering, typed model contracts, and recovery paths | Your schema and retrieval policy are deliberately small and application-specific |
 
 Choose another design if you require a hosted control plane, built-in authentication, autonomous
-planning, or multiple tenants inside one physical store. MindBridge deliberately leaves those
+planning, or multiple tenants inside one physical store. SenseMem deliberately leaves those
 concerns to the host.
 
 ## Design philosophy
@@ -116,7 +116,7 @@ See [Design principles](docs/design-principles.md) and
 
 ## Installation
 
-MindBridge supports Python 3.11 through 3.14. Install only the surfaces you use:
+SenseMem supports Python 3.11 through 3.14. Install only the surfaces you use:
 
 The base package provides local storage, retrieval, public types and Zvec. Model runtimes and
 transports live in optional extras; the [configuration guide](docs/configuration.md#install-only-the-surfaces-you-use)
@@ -125,24 +125,24 @@ maintains their complete dependency catalog.
 Common choices:
 
 ```bash
-uv add "mindbridge[all]"                       # every optional integration
-uv add mindbridge                              # bring your own embedder
-uv add "mindbridge[local]"                     # first local add/search loop
-uv add "mindbridge[local,reranking]"           # local embedding and Qwen3-VL reranking
-uv add "mindbridge[openai]"                    # OpenAI-compatible models
-uv add "mindbridge[local,server]"              # local models plus REST
-uv add "mindbridge[openai,mcp]"                # remote models plus MCP
-uv add "mindbridge[benchmarks,local,openai]"   # evaluation environment
+uv add "sensemem[all]"                       # every optional integration
+uv add sensemem                              # bring your own embedder
+uv add "sensemem[local]"                     # first local add/search loop
+uv add "sensemem[local,reranking]"           # local embedding and Qwen3-VL reranking
+uv add "sensemem[openai]"                    # OpenAI-compatible models
+uv add "sensemem[local,server]"              # local models plus REST
+uv add "sensemem[openai,mcp]"                # remote models plus MCP
+uv add "sensemem[benchmarks,local,openai]"   # evaluation environment
 ```
 
 With `pip`, the same extras apply:
 
 ```bash
-python -m pip install "mindbridge[all]"
-python -m pip install "mindbridge[local]"
+python -m pip install "sensemem[all]"
+python -m pip install "sensemem[local]"
 ```
 
-`mindbridge[all]` installs the complete optional dependency surface. It does not configure model
+`sensemem[all]` installs the complete optional dependency surface. It does not configure model
 providers, download benchmark datasets, or supply the YuNet and SFace model files.
 
 Transport extras do not choose a model backend. The base package always requires an application
@@ -161,10 +161,10 @@ This complete example stores a fact, proves idempotent identity, and retrieves i
 service or model API key:
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 config = {
-    "data_dir": "./data/mindbridge-demo",
+    "data_dir": "./data/sensemem-demo",
     "embedding": {
         "provider": "sentence-transformers",
         "model": "google/embeddinggemma-2",
@@ -233,16 +233,16 @@ The [documentation index](docs/README.md) is the complete task-oriented map.
 
 ## Benchmarks
 
-`mindbridge-bench eval` evaluates memory quality and end-to-end behavior through the public SDK.
+`sensemem-bench eval` evaluates memory quality and end-to-end behavior through the public SDK.
 Its executable catalog covers seventeen benchmark families across long-horizon conversation,
 personalization, multimodal video and lifelog QA, embodied scene memory, and grounded retrieval.
 Separate utilities produce raw LoCoMo-Refined predictions and measure the local SQLite-to-Zvec
 index path. Copy the [evaluation example](docs/examples/eval.example.yaml) to `eval.yaml` and
-select an embedding model before executing a MindBridge run.
+select an embedding model before executing a SenseMem run.
 
 ```bash
-mindbridge-bench eval --list-tasks
-mindbridge-bench eval \
+sensemem-bench eval --list-tasks
+sensemem-bench eval \
   --config eval.yaml \
   --tasks locomo-refined \
   --model-args generation_model=gpt-5-mini-2025-08-07 \
@@ -265,7 +265,7 @@ dataset, scorer, model, runtime, hardware, and validity fields. Read
 - REST and network MCP add no authentication, authorization, TLS, quotas, or rate limits.
 - Backups require SQLite and original assets; Zvec alone is disposable.
 - Embedding model, revision, dimension, and recipe form durable identity.
-- MindBridge does not fetch remote URLs; the host must download and validate media.
+- SenseMem does not fetch remote URLs; the host must download and validate media.
 - Stored content remains untrusted model input; inspect `AnswerResult.hits` for high-impact use.
 
 Read [Security](SECURITY.md), [Deployment](docs/deployment.md),
@@ -273,25 +273,25 @@ Read [Security](SECURITY.md), [Deployment](docs/deployment.md),
 
 ## Citation
 
-If you use MindBridge in academic or technical work, cite the version or commit you evaluated:
+If you use SenseMem in academic or technical work, cite the version or commit you evaluated:
 
 ```bibtex
-@software{mindbridge_2026,
-  author  = {{MindBridge contributors}},
-  title   = {MindBridge: An Agentic Native Embodied Omni-Modal Memory System},
+@software{sensemem_2026,
+  author  = {{SenseMem contributors}},
+  title   = {SenseMem: An Agentic Native Embodied Omni-Modal Memory System},
   year    = {2026},
-  version = {0.2.0},
-  url     = {https://github.com/EventHorizon-Lab/MindBridge}
+  version = {0.3.0},
+  url     = {https://github.com/SenseMem/SenseMem}
 }
 ```
 
 ## Acknowledgements
 
-MindBridge builds on SQLite, Zvec, Pydantic, and OpenTelemetry. Optional surfaces integrate
+SenseMem builds on SQLite, Zvec, Pydantic, and OpenTelemetry. Optional surfaces integrate
 Sentence Transformers, FunASR, OpenCV, the official OpenAI SDK, FastAPI/Starlette, and MCP.
 We thank their maintainers and research communities. Benchmark sources, revisions, protocol notes,
 and retained licenses are listed in [Benchmarking](docs/benchmarking.md) and the bundled
-[scorer notices](src/mindbridge/benchmarks/_official/NOTICE.md).
+[scorer notices](src/sensemem/benchmarks/_official/NOTICE.md).
 
 ## Contributing
 
@@ -302,6 +302,6 @@ issues privately through [SECURITY.md](SECURITY.md).
 
 ## License
 
-MindBridge-authored code and documentation are available under the
+SenseMem-authored code and documentation are available under the
 [Apache License 2.0](LICENSE). Models, datasets, and vendored benchmark material retain their own
 terms; review the licenses of every model and dataset selected for your deployment.

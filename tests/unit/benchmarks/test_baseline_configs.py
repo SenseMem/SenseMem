@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.eval_config import _load_memory_config
-from mindbridge.benchmarks.task_catalog import TASKS, expand
+from sensemem.benchmarks.eval_config import _load_memory_config
+from sensemem.benchmarks.task_catalog import TASKS, expand
 
 _ROOT = Path(__file__).resolve().parents[3]
 _BASELINES = _ROOT / "docs" / "examples" / "baselines"

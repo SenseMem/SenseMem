@@ -12,24 +12,24 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.beam import BEAM_CATEGORIES, load_beam
-from mindbridge.benchmarks.clbench import (
+from sensemem.benchmarks.beam import BEAM_CATEGORIES, load_beam
+from sensemem.benchmarks.clbench import (
     OVERSIZED_QUESTION_CHARACTERS,
     _load_clbench_selected,
     load_clbench,
     split_question,
 )
-from mindbridge.benchmarks.download import _patterns
-from mindbridge.benchmarks.eval_adapters import LoadedTask, load_task
-from mindbridge.benchmarks.longmemeval import load_longmemeval
-from mindbridge.benchmarks.memlens import load_memlens
-from mindbridge.benchmarks.openeqa import OPENEQA_SPLITS, episode_frames, load_openeqa
-from mindbridge.benchmarks.personamem_v3 import (
+from sensemem.benchmarks.download import _patterns
+from sensemem.benchmarks.eval_adapters import LoadedTask, load_task
+from sensemem.benchmarks.longmemeval import load_longmemeval
+from sensemem.benchmarks.memlens import load_memlens
+from sensemem.benchmarks.openeqa import OPENEQA_SPLITS, episode_frames, load_openeqa
+from sensemem.benchmarks.personamem_v3 import (
     load_personamem_v3,
     render_candidates,
     render_event,
 )
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 def _write(path: Path, payload: object) -> Path:
@@ -688,8 +688,8 @@ def test_personamem_v3_reads_the_flattened_row_spelling(tmp_path: Path) -> None:
 
 def test_personamem_v3_never_records_the_question_as_its_own_reference(tmp_path: Path) -> None:
     """857 released queries publish no `example_response`."""
-    from mindbridge.benchmarks.eval_adapters import load_task
-    from mindbridge.benchmarks.task_catalog import TASKS
+    from sensemem.benchmarks.eval_adapters import load_task
+    from sensemem.benchmarks.task_catalog import TASKS
 
     persona = tmp_path / "personamem-v3" / "backend" / "8"
     _write(persona / "instagram.json", [_personamem_event("a", 1_000)])
@@ -728,8 +728,8 @@ def test_text_memories_split_passages_the_product_would_reject() -> None:
     unit. BEAM turns reach 348,864 characters and LongMemEval has one of
     76,594, so unsplit storage silently left 70% of BEAM's 10M tier unjudged.
     """
-    from mindbridge.benchmarks.eval_adapters import _text_memories
-    from mindbridge.kernel.validation import MAX_TEXT_CHARACTERS
+    from sensemem.benchmarks.eval_adapters import _text_memories
+    from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
 
     short = _text_memories("turn", "one short line")
     assert len(short) == 1
@@ -888,7 +888,7 @@ def test_locomo_refined_labels_the_dialogue_turns_that_hold_the_answer(tmp_path:
     is not the source-ID vocabulary reads as a join failure rather than as recall
     over the handful of IDs that happened to match.
     """
-    from mindbridge.benchmarks.eval_adapters import load_task
+    from sensemem.benchmarks.eval_adapters import load_task
 
     _write(
         tmp_path / "locomo-refined" / "data" / "raw" / "locomo_refined.json",
@@ -955,7 +955,7 @@ def test_undated_questions_are_anchored_at_the_end_of_their_corpus() -> None:
     anchor `Memory.ask` used the wall clock, so "this year" meant the run's year, not the
     corpus's. Questions that carry their own date keep it.
     """
-    from mindbridge.benchmarks.eval_adapters import (
+    from sensemem.benchmarks.eval_adapters import (
         EvalQuestion,
         EvalUnit,
         MemoryItem,
@@ -998,13 +998,13 @@ def test_undated_questions_are_anchored_at_the_end_of_their_corpus() -> None:
 def test_question_clock_precedes_corpus_fallback(
     question: str, expected: tuple[int, int, int]
 ) -> None:
-    from mindbridge.benchmarks.eval_adapters import (
+    from sensemem.benchmarks.eval_adapters import (
         EvalQuestion,
         EvalUnit,
         MemoryItem,
         _with_corpus_reference,
     )
-    from mindbridge.kernel.temporal import query_temporal_range
+    from sensemem.kernel.temporal import query_temporal_range
 
     latest = datetime(2025, 7, 22, tzinfo=timezone.utc)
     unit = EvalUnit(
@@ -1024,7 +1024,7 @@ def test_question_clock_precedes_corpus_fallback(
 
 
 def test_question_clock_uses_original_text_and_preserves_explicit_dates() -> None:
-    from mindbridge.benchmarks.eval_adapters import (
+    from sensemem.benchmarks.eval_adapters import (
         EvalQuestion,
         EvalUnit,
         MemoryItem,
@@ -1060,7 +1060,7 @@ def test_longmemeval_labels_the_answer_turn_and_every_block_it_was_split_into(
     marked turn is gold: labelling only one block would score a correct retrieval
     as a miss on exactly the long turns that motivated the split.
     """
-    from mindbridge.benchmarks.eval_adapters import _TEXT_BLOCK_CHARACTERS, load_task
+    from sensemem.benchmarks.eval_adapters import _TEXT_BLOCK_CHARACTERS, load_task
 
     long_answer = "\n\n".join(["Juno is a beagle." * 40] * 15)
     assert len(long_answer) > _TEXT_BLOCK_CHARACTERS
@@ -1120,8 +1120,8 @@ def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     differ from the clip's own key, so every 30 s clip was uploaded to the embedder twice. The
     harness reads source ids from metadata (`_evidence`), never from content.
     """
-    from mindbridge.benchmarks.eval import _memory_content, _memory_metadata
-    from mindbridge.benchmarks.eval_adapters import MemoryItem
+    from sensemem.benchmarks.eval import _memory_content, _memory_metadata
+    from sensemem.benchmarks.eval_adapters import MemoryItem
 
     clip = tmp_path / "segment.mp4"
     clip.write_bytes(b"video")
@@ -1136,12 +1136,12 @@ def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
 
 def test_longmemeval_source_labels_are_evaluator_only(tmp_path: Path) -> None:
     """Changing release labels cannot change stored memories or their gold join."""
-    from mindbridge.benchmarks.eval import (
+    from sensemem.benchmarks.eval import (
         _cache_task,
         _memory_content,
         _memory_metadata,
     )
-    from mindbridge.benchmarks.longmemeval import LONGMEMEVAL_ADAPTER_VERSION
+    from sensemem.benchmarks.longmemeval import LONGMEMEVAL_ADAPTER_VERSION
 
     def load_with_labels(first: str, second: str) -> LoadedTask:
         _write(
@@ -1217,7 +1217,7 @@ def test_longmemeval_reports_no_gold_evidence_when_the_release_marks_no_turn(
     `MISSING recall_at_20` -- the honest state -- rather than a gold set of every turn
     in the answer session.
     """
-    from mindbridge.benchmarks.eval_adapters import load_task
+    from sensemem.benchmarks.eval_adapters import load_task
 
     _write(
         tmp_path / "longmemeval" / "longmemeval_s",

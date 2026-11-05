@@ -15,8 +15,8 @@ import httpx2 as httpx
 import pytest
 from openai import OpenAI
 
-from mindbridge import AnswerPolicy, AnswerResult, Modality, SearchHit
-from mindbridge.models.base import EmbedTask, ModelInput
+from sensemem import AnswerPolicy, AnswerResult, Modality, SearchHit
+from sensemem.models.base import EmbedTask, ModelInput
 
 
 class _FakeModels:
@@ -359,7 +359,7 @@ def test_trial_freezes_assets_and_index_with_sqlite(tmp_path: Path, changed: str
     driver = _driver()
     tree_manifest = driver.tree_manifest
     source = tmp_path / "source"
-    for name in ("state.sqlite3", ".mindbridge.lock", "assets/video.mp4", "zvec/index"):
+    for name in ("state.sqlite3", ".sensemem.lock", "assets/video.mp4", "zvec/index"):
         path = source / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"original")
@@ -392,7 +392,7 @@ def test_trial_rejects_snapshot_changed_during_copy(
     source = tmp_path / "source"
     source.mkdir()
     (source / "state.sqlite3").write_bytes(b"original")
-    (source / ".mindbridge.lock").touch()
+    (source / ".sensemem.lock").touch()
     recipe = _recipe(
         driver,
         source_sqlite_sha256=driver.dataset_digest(source / "state.sqlite3"),
@@ -414,7 +414,7 @@ def test_trial_refuses_to_copy_a_store_with_a_live_owner(tmp_path: Path) -> None
     source = tmp_path / "source"
     source.mkdir()
     (source / "state.sqlite3").write_bytes(b"sqlite")
-    with (source / ".mindbridge.lock").open("w+b") as lock:
+    with (source / ".sensemem.lock").open("w+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         destination = tmp_path / "copy"
         with pytest.raises(RuntimeError, match="still owned"):

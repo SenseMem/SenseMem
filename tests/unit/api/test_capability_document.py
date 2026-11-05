@@ -5,7 +5,7 @@ routing table. The memory control plane is SDK-only by design (`docs/context-os.
 `consolidate` has no `/v1` route and none of the thirteen MCP tools, and the embodied operations
 reach a route or a tool only when the host opts in. An agent that read `consolidate` in the MCP
 greeting would go looking for a tool that is not there, so every surface narrows the list to what
-it serves -- except `mindbridge doctor`, which reports for a CLI that does have the command.
+it serves -- except `sensemem doctor`, which reports for a CLI that does have the command.
 """
 
 import json
@@ -13,10 +13,10 @@ from typing import Any, cast
 
 from fastapi.testclient import TestClient
 
-from mindbridge import cli
-from mindbridge.api import app as rest
-from mindbridge.api import mcp as mcp_adapter
-from mindbridge.types import MemoryCapabilities, Modality
+from sensemem import cli
+from sensemem.api import app as rest
+from sensemem.api import mcp as mcp_adapter
+from sensemem.types import MemoryCapabilities, Modality
 
 # Every optional backend declared at once, so each operation is derivable and the publishing
 # surface is the only thing that can be the reason one is missing.
@@ -151,7 +151,7 @@ def test_the_two_network_surfaces_narrow_one_document_identically() -> None:
 
 
 def test_doctor_still_publishes_the_whole_derivation() -> None:
-    """`mindbridge consolidate` exists, so the CLI's document is the derivation, unnarrowed."""
+    """`sensemem consolidate` exists, so the CLI's document is the derivation, unnarrowed."""
     probed = cli._doctor_capabilities({"embedder": _Embedder(), "consolidator": _Consolidator()})
 
     assert probed is not None

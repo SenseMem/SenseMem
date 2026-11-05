@@ -24,11 +24,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode, Tracer
 
-import mindbridge.configuration as configuration_module
-import mindbridge.kernel.projection as projection_module
-import mindbridge.memory as memory_module
-from mindbridge import MemoryConfig, MemoryPlugins, RetrievalRejection
-from mindbridge._telemetry import (
+import sensemem.configuration as configuration_module
+import sensemem.kernel.projection as projection_module
+import sensemem.memory as memory_module
+from sensemem import MemoryConfig, MemoryPlugins, RetrievalRejection
+from sensemem._telemetry import (
     ASYNC_QUEUE_TIME,
     EMBEDDING_TASK,
     IDENTITY_MATCHED,
@@ -51,8 +51,8 @@ from mindbridge._telemetry import (
     record_model_usage,
     record_unmetered_model_usage,
 )
-from mindbridge.control import dump_operation
-from mindbridge.exceptions import (
+from sensemem.control import dump_operation
+from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
     MemoryNotFoundError,
@@ -60,8 +60,8 @@ from mindbridge.exceptions import (
     StorageError,
     ValidationError,
 )
-from mindbridge.infrastructure.local.assets import AssetStore
-from mindbridge.infrastructure.local.store import (
+from sensemem.infrastructure.local.assets import AssetStore
+from sensemem.infrastructure.local.store import (
     IndexDocument,
     LocalStore,
     SpeechPlan,
@@ -69,20 +69,20 @@ from mindbridge.infrastructure.local.store import (
     StoredEmbedding,
     StoredMemory,
 )
-from mindbridge.infrastructure.local.store._connections import Connections
-from mindbridge.infrastructure.local.store.media import MediaAnalyses
-from mindbridge.infrastructure.local.store.records import MemoryRecords
-from mindbridge.infrastructure.local.zvec_index import IndexHit
-from mindbridge.kernel.derived import derived_text
-from mindbridge.kernel.ranking import (
+from sensemem.infrastructure.local.store._connections import Connections
+from sensemem.infrastructure.local.store.media import MediaAnalyses
+from sensemem.infrastructure.local.store.records import MemoryRecords
+from sensemem.infrastructure.local.zvec_index import IndexHit
+from sensemem.kernel.derived import derived_text
+from sensemem.kernel.ranking import (
     LEXICAL_FULL_COVERAGE_RELEVANCE,
     merge_index_hits,
     ranking_signals,
 )
-from mindbridge.kernel.runtime import translate_index_errors
-from mindbridge.kernel.temporal import parse_temporal_range
-from mindbridge.memory import AsyncMemory, Memory
-from mindbridge.models.base import (
+from sensemem.kernel.runtime import translate_index_errors
+from sensemem.kernel.temporal import parse_temporal_range
+from sensemem.memory import AsyncMemory, Memory
+from sensemem.models.base import (
     EmbedTask,
     FaceAnalysis,
     FaceEmbedding,
@@ -93,10 +93,10 @@ from mindbridge.models.base import (
     SpeechTurn,
     StreamingGenerationBackend,
 )
-from mindbridge.models.openai_sdk import OpenAIModels
-from mindbridge.recall import fallback_plan
-from mindbridge.streams import AsyncOmniPrefetch
-from mindbridge.types import (
+from sensemem.models.openai_sdk import OpenAIModels
+from sensemem.recall import fallback_plan
+from sensemem.streams import AsyncOmniPrefetch
+from sensemem.types import (
     AbstentionReason,
     AnswerPolicy,
     AnswerResult,
@@ -774,7 +774,7 @@ def test_ask_observes_the_pre_grounding_ranking_without_affecting_answers(
 def test_generation_observer_sees_selected_evidence_and_cannot_change_the_answer(
     tmp_path: Path,
 ) -> None:
-    from mindbridge._telemetry import _observe_generation_inputs
+    from sensemem._telemetry import _observe_generation_inputs
 
     observed: list[object] = []
 
@@ -906,26 +906,26 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
     spans = exporter.get_finished_spans()
     names = {span.name for span in spans}
     assert {
-        "mindbridge.add",
-        "mindbridge.ask",
-        "mindbridge.content.prepare",
-        "mindbridge.retrieve",
-        "mindbridge.model.embedding",
-        "mindbridge.index.sync",
-        "mindbridge.index.sync.sqlite.read",
-        "mindbridge.index.sync.zvec.apply",
-        "mindbridge.index.sync.zvec.flush",
-        "mindbridge.index.sync.zvec.optimize",
-        "mindbridge.index.sync.sqlite.ack",
-        "mindbridge.index.search",
-        "mindbridge.storage.write",
-        "mindbridge.retrieval.rank",
-        "mindbridge.model.generation",
+        "sensemem.add",
+        "sensemem.ask",
+        "sensemem.content.prepare",
+        "sensemem.retrieve",
+        "sensemem.model.embedding",
+        "sensemem.index.sync",
+        "sensemem.index.sync.sqlite.read",
+        "sensemem.index.sync.zvec.apply",
+        "sensemem.index.sync.zvec.flush",
+        "sensemem.index.sync.zvec.optimize",
+        "sensemem.index.sync.sqlite.ack",
+        "sensemem.index.search",
+        "sensemem.storage.write",
+        "sensemem.retrieval.rank",
+        "sensemem.model.generation",
     } <= names
-    generation = next(span for span in spans if span.name == "mindbridge.model.generation")
-    add = next(span for span in spans if span.name == "mindbridge.add")
-    ask = next(span for span in spans if span.name == "mindbridge.ask")
-    retrieve = next(span for span in spans if span.name == "mindbridge.retrieve")
+    generation = next(span for span in spans if span.name == "sensemem.model.generation")
+    add = next(span for span in spans if span.name == "sensemem.add")
+    ask = next(span for span in spans if span.name == "sensemem.ask")
+    retrieve = next(span for span in spans if span.name == "sensemem.retrieve")
     assert generation.attributes is not None
     ttft = generation.attributes[MODEL_TTFT]
     assert isinstance(ttft, int | float) and ttft >= 0
@@ -939,16 +939,16 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
         if span.parent is not None and span.parent.span_id == retrieve.context.span_id
     }
     assert {
-        "mindbridge.content.prepare",
-        "mindbridge.model.embedding",
-        "mindbridge.index.sync",
-        "mindbridge.index.search",
-        "mindbridge.retrieval.rank",
+        "sensemem.content.prepare",
+        "sensemem.model.embedding",
+        "sensemem.index.sync",
+        "sensemem.index.search",
+        "sensemem.retrieval.rank",
     } <= retrieve_children
     query_embedding = next(
         span
         for span in spans
-        if span.name == "mindbridge.model.embedding"
+        if span.name == "sensemem.model.embedding"
         and span.attributes is not None
         and span.attributes[EMBEDDING_TASK] == EmbedTask.QUERY.value
     )
@@ -957,7 +957,7 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
     add_index_sync = next(
         span
         for span in spans
-        if span.name == "mindbridge.index.sync"
+        if span.name == "sensemem.index.sync"
         and span.parent is not None
         and span.parent.span_id == add.context.span_id
     )
@@ -967,22 +967,22 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
         if span.parent is not None and span.parent.span_id == add_index_sync.context.span_id
     }
     assert {
-        "mindbridge.index.sync.sqlite.read",
-        "mindbridge.index.sync.zvec.apply",
+        "sensemem.index.sync.sqlite.read",
+        "sensemem.index.sync.zvec.apply",
     } <= index_sync_children
     # The flush is batched behind the write; here `close()` took it, under its own sync stage.
-    flush = next(span for span in spans if span.name == "mindbridge.index.sync.zvec.flush")
+    flush = next(span for span in spans if span.name == "sensemem.index.sync.zvec.flush")
     assert flush.parent is not None
     close_sync = next(span for span in spans if span.context.span_id == flush.parent.span_id)
-    assert close_sync.name == "mindbridge.index.sync"
+    assert close_sync.name == "sensemem.index.sync"
     assert {
         span.name
         for span in spans
         if span.parent is not None and span.parent.span_id == close_sync.context.span_id
     } == {
-        "mindbridge.index.sync.zvec.flush",
-        "mindbridge.index.sync.zvec.optimize",
-        "mindbridge.index.sync.sqlite.ack",
+        "sensemem.index.sync.zvec.flush",
+        "sensemem.index.sync.zvec.optimize",
+        "sensemem.index.sync.sqlite.ack",
     }
     assert ask.attributes is not None
     operation_ttft = ask.attributes[OPERATION_TTFT]
@@ -993,7 +993,7 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
     embedding_tasks = {
         span.attributes[EMBEDDING_TASK]
         for span in spans
-        if span.name == "mindbridge.model.embedding" and span.attributes is not None
+        if span.name == "sensemem.model.embedding" and span.attributes is not None
     }
     assert embedding_tasks == {EmbedTask.DOCUMENT.value, EmbedTask.QUERY.value}
 
@@ -1042,7 +1042,7 @@ def test_formation_and_consolidation_report_unmetered_requests_as_incomplete(
     provider.shutdown()
 
     spans = {span.name: span for span in exporter.get_finished_spans()}
-    for name in ("mindbridge.model.formation", "mindbridge.model.consolidation"):
+    for name in ("sensemem.model.formation", "sensemem.model.consolidation"):
         attributes = spans[name].attributes
         assert attributes is not None
         assert attributes[MODEL_REQUEST_COUNT] == 1
@@ -1070,9 +1070,9 @@ def test_trace_errors_never_export_exception_details(tmp_path: Path) -> None:
         if span.status.status_code is StatusCode.ERROR
     )
     assert {span.name for span in failed} >= {
-        "mindbridge.add",
-        "mindbridge.content.prepare",
-        "mindbridge.model.embedding",
+        "sensemem.add",
+        "sensemem.content.prepare",
+        "sensemem.model.embedding",
     }
     assert all(not span.events and span.status.description is None for span in failed)
 
@@ -1107,7 +1107,7 @@ def test_empty_stream_is_invalid_model_output(tmp_path: Path, chunks: tuple[str,
             memory.ask("what is red?")
     provider.shutdown()
 
-    ask = next(span for span in exporter.get_finished_spans() if span.name == "mindbridge.ask")
+    ask = next(span for span in exporter.get_finished_spans() if span.name == "sensemem.ask")
     assert ask.attributes is not None
     assert OPERATION_TTFT not in ask.attributes
 
@@ -1139,12 +1139,12 @@ def test_stream_ttft_requires_an_actual_model_request(tmp_path: Path) -> None:
     provider.shutdown()
 
     generation = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.model.generation"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.model.generation"
     )
     assert generation.attributes is not None
     assert generation.attributes[MODEL_REQUEST_COUNT] == 0
     assert MODEL_TTFT not in generation.attributes
-    ask = next(span for span in exporter.get_finished_spans() if span.name == "mindbridge.ask")
+    ask = next(span for span in exporter.get_finished_spans() if span.name == "sensemem.ask")
     assert ask.attributes is not None
     assert cast(float, ask.attributes[OPERATION_TTFT]) >= 0
 
@@ -3319,22 +3319,22 @@ def test_face_recognition_records_new_then_matched_identity_counts(tmp_path: Pat
     provider.shutdown()
 
     assert first_identity == second_identity
-    created, matched = _identity_attributes(exporter, "mindbridge.identity.faces")
+    created, matched = _identity_attributes(exporter, "sensemem.identity.faces")
     assert created == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 1,
-        "mindbridge.identity.identities": 1,
-        "mindbridge.identity.matched_existing": 0,
-        "mindbridge.identity.created": 1,
-        "mindbridge.identity.cached": False,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 1,
+        "sensemem.identity.identities": 1,
+        "sensemem.identity.matched_existing": 0,
+        "sensemem.identity.created": 1,
+        "sensemem.identity.cached": False,
     }
     assert matched == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 1,
-        "mindbridge.identity.identities": 1,
-        "mindbridge.identity.matched_existing": 1,
-        "mindbridge.identity.created": 0,
-        "mindbridge.identity.cached": False,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 1,
+        "sensemem.identity.identities": 1,
+        "sensemem.identity.matched_existing": 1,
+        "sensemem.identity.created": 0,
+        "sensemem.identity.cached": False,
     }
 
 
@@ -3351,14 +3351,14 @@ def test_face_recognition_counts_observations_apart_from_identities(tmp_path: Pa
     provider.shutdown()
 
     assert len({observation.identity_id for observation in observations}) == 1
-    (recorded,) = _identity_attributes(exporter, "mindbridge.identity.faces")
+    (recorded,) = _identity_attributes(exporter, "sensemem.identity.faces")
     assert recorded == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 2,
-        "mindbridge.identity.identities": 1,
-        "mindbridge.identity.matched_existing": 1,
-        "mindbridge.identity.created": 1,
-        "mindbridge.identity.cached": False,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 2,
+        "sensemem.identity.identities": 1,
+        "sensemem.identity.matched_existing": 1,
+        "sensemem.identity.created": 1,
+        "sensemem.identity.cached": False,
     }
 
 
@@ -3376,15 +3376,15 @@ def test_face_recognition_records_zero_detections(tmp_path: Path) -> None:
     provider.shutdown()
 
     assert len(analyzer.calls) == 1
-    recorded = _identity_attributes(exporter, "mindbridge.identity.faces")
+    recorded = _identity_attributes(exporter, "sensemem.identity.faces")
     assert len(recorded) == 1
     assert recorded[0] == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 0,
-        "mindbridge.identity.identities": 0,
-        "mindbridge.identity.matched_existing": 0,
-        "mindbridge.identity.created": 0,
-        "mindbridge.identity.cached": False,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 0,
+        "sensemem.identity.identities": 0,
+        "sensemem.identity.matched_existing": 0,
+        "sensemem.identity.created": 0,
+        "sensemem.identity.cached": False,
     }
 
 
@@ -3403,15 +3403,15 @@ def test_cached_face_analysis_reports_counts_and_is_marked_cached(tmp_path: Path
     provider.shutdown()
 
     assert len(analyzer.calls) == 1
-    fresh, cached = _identity_attributes(exporter, "mindbridge.identity.faces")
-    assert fresh["mindbridge.identity.cached"] is False
+    fresh, cached = _identity_attributes(exporter, "sensemem.identity.faces")
+    assert fresh["sensemem.identity.cached"] is False
     assert cached == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 1,
-        "mindbridge.identity.identities": 1,
-        "mindbridge.identity.matched_existing": 0,
-        "mindbridge.identity.created": 1,
-        "mindbridge.identity.cached": True,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 1,
+        "sensemem.identity.identities": 1,
+        "sensemem.identity.matched_existing": 0,
+        "sensemem.identity.created": 1,
+        "sensemem.identity.cached": True,
     }
 
 
@@ -3437,22 +3437,22 @@ def test_speaker_recognition_records_new_then_matched_identity_counts(tmp_path: 
     provider.shutdown()
 
     assert first_speaker is not None and first_speaker == second_speaker
-    created, matched = _identity_attributes(exporter, "mindbridge.identity.speakers")
+    created, matched = _identity_attributes(exporter, "sensemem.identity.speakers")
     assert created == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 1,
-        "mindbridge.identity.identities": 1,
-        "mindbridge.identity.matched_existing": 0,
-        "mindbridge.identity.created": 1,
-        "mindbridge.identity.cached": False,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 1,
+        "sensemem.identity.identities": 1,
+        "sensemem.identity.matched_existing": 0,
+        "sensemem.identity.created": 1,
+        "sensemem.identity.cached": False,
     }
     assert matched == {
-        "mindbridge.span.kind": "stage",
-        "mindbridge.identity.observations": 1,
-        "mindbridge.identity.identities": 1,
-        "mindbridge.identity.matched_existing": 1,
-        "mindbridge.identity.created": 0,
-        "mindbridge.identity.cached": False,
+        "sensemem.span.kind": "stage",
+        "sensemem.identity.observations": 1,
+        "sensemem.identity.identities": 1,
+        "sensemem.identity.matched_existing": 1,
+        "sensemem.identity.created": 0,
+        "sensemem.identity.cached": False,
     }
 
 
@@ -5318,8 +5318,8 @@ def test_abandoning_ask_stream_closes_the_generation_stream_inside_the_operation
 
     assert closed == [True]
     spans = {span.name: span for span in exporter.get_finished_spans()}
-    generation_end = spans["mindbridge.model.generation"].end_time
-    ask_end = spans["mindbridge.ask"].end_time
+    generation_end = spans["sensemem.model.generation"].end_time
+    ask_end = spans["sensemem.ask"].end_time
     assert generation_end is not None and ask_end is not None
     # Left to the frame's last reference dropping, the generation stream would close after the
     # operation that owns it, which loses its model usage and inverts the trace.
@@ -5343,12 +5343,12 @@ def test_ask_stream_records_time_to_first_token_on_the_generation_span(tmp_path:
     provider.shutdown()
 
     generation = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.model.generation"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.model.generation"
     )
     assert generation.attributes is not None
     ttft = generation.attributes[MODEL_TTFT]
     assert isinstance(ttft, int | float) and ttft >= 0
-    ask = next(span for span in exporter.get_finished_spans() if span.name == "mindbridge.ask")
+    ask = next(span for span in exporter.get_finished_spans() if span.name == "sensemem.ask")
     assert ask.attributes is not None
     assert cast(float, ask.attributes[OPERATION_TTFT]) >= 0
 
@@ -5385,7 +5385,7 @@ def test_answering_reinforces_only_the_evidence_the_model_cited(tmp_path: Path) 
     """Answering has to move `access_count`, or decay only ever measures age.
 
     `reinforce` was reachable from the public operation and the CLI and from nowhere else, so an
-    agent driving MindBridge over MCP or REST left every memory at zero for ever: the
+    agent driving SenseMem over MCP or REST left every memory at zero for ever: the
     reinforcement factor in `_ranking_signals` was pinned at 1.0, and turning on
     `decay_half_life_days` degraded memories purely by age with no usage signal to hold up the
     ones that keep answering questions. The set reinforced is the answer's own citations, so a
@@ -5682,7 +5682,7 @@ def test_speech_backend_analysis_is_indexed_by_default(tmp_path: Path) -> None:
 def test_indexed_speech_is_not_re_analyzed_when_speech_is_read_back(tmp_path: Path) -> None:
     """`index_speech` moves the speech cost to `add`; it must not duplicate it.
 
-    `speech()` still reports one `mindbridge.identity.speakers` span per asset so a recognizer's
+    `speech()` still reports one `sensemem.identity.speakers` span per asset so a recognizer's
     yield stays observable, but the span carries `cached=True` and no model call or write follows
     it. Without the cache the analysis would run twice for any caller that both writes and reads.
     """
@@ -5705,11 +5705,11 @@ def test_indexed_speech_is_not_re_analyzed_when_speech_is_read_back(tmp_path: Pa
     assert len(speech.calls) == 1, "reading speech back must not re-analyze the asset"
     replayed = exporter.get_finished_spans()[settled:]
     names = [span.name for span in replayed]
-    assert names.count("mindbridge.model.transcription") == 0
-    assert names.count("mindbridge.storage.write") == 0
-    identity = [span for span in replayed if span.name == "mindbridge.identity.speakers"]
+    assert names.count("sensemem.model.transcription") == 0
+    assert names.count("sensemem.storage.write") == 0
+    identity = [span for span in replayed if span.name == "sensemem.identity.speakers"]
     assert identity, "a cached read still reports the recognizer yield"
-    assert all((span.attributes or {})["mindbridge.identity.cached"] for span in identity)
+    assert all((span.attributes or {})["sensemem.identity.cached"] for span in identity)
 
 
 def test_index_speech_opt_out_keeps_a_speech_backend_off_the_write_path(tmp_path: Path) -> None:
@@ -5932,7 +5932,7 @@ def test_cas_write_failure_maps_to_storage_error(
     def fail_replace(_source: Path, _destination: Path) -> None:
         raise OSError("simulated full disk")
 
-    monkeypatch.setattr("mindbridge.infrastructure.local.assets.os.replace", fail_replace)
+    monkeypatch.setattr("sensemem.infrastructure.local.assets.os.replace", fail_replace)
     with (
         _memory(tmp_path, _FakeModels()) as memory,
         pytest.raises(StorageError, match="materialize media"),
@@ -6186,7 +6186,7 @@ async def test_async_ask_stream_propagates_trace_context_and_reports_queue_time(
     provider.shutdown()
 
     assert "".join(chunk.text for chunk in chunks) == "the red toolbox is on the bench"
-    ask = next(span for span in exporter.get_finished_spans() if span.name == "mindbridge.ask")
+    ask = next(span for span in exporter.get_finished_spans() if span.name == "sensemem.ask")
     assert ask.parent is not None
     assert ask.parent.span_id == caller.get_span_context().span_id
     assert ask.attributes is not None
@@ -6216,7 +6216,7 @@ async def test_async_buffered_ask_reports_executor_queue_in_end_to_end_ttft(
     provider.shutdown()
 
     assert answer.answer == "the red toolbox is on the bench"
-    span = next(item for item in exporter.get_finished_spans() if item.name == "mindbridge.ask")
+    span = next(item for item in exporter.get_finished_spans() if item.name == "sensemem.ask")
     assert span.attributes is not None
     queue_time = cast(float, span.attributes[ASYNC_QUEUE_TIME])
     assert queue_time >= 0
@@ -6816,7 +6816,7 @@ def test_add_stream_indexes_committed_items_in_bounded_groups(
     The stream groups the *apply*; the flush that acknowledges the rows is batched behind every
     write and here runs once, at `close()`.
     """
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
     with _memory(tmp_path, _FakeModels()) as memory:
         index = _FakeIndex.instances[-1]
@@ -6847,7 +6847,7 @@ def test_add_stream_applies_a_slow_source_on_the_time_bound(
     tmp_path: Path,
 ) -> None:
     """The elapsed bound is the one that fires when the source is slower than the group."""
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 0.0)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 0.0)
 
     with _memory(tmp_path, _FakeModels()) as memory:
         index = _FakeIndex.instances[-1]
@@ -6866,7 +6866,7 @@ def test_a_stream_that_ended_stops_deferring_even_if_another_outlives_it(
     again: every later `add`, `delete` or `optimize` on that thread returned without flushing the
     index, and the rows stayed durable but unsearchable.
     """
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
     with _memory(tmp_path, _FakeModels()) as memory:
         index = _FakeIndex.instances[-1]
@@ -6914,7 +6914,7 @@ def test_a_stream_pumped_across_threads_stops_deferring_on_the_thread_that_opene
     left the opener deferring forever: every later `add` or `delete` on that worker returned
     without flushing the index and its rows stayed durable but unsearchable.
     """
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
     exhausted = object()
 
     with _memory(tmp_path, _FakeModels()) as memory:
@@ -6946,7 +6946,7 @@ def test_search_during_a_stream_sees_the_committed_items(
     tmp_path: Path,
 ) -> None:
     """A group that has not flushed yet is still retrievable: `search` drains first."""
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
     with _memory(tmp_path, _FakeModels()) as memory:
         index = _FakeIndex.instances[-1]
@@ -6970,7 +6970,7 @@ def test_search_inside_a_live_stream_loop_sees_the_item_just_yielded(
     The stream defers its flushes on its own thread; a search on that same thread would otherwise
     skip the drain and miss every item committed since the last group boundary.
     """
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
     with _memory(tmp_path, _FakeModels()) as memory:
         index = _FakeIndex.instances[-1]
@@ -6990,7 +6990,7 @@ def test_add_stream_source_failure_leaves_the_committed_prefix_searchable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr("mindbridge.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
+    monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
     def contents() -> Iterator[str]:
         yield "first failing-stream clip"
@@ -7206,7 +7206,7 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
         assert absorbed != survivor
         # Lineage: which recognizer produced the templates, and which kernel rule bound them.
         assert merged.model_id == _FakeFace.face_model
-        assert merged.recipe == "mindbridge-identity-link-v1"
+        assert merged.recipe == "sensemem-identity-link-v1"
         assert merged.trigger is MemoryTrigger.EVIDENCE
         # Before the reversal the absorbed ID is an alias, so it resolves to the named person.
         assert memory.identity(absorbed) == IdentityProfile(
@@ -7690,7 +7690,7 @@ def test_planning_with_an_answerer_that_cannot_plan_is_said_once_and_keeps_the_f
             return None
 
     with (
-        caplog.at_level(logging.WARNING, logger="mindbridge.memory"),
+        caplog.at_level(logging.WARNING, logger="sensemem.memory"),
         Memory(
             tmp_path / "unplanned",
             embedder=_FakeEmbedder(),
@@ -7709,7 +7709,7 @@ def test_planning_with_an_answerer_that_cannot_plan_is_said_once_and_keeps_the_f
 
     caplog.clear()
     with (
-        caplog.at_level(logging.WARNING, logger="mindbridge.memory"),
+        caplog.at_level(logging.WARNING, logger="sensemem.memory"),
         _memory(tmp_path / "planned", recall_planning=True) as memory,
     ):
         _dated_corpus(memory)
@@ -8086,7 +8086,7 @@ def test_semantic_recall_reports_candidate_selection_and_budget_losses(
     provider.shutdown()
 
     grounded = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.recall.ground"
+        span for span in exporter.get_finished_spans() if span.name == "sensemem.recall.ground"
     )
     assert grounded.attributes is not None
     assert grounded.attributes[RECALL_QUERY_COUNT] == 1
@@ -8527,9 +8527,7 @@ def test_a_predicate_that_matched_most_of_the_corpus_grounds_like_no_plan_at_all
     assert "only the top-ranked records for the question are shown" in question.text
     assert "complete for their predicates" not in question.text
     assert "do not state a total" in question.text
-    recall = next(
-        span for span in exporter.get_finished_spans() if span.name == "mindbridge.recall"
-    )
+    recall = next(span for span in exporter.get_finished_spans() if span.name == "sensemem.recall")
     assert recall.attributes is not None
     assert recall.attributes[RECALL_NON_SELECTIVE_STEPS] == 1
 
@@ -8905,7 +8903,7 @@ def test_a_streaming_round_nothing_can_replace_is_not_held_back(tmp_path: Path) 
 
 
 def test_planning_and_the_reads_it_names_happen_inside_a_span(tmp_path: Path) -> None:
-    """The `mindbridge.retrieve` leg closes on the ranked hits; these run after it.
+    """The `sensemem.retrieve` leg closes on the ranked hits; these run after it.
 
     A planning call and a set of exhaustive table scans with no span of their own are latency
     the trace cannot attribute: the operation gets longer and nothing says which leg grew.
@@ -8927,14 +8925,14 @@ def test_planning_and_the_reads_it_names_happen_inside_a_span(tmp_path: Path) ->
     provider.shutdown()
 
     spans = exporter.get_finished_spans()
-    recall = next(span for span in spans if span.name == "mindbridge.recall")
-    ask = next(span for span in spans if span.name == "mindbridge.ask")
+    recall = next(span for span in spans if span.name == "sensemem.recall")
+    ask = next(span for span in spans if span.name == "sensemem.ask")
     assert recall.parent is not None
     assert recall.parent.span_id == ask.context.span_id
     planned = next(
         span
         for span in spans
-        if span.name == "mindbridge.model.generation" and span.parent is not None
+        if span.name == "sensemem.model.generation" and span.parent is not None
     )
     assert planned.parent is not None
     assert planned.parent.span_id == recall.context.span_id

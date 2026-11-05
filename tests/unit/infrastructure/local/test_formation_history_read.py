@@ -3,8 +3,8 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from mindbridge.infrastructure.local import LocalStore, StoredMemory
-from mindbridge.types import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem.infrastructure.local import LocalStore, StoredMemory
+from sensemem.types import EvidenceBasis, MemoryContext, MemoryKind
 
 
 def test_unknown_semantic_version_cannot_hide_an_older_eligible_history(tmp_path: Path) -> None:

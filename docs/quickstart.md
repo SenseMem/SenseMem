@@ -1,56 +1,56 @@
 # Quick start
 
-This guide teaches the smallest complete MindBridge loop: store a memory, close the process-local
+This guide teaches the smallest complete SenseMem loop: store a memory, close the process-local
 runtime, reopen it, and retrieve the same memory. The main example needs no database service or API
 key. Optional steps then add grounded answers, typed events, and omni-modal input one concept at a
 time.
 
-## 1. Install MindBridge
+## 1. Install SenseMem
 
 The SDK supports Python 3.11 through 3.14. In an existing Python project, install the local surface
 used by the first example:
 
 ```bash
-uv add "mindbridge[local]"
+uv add "sensemem[local]"
 ```
 
 With `pip`:
 
 ```bash
-python -m pip install "mindbridge[local]"
+python -m pip install "sensemem[local]"
 ```
 
 For every optional integration, install the union of extras instead:
 
 ```bash
-uv add "mindbridge[all]"
+uv add "sensemem[all]"
 ```
 
 | Install | Choose it when |
 | --- | --- |
-| `mindbridge[all]` | You want every optional model runtime, transport, observability, and benchmark dependency. |
-| `mindbridge[local]` | You want local embedding and speech without an API key. |
-| `mindbridge[openai]` | You want OpenAI or an OpenAI-compatible model endpoint. |
-| `mindbridge` | Your application supplies its own embedding backend. |
+| `sensemem[all]` | You want every optional model runtime, transport, observability, and benchmark dependency. |
+| `sensemem[local]` | You want local embedding and speech without an API key. |
+| `sensemem[openai]` | You want OpenAI or an OpenAI-compatible model endpoint. |
+| `sensemem` | Your application supplies its own embedding backend. |
 
-`mindbridge[all]` installs dependencies; it does not configure providers, download benchmark
+`sensemem[all]` installs dependencies; it does not configure providers, download benchmark
 datasets, or supply YuNet and SFace model files. Install the smallest surface that fits your
 deployment once you know which capabilities it needs.
 
 If you are starting without a Python project, run `uv init` in an empty working directory before
 `uv add`. For development from this repository, use the locked setup in
-[CONTRIBUTING.md](../CONTRIBUTING.md) instead of adding a second installed copy of MindBridge.
+[CONTRIBUTING.md](../CONTRIBUTING.md) instead of adding a second installed copy of SenseMem.
 
 ## 2. Store and retrieve one memory
 
 Save this as `quickstart.py`:
 
 ```python
-from mindbridge import Memory
+from sensemem import Memory
 
 # Everything stored by this example lives under this directory.
 config = {
-    "data_dir": "./data/mindbridge-quickstart",
+    "data_dir": "./data/sensemem-quickstart",
     # EmbeddingGemma 2 embeds text, images, video, and audio locally.
     "embedding": {
         "provider": "sentence-transformers",
@@ -108,10 +108,10 @@ Search returns evidence for your application to use. `ask()` additionally asks a
 generation model to answer from that evidence.
 
 If you installed only `local`, add the OpenAI integration and provide a key. Skip this installation
-step if you already use `mindbridge[all]`.
+step if you already use `sensemem[all]`.
 
 ```bash
-uv add "mindbridge[local,openai]"
+uv add "sensemem[local,openai]"
 export OPENAI_API_KEY="replace-with-your-key"
 ```
 
@@ -150,7 +150,7 @@ Use `MemoryType` and timezone-aware event times when *what happened when* matter
 ```python
 from datetime import datetime, timezone
 
-from mindbridge import MemoryType
+from sensemem import MemoryType
 
 # Run inside an open `with Memory.from_config(...) as memory:` block.
 memory.add(
@@ -165,7 +165,7 @@ hits = memory.search(
 ).hits
 ```
 
-MindBridge also supports semantic memories for facts and procedural memories for instructions.
+SenseMem also supports semantic memories for facts and procedural memories for instructions.
 Event intervals, bitemporal validity, spatial scope, decay, and reinforcement are covered in
 [Memory types, time, and decay](memory-types-time-and-decay.md).
 
@@ -198,7 +198,7 @@ fails explicitly instead of silently discarding evidence.
 - Local Sentence Transformers models load with `trust_remote_code=False`. Review the selected
   model's license and use an immutable revision for reproducible deployments.
 - Remote URLs are not fetched. Download and validate remote media in the host application before
-  passing a `Blob` to MindBridge.
+  passing a `Blob` to SenseMem.
 
 ## Where to go next
 

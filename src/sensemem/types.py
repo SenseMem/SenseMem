@@ -1,0 +1,3474 @@
+"""Small values accepted and returned by the public SenseMem API."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import re
+from collections.abc import Container, Mapping, Sequence
+from dataclasses import dataclass, field, fields
+from datetime import datetime, timedelta
+from enum import Enum
+from itertools import combinations
+from pathlib import Path
+from types import MappingProxyType
+from typing import Literal, TypeAlias
+
+from sensemem._validation import positive_int, unit_interval
+from sensemem.exceptions import ValidationError
+
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_MEDIA_TYPE = re.compile(r"[!#$&^_.+0-9A-Za-z-]+/[!#$&^_.+0-9A-Za-z-]+\Z")
+
+
+class Modality(str, Enum):
+    """A native SenseMem input modality; omni means multiple media kinds."""
+
+    TEXT = "text"
+    IMAGE = "image"
+    VIDEO = "video"
+    AUDIO = "audio"
+    OMNI = "omni"
+
+
+class MemoryType(str, Enum):
+    """The cognitive role a memory serves for an agent."""
+
+    SEMANTIC = "semantic"
+    EPISODIC = "episodic"
+    PROCEDURAL = "procedural"
+
+
+class EvidenceBasis(str, Enum):
+    """How a source or derived memory became known."""
+
+    OBSERVATION = "observation"
+    USER_STATEMENT = "user_statement"
+    MODEL_INFERENCE = "model_inference"
+    RESPONSE_FEEDBACK = "response_feedback"
+
+
+class MemoryKind(str, Enum):
+    """The typed semantic role maintained for a memory record."""
+
+    OBSERVATION = "observation"
+    ENTITY = "entity"
+    EVENT = "event"
+    STATE = "state"
+    RELATION = "relation"
+    AFFECT = "affect"
+    TRAIT = "trait"
+    RESPONSE_POLICY = "response_policy"
+
+
+# The `MemoryType` a validated formation proposal of each kind is stored as. Kernel policy, kept
+# beside the two enums because two readers depend on it and must not drift: `memory.py` applies it
+# when it writes a formed record, and the context compiler reads it back to know which bundle
+# sections a `memory_types` filter can empty. A kind absent here is stored as `SEMANTIC`.
+KIND_MEMORY_TYPES: Mapping[MemoryKind, MemoryType] = MappingProxyType(
+    {
+        MemoryKind.EVENT: MemoryType.EPISODIC,
+        MemoryKind.AFFECT: MemoryType.EPISODIC,
+        MemoryKind.RESPONSE_POLICY: MemoryType.PROCEDURAL,
+    }
+)
+
+
+class ContextUnknownKind(str, Enum):
+    """Why a compiled bundle is missing something the request implied it might contain."""
+
+    SCOPE_EMPTY = "scope_empty"
+    SECTION_EMPTY = "section_empty"
+    BUDGET_EXCLUDED = "budget_excluded"
+    CANDIDATES_EXHAUSTED = "candidates_exhausted"
+    MODALITY_UNSUPPORTED = "modality_unsupported"
+    STAGE_SKIPPED = "stage_skipped"
+    CONSENT_WITHHELD = "consent_withheld"
+    EVIDENCE_UNAVAILABLE = "evidence_unavailable"
+
+
+class ContextSymbolNamespace(str, Enum):
+    """The durable identifier family one request-local context symbol represents."""
+
+    MEMORY = "memory"
+    IDENTITY = "identity"
+
+
+class ContextSymbolCoverage(str, Enum):
+    """How much of a symbol's memory source is present in this presentation."""
+
+    FULL = "full"
+    PARTIAL = "partial"
+    REFERENCE_ONLY = "reference_only"
+
+
+class ContextSymbolRole(str, Enum):
+    """How a stable identifier is used by one compact context presentation."""
+
+    HIT = "hit"
+    EXCERPT = "excerpt"
+    EVIDENCE = "evidence"
+    AFFECT_EVENT = "affect_event"
+    ACTOR = "actor"
+    OBSERVED_IN = "observed_in"
+    NAMING_ASSERTION = "naming_assertion"
+    CONFLICT = "conflict"
+
+
+class SpatialAnchor(str, Enum):
+    """Whether a pose locates the observer or the observed subject."""
+
+    OBSERVER = "observer"
+    SUBJECT = "subject"
+
+
+class AbstentionReason(str, Enum):
+    """Why an answer backend declined to answer from retrieved evidence."""
+
+    NO_EVIDENCE = "no_evidence"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
+# Whether declining is the caller's preferred failure. Abstaining is right for a caller whose
+# questions can be genuinely unanswerable and wrong for one whose protocol gives no credit for
+# "unknown" -- a multiple-choice caller, or a benchmark scored only on a committed answer. The
+# product default stays `strict`; `best_effort` still reports the insufficiency through
+# `AnswerResult.abstained`, it just also commits to the most likely answer.
+AnswerPolicy: TypeAlias = Literal["strict", "best_effort"]
+
+
+class IndexQuantization(str, Enum):
+    """Explicit compression applied only to the rebuildable vector index."""
+
+    NONE = "none"
+    FP16 = "fp16"
+    INT8 = "int8"
+    RABITQ = "rabitq"
+
+
+class RetrievalMode(str, Enum):
+    """Candidate route policy for one local memory instance."""
+
+    HYBRID = "hybrid"
+    DENSE = "dense"
+    LEXICAL = "lexical"
+
+
+@dataclass(frozen=True, slots=True)
+class Blob:
+    """Immutable inline media bytes with an explicit IANA media type."""
+
+    data: bytes = field(repr=False)
+    media_type: str
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data, bytes) or not self.data:
+            raise ValidationError("Blob data must be non-empty bytes")
+        object.__setattr__(self, "media_type", _media_type(self.media_type))
+        object.__setattr__(self, "name", _optional_text(self.name, "Blob name"))
+
+
+@dataclass(frozen=True, slots=True)
+class AssetRef:
+    """A local asset, or an opaque ID for Memory to resolve from SQLite."""
+
+    id: str
+    modality: Modality | None = None
+    media_type: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    name: str | None = None
+    path: Path | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _text(self.id, "asset id"))
+        modality = self.modality
+        if modality is not None and not isinstance(modality, Modality):
+            try:
+                modality = Modality(modality)
+            except (TypeError, ValueError):
+                raise ValidationError("asset modality is invalid") from None
+        if modality in {Modality.TEXT, Modality.OMNI}:
+            raise ValidationError("asset modality must be image, video, or audio")
+        media_type = _optional_media_type(self.media_type)
+        if modality is not None and media_type is not None:
+            _require_matching_media_type(modality, media_type)
+        if self.size_bytes is not None and (
+            isinstance(self.size_bytes, bool)
+            or not isinstance(self.size_bytes, int)
+            or self.size_bytes < 0
+        ):
+            raise ValidationError("asset size_bytes must be a non-negative integer")
+        if self.sha256 is not None and (
+            not isinstance(self.sha256, str) or _SHA256.fullmatch(self.sha256) is None
+        ):
+            raise ValidationError("asset sha256 must be 64 lowercase hexadecimal characters")
+        path = self.path
+        if path is not None:
+            try:
+                path = Path(path)
+            except TypeError:
+                raise ValidationError("asset path must be a filesystem path") from None
+        object.__setattr__(self, "modality", modality)
+        object.__setattr__(self, "media_type", media_type)
+        object.__setattr__(self, "name", _optional_text(self.name, "asset name"))
+        object.__setattr__(self, "path", path)
+
+    @property
+    def is_resolved(self) -> bool:
+        """Whether this reference carries all metadata required by a model adapter."""
+        return (
+            self.modality is not None
+            and self.media_type is not None
+            and self.size_bytes is not None
+            and self.sha256 is not None
+            and self.path is not None
+        )
+
+
+ContentAtom: TypeAlias = str | Path | Blob | AssetRef
+ContentInput: TypeAlias = ContentAtom | Sequence[ContentAtom]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SpatialContext:
+    """One metric pose in an application-selected Cartesian coordinate frame."""
+
+    frame_id: str
+    anchor: SpatialAnchor
+    x: float
+    y: float
+    z: float = 0.0
+    orientation_xyzw: tuple[float, float, float, float] | None = None
+    position_uncertainty_m: float | None = None
+
+    def __post_init__(self) -> None:  # noqa: C901 - validates one physical value
+        object.__setattr__(self, "frame_id", _text(self.frame_id, "spatial frame_id"))
+        if not isinstance(self.anchor, SpatialAnchor):
+            try:
+                object.__setattr__(self, "anchor", SpatialAnchor(self.anchor))
+            except (TypeError, ValueError):
+                raise ValidationError("spatial anchor is invalid") from None
+        for name in ("x", "y", "z"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(float(value))
+            ):
+                raise ValidationError(f"spatial {name} must be a finite number")
+            object.__setattr__(self, name, float(value))
+        uncertainty = self.position_uncertainty_m
+        if uncertainty is not None:
+            if (
+                isinstance(uncertainty, bool)
+                or not isinstance(uncertainty, int | float)
+                or not math.isfinite(float(uncertainty))
+                or uncertainty < 0
+            ):
+                raise ValidationError(
+                    "spatial position_uncertainty_m must be a non-negative finite number"
+                )
+            object.__setattr__(self, "position_uncertainty_m", float(uncertainty))
+        supplied_orientation = self.orientation_xyzw
+        if supplied_orientation is None:
+            return
+        try:
+            values = tuple(float(value) for value in supplied_orientation)
+        except (TypeError, ValueError):
+            raise ValidationError("spatial orientation_xyzw must contain four numbers") from None
+        if len(values) != 4 or any(not math.isfinite(value) for value in values):
+            raise ValidationError("spatial orientation_xyzw must contain four finite numbers")
+        x, y, z, w = values
+        norm = math.hypot(*values)
+        if norm == 0:
+            raise ValidationError("spatial orientation_xyzw must not be zero")
+        normalized: tuple[float, float, float, float] = (
+            x / norm,
+            y / norm,
+            z / norm,
+            w / norm,
+        )
+        sign_value = normalized[3]
+        if sign_value == 0:
+            sign_value = next((value for value in normalized[:3] if value != 0), 0)
+        if sign_value < 0:
+            normalized = (
+                -normalized[0],
+                -normalized[1],
+                -normalized[2],
+                -normalized[3],
+            )
+        object.__setattr__(
+            self,
+            "orientation_xyzw",
+            tuple(0.0 if value == 0 else value for value in normalized),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ObservationContext:
+    """Typed provenance, validity, and optional pose supplied with an observation."""
+
+    basis: EvidenceBasis = EvidenceBasis.OBSERVATION
+    source_id: str | None = None
+    confidence: float = 1.0
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    spatial: SpatialContext | None = None
+    # The symbolic room-level place, as distinct from `spatial`'s metric pose: a robot can label
+    # "kitchen" when it cannot localise, and "in the kitchen" is the query a household asks.
+    # Equality-matched, so a producer must label consistently -- "kitchen" and "the kitchen" would
+    # partition the store, and nothing normalises it beyond rejecting untrimmed text.
+    place_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.place_id is not None:
+            place = self.place_id
+            if not isinstance(place, str) or not place.strip() or place != place.strip():
+                raise ValidationError("place_id must be non-empty and trimmed")
+        if not isinstance(self.basis, EvidenceBasis):
+            try:
+                object.__setattr__(self, "basis", EvidenceBasis(self.basis))
+            except (TypeError, ValueError):
+                raise ValidationError("observation basis is invalid") from None
+        object.__setattr__(
+            self,
+            "source_id",
+            _optional_text(self.source_id, "observation source_id"),
+        )
+        object.__setattr__(
+            self,
+            "confidence",
+            unit_interval(self.confidence, "observation confidence"),
+        )
+        _require_named_interval(
+            self.valid_from,
+            self.valid_until,
+            "valid_from",
+            "valid_until",
+        )
+        if self.spatial is not None and not isinstance(self.spatial, SpatialContext):
+            raise ValidationError("observation spatial context is invalid")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RetrievalScope:
+    """Optional world-time, knowledge-time, spatial, and identity retrieval scope.
+
+    Two spatial axes, because a household asks in both. `near`/`radius_m` is metric and answers
+    "within two metres of here". `place_id` is symbolic and answers "in the kitchen" — the query a
+    person actually asks, and the one a robot can label when it cannot localise metrically. They
+    are independent: a symbolic equality is the one spatial predicate SQLite indexes cheaply,
+    while the metric radius is a filter over retrieved candidates.
+
+    `identity_id` answers "about this person". A memory is in scope when its semantic subject is
+    that identity (`memory_semantics.identity_id`, the binding a naming or claim assertion
+    carries) **or** the identity was observed in it: a diarised speech segment or a face
+    observation on one of the memory's media assets. A merged alias resolves to the surviving
+    identity, so scoping by either ID of a merged pair returns the same memories.
+    """
+
+    valid_at: datetime | None = None
+    known_at: datetime | None = None
+    near: SpatialContext | None = None
+    radius_m: float | None = None
+    # `None` means "do not scope by place", never "memories that have no place".
+    place_id: str | None = None
+    # `None` means "do not scope by identity", never "memories about nobody".
+    identity_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.valid_at, "scope valid_at")
+        _require_aware(self.known_at, "scope known_at")
+        if self.place_id is not None:
+            place = self.place_id
+            # Matches the store's own rule and its SQLite CHECK, so a value that would be
+            # rejected on the write path cannot be silently accepted on the read path.
+            if not isinstance(place, str) or not place.strip() or place != place.strip():
+                raise ValidationError("scope place_id must be non-empty and trimmed")
+        if self.identity_id is not None:
+            identity = self.identity_id
+            if (
+                not isinstance(identity, str)
+                or not identity.strip()
+                or identity != identity.strip()
+            ):
+                raise ValidationError("scope identity_id must be non-empty and trimmed")
+        if (self.near is None) != (self.radius_m is None):
+            raise ValidationError("scope near and radius_m must be supplied together")
+        if self.near is not None and not isinstance(self.near, SpatialContext):
+            raise ValidationError("scope near must be a SpatialContext")
+        if self.radius_m is not None:
+            radius = self.radius_m
+            if (
+                isinstance(radius, bool)
+                or not isinstance(radius, int | float)
+                or not math.isfinite(float(radius))
+                or radius < 0
+            ):
+                raise ValidationError("scope radius_m must be a non-negative finite number")
+            object.__setattr__(self, "radius_m", float(radius))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FormationProposal:
+    """One typed, source-grounded semantic memory proposed by a model adapter.
+
+    ``evidence_ids=None`` uses the primary input as the sole evidence member. A supplied tuple
+    declares the ordered observations from the current formation batch the proposal jointly
+    depends on; the memory kernel verifies batch membership and the primary source before commit.
+    """
+
+    kind: MemoryKind
+    content: str
+    basis: EvidenceBasis = EvidenceBasis.MODEL_INFERENCE
+    subject: str | None = None
+    predicate: str | None = None
+    value: str | None = None
+    confidence: float = 1.0
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    spatial: SpatialContext | None = None
+    cue_modality: Modality | None = None
+    valence: float | None = None
+    arousal: float | None = None
+    evidence_ids: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:  # noqa: C901 - kind-specific boundary validation
+        if not isinstance(self.kind, MemoryKind):
+            try:
+                object.__setattr__(self, "kind", MemoryKind(self.kind))
+            except (TypeError, ValueError):
+                raise ValidationError("formation kind is invalid") from None
+        if self.kind is MemoryKind.OBSERVATION:
+            raise ValidationError("formation cannot propose an observation")
+        if not isinstance(self.basis, EvidenceBasis):
+            try:
+                object.__setattr__(self, "basis", EvidenceBasis(self.basis))
+            except (TypeError, ValueError):
+                raise ValidationError("formation basis is invalid") from None
+        if self.basis is EvidenceBasis.OBSERVATION:
+            raise ValidationError("formation basis cannot be observation")
+        object.__setattr__(self, "content", _text(self.content, "formation content"))
+        for name in ("subject", "predicate", "value"):
+            object.__setattr__(
+                self,
+                name,
+                _optional_text(getattr(self, name), f"formation {name}"),
+            )
+        needs_subject = {
+            MemoryKind.ENTITY,
+            MemoryKind.STATE,
+            MemoryKind.RELATION,
+            MemoryKind.AFFECT,
+            MemoryKind.TRAIT,
+            MemoryKind.RESPONSE_POLICY,
+        }
+        needs_predicate = {
+            MemoryKind.STATE,
+            MemoryKind.RELATION,
+            MemoryKind.TRAIT,
+            MemoryKind.RESPONSE_POLICY,
+        }
+        needs_value = needs_predicate | {MemoryKind.AFFECT}
+        if self.kind in needs_subject and self.subject is None:
+            raise ValidationError(f"{self.kind.value} formation requires a subject")
+        if self.kind in needs_predicate and self.predicate is None:
+            raise ValidationError(f"{self.kind.value} formation requires a predicate")
+        if self.kind in needs_value and self.value is None:
+            raise ValidationError(f"{self.kind.value} formation requires a value")
+        object.__setattr__(
+            self,
+            "confidence",
+            unit_interval(self.confidence, "formation confidence"),
+        )
+        _require_named_interval(
+            self.valid_from,
+            self.valid_until,
+            "formation valid_from",
+            "formation valid_until",
+        )
+        if self.evidence_ids is not None:
+            if isinstance(self.evidence_ids, str | bytes):
+                raise ValidationError(
+                    "formation evidence_ids must be a non-empty sequence of memory IDs"
+                )
+            try:
+                evidence_ids = tuple(self.evidence_ids)
+            except TypeError:
+                raise ValidationError(
+                    "formation evidence_ids must be a non-empty sequence of memory IDs"
+                ) from None
+            if not evidence_ids or any(
+                not isinstance(value, str) or not value.strip() for value in evidence_ids
+            ):
+                raise ValidationError(
+                    "formation evidence_ids must be a non-empty sequence of memory IDs"
+                )
+            if len(set(evidence_ids)) != len(evidence_ids):
+                raise ValidationError("formation evidence_ids must be unique")
+            object.__setattr__(self, "evidence_ids", evidence_ids)
+        if self.spatial is not None and not isinstance(self.spatial, SpatialContext):
+            raise ValidationError("formation spatial context is invalid")
+        if self.cue_modality is not None:
+            try:
+                cue_modality = Modality(self.cue_modality)
+            except (TypeError, ValueError):
+                raise ValidationError("formation cue_modality is invalid") from None
+            if cue_modality is Modality.OMNI:
+                raise ValidationError("formation cue_modality must be atomic")
+            object.__setattr__(self, "cue_modality", cue_modality)
+        object.__setattr__(self, "valence", _bounded_optional(self.valence, "valence", -1, 1))
+        object.__setattr__(self, "arousal", _bounded_optional(self.arousal, "arousal", 0, 1))
+        if self.kind is not MemoryKind.AFFECT and any(
+            value is not None for value in (self.cue_modality, self.valence, self.arousal)
+        ):
+            raise ValidationError("affect fields require kind='affect'")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MemoryContext:
+    """Authoritative typed semantics attached to a stored memory."""
+
+    kind: MemoryKind
+    basis: EvidenceBasis
+    confidence: float
+    valid_from: datetime | None
+    valid_until: datetime | None
+    recorded_at: datetime
+    visible: bool = True
+    retired_at: datetime | None = None
+    lineage_id: str | None = None
+    source_id: str | None = None
+    subject: str | None = None
+    predicate: str | None = None
+    value: str | None = None
+    evidence_ids: tuple[str, ...] = ()
+    supersedes_id: str | None = None
+    model_id: str | None = None
+    recipe: str | None = None
+    identity_id: str | None = None
+    spatial: SpatialContext | None = None
+    cue_modality: Modality | None = None
+    valence: float | None = None
+    arousal: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, MemoryKind) or not isinstance(self.basis, EvidenceBasis):
+            raise ValidationError("memory context kind or basis is invalid")
+        object.__setattr__(
+            self,
+            "confidence",
+            unit_interval(self.confidence, "memory context confidence"),
+        )
+        _require_named_interval(
+            self.valid_from,
+            self.valid_until,
+            "memory context valid_from",
+            "memory context valid_until",
+        )
+        _require_aware(self.recorded_at, "memory context recorded_at")
+        if not isinstance(self.visible, bool):
+            raise ValidationError("memory context visible must be a boolean")
+        _require_aware(self.retired_at, "memory context retired_at")
+        if self.retired_at is not None and self.retired_at <= self.recorded_at:
+            raise ValidationError("memory context retired_at must follow recorded_at")
+        for name in (
+            "source_id",
+            "lineage_id",
+            "subject",
+            "predicate",
+            "value",
+            "supersedes_id",
+            "model_id",
+            "recipe",
+            "identity_id",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _optional_text(getattr(self, name), f"memory context {name}"),
+            )
+        evidence_ids = tuple(dict.fromkeys(self.evidence_ids))
+        if any(not isinstance(value, str) or not value.strip() for value in evidence_ids):
+            raise ValidationError("memory context evidence_ids are invalid")
+        object.__setattr__(self, "evidence_ids", evidence_ids)
+        if self.spatial is not None and not isinstance(self.spatial, SpatialContext):
+            raise ValidationError("memory context spatial value is invalid")
+        if self.cue_modality is not None and not isinstance(self.cue_modality, Modality):
+            raise ValidationError("memory context cue_modality is invalid")
+        object.__setattr__(self, "valence", _bounded_optional(self.valence, "valence", -1, 1))
+        object.__setattr__(self, "arousal", _bounded_optional(self.arousal, "arousal", 0, 1))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IdentityClaim:
+    """Who one recognized person is, as an `IDENTIFY` operation claims it.
+
+    The kernel, not the backend, turns this into the typed ENTITY assertion `identities.name`
+    projects, so a proposal only has to name the identity and cite its evidence.
+    """
+
+    identity_id: str
+    name: str
+    relationship: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        for label, value in (("name", self.name), ("relationship", self.relationship)):
+            if value is None and label == "relationship":
+                continue
+            text = _text(value, f"identity {label}")
+            if len(text) > 255 or not text.isprintable():
+                raise ValidationError(f"identity {label} must be at most 255 printable characters")
+            object.__setattr__(self, label, text)
+
+
+class ConsentState(str, Enum):
+    """Whether a recognized person has agreed to be processed as a recognized person.
+
+    Three states rather than a flag, because "nobody has asked" is not "they said no": an
+    identity with no recorded consent is unstated, `WITHHELD` is a refusal that was actually
+    given, and `WITHDRAWN` is a permission that was given and taken back. Only the last two
+    restrain the kernel, and they restrain it identically; the distinction is audit history.
+    """
+
+    GRANTED = "granted"
+    WITHHELD = "withheld"
+    WITHDRAWN = "withdrawn"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConsentClaim:
+    """One person's own statement about how they may be processed.
+
+    Carried on a `CONSENT` operation the way `IdentityClaim` is carried on an `IDENTIFY` one:
+    the kernel, not a backend, turns it into the typed STATE assertion `consent()` projects.
+    A model may never propose one -- the kernel refuses a proposed `CONSENT` as `unauthorized`,
+    the way it refuses a proposed `MERGE` -- so the recorded basis is always `USER_STATEMENT`.
+    """
+
+    identity_id: str
+    state: ConsentState
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        if not isinstance(self.state, ConsentState):
+            try:
+                object.__setattr__(self, "state", ConsentState(self.state))
+            except (TypeError, ValueError):
+                raise ValidationError("consent state is invalid") from None
+        object.__setattr__(self, "note", _optional_text(self.note, "consent note"))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IdentityChange:
+    """Which recognized people one identity-lifecycle operation moved.
+
+    `identity_id` is the person who stands after the operation: the survivor of a cross-modal
+    merge, the identity a split was taken back out of, the person an erasure destroyed.
+    `moved_ids` are the other identities the operation names -- the absorbed identity of a
+    `MERGE`, the identity a `CORRECT` split restored, the aliases an erasure destroyed with the
+    person. An identity ID is not a memory ID, which is why it travels here rather than in
+    `target_ids`.
+    """
+
+    identity_id: str
+    moved_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        moved = _memory_ids(self.moved_ids, "moved_ids")
+        if self.identity_id in moved:
+            raise ValidationError("an identity change must not move the identity it keeps")
+        object.__setattr__(self, "moved_ids", moved)
+
+
+class MemoryIntent(str, Enum):
+    """One memory-management operation the agentic control plane may propose."""
+
+    REINFORCE = "reinforce"
+    CONSOLIDATE = "consolidate"
+    CORRECT = "correct"
+    FORGET = "forget"
+    IDENTIFY = "identify"
+    # Host-initiated only, for the same reason MERGE is kernel-initiated only: consent is a
+    # statement the data subject makes, so a model that could propose one could manufacture it.
+    CONSENT = "consent"
+    # Kernel-initiated only. A cross-modal identity merge is committed from corroborated
+    # co-occurrence evidence the kernel counted, not from a backend's vocabulary: the kernel
+    # rejects a proposed MERGE as `"unauthorized"`.
+    MERGE = "merge"
+
+
+_IDENTITY_INTENTS = frozenset(
+    {MemoryIntent.MERGE, MemoryIntent.CORRECT, MemoryIntent.FORGET},
+)
+
+
+class MemoryTrigger(str, Enum):
+    """Why one bounded memory-management deliberation ran."""
+
+    MANUAL = "manual"
+    EVIDENCE = "evidence"
+    FEEDBACK = "feedback"
+    CONTRADICTION = "contradiction"
+    QUERY_FAILURE = "query_failure"
+    PRESSURE = "pressure"
+    IDLE = "idle"
+
+
+class MemoryOutcome(str, Enum):
+    """What later evidence said about one already-applied control-plane operation.
+
+    Recorded after the fact by `record_outcome()`, which is what makes the slow loop's quality
+    measurable: consolidation precision and contradiction recovery are `CONFIRMED` rates over
+    `CONSOLIDATE` and `CORRECT` rows, and false retirement is the `REFUTED` rate over rows that
+    forgot something. The kernel never sets it and never reads it back into a decision.
+    """
+
+    CONFIRMED = "confirmed"
+    REFUTED = "refuted"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MemoryOperation:
+    """One proposed memory operation whose required fields follow from its intent."""
+
+    intent: MemoryIntent
+    evidence_ids: tuple[str, ...] = ()
+    target_ids: tuple[str, ...] = ()
+    proposal: FormationProposal | None = None
+    claim: IdentityClaim | None = None
+    # Set exactly by `CONSENT`, which asserts how one person may be processed rather than
+    # moving any person or any memory.
+    consent: ConsentClaim | None = None
+    # Set exactly by the three identity-lifecycle intents: a `MERGE`, and a `CORRECT` or
+    # `FORGET` that names a person instead of memories.
+    identity: IdentityChange | None = None
+    rationale: str | None = None
+
+    def __post_init__(self) -> None:  # noqa: C901 - intent-specific boundary validation
+        if not isinstance(self.intent, MemoryIntent):
+            try:
+                object.__setattr__(self, "intent", MemoryIntent(self.intent))
+            except (TypeError, ValueError):
+                raise ValidationError("memory operation intent is invalid") from None
+        object.__setattr__(self, "evidence_ids", _memory_ids(self.evidence_ids, "evidence_ids"))
+        object.__setattr__(self, "target_ids", _memory_ids(self.target_ids, "target_ids"))
+        object.__setattr__(
+            self,
+            "rationale",
+            _optional_text(self.rationale, "operation rationale"),
+        )
+        if self.proposal is not None and not isinstance(self.proposal, FormationProposal):
+            raise ValidationError("memory operation proposal is invalid")
+        if self.claim is not None and not isinstance(self.claim, IdentityClaim):
+            raise ValidationError("memory operation claim is invalid")
+        if self.consent is not None and not isinstance(self.consent, ConsentClaim):
+            raise ValidationError("memory operation consent is invalid")
+        if self.intent is MemoryIntent.CONSENT:
+            # A consent statement names its subject and nothing else: no memory is evidence for
+            # it, no memory is its target, and it moves no identity.
+            if (
+                self.consent is None
+                or self.claim is not None
+                or self.identity is not None
+                or self.target_ids
+                or self.evidence_ids
+                or self.proposal is not None
+            ):
+                raise ValidationError("consent names one identity and one state, and nothing else")
+            return
+        if self.consent is not None:
+            raise ValidationError(f"{self.intent.value} must not carry consent")
+        if self.identity is not None:
+            if not isinstance(self.identity, IdentityChange):
+                raise ValidationError("memory operation identity is invalid")
+            if self.intent not in _IDENTITY_INTENTS:
+                raise ValidationError(f"{self.intent.value} must not carry an identity")
+        if self.intent is MemoryIntent.MERGE:
+            # One absorbed identity, no memory: which naming assertions and exemplars moved is
+            # an effect the log row records, not something a proposal states.
+            if (
+                self.identity is None
+                or len(self.identity.moved_ids) != 1
+                or self.target_ids
+                or self.evidence_ids
+                or self.proposal is not None
+            ):
+                raise ValidationError(
+                    "merge names one surviving and one absorbed identity, and no memory"
+                )
+            return
+        if self.intent is MemoryIntent.IDENTIFY:
+            # A host naming somebody cites nothing, so an empty evidence set is well formed here
+            # and it is the kernel that requires cited evidence of an agent's proposal.
+            if self.claim is None or self.target_ids or self.proposal is not None:
+                raise ValidationError(
+                    "identify requires a claim and cites evidence, and names no target"
+                )
+            return
+        if self.claim is not None:
+            raise ValidationError(f"{self.intent.value} must not carry a claim")
+        if self.intent is MemoryIntent.CONSOLIDATE:
+            # `target_ids` on a consolidation is consolidation forgetting: the sources to retire
+            # from ordinary recall once the derived record exists. The kernel enforces the
+            # containment rule (a target must be one of this proposal's own evidence IDs); the
+            # value type only knows that naming a target requires evidence to name it from.
+            if self.proposal is None or not self.evidence_ids:
+                raise ValidationError("consolidate requires a proposal and cited evidence")
+        elif self.proposal is not None:
+            raise ValidationError(f"{self.intent.value} must not carry a proposal")
+        elif self.intent is MemoryIntent.REINFORCE:
+            if len(self.target_ids) != 1 or not self.evidence_ids:
+                raise ValidationError("reinforce requires exactly one target and cited evidence")
+        elif self.identity is not None:
+            # A split or an erasure names the person, not a record. Naming both would leave the
+            # log row claiming two unrelated effects for one operation.
+            if self.target_ids or self.evidence_ids:
+                raise ValidationError(
+                    f"{self.intent.value} names either memories or one identity, not both"
+                )
+        elif not self.target_ids or self.evidence_ids:
+            raise ValidationError(
+                f"{self.intent.value} requires at least one target and cites no evidence"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MemoryOperationRecord:
+    """One applied control-plane operation as the append-only log holds it."""
+
+    operation_id: int
+    operation: MemoryOperation
+    trigger: MemoryTrigger
+    applied_at: datetime
+    model_id: str | None = None
+    recipe: str | None = None
+    created_ids: tuple[str, ...] = ()
+    changed_ids: tuple[str, ...] = ()
+    # Records this operation moved out of ordinary recall. On a FORGET row that is cognitive
+    # forgetting; on a CONSOLIDATE row it is consolidation forgetting, the sources the derived
+    # record replaced. `rollback()` clears exactly these.
+    forgotten_ids: tuple[str, ...] = ()
+    # `(memory_id, version)` pairs the kernel's own lineage rule superseded while applying this
+    # operation: the records a new `STATE` or user-stated `TRAIT` replaced in its lineage, which
+    # the backend never named and may never have been shown. `rollback()` restores exactly these.
+    superseded: tuple[tuple[str, int], ...] = ()
+    rolled_back_at: datetime | None = None
+    # Post-hoc, written by `record_outcome()` and never by the kernel: what later evidence said
+    # about this operation. `None` means nobody has judged it yet, which is not the same as
+    # unrefuted.
+    outcome: MemoryOutcome | None = None
+    outcome_note: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.operation_id, bool)
+            or not isinstance(self.operation_id, int)
+            or self.operation_id <= 0
+        ):
+            raise ValidationError("operation_id must be a positive integer")
+        if not isinstance(self.operation, MemoryOperation):
+            raise ValidationError("operation must be a MemoryOperation")
+        if not isinstance(self.trigger, MemoryTrigger):
+            raise ValidationError("operation trigger is invalid")
+        _require_aware(self.applied_at, "applied_at")
+        _require_aware(self.rolled_back_at, "rolled_back_at")
+        for name in ("model_id", "recipe"):
+            object.__setattr__(
+                self,
+                name,
+                _optional_text(getattr(self, name), f"operation {name}"),
+            )
+        object.__setattr__(self, "created_ids", _memory_ids(self.created_ids, "created_ids"))
+        object.__setattr__(self, "changed_ids", _memory_ids(self.changed_ids, "changed_ids"))
+        object.__setattr__(self, "forgotten_ids", _memory_ids(self.forgotten_ids, "forgotten_ids"))
+        superseded = tuple(self.superseded)
+        for memory_id, version in superseded:
+            _memory_ids((memory_id,), "superseded")
+            if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+                raise ValidationError("superseded version must be a positive integer")
+        object.__setattr__(self, "superseded", superseded)
+        if self.outcome is not None and not isinstance(self.outcome, MemoryOutcome):
+            raise ValidationError("operation outcome is invalid")
+        object.__setattr__(
+            self,
+            "outcome_note",
+            _optional_text(self.outcome_note, "operation outcome_note"),
+        )
+        if self.outcome is None and self.outcome_note is not None:
+            raise ValidationError("an outcome note requires an outcome")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConsolidationCandidate:
+    """One piece of deliberation work the store's own state says is due.
+
+    `memory_ids` is the set to hand straight to `consolidate(evidence_ids=...)`. `evidence_count`
+    is what the trigger counted: new evidence links for `EVIDENCE`, distinct conflicting values
+    for `CONTRADICTION`, recorded confirmations for `FEEDBACK`, recorded recall failures for
+    `QUERY_FAILURE`, and the record count over budget for `PRESSURE`. An `IDLE` row counts one:
+    the operator opened the window, so the count is the lineage, not a measured signal.
+    """
+
+    trigger: MemoryTrigger
+    memory_ids: tuple[str, ...]
+    evidence_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.trigger, MemoryTrigger):
+            raise ValidationError("candidate trigger is invalid")
+        object.__setattr__(self, "memory_ids", _memory_ids(self.memory_ids, "memory_ids"))
+        if not self.memory_ids:
+            raise ValidationError("a consolidation candidate must name at least one memory")
+        if (
+            isinstance(self.evidence_count, bool)
+            or not isinstance(self.evidence_count, int)
+            or self.evidence_count <= 0
+        ):
+            raise ValidationError("evidence_count must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConsolidationReport:
+    """What a bounded consolidation run applied and which proposals the kernel refused.
+
+    `weighed` is how many evidence records the backend was actually shown. Zero means the pass
+    reached no backend at all. `rounds` counts executed passes, `skipped` counts inactive
+    candidate sets, and `model_calls` counts backend round trips. Explicit evidence runs one
+    pass; automatic candidate runs aggregate the same values and operation records.
+    """
+
+    operations: tuple[MemoryOperationRecord, ...] = ()
+    rejected: tuple[tuple[MemoryOperation, str], ...] = ()
+    weighed: int = 0
+    rounds: int = 0
+    skipped: int = 0
+    model_calls: int = 0
+
+    @property
+    def applied(self) -> int:
+        return len(self.operations)
+
+    def __post_init__(self) -> None:
+        for name in ("weighed", "rounds", "skipped", "model_calls"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(f"consolidation {name} must be a non-negative integer")
+        operations = tuple(self.operations)
+        if any(not isinstance(value, MemoryOperationRecord) for value in operations):
+            raise ValidationError("consolidation operations are invalid")
+        try:
+            rejected = tuple((value, reason) for value, reason in self.rejected)
+        except (TypeError, ValueError):
+            raise ValidationError("consolidation rejections are invalid") from None
+        if any(
+            not isinstance(value, MemoryOperation)
+            or not isinstance(reason, str)
+            or not reason.strip()
+            for value, reason in rejected
+        ):
+            raise ValidationError("consolidation rejections are invalid")
+        object.__setattr__(self, "operations", operations)
+        object.__setattr__(self, "rejected", rejected)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamInput:
+    """One independently durable observation from an omni input stream."""
+
+    content: ContentInput
+    occurred_at: datetime | None = None
+    occurred_end: datetime | None = None
+    metadata: Mapping[str, object] | None = field(default=None, hash=False)
+    memory_type: MemoryType = MemoryType.SEMANTIC
+    context: ObservationContext | None = None
+    transcript: str | None = None
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        content = _stream_content(self.content)
+        _require_interval(self.occurred_at, self.occurred_end)
+        if not isinstance(self.memory_type, MemoryType):
+            raise ValidationError("memory_type is invalid")
+        metadata = self.metadata
+        if metadata is not None:
+            if not isinstance(metadata, Mapping):
+                raise ValidationError("metadata must be a mapping")
+            metadata = dict(metadata)
+        object.__setattr__(self, "content", content)
+        object.__setattr__(self, "metadata", metadata)
+        if self.context is not None and not isinstance(self.context, ObservationContext):
+            raise ValidationError("stream context must be an ObservationContext")
+        object.__setattr__(
+            self,
+            "transcript",
+            _optional_text(self.transcript, "stream transcript"),
+        )
+        object.__setattr__(
+            self,
+            "description",
+            _optional_text(self.description, "stream description"),
+        )
+
+
+class AudioBoundary(str, Enum):
+    """A canonical acoustic segment boundary."""
+
+    START = "start"
+    END = "end"
+    CANCEL = "cancel"
+
+
+@dataclass(frozen=True, slots=True)
+class PCMChunk:
+    """One immutable chunk of interleaved WAV-compatible linear PCM."""
+
+    data: bytes = field(repr=False)
+    sample_rate_hz: int = 16_000
+    channels: int = 1
+    sample_width_bytes: int = 2
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data, bytes) or not self.data:
+            raise ValidationError("PCM chunk data must be non-empty bytes")
+        for name in ("sample_rate_hz", "channels", "sample_width_bytes"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValidationError(f"PCM {name} must be a positive integer")
+        if self.sample_width_bytes > 4:
+            raise ValidationError("PCM sample_width_bytes must be between one and four")
+        frame_bytes = self.channels * self.sample_width_bytes
+        if frame_bytes > 0xFFFF or self.sample_rate_hz * frame_bytes > 0xFFFFFFFF:
+            raise ValidationError("PCM format exceeds WAV limits")
+        if len(self.data) % frame_bytes:
+            raise ValidationError("PCM chunk data must contain complete sample frames")
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "PCM occurred_at")
+
+
+@dataclass(frozen=True, slots=True)
+class VADPacket:
+    """One canonical voice-activity state transition."""
+
+    active: bool
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.active, bool):
+            raise ValidationError("VAD active must be a boolean")
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "VAD occurred_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ASRPartial:
+    """The complete current ASR hypothesis for one audio stream."""
+
+    text: str
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise ValidationError("ASR partial text must be text")
+        object.__setattr__(self, "text", self.text.strip())
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "ASR occurred_at")
+
+
+@dataclass(frozen=True, slots=True)
+class AcousticBoundary:
+    """Start, finish, or cancel one canonical acoustic segment."""
+
+    boundary: AudioBoundary
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.boundary, AudioBoundary):
+            try:
+                object.__setattr__(self, "boundary", AudioBoundary(self.boundary))
+            except (TypeError, ValueError):
+                raise ValidationError("audio boundary is invalid") from None
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "audio boundary occurred_at")
+
+
+AudioStreamPacket: TypeAlias = PCMChunk | VADPacket | ASRPartial | AcousticBoundary
+
+
+class VisionBoundary(str, Enum):
+    """A canonical visual scene boundary."""
+
+    START = "start"
+    END = "end"
+    CANCEL = "cancel"
+
+
+@dataclass(frozen=True, slots=True)
+class VisionFrame:
+    """One immutable encoded image frame from a visual stream."""
+
+    image: Blob
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.image, Blob) or not self.image.media_type.startswith("image/"):
+            raise ValidationError("vision frame must contain an image Blob")
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "vision frame occurred_at")
+
+
+@dataclass(frozen=True, slots=True)
+class VisionPartial:
+    """The complete current caption, OCR, or detector description for one scene."""
+
+    text: str
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise ValidationError("vision partial text must be text")
+        object.__setattr__(self, "text", self.text.strip())
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "vision partial occurred_at")
+
+
+@dataclass(frozen=True, slots=True)
+class SceneBoundary:
+    """Start, finish, or cancel one canonical visual scene."""
+
+    boundary: VisionBoundary
+    stream_id: str = "default"
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.boundary, VisionBoundary):
+            try:
+                object.__setattr__(self, "boundary", VisionBoundary(self.boundary))
+            except (TypeError, ValueError):
+                raise ValidationError("vision boundary is invalid") from None
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        _require_aware(self.occurred_at, "vision boundary occurred_at")
+
+
+VisionStreamPacket: TypeAlias = VisionFrame | VisionPartial | SceneBoundary
+
+
+class StreamPhase(str, Enum):
+    """Lifecycle boundary emitted by a modality-specific capture adapter."""
+
+    UPDATE = "update"
+    FINAL = "final"
+    CANCEL = "cancel"
+
+
+@dataclass(frozen=True, slots=True)
+class StreamEvent:
+    """A complete current snapshot, final durable observation, or cancellation."""
+
+    phase: StreamPhase
+    item: ContentInput | StreamInput | None = None
+    stream_id: str = "default"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.phase, StreamPhase):
+            try:
+                object.__setattr__(self, "phase", StreamPhase(self.phase))
+            except (TypeError, ValueError):
+                raise ValidationError("stream phase is invalid") from None
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+        if self.phase is StreamPhase.CANCEL:
+            if self.item is not None:
+                raise ValidationError("cancel stream events must not contain an item")
+            return
+        if self.item is None:
+            raise ValidationError("update and final stream events require an item")
+        if self.phase is StreamPhase.UPDATE and isinstance(self.item, StreamInput):
+            raise ValidationError("update stream events require a content snapshot")
+        content = (
+            self.item.content if isinstance(self.item, StreamInput) else _stream_content(self.item)
+        )
+        if not isinstance(self.item, StreamInput):
+            object.__setattr__(self, "item", content)
+        atoms = (content,) if isinstance(content, (str, Path, Blob, AssetRef)) else tuple(content)
+        if self.phase is StreamPhase.UPDATE and any(isinstance(atom, Path) for atom in atoms):
+            raise ValidationError("update stream paths are mutable; use Blob or AssetRef")
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakerSegment:
+    """One timed transcript turn linked to a stable local speaker identity."""
+
+    asset_id: str
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker_id: str | None = None
+    speaker_name: str | None = None
+    identity_score: float | None = None
+
+    def __post_init__(self) -> None:
+        if _SHA256.fullmatch(self.asset_id) is None:
+            raise ValidationError("speaker segment asset_id must be a SHA-256 identifier")
+        if (
+            isinstance(self.start_ms, bool)
+            or not isinstance(self.start_ms, int)
+            or isinstance(self.end_ms, bool)
+            or not isinstance(self.end_ms, int)
+            or self.start_ms < 0
+            or self.end_ms <= self.start_ms
+        ):
+            raise ValidationError("speaker segment must have a positive time range")
+        object.__setattr__(self, "text", _text(self.text, "speaker segment text"))
+        if self.speaker_id is not None:
+            object.__setattr__(
+                self,
+                "speaker_id",
+                _text(self.speaker_id, "speaker_id"),
+            )
+        if self.speaker_name is not None:
+            name = _text(self.speaker_name, "speaker_name")
+            if len(name) > 255 or not name.isprintable():
+                raise ValidationError("speaker_name must be at most 255 printable characters")
+            object.__setattr__(self, "speaker_name", name)
+        if self.identity_score is not None and (
+            isinstance(self.identity_score, bool)
+            or not isinstance(self.identity_score, int | float)
+            or not math.isfinite(float(self.identity_score))
+            or not 0.0 <= self.identity_score <= 1.0
+        ):
+            raise ValidationError("identity_score must be between zero and one")
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityProfile:
+    """What a caller has registered about one recognized person.
+
+    `confirmed` and `evidence_ids` are derived, never stored: a person is confirmed exactly
+    while a visible naming assertion names them, and the evidence is what that assertion
+    cites. An unconfirmed person is provisional -- present, recognized, not yet named -- which
+    is a different thing from an unknown ID, and the difference decides what an agent may say.
+    """
+
+    identity_id: str
+    name: str | None = None
+    relationship: str | None = None
+    confirmed: bool = False
+    evidence_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        object.__setattr__(self, "confirmed", bool(self.confirmed))
+        object.__setattr__(
+            self,
+            "evidence_ids",
+            tuple(_text(value, "evidence id") for value in self.evidence_ids),
+        )
+        for label in ("name", "relationship"):
+            value = getattr(self, label)
+            if value is None:
+                continue
+            text = _text(value, f"identity {label}")
+            if len(text) > 255 or not text.isprintable():
+                raise ValidationError(f"identity {label} must be at most 255 printable characters")
+            object.__setattr__(self, label, text)
+
+
+@dataclass(frozen=True, slots=True)
+class FaceObservation:
+    """One detected face linked to a stable local multimodal identity."""
+
+    asset_id: str
+    bounding_box: tuple[float, float, float, float]
+    identity_id: str
+    identity_name: str | None = None
+    identity_score: float | None = None
+    observed_at_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        if _SHA256.fullmatch(self.asset_id) is None:
+            raise ValidationError("face observation asset_id must be a SHA-256 identifier")
+        box = tuple(self.bounding_box)
+        if len(box) != 4 or any(not math.isfinite(value) for value in box):
+            raise ValidationError("face bounding_box must contain four finite values")
+        x, y, width, height = box
+        if (
+            x < 0.0
+            or y < 0.0
+            or width <= 0.0
+            or height <= 0.0
+            or x + width > 1.0
+            or y + height > 1.0
+        ):
+            raise ValidationError("face bounding_box must be normalized within the frame")
+        object.__setattr__(self, "bounding_box", box)
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        if self.identity_name is not None:
+            name = _text(self.identity_name, "identity_name")
+            if len(name) > 255 or not name.isprintable():
+                raise ValidationError("identity_name must be at most 255 printable characters")
+            object.__setattr__(self, "identity_name", name)
+        if self.identity_score is not None and (
+            isinstance(self.identity_score, bool)
+            or not isinstance(self.identity_score, int | float)
+            or not math.isfinite(float(self.identity_score))
+            or not 0.0 <= self.identity_score <= 1.0
+        ):
+            raise ValidationError("identity_score must be between zero and one")
+        if self.observed_at_ms is not None and (
+            isinstance(self.observed_at_ms, bool)
+            or not isinstance(self.observed_at_ms, int)
+            or self.observed_at_ms < 0
+        ):
+            raise ValidationError("observed_at_ms must be a non-negative integer")
+
+
+def _metadata(value: Mapping[str, object]) -> Mapping[str, object]:
+    return dict(value)
+
+
+def _text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(f"{name} must not be blank")
+    return value.strip()
+
+
+def _stream_content(value: object) -> ContentInput:
+    if isinstance(value, str):
+        return _text(value, "stream content")
+    if isinstance(value, (Path, Blob, AssetRef)):
+        return value
+    if isinstance(value, bytes) or not isinstance(value, Sequence):
+        raise ValidationError("stream content must be text, media, or an ordered sequence of them")
+    atoms = tuple(value)
+    if not atoms:
+        raise ValidationError("stream content must not be empty")
+    normalized: list[ContentAtom] = []
+    for atom in atoms:
+        if isinstance(atom, str):
+            normalized.append(_text(atom, "stream text"))
+        elif isinstance(atom, (Path, Blob, AssetRef)):
+            normalized.append(atom)
+        else:
+            raise ValidationError("stream content contains an unsupported value")
+    return tuple(normalized)
+
+
+def _optional_text(value: object | None, name: str) -> str | None:
+    return None if value is None else _text(value, name)
+
+
+def _media_type(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValidationError("media_type must be an image, video, or audio media type")
+    normalized = value.strip().lower()
+    if _MEDIA_TYPE.fullmatch(normalized) is None or normalized.split("/", 1)[0] not in {
+        "image",
+        "video",
+        "audio",
+    }:
+        raise ValidationError("media_type must be an image, video, or audio media type")
+    return normalized
+
+
+def _optional_media_type(value: object | None) -> str | None:
+    return None if value is None else _media_type(value)
+
+
+def _require_matching_media_type(modality: Modality, media_type: str) -> None:
+    if media_type.split("/", 1)[0] != modality.value:
+        raise ValidationError("asset modality does not match media_type")
+
+
+def _memory_ids(values: object, name: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValidationError(f"{name} must be a sequence of memory IDs")
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValidationError(f"{name} must contain non-blank memory IDs")
+    return tuple(dict.fromkeys(values))
+
+
+def _require_aware(value: datetime | None, name: str) -> None:
+    if value is not None and (
+        not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None
+    ):
+        raise ValidationError(f"{name} must include a timezone")
+
+
+def _require_interval(start: datetime | None, end: datetime | None) -> None:
+    _require_aware(start, "occurred_at")
+    _require_aware(end, "occurred_end")
+    if end is not None and (start is None or end <= start):
+        raise ValidationError("occurred_end must be later than occurred_at")
+
+
+def _require_named_interval(
+    start: datetime | None,
+    end: datetime | None,
+    start_name: str,
+    end_name: str,
+) -> None:
+    _require_aware(start, start_name)
+    _require_aware(end, end_name)
+    if end is not None and (start is None or end <= start):
+        raise ValidationError(f"{end_name} must be later than {start_name}")
+
+
+def _bounded_optional(
+    value: object | None,
+    name: str,
+    minimum: float,
+    maximum: float,
+) -> float | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(float(value))
+        or not minimum <= value <= maximum
+    ):
+        raise ValidationError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return float(value)
+
+
+def _trace_number(value: object, name: str, *, maximum: float | None = None) -> None:
+    if value is None:
+        return
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(float(value))
+        or value < 0.0
+    ):
+        raise ValidationError(f"trace {name} must be a non-negative finite number")
+    if maximum is not None and value > maximum:
+        raise ValidationError(f"trace {name} must not exceed one")
+
+
+def _assets(value: Sequence[AssetRef], modality: Modality) -> tuple[AssetRef, ...]:
+    assets = tuple(value)
+    if any(not isinstance(asset, AssetRef) or not asset.is_resolved for asset in assets):
+        raise ValidationError("record assets must contain resolved AssetRef values")
+    kinds = {asset.modality for asset in assets}
+    if modality is Modality.TEXT and assets:
+        raise ValidationError("text memories must not contain media assets")
+    if modality in {Modality.IMAGE, Modality.VIDEO, Modality.AUDIO} and (
+        not assets or kinds != {modality}
+    ):
+        raise ValidationError("memory modality does not match its assets")
+    if modality is Modality.OMNI and len(kinds) < 2:
+        raise ValidationError("omni memories must contain at least two media modalities")
+    return assets
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRecord:
+    """One stored memory.
+
+    `content` is the caller's text followed by any text the configured models derived from the
+    media. Derived sections are appended, never substituted: what the caller supplied stays
+    byte-identical at the front, and each derived section is introduced by its own marker line --
+    `[transcript:<asset_id>]`, `[visual description:<asset_id>]`, `[facts:<asset_id>]`, or
+    `[speech identities:<asset_id>]` -- so a reader can tell interpretation from evidence and
+    which asset it came from. `add` derives before its first write and `settle` derives after
+    `capture` already committed, so the same record shape results either way; the raw media is
+    never rewritten and stays in `assets` under its content address.
+    """
+
+    id: str
+    content: str
+    created_at: datetime
+    occurred_at: datetime | None = None
+    occurred_end: datetime | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict, hash=False)
+    assets: tuple[AssetRef, ...] = ()
+    modality: Modality = Modality.TEXT
+    memory_type: MemoryType = MemoryType.SEMANTIC
+    context: MemoryContext | None = None
+    # The symbolic place this was captured in, as supplied on `ObservationContext`. Read-back
+    # matters because the label is equality-matched: an application cannot notice it wrote
+    # "the kitchen" where "kitchen" was meant unless it can see what was stored.
+    place_id: str | None = None
+    forgotten_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.id, "id")
+        _require_aware(self.created_at, "created_at")
+        _require_interval(self.occurred_at, self.occurred_end)
+        _require_aware(self.forgotten_at, "forgotten_at")
+        if self.place_id is not None:
+            place = self.place_id
+            if not isinstance(place, str) or not place.strip() or place != place.strip():
+                raise ValidationError("place_id must be non-empty and trimmed")
+        if not isinstance(self.modality, Modality):
+            raise ValidationError("memory modality is invalid")
+        if not isinstance(self.memory_type, MemoryType):
+            raise ValidationError("memory_type is invalid")
+        assets = _assets(self.assets, self.modality)
+        if not isinstance(self.content, str) or (not self.content.strip() and not assets):
+            raise ValidationError("memory must contain content or media assets")
+        object.__setattr__(self, "metadata", _metadata(self.metadata))
+        object.__setattr__(self, "assets", assets)
+        if self.context is not None and not isinstance(self.context, MemoryContext):
+            raise ValidationError("memory context is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class VisualRetrievalMatch:
+    """An image-only retrieval association, not a verified identity or factual claim."""
+
+    query_asset_id: str
+    memory_id: str
+    source_asset_id: str
+    rank: int
+    cosine_similarity: float
+
+    def __post_init__(self) -> None:
+        _text(self.query_asset_id, "query asset id")
+        _text(self.memory_id, "memory id")
+        _text(self.source_asset_id, "source asset id")
+        positive_int(self.rank, "visual retrieval rank")
+        value = self.cosine_similarity
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+            or not -1.0 <= value <= 1.0
+        ):
+            raise ValidationError("visual retrieval cosine must be between minus one and one")
+
+
+@dataclass(frozen=True, slots=True)
+class SearchHit:
+    """One ranked memory, flattened for direct use."""
+
+    id: str
+    content: str
+    score: float
+    created_at: datetime
+    occurred_at: datetime | None = None
+    occurred_end: datetime | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict, hash=False)
+    assets: tuple[AssetRef, ...] = ()
+    modality: Modality = Modality.TEXT
+    memory_type: MemoryType = MemoryType.SEMANTIC
+    context: MemoryContext | None = None
+    # A hit is a memory, so a place-scoped search reports which place each came from.
+    place_id: str | None = None
+    forgotten_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.id, "id")
+        _require_aware(self.created_at, "created_at")
+        _require_interval(self.occurred_at, self.occurred_end)
+        _require_aware(self.forgotten_at, "forgotten_at")
+        if not math.isfinite(self.score) or not 0.0 <= self.score <= 1.0:
+            raise ValidationError("score must be between zero and one")
+        if not isinstance(self.modality, Modality):
+            raise ValidationError("memory modality is invalid")
+        if not isinstance(self.memory_type, MemoryType):
+            raise ValidationError("memory_type is invalid")
+        assets = _assets(self.assets, self.modality)
+        if not isinstance(self.content, str) or (not self.content.strip() and not assets):
+            raise ValidationError("memory must contain content or media assets")
+        object.__setattr__(self, "metadata", _metadata(self.metadata))
+        object.__setattr__(self, "assets", assets)
+        if self.context is not None and not isinstance(self.context, MemoryContext):
+            raise ValidationError("memory context is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class PendingCapture:
+    """One record whose deferred work is not finished, and why it is still waiting.
+
+    `Memory.pending_captures` returns these. `awaiting` is the stage the record is stopped at:
+    `"enrichment"` has no vectors and is invisible to `search`, while `"formation"` is already
+    embedded, indexed, and searchable and owes only the formation `add` holds a row for between
+    its commit and its model call. A memory ID that is absent from the result is not pending: it
+    is either settled or unknown, and `get` distinguishes the two. `attempts` and `last_error` are
+    the failure state a poisoned record accumulates, so an operator can see the reason without
+    opening SQLite.
+    """
+
+    memory_id: str
+    enqueued_at: datetime
+    attempts: int = 0
+    last_error: str | None = None
+    awaiting: Literal["enrichment", "formation"] = "enrichment"
+
+    def __post_init__(self) -> None:
+        _text(self.memory_id, "memory_id")
+        _require_aware(self.enqueued_at, "enqueued_at")
+        if self.enqueued_at is None:
+            raise ValidationError("enqueued_at must include a timezone")
+        if self.awaiting not in {"enrichment", "formation"}:
+            raise ValidationError("awaiting must be enrichment or formation")
+        if isinstance(self.attempts, bool) or not isinstance(self.attempts, int):
+            raise ValidationError("attempts must be an integer")
+        if self.attempts < 0:
+            raise ValidationError("attempts must not be negative")
+        if self.last_error is not None and not isinstance(self.last_error, str):
+            raise ValidationError("last_error must be text")
+
+
+@dataclass(frozen=True, slots=True)
+class PrefetchResult:
+    """The newest completed speculative search for one streaming turn."""
+
+    hits: tuple[SearchHit, ...]
+
+    def __post_init__(self) -> None:
+        hits = tuple(self.hits)
+        if any(not isinstance(hit, SearchHit) for hit in hits):
+            raise ValidationError("prefetch hits are invalid")
+        object.__setattr__(self, "hits", hits)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamCommit:
+    """One durable final observation, with retrieval skipped when awaiting settlement.
+
+    `pending_settlement` is true when the reducer committed through `capture` rather than `add`:
+    the record is durable and readable but has no vectors yet, so it stays invisible to `search`
+    until the host calls `settle`. Both `prefetch` and `retrieval_error` may then be `None`.
+    """
+
+    record: MemoryRecord
+    prefetch: PrefetchResult | None
+    retrieval_error: str | None = None
+    stream_id: str = "default"
+    pending_settlement: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.record, MemoryRecord):
+            raise ValidationError("stream commit values are invalid")
+        if not isinstance(self.pending_settlement, bool):
+            raise ValidationError("stream commit pending_settlement must be a boolean")
+        if self.prefetch is not None and not isinstance(self.prefetch, PrefetchResult):
+            raise ValidationError("stream prefetch result is invalid")
+        error = _optional_text(self.retrieval_error, "stream retrieval_error")
+        if (self.prefetch is not None and error is not None) or (
+            self.prefetch is None and error is None and not self.pending_settlement
+        ):
+            raise ValidationError("stream commit requires either prefetch or retrieval_error")
+        object.__setattr__(self, "retrieval_error", error)
+        object.__setattr__(self, "stream_id", _text(self.stream_id, "stream_id"))
+
+
+class RetrievalRejection(str, Enum):
+    """Why one bounded retrieval candidate did not become a search hit."""
+
+    STALE_INDEX = "stale_index"
+    OCCURRENCE_RANGE = "occurrence_range"
+    MISSING_MEMORY = "missing_memory"
+    MEMORY_TYPE = "memory_type"
+    MINIMUM_RELEVANCE = "minimum_relevance"
+    AMBIGUITY = "ambiguity"
+    LIMIT = "limit"
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityErasure:
+    """What one `forget_identity` call actually destroyed.
+
+    The counts are the audit record for a privacy operation: a caller that erased a person can
+    state how many biometric templates and annotations were removed instead of assuming. It lives
+    here rather than in the storage layer because it is the return type of a public `Memory`
+    operation, and the supported import path is `sensemem`.
+    """
+
+    identity_id: str
+    alias_ids: tuple[str, ...]
+    face_exemplars: int
+    voice_exemplars: int
+    face_observations: int
+    speech_segments: int
+
+    def __post_init__(self) -> None:
+        _text(self.identity_id, "identity_id")
+        for name in ("face_exemplars", "voice_exemplars", "face_observations", "speech_segments"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValidationError(f"{name} must be a non-negative integer")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExportBundle:
+    """Everything one physical memory holds about one data subject, in transferable form.
+
+    The right of access, answered from the same authoritative rows every other read uses.
+    `records` carries every version, including the retired and the cognitively forgotten ones,
+    because a subject asking what is held about them is owed the history rather than the
+    projection; each record's `context.evidence_ids` is the evidence link that record stands on
+    and each record's `assets` are its media by identity, size, and digest. No media bytes are
+    ever inlined: an export names the assets, and copying them is the host's decision.
+    """
+
+    exported_at: datetime
+    identity_id: str | None
+    identities: tuple[IdentityProfile, ...]
+    records: tuple[MemoryRecord, ...]
+    operations: tuple[MemoryOperationRecord, ...]
+
+    def __post_init__(self) -> None:
+        _require_aware(self.exported_at, "exported_at")
+        object.__setattr__(
+            self,
+            "identity_id",
+            _optional_text(self.identity_id, "identity_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RetentionPolicy:
+    """Declarative maximum ages after which stored material is physically deleted.
+
+    Every field is `None` by default, and `None` means "no policy", not "keep for zero days":
+    physical deletion is the one lifecycle step SenseMem never takes because a clock ticked
+    and nobody said so. Ages are in days and are measured from the material's own recorded
+    time, not from the last time it was read, so a policy cannot be reset by traffic.
+    """
+
+    # Media assets older than this, and every memory that still references them, are deleted.
+    # Media dominates storage growth, so this is the cost knob as well as the privacy one.
+    media_days: float | None = None
+    # Records cognitively forgotten longer ago than this are physically deleted. Cognitive
+    # forgetting is reversible by design; this is what eventually makes it final.
+    forgotten_days: float | None = None
+    # Capture-queue rows enqueued longer ago than this that have failed at least once are
+    # abandoned. The memory itself survives -- only the promise to keep retrying is dropped.
+    capture_failure_days: float | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("media_days", "forgotten_days", "capture_failure_days"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value <= 0
+            ):
+                raise ValidationError(f"retention {name} must be a positive number of days")
+            object.__setattr__(self, name, float(value))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RetentionReport:
+    """What one retention pass deleted, or would have deleted under `dry_run`.
+
+    Identifiers rather than content: `delete()` leaves no operation-log row, so this report is
+    the only account of a physical deletion, and it has to be safe to keep after the content it
+    names is unrecoverable.
+    """
+
+    dry_run: bool
+    # Memories deleted because they referenced media older than `media_days`.
+    media_memory_ids: tuple[str, ...] = ()
+    # Memories deleted because they had been cognitively forgotten longer than `forgotten_days`.
+    forgotten_memory_ids: tuple[str, ...] = ()
+    # Additional derived records deleted because every complete support clause was lost.
+    cascade_memory_ids: tuple[str, ...] = ()
+    # Media descriptors and their bytes removed because no memory referenced them any more.
+    asset_ids: tuple[str, ...] = ()
+    # Capture-queue rows abandoned; the memories themselves stay.
+    capture_memory_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dry_run, bool):
+            raise ValidationError("dry_run must be a boolean")
+        for name in (
+            "media_memory_ids",
+            "forgotten_memory_ids",
+            "cascade_memory_ids",
+            "asset_ids",
+            "capture_memory_ids",
+        ):
+            object.__setattr__(self, name, _memory_ids(getattr(self, name), name))
+
+    @property
+    def deleted(self) -> int:
+        """How many memories this pass removed, which is what a policy is judged on."""
+        return len(
+            {
+                *self.media_memory_ids,
+                *self.forgotten_memory_ids,
+                *self.cascade_memory_ids,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingRoute:
+    """One exact native input combination, with its repeated-media constraint."""
+
+    modalities: frozenset[Modality]
+    max_assets_per_modality: int | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.modalities, frozenset)
+            or not self.modalities
+            or any(
+                not isinstance(value, Modality) or value is Modality.OMNI
+                for value in self.modalities
+            )
+        ):
+            raise ValidationError("embedding route must contain atomic modalities")
+        if self.max_assets_per_modality is not None:
+            positive_int(self.max_assets_per_modality, "max_assets_per_modality")
+
+    @classmethod
+    def combinations(
+        cls, modalities: frozenset[Modality], *, max_assets_per_modality: int | None = None
+    ) -> tuple[EmbeddingRoute, ...]:
+        """Declare every non-empty subset when a backend has no joint-input restrictions."""
+        ordered = sorted(modalities, key=lambda value: value.value)
+        return tuple(
+            cls(frozenset(values), max_assets_per_modality=max_assets_per_modality)
+            for size in range(1, len(ordered) + 1)
+            for values in combinations(ordered, size)
+        )
+
+    def supports(self, modalities: frozenset[Modality], *, assets_per_modality: int = 1) -> bool:
+        """Match the exact combination and maximum asset count of any one media kind."""
+        return modalities == self.modalities and (
+            self.max_assets_per_modality is None
+            or assets_per_modality <= self.max_assets_per_modality
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCapabilities:
+    """What one composition can actually do, declared by its backends rather than inferred.
+
+    Routing is by declared capability, so this is the same information `Memory` routes on. It is
+    published because a caller and an agent both need to know which modalities an operation will
+    accept before sending one, and because the embedding identity is what decides whether stored
+    vectors and a new backend belong to the same space.
+    """
+
+    embedding: frozenset[Modality]
+    embedding_model: str
+    embedding_space: str
+    embedding_dimension: int
+    embedding_routes: tuple[EmbeddingRoute, ...] = ()
+    generation: frozenset[Modality] = frozenset()
+    generation_routes: tuple[frozenset[Modality], ...] = ()
+    transcription: frozenset[Modality] = frozenset()
+    vision: frozenset[Modality] = frozenset()
+    face: frozenset[Modality] = frozenset()
+    formation: frozenset[Modality] = frozenset()
+    reranking: frozenset[Modality] = frozenset()
+    reranking_model: str | None = None
+    generation_model: str | None = None
+    transcription_space: str | None = None
+    vision_model: str | None = None
+    face_model: str | None = None
+    formation_model: str | None = None
+    consolidation_model: str | None = None
+    # A `TranscriptionBackend` yields text; only a `SpeechBackend` resolves speakers, and the two
+    # occupy the same slot, so whether speech perception will work is not visible from the modalities.
+    speaker_recognition: bool = False
+
+    def __post_init__(self) -> None:
+        _text(self.embedding_model, "embedding_model")
+        _text(self.embedding_space, "embedding_space")
+        if not isinstance(self.embedding_dimension, int) or self.embedding_dimension <= 0:
+            raise ValidationError("embedding_dimension must be a positive integer")
+        for name in (
+            "embedding",
+            "generation",
+            "transcription",
+            "vision",
+            "face",
+            "formation",
+            "reranking",
+        ):
+            values = getattr(self, name)
+            if not isinstance(values, frozenset) or any(
+                not isinstance(value, Modality) or value is Modality.OMNI for value in values
+            ):
+                raise ValidationError(f"{name} capabilities must be a frozenset of modalities")
+        embedding_routes = tuple(self.embedding_routes) or EmbeddingRoute.combinations(
+            self.embedding
+        )
+        if (
+            any(not isinstance(route, EmbeddingRoute) for route in embedding_routes)
+            or frozenset(modality for route in embedding_routes for modality in route.modalities)
+            != self.embedding
+        ):
+            raise ValidationError(
+                "embedding_routes must cover exactly the declared embedding modalities"
+            )
+        object.__setattr__(self, "embedding_routes", tuple(dict.fromkeys(embedding_routes)))
+        routes = tuple(self.generation_routes) or ((self.generation,) if self.generation else ())
+        if (
+            any(
+                not isinstance(route, frozenset)
+                or not route
+                or any(not isinstance(modality, Modality) for modality in route)
+                or not route <= self.generation
+                for route in routes
+            )
+            or frozenset(modality for route in routes for modality in route) != self.generation
+        ):
+            raise ValidationError(
+                "generation_routes must cover exactly the declared generation modalities"
+            )
+        object.__setattr__(self, "generation_routes", tuple(dict.fromkeys(routes)))
+
+    def supports_embedding(
+        self, modalities: frozenset[Modality], *, assets_per_modality: int = 1
+    ) -> bool:
+        """Whether one native embedding route accepts this combination, before atomic fallback."""
+        if (
+            not isinstance(modalities, frozenset)
+            or not modalities
+            or any(
+                not isinstance(value, Modality) or value is Modality.OMNI for value in modalities
+            )
+        ):
+            raise ValidationError(
+                "modalities must be a non-empty frozenset of atomic Modality values"
+            )
+        if (
+            isinstance(assets_per_modality, bool)
+            or not isinstance(assets_per_modality, int)
+            or assets_per_modality < 0
+        ):
+            raise ValidationError("assets_per_modality must be a non-negative integer")
+        return any(
+            route.supports(modalities, assets_per_modality=assets_per_modality)
+            for route in self.embedding_routes
+        )
+
+    def supports_generation(self, modalities: frozenset[Modality]) -> bool:
+        """Whether one native route covers the full modality combination, before conversion."""
+        if (
+            not isinstance(modalities, frozenset)
+            or not modalities
+            or any(
+                not isinstance(modality, Modality) or modality is Modality.OMNI
+                for modality in modalities
+            )
+        ):
+            raise ValidationError(
+                "modalities must be a non-empty frozenset of atomic Modality values"
+            )
+        return any(modalities <= route for route in self.generation_routes)
+
+    @property
+    def operations(self) -> frozenset[str]:
+        """Optional operations this composition can serve, named by the backend each needs.
+
+        The mapping from an operation to its backend was prose in three reference pages, so a
+        caller had to know that `ask` needs generation and `consolidate` needs a consolidation
+        backend. It is derived, never declared: the backends above are the only source.
+        """
+        available = {
+            "ask": bool(self.generation),
+            "perceive": (self.speaker_recognition and bool(self.transcription)) or bool(self.face),
+            "transcribe": bool(self.transcription),
+            "describe_vision": bool(self.vision),
+            "formation": bool(self.formation),
+            "consolidate": self.consolidation_model is not None,
+            "consolidate_pending": self.consolidation_model is not None,
+        }
+        return frozenset(name for name, ready in available.items() if ready)
+
+    def document(self, *, served: frozenset[str] | None = None) -> dict[str, object]:
+        """Return the JSON-ready capability document every surface publishes.
+
+        REST serves it from `/healthz`, the MCP server embeds it in its instructions, and
+        `sensemem doctor` prints it, so the three cannot describe the same composition
+        differently -- beyond the one narrowing below. Modality sets and operation names are
+        sorted so the document is stable.
+
+        `served` names the operations the publishing surface can actually route to, and
+        `operations` is intersected with it. The backends are declared the same way everywhere,
+        but the control plane is SDK-only by design, so a network surface that published the
+        whole derivation would tell an agent it has a `consolidate` it cannot find. The SDK and
+        `sensemem doctor` pass nothing and publish the derivation itself.
+        """
+        values: dict[str, object] = {
+            declared.name: (
+                sorted(item.value for item in value)
+                if isinstance(value := getattr(self, declared.name), frozenset)
+                else value
+            )
+            for declared in fields(self)
+        }
+        operations = self.operations
+        values["generation_routes"] = [
+            sorted(value.value for value in route) for route in self.generation_routes
+        ]
+        values["embedding_routes"] = [
+            {
+                "modalities": sorted(value.value for value in route.modalities),
+                "max_assets_per_modality": route.max_assets_per_modality,
+            }
+            for route in self.embedding_routes
+        ]
+        values["operations"] = sorted(operations if served is None else operations & served)
+        return values
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalCandidateTrace:
+    """Effective score components and final disposition for one considered parent memory.
+
+    Dense values can come from an unquantized ANN hit or from exact persisted-vector scoring
+    for quantized candidates and lexical-only parents. ``index_ids`` are the candidates that
+    admitted the parent; they neither identify the admitting route nor list every persisted
+    part used by exact scoring. ``reranking_score`` is an optional raw query-document logit;
+    it can change ``rank`` without changing the bounded ``final_score`` or relevance gate.
+    """
+
+    memory_id: str | None
+    index_ids: tuple[str, ...]
+    dense_relevance: float | None = None
+    dense_confidence: float | None = None
+    lexical_relevance: float | None = None
+    lexical_rerank_bonus: float | None = None
+    lexical_match: bool = False
+    gate_relevance: float | None = None
+    base_relevance: float | None = None
+    reinforcement_factor: float | None = None
+    temporal_factor: float | None = None
+    retention_factor: float | None = None
+    final_score: float | None = None
+    reranking_score: float | None = None
+    rank: int | None = None
+    rejected_by: RetrievalRejection | None = None
+
+    def __post_init__(self) -> None:
+        if self.memory_id is not None:
+            _text(self.memory_id, "trace memory_id")
+        index_ids = tuple(self.index_ids)
+        if not index_ids or len(set(index_ids)) != len(index_ids):
+            raise ValidationError("trace index_ids must be non-empty and unique")
+        for index_id in index_ids:
+            _text(index_id, "trace index_id")
+        for name in (
+            "dense_relevance",
+            "dense_confidence",
+            "lexical_relevance",
+            "lexical_rerank_bonus",
+            "gate_relevance",
+            "base_relevance",
+            "reinforcement_factor",
+            "temporal_factor",
+            "retention_factor",
+            "final_score",
+        ):
+            _trace_number(getattr(self, name), name)
+        for name in (
+            "dense_relevance",
+            "dense_confidence",
+            "lexical_relevance",
+            "lexical_rerank_bonus",
+            "gate_relevance",
+            "base_relevance",
+            "final_score",
+        ):
+            _trace_number(getattr(self, name), name, maximum=1.0)
+        if self.reranking_score is not None and (
+            isinstance(self.reranking_score, bool)
+            or not isinstance(self.reranking_score, int | float)
+            or not math.isfinite(self.reranking_score)
+        ):
+            raise ValidationError("trace reranking_score must be a finite number")
+        if not isinstance(self.lexical_match, bool):
+            raise ValidationError("trace lexical_match must be a boolean")
+        if self.rank is not None and (
+            isinstance(self.rank, bool) or not isinstance(self.rank, int) or self.rank <= 0
+        ):
+            raise ValidationError("trace rank must be a positive integer")
+        if self.rejected_by is not None and not isinstance(self.rejected_by, RetrievalRejection):
+            raise ValidationError("trace rejected_by is invalid")
+        object.__setattr__(self, "index_ids", index_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalTrace:
+    """Bounded candidate trace for one explicit traced search."""
+
+    candidates: tuple[RetrievalCandidateTrace, ...]
+    candidate_limit: int
+    exhaustive: bool
+    ambiguous: bool = False
+
+    def __post_init__(self) -> None:
+        candidates = tuple(self.candidates)
+        if any(not isinstance(candidate, RetrievalCandidateTrace) for candidate in candidates):
+            raise ValidationError("trace candidates are invalid")
+        if (
+            isinstance(self.candidate_limit, bool)
+            or not isinstance(self.candidate_limit, int)
+            or self.candidate_limit <= 0
+        ):
+            raise ValidationError("trace candidate_limit must be a positive integer")
+        if not isinstance(self.exhaustive, bool) or not isinstance(self.ambiguous, bool):
+            raise ValidationError("trace exhaustive and ambiguous must be booleans")
+        object.__setattr__(self, "candidates", candidates)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchResult:
+    """Ranked search hits with an optional diagnostic trace."""
+
+    hits: tuple[SearchHit, ...]
+    trace: RetrievalTrace | None = None
+
+    def __post_init__(self) -> None:
+        hits = tuple(self.hits)
+        if any(not isinstance(hit, SearchHit) for hit in hits):
+            raise ValidationError("search hits are invalid")
+        if self.trace is not None and not isinstance(self.trace, RetrievalTrace):
+            raise ValidationError("search trace is invalid")
+        object.__setattr__(self, "hits", hits)
+
+
+PerceptionKind: TypeAlias = Literal["speech", "faces"]
+PerceptionSkipReason: TypeAlias = Literal[
+    "not_requested", "backend_not_configured", "unsupported_modality"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionCoverage:
+    """One asset's completed analysis, or the reason it was not analyzed."""
+
+    kind: PerceptionKind
+    asset_id: str
+    reason: PerceptionSkipReason | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"speech", "faces"}:
+            raise ValidationError("perception kind is invalid")
+        _text(self.asset_id, "asset_id")
+        if self.reason not in {
+            None,
+            "not_requested",
+            "backend_not_configured",
+            "unsupported_modality",
+        }:
+            raise ValidationError("perception skip reason is invalid")
+
+    @property
+    def processed(self) -> bool:
+        """Analysis ran successfully or an existing analysis was reused."""
+        return self.reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionResult:
+    """Source-local speech and face observations, retaining their distinct value types."""
+
+    speech: tuple[SpeakerSegment, ...] = ()
+    faces: tuple[FaceObservation, ...] = ()
+    coverage: tuple[PerceptionCoverage, ...] = ()
+
+    def __post_init__(self) -> None:
+        speech = tuple(self.speech)
+        faces = tuple(self.faces)
+        if any(not isinstance(value, SpeakerSegment) for value in speech):
+            raise ValidationError("perception speech is invalid")
+        if any(not isinstance(value, FaceObservation) for value in faces):
+            raise ValidationError("perception faces are invalid")
+        object.__setattr__(self, "speech", speech)
+        object.__setattr__(self, "faces", faces)
+        coverage = tuple(self.coverage)
+        if any(not isinstance(value, PerceptionCoverage) for value in coverage):
+            raise ValidationError("perception coverage is invalid")
+        keys = {(value.kind, value.asset_id) for value in coverage}
+        if len(keys) != len(coverage):
+            raise ValidationError("perception coverage must be unique per kind and asset")
+        object.__setattr__(self, "coverage", coverage)
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerResult:
+    """A grounded answer and the memories used to produce it."""
+
+    answer: str
+    hits: tuple[SearchHit, ...] = ()
+    abstained: bool = False
+    abstention_reason: AbstentionReason | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.answer, "answer")
+        try:
+            hits = tuple(self.hits)
+        except TypeError:
+            raise ValidationError("answer hits must contain SearchHit values") from None
+        if any(not isinstance(hit, SearchHit) for hit in hits):
+            raise ValidationError("answer hits must contain SearchHit values")
+        object.__setattr__(self, "hits", hits)
+        if not isinstance(self.abstained, bool):
+            raise ValidationError("abstained must be a boolean")
+        if self.abstention_reason is not None and not isinstance(
+            self.abstention_reason, AbstentionReason
+        ):
+            raise ValidationError("abstention_reason is invalid")
+        if self.abstained != (self.abstention_reason is not None):
+            raise ValidationError("abstained and abstention_reason must agree")
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerChunk:
+    """One streamed answer delta, or the terminal chunk carrying the grounded result.
+
+    Exactly one field is populated. A delta carries `text` and no `result`; the single terminal
+    chunk carries `result` and no `text`. `"".join(chunk.text for chunk in stream)` therefore
+    reconstructs the answer, and a caller that only wants the grounded outcome can wait for the
+    chunk whose `result` is set.
+    """
+
+    text: str = ""
+    result: AnswerResult | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise ValidationError("answer chunk text must be a string")
+        if self.result is not None and not isinstance(self.result, AnswerResult):
+            raise ValidationError("answer chunk result is invalid")
+        if bool(self.text) == (self.result is not None):
+            raise ValidationError("an answer chunk carries either text or a result")
+
+
+@dataclass(frozen=True, slots=True)
+class Page:
+    """One stable page of memories."""
+
+    items: tuple[MemoryRecord, ...]
+    next_cursor: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.next_cursor is not None:
+            _text(self.next_cursor, "next_cursor")
+
+
+# The one-line reading guide `ContextBundle.render()` writes under the goal. A module constant
+# because `context._frame_cost` charges its length against `max_chars`: a second copy of the
+# sentence drifted from this one the moment the affect marks were added to it, and the header was
+# then priced 78 characters short of what it rendered.
+CONTEXT_READING_GUIDE = (
+    "Each line is one memory: [id] content (confidence; validity; for affect also basis,"
+    " cue, valence, arousal, source and co-occurring event ids)."
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextBudget:
+    """The size, type, confidence, and freshness bounds one context compilation may spend.
+
+    `max_chars` bounds the rendered evidence, the same quantity `ContextBundle.chars` reports:
+    the four-line header, each section heading, each memory's rendered line with its `- [id]`
+    frame and confidence suffix, a text-equivalent price per grounded media part, and each
+    `NamedActor` or `ProvisionalActor` line. A bundle that carries no compilation diagnostics
+    therefore satisfies `len(bundle.render()) <= max_chars`; only the `## Conflicts`,
+    `## Unknowns`, and `Omitted:` blocks are appended outside it, because they explain the
+    bundle rather than ground it and suppressing them to fit a budget would make a thin bundle
+    look like an empty store. An actor line is priced and fit in after the ranked hits it
+    depends on, the same as any other line the compiler grounds -- dropped, not given away for
+    free, when what is left of `max_chars` cannot buy it. Because the header is inside the bound
+    and is written whether or not anything else fits, a `max_chars` the header alone overruns has
+    no bundle that satisfies it: compilation refuses it with `ValidationError` naming the floor,
+    rather than returning a bundle over the limit it was given. The floor moves with the goal,
+    which the header repeats.
+
+    `max_media_items` bounds grounded media parts instead of their price: `0` compiles a
+    text-only bundle, and `None` lets `max_chars` alone decide. The default `max_chars` buys the
+    most expensive single grounded part -- a video part is priced at 12 000 characters -- and
+    still leaves room for its record text and a cheaper second part, so a default compilation
+    can reach a media memory at all.
+    """
+
+    max_chars: int = 16000
+    max_items: int = 24
+    max_media_items: int | None = None
+    memory_types: frozenset[MemoryType] | None = None
+    min_confidence: float = 0.0
+    freshness: timedelta | None = None
+    # A deadline, not a timeout: the compiler checks the clock between stages and stops adding
+    # optional ones. It never interrupts work already in flight, so an exceeded deadline is
+    # reported on the bundle rather than raised.
+    max_latency_ms: int | None = None
+    # Full provenance remains the default; selected delivery carries explicit certificates.
+    selected_proofs: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.selected_proofs, bool):
+            raise ValidationError("budget selected_proofs must be a boolean")
+        object.__setattr__(self, "max_chars", positive_int(self.max_chars, "budget max_chars"))
+        object.__setattr__(self, "max_items", positive_int(self.max_items, "budget max_items"))
+        if self.max_media_items is not None:
+            if isinstance(self.max_media_items, bool) or not isinstance(self.max_media_items, int):
+                raise ValidationError("budget max_media_items must be a non-negative integer")
+            if self.max_media_items < 0:
+                raise ValidationError("budget max_media_items must be a non-negative integer")
+        if self.max_latency_ms is not None:
+            object.__setattr__(
+                self,
+                "max_latency_ms",
+                positive_int(self.max_latency_ms, "budget max_latency_ms"),
+            )
+        if self.memory_types is not None:
+            memory_types = frozenset(self.memory_types)
+            if not memory_types or any(not isinstance(value, MemoryType) for value in memory_types):
+                raise ValidationError("budget memory_types must name at least one MemoryType")
+            object.__setattr__(self, "memory_types", memory_types)
+        object.__setattr__(
+            self,
+            "min_confidence",
+            unit_interval(self.min_confidence, "budget min_confidence"),
+        )
+        if self.freshness is not None and (
+            not isinstance(self.freshness, timedelta) or self.freshness <= timedelta(0)
+        ):
+            raise ValidationError("budget freshness must be a positive timedelta")
+
+    def document(self) -> dict[str, object]:
+        """Return the JSON-ready bound document every surface reads and writes.
+
+        `freshness` is a timedelta; JSON carries the same bound as `freshness_seconds`, which is
+        the one rename between this projection and the dataclass.
+        """
+        return {
+            "selected_proofs": self.selected_proofs,
+            "max_chars": self.max_chars,
+            "max_items": self.max_items,
+            "max_media_items": self.max_media_items,
+            "memory_types": (
+                None
+                if self.memory_types is None
+                else sorted(value.value for value in self.memory_types)
+            ),
+            "min_confidence": self.min_confidence,
+            "freshness_seconds": (
+                None if self.freshness is None else self.freshness.total_seconds()
+            ),
+            "max_latency_ms": self.max_latency_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextConflict:
+    """Two or more candidates in one lineage that disagree on the same value.
+
+    The compiler reports a disagreement and never resolves it. `values` and `memory_ids` are
+    aligned: each value is paired with the highest-ranked candidate that asserts it, whether or
+    not the budget included that memory; `render()` marks the ones it did not.
+    """
+
+    lineage_id: str
+    subject: str | None
+    predicate: str | None
+    values: tuple[str, ...]
+    memory_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.values) < 2 or len(self.values) != len(self.memory_ids):
+            raise ValidationError("a conflict pairs at least two values with one memory each")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProvisionalActor:
+    """One recognized person in the compiled evidence whom no visible assertion names.
+
+    A stranger in the room is not a stranger missing from context. This carries the identity
+    and the included memories that observed them, and nothing else: there is no name to carry,
+    which is the whole point. It is not a hit and occupies no item slot, but its rendered line
+    is charged against `ContextBudget.max_chars` like every other line the compiler grounds.
+    """
+
+    identity_id: str
+    memory_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        if not self.memory_ids:
+            raise ValidationError("a provisional actor names at least one observing memory")
+        object.__setattr__(
+            self,
+            "memory_ids",
+            tuple(_text(value, "memory id") for value in self.memory_ids),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class NamedActor:
+    """One person a currently visible naming assertion names, reached through evidence other
+    than the assertion itself.
+
+    A memory carries an identity edge two ways -- its own semantic assertion may be bound to
+    an identity, or its media asset may have recognized one -- and either can point to
+    somebody already named without that naming assertion ranking into the bundle. This
+    reports the name anyway. `memory_ids` are the included evidence memories whose identity
+    edge resolved here, never the naming assertion's own memory: that memory renders as its
+    own actors hit when it is itself included, so reporting it again here would list the same
+    person twice. `naming_assertion_id` is that assertion's memory id, kept for provenance
+    even though it may not be in the bundle. Like a `ProvisionalActor`, its rendered line is
+    charged against `ContextBudget.max_chars`.
+    """
+
+    identity_id: str
+    name: str
+    memory_ids: tuple[str, ...]
+    naming_assertion_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "identity_id", _text(self.identity_id, "identity_id"))
+        object.__setattr__(self, "name", _text(self.name, "name"))
+        if not self.memory_ids:
+            raise ValidationError("a named actor names at least one observing memory")
+        object.__setattr__(
+            self,
+            "memory_ids",
+            tuple(_text(value, "memory id") for value in self.memory_ids),
+        )
+        object.__setattr__(
+            self,
+            "naming_assertion_id",
+            _optional_text(self.naming_assertion_id, "naming_assertion_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextUnknown:
+    """One thing the request implied a bundle might contain that this bundle does not.
+
+    Every unknown is a deterministic statement about the compilation itself -- a scope that
+    matched nothing, a requested type nothing was included for, evidence the budget could not
+    buy, a modality this composition cannot search, a stage a deadline skipped. The compiler
+    calls no model to produce one, so an unknown is never a guess about the world.
+    """
+
+    kind: ContextUnknownKind
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, ContextUnknownKind):
+            raise ValidationError("unknown kind is invalid")
+        object.__setattr__(self, "detail", _text(self.detail, "unknown detail"))
+
+
+# How many IDs one rendered line may name, and how many co-derived events one cue carries. The
+# marks are charged, because `bundle_cost` prices `render_hit_line` and they are part of it, but
+# they are bounded by a constant too so one capture's fan-out cannot dominate a line: two lists
+# of at most this many IDs, plus a short `+N more` when truncated.
+_MAX_CUE_IDS = 8
+
+
+@dataclass(frozen=True, slots=True)
+class AffectCue(SearchHit):
+    """One affect hit in a compiled bundle, carrying the evidence the cue hangs on.
+
+    An affect entry asserts something about how somebody felt, so a reader has to be able to
+    tell a model's inference from a person's own statement. `context.basis`, `confidence`,
+    `cue_modality`, `valence`, and `arousal` already carry that, and `render()` prints all five
+    on the line rather than leaving them to a caller who may never look.
+
+    The observations the cue cites are its own `context.evidence_ids`, which every transport
+    already carries. `event_ids` are the active `EVENT` records formed from at least one of
+    those same observations: **co-occurrence inside one capture, never an attributed cause**.
+    Nothing here says the event caused the feeling, or even that the cue is about the event;
+    both were derived from the same thing somebody observed. Only the IDs are carried, so the
+    hop grounds nothing and buys no item slot: no event is fetched, `get()` reads an event's text
+    when a caller decides it wants it, and an event the ranking already bought appears in
+    `episodes` on its own merit. The IDs the line does print are charged like any other rendered
+    characters, so `ContextBundle.chars` still bounds `render()`. At most eight events are
+    carried, so one cue's hop is bounded however many events one capture formed.
+    """
+
+    event_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # `slots=True` rebuilds the class, so the zero-argument `super()` cell would name the
+        # pre-rebuild class. The base validation is called explicitly for that reason.
+        SearchHit.__post_init__(self)
+        object.__setattr__(
+            self,
+            "event_ids",
+            tuple(dict.fromkeys(_text(value, "affect cue event_ids") for value in self.event_ids)),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TextSpanPiece:
+    """One exact source range in a contextual text embedding input."""
+
+    role: Literal["context", "body"]
+    start_codepoint: int
+    end_codepoint: int
+    source_text: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.role not in {"context", "body"}:
+            raise ValidationError("text span role must be context or body")
+        if (
+            isinstance(self.start_codepoint, bool)
+            or not isinstance(self.start_codepoint, int)
+            or isinstance(self.end_codepoint, bool)
+            or not isinstance(self.end_codepoint, int)
+            or self.start_codepoint < 0
+            or self.end_codepoint <= self.start_codepoint
+        ):
+            raise ValidationError("text span offsets must be a non-empty half-open interval")
+        if not isinstance(self.source_text, str) or not self.source_text:
+            raise ValidationError("text span source_text must not be empty")
+        if not isinstance(self.sha256, str) or _SHA256.fullmatch(self.sha256) is None:
+            raise ValidationError("text span sha256 must be 64 lowercase hexadecimal characters")
+        if hashlib.sha256(self.source_text.encode("utf-8")).hexdigest() != self.sha256:
+            raise ValidationError("text span source_text does not match its sha256")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TextSpanSelector:
+    """Digest-bound exact source pieces which produced one text embedding input."""
+
+    parent_content_sha256: str
+    embedding_input_sha256: str
+    recipe_version: str
+    pieces: tuple[TextSpanPiece, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("parent_content_sha256", "embedding_input_sha256"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                raise ValidationError(f"text selector {name} must be a SHA-256 identifier")
+        object.__setattr__(
+            self,
+            "recipe_version",
+            _text(self.recipe_version, "text selector recipe_version"),
+        )
+        if not self.pieces or any(not isinstance(piece, TextSpanPiece) for piece in self.pieces):
+            raise ValidationError("text selector pieces must contain TextSpanPiece values")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextExcerpt:
+    """One compiler-selected partial rendering of an authoritative raw observation."""
+
+    source_memory_id: str
+    matched_index_id: str
+    content: str
+    selector: TextSpanSelector
+    score: float
+    created_at: datetime
+    occurred_at: datetime | None = None
+    occurred_end: datetime | None = None
+    memory_type: MemoryType = MemoryType.SEMANTIC
+    context: MemoryContext | None = None
+    place_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "source_memory_id", _text(self.source_memory_id, "source_memory_id")
+        )
+        object.__setattr__(
+            self, "matched_index_id", _text(self.matched_index_id, "matched_index_id")
+        )
+        if not isinstance(self.content, str) or not self.content:
+            raise ValidationError("context excerpt content must not be empty")
+        if not isinstance(self.selector, TextSpanSelector):
+            raise ValidationError("context excerpt selector must be a TextSpanSelector")
+        if (
+            isinstance(self.score, bool)
+            or not isinstance(self.score, int | float)
+            or not math.isfinite(self.score)
+            or not 0.0 <= self.score <= 1.0
+        ):
+            raise ValidationError("context excerpt score must be between zero and one")
+        _require_aware(self.created_at, "created_at")
+        _require_interval(self.occurred_at, self.occurred_end)
+        if not isinstance(self.memory_type, MemoryType):
+            raise ValidationError("context excerpt memory_type is invalid")
+        if self.context is not None and not isinstance(self.context, MemoryContext):
+            raise ValidationError("context excerpt context is invalid")
+        object.__setattr__(self, "place_id", _optional_text(self.place_id, "place_id"))
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSymbol:
+    """One request-local alias and its presentation coverage."""
+
+    symbol: str
+    namespace: ContextSymbolNamespace
+    stable_id: str
+    coverage: ContextSymbolCoverage
+    roles: tuple[ContextSymbolRole, ...]
+    selector: TextSpanSelector | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.namespace, ContextSymbolNamespace):
+            raise ValidationError("context symbol namespace is invalid")
+        expected_prefix = "m" if self.namespace is ContextSymbolNamespace.MEMORY else "i"
+        if not re.fullmatch(rf"{expected_prefix}[1-9][0-9]*", self.symbol):
+            raise ValidationError("context symbol is invalid for its namespace")
+        object.__setattr__(self, "stable_id", _text(self.stable_id, "context symbol stable_id"))
+        if not isinstance(self.coverage, ContextSymbolCoverage):
+            raise ValidationError("context symbol coverage is invalid")
+        if not self.roles or any(not isinstance(role, ContextSymbolRole) for role in self.roles):
+            raise ValidationError("context symbol roles are invalid")
+        object.__setattr__(self, "roles", tuple(dict.fromkeys(self.roles)))
+        _validate_context_symbol_coverage(self)
+
+
+def _validate_context_symbol_coverage(symbol: ContextSymbol) -> None:
+    if symbol.namespace is ContextSymbolNamespace.IDENTITY:
+        if symbol.coverage is not ContextSymbolCoverage.REFERENCE_ONLY:
+            raise ValidationError("identity symbols must have reference-only coverage")
+        if symbol.selector is not None:
+            raise ValidationError("identity symbols cannot carry a text selector")
+    elif symbol.coverage is ContextSymbolCoverage.PARTIAL:
+        if not isinstance(symbol.selector, TextSpanSelector):
+            raise ValidationError("partial memory symbols require a text selector")
+    elif symbol.selector is not None:
+        raise ValidationError("only partial memory symbols can carry a text selector")
+
+
+@dataclass(frozen=True, slots=True)
+class ContextCitation:
+    """A decoded full or partial memory citation from one exact presentation.
+
+    Constructing this value does not prove that its source or selector was emitted by SenseMem;
+    callers validate model aliases through `ContextPresentation.resolve_citation()`.
+    """
+
+    memory_id: str
+    coverage: ContextSymbolCoverage
+    selector: TextSpanSelector | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "memory_id", _text(self.memory_id, "context citation memory_id"))
+        if not isinstance(self.coverage, ContextSymbolCoverage) or self.coverage not in {
+            ContextSymbolCoverage.FULL,
+            ContextSymbolCoverage.PARTIAL,
+        }:
+            raise ValidationError("context citation coverage must be full or partial")
+        if self.coverage is ContextSymbolCoverage.PARTIAL:
+            if not isinstance(self.selector, TextSpanSelector):
+                raise ValidationError("partial context citations require a text selector")
+        elif self.selector is not None:
+            raise ValidationError("full context citations cannot carry a text selector")
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPresentation:
+    """Frozen request-local text and typed aliases needed to interpret citations.
+
+    Symbols have no meaning outside this object. The text and symbol table together are
+    reversible; the compact text by itself is not an ID-preserving rewrite of arbitrary goals or
+    stored content.
+    """
+
+    text: str
+    symbols: tuple[ContextSymbol, ...]
+    chars: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "text", _text(self.text, "context presentation text"))
+        if self.chars != len(self.text):
+            raise ValidationError("context presentation chars must equal the text length")
+        if any(not isinstance(symbol, ContextSymbol) for symbol in self.symbols):
+            raise ValidationError("context presentation symbols are invalid")
+        keys = tuple((symbol.namespace, symbol.symbol) for symbol in self.symbols)
+        stable = tuple((symbol.namespace, symbol.stable_id) for symbol in self.symbols)
+        if len(set(keys)) != len(keys) or len(set(stable)) != len(stable):
+            raise ValidationError("context presentation symbols must be unique")
+
+    def resolve(self, symbol: str, *, namespace: ContextSymbolNamespace) -> str:
+        """Decode one alias without asserting delivery, eligibility, or evidentiary support."""
+        if not isinstance(namespace, ContextSymbolNamespace):
+            raise ValidationError("context symbol namespace is invalid")
+        for entry in self.symbols:
+            if entry.namespace is namespace and entry.symbol == symbol:
+                return entry.stable_id
+        raise ValidationError("context symbol is unknown in this presentation")
+
+    def resolve_citation(self, symbol: str) -> ContextCitation:
+        """Decode an eligible memory citation, rejecting identities and reference-only IDs."""
+        for entry in self.symbols:
+            if entry.symbol != symbol:
+                continue
+            if entry.namespace is not ContextSymbolNamespace.MEMORY:
+                raise ValidationError("identity symbols cannot be memory citations")
+            if entry.coverage is ContextSymbolCoverage.REFERENCE_ONLY:
+                raise ValidationError("reference-only memory symbols cannot be citations")
+            return ContextCitation(
+                memory_id=entry.stable_id,
+                coverage=entry.coverage,
+                selector=entry.selector,
+            )
+        raise ValidationError("context symbol is unknown in this presentation")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextProofNode:
+    """One complete AND assessment, or a capture leaf, in a delivery certificate.
+
+    Assessments come from SQLite, not from the flattened ``evidence_ids`` union. Confidence
+    is the assessment's score; a leaf's ``capture_id`` identifies shared capture provenance.
+    """
+
+    memory_id: str
+    confidence: float
+    sources: tuple[str, ...] = ()
+    capture_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "memory_id", _text(self.memory_id, "proof memory_id"))
+        object.__setattr__(self, "sources", _memory_ids(self.sources, "proof sources"))
+        object.__setattr__(self, "confidence", unit_interval(self.confidence, "proof confidence"))
+        object.__setattr__(self, "capture_id", _optional_text(self.capture_id, "proof capture_id"))
+        if bool(self.sources) == (self.capture_id is not None) or self.confidence == 0.0:
+            raise ValidationError(
+                "a proof node needs positive confidence and either sources or a capture"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextProof:
+    """An acyclic, complete witness for one included assertion, separate from its audit union."""
+
+    anchor_id: str
+    nodes: tuple[ContextProofNode, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "anchor_id", _text(self.anchor_id, "proof anchor_id"))
+        nodes = tuple(self.nodes)
+        if not nodes or any(not isinstance(node, ContextProofNode) for node in nodes):
+            raise ValidationError("proof nodes must contain ContextProofNode values")
+        by_id = {node.memory_id: node for node in nodes}
+        if len(by_id) != len(nodes) or self.anchor_id not in by_id:
+            raise ValidationError("proof nodes must be unique and contain the anchor")
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(memory_id: str) -> None:
+            if memory_id in visiting or memory_id not in by_id:
+                raise ValidationError("a proof cannot contain a cycle or a missing AND member")
+            if memory_id in visited:
+                return
+            visiting.add(memory_id)
+            for source in by_id[memory_id].sources:
+                visit(source)
+            visiting.remove(memory_id)
+            visited.add(memory_id)
+
+        # Iteration in the producer is bounded; reject excessive user-supplied recursion here.
+        if len(nodes) > 256:
+            raise ValidationError("a proof cannot exceed 256 nodes")
+        visit(self.anchor_id)
+        if len(visited) != len(nodes):
+            raise ValidationError("proof nodes must all be reachable from the anchor")
+        object.__setattr__(self, "nodes", tuple(sorted(nodes, key=lambda node: node.memory_id)))
+
+    @property
+    def confidence(self) -> float:
+        return min(node.confidence for node in self.nodes)
+
+    @property
+    def footprint(self) -> frozenset[tuple[str, str]]:
+        return frozenset(
+            ("capture", node.capture_id)
+            if node.capture_id is not None
+            else ("node", node.memory_id)
+            for node in self.nodes
+            if node.memory_id != self.anchor_id or node.capture_id is not None
+        )
+
+    def independent_of(self, other: ContextProof) -> bool:
+        if self.anchor_id != other.anchor_id:
+            return False
+        left = next(node.sources for node in self.nodes if node.memory_id == self.anchor_id)
+        right = next(node.sources for node in other.nodes if node.memory_id == other.anchor_id)
+        return set(left) != set(right) and self.footprint.isdisjoint(other.footprint)
+
+    def render(self, *, symbols: Sequence[ContextSymbol] = ()) -> str:
+        def identifier(memory_id: str) -> str:
+            return (
+                _symbol(memory_id, ContextSymbolNamespace.MEMORY, symbols) if symbols else memory_id
+            )
+
+        steps = "; ".join(
+            f"[{identifier(node.memory_id)}] <- "
+            + (
+                ", ".join(f"[{identifier(source)}]" for source in node.sources)
+                if node.sources
+                else f"capture [{identifier(node.capture_id or '')}]"
+            )
+            + f" @{node.confidence:.17g}"
+            for node in self.nodes
+        )
+        return f"- Proof [{identifier(self.anchor_id)}]: {steps}"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextBundle:
+    """One bounded, structured context view compiled for a goal."""
+
+    goal: str
+    reference_at: datetime
+    budget: ContextBudget
+    actors: tuple[SearchHit | NamedActor | ProvisionalActor, ...]
+    relationships: tuple[SearchHit, ...]
+    scene: tuple[SearchHit, ...]
+    episodes: tuple[SearchHit, ...]
+    facts: tuple[SearchHit, ...]
+    procedures: tuple[SearchHit, ...]
+    # Evidence-first: an affect entry carries its provenance and its one co-occurrence hop.
+    affect: tuple[AffectCue, ...]
+    traits: tuple[SearchHit, ...]
+    conflicts: tuple[ContextConflict, ...]
+    unknowns: tuple[ContextUnknown, ...]
+    occurred_from: datetime | None
+    occurred_until: datetime | None
+    frames: tuple[str, ...]
+    places: tuple[str, ...]
+    omitted: int
+    chars: int
+    elapsed_ms: int
+    deadline_exceeded: bool
+    excerpts: tuple[ContextExcerpt, ...] = ()
+    proofs: tuple[ContextProof, ...] = ()
+
+    def __post_init__(self) -> None:  # noqa: C901 - validate the complete certificate delivery contract
+        # The affect section is the one whose entries carry more than a hit does, and every
+        # transport reads that extra without asking. A plain hit here would serialize as an
+        # affect cue with an empty hop, so the type is enforced rather than defaulted.
+        if any(not isinstance(cue, AffectCue) for cue in self.affect):
+            raise ValidationError("affect entries must be AffectCue")
+        if any(not isinstance(excerpt, ContextExcerpt) for excerpt in self.excerpts):
+            raise ValidationError("excerpts must contain ContextExcerpt values")
+        if {hit.id for hit in self.hits} & {excerpt.source_memory_id for excerpt in self.excerpts}:
+            raise ValidationError("a bundle cannot contain a full hit and excerpt of one source")
+        if any(not isinstance(proof, ContextProof) for proof in self.proofs):
+            raise ValidationError("proofs must contain ContextProof values")
+        if self.proofs and not self.budget.selected_proofs:
+            raise ValidationError("delivery certificates require selected_proofs")
+        hits = {hit.id: hit for hit in self.hits}
+        by_anchor: dict[str, list[ContextProof]] = {}
+        for proof in self.proofs:
+            by_anchor.setdefault(proof.anchor_id, []).append(proof)
+            for node in proof.nodes:
+                if node.memory_id not in hits:
+                    raise ValidationError("every proof node must be delivered as a full hit")
+                context = hits[node.memory_id].context
+                if node.sources and (
+                    context is None or not set(node.sources) <= set(context.evidence_ids)
+                ):
+                    raise ValidationError(
+                        "proof sources must belong to the authoritative evidence union"
+                    )
+                if node.capture_id is not None:
+                    if context is not None and (
+                        context.evidence_ids
+                        or (
+                            context.kind is not MemoryKind.OBSERVATION
+                            and context.basis
+                            not in {EvidenceBasis.USER_STATEMENT, EvidenceBasis.RESPONSE_FEEDBACK}
+                        )
+                    ):
+                        raise ValidationError("a derived assertion cannot be a capture leaf")
+                    if node.capture_id != (
+                        node.memory_id if context is None else context.source_id or node.memory_id
+                    ):
+                        raise ValidationError("proof capture_id must match its stored capture")
+        for memory_id, witnesses in by_anchor.items():
+            context = hits[memory_id].context
+            confidence = max(proof.confidence for proof in witnesses)
+            independent = False
+            for position, proof in enumerate(witnesses):
+                for other in witnesses[position + 1 :]:
+                    if proof.independent_of(other):
+                        independent = True
+                        confidence = max(
+                            confidence, 1.0 - (1.0 - proof.confidence) * (1.0 - other.confidence)
+                        )
+            if context is not None:
+                if confidence + 1e-12 < context.confidence:
+                    raise ValidationError(
+                        "selected witnesses must justify the delivered confidence"
+                    )
+                if (
+                    context.basis
+                    not in {EvidenceBasis.USER_STATEMENT, EvidenceBasis.RESPONSE_FEEDBACK}
+                    and (
+                        context.kind is MemoryKind.TRAIT
+                        or (context.kind is MemoryKind.ENTITY and context.identity_id is not None)
+                    )
+                    and not independent
+                ):
+                    raise ValidationError(
+                        "selected trait or naming evidence requires independent witnesses"
+                    )
+        if self.proofs:
+            for hit in self.hits:
+                if hit.context is not None and hit.context.evidence_ids and hit.id not in by_anchor:
+                    raise ValidationError(
+                        "every delivered derived assertion requires its own certificate"
+                    )
+
+    @property
+    def hits(self) -> tuple[SearchHit, ...]:
+        """Every included hit in rank order, without duplicates.
+
+        A provisional actor is not a hit: it is a person the evidence observed, not evidence.
+        """
+        merged = {
+            entry.id: entry
+            for _heading, section in self._sections()
+            for entry in section
+            if isinstance(entry, SearchHit)
+        }
+        return tuple(sorted(merged.values(), key=lambda hit: (-hit.score, hit.id)))
+
+    def render(self) -> str:
+        """Return the bundle as deterministic sectioned text carrying `[id]` provenance."""
+        included = len(self.hits) + len(self.excerpts)
+        lines = [
+            f"# Context: {self.goal}",
+            CONTEXT_READING_GUIDE,
+            f"Reference time: {self.reference_at.isoformat()}",
+            f"Budget: {self.chars}/{self.budget.max_chars} chars, "
+            f"{included}/{self.budget.max_items} items",
+        ]
+        for heading, section in self._sections():
+            if not section:
+                continue
+            lines.extend(("", f"## {heading}"))
+            lines.extend(_section_line(entry) for entry in section)
+        if self.excerpts:
+            lines.extend(("", "## Partial sources"))
+            lines.extend(render_excerpt_line(excerpt) for excerpt in self.excerpts)
+        if self.proofs:
+            lines.extend(("", "## Selected proofs"))
+            lines.extend(proof.render() for proof in self.proofs)
+        if self.conflicts:
+            lines.extend(("", "## Conflicts"))
+            included_ids = {hit.id for hit in self.hits}
+            lines.extend(_conflict_line(conflict, included_ids) for conflict in self.conflicts)
+        if self.unknowns:
+            lines.extend(("", "## Unknowns"))
+            lines.extend(f"- {item.kind.value}: {item.detail}" for item in self.unknowns)
+        if self.omitted > 0:
+            lines.extend(("", f"Omitted: {self.omitted} lower-ranked candidates"))
+        return "\n".join(lines)
+
+    def compact(self) -> ContextPresentation:
+        """Return an optional compact view without changing selection or budget accounting.
+
+        Only identifier fields held structurally by the formatter are aliased. Stored content,
+        the goal, conflict values, and diagnostic prose are never searched or rewritten. The
+        existing `render()`, `hits`, and transport document remain the stable-ID presentation.
+        """
+        symbols = _context_symbols(self)
+        text = _compact_context_text(self, symbols)
+        return ContextPresentation(text=text, symbols=symbols, chars=len(text))
+
+    def document(self) -> dict[str, object]:
+        """Return the field-keyed projection REST, MCP, and the CLI each publish.
+
+        Values stay as they are declared -- the transports validate them through their own
+        models -- except `budget`, which flattens `freshness` to seconds, and `rendered`, which
+        is `render()` rather than a stored field. Driven by `fields(self)` so a new section
+        reaches all three surfaces instead of being spelled a fourth time in each of them.
+        """
+        values: dict[str, object] = {
+            declared.name: getattr(self, declared.name) for declared in fields(self)
+        }
+        values["budget"] = self.budget.document()
+        values["rendered"] = self.render()
+        return values
+
+    def _sections(
+        self,
+    ) -> tuple[tuple[str, tuple[SearchHit | NamedActor | ProvisionalActor, ...]], ...]:
+        """Return the sections in their fixed rendering order."""
+        return (
+            ("Actors", self.actors),
+            ("Relationships", self.relationships),
+            ("Scene", self.scene),
+            ("Facts", self.facts),
+            ("Episodes", self.episodes),
+            ("Procedures", self.procedures),
+            ("Affect", self.affect),
+            ("Traits", self.traits),
+        )
+
+
+def _entry_symbol_references(
+    entry: SearchHit | NamedActor | ProvisionalActor,
+) -> tuple[tuple[ContextSymbolNamespace, str, ContextSymbolRole], ...]:
+    if isinstance(entry, SearchHit):
+        references = [
+            (ContextSymbolNamespace.MEMORY, entry.id, ContextSymbolRole.HIT),
+            *(
+                (ContextSymbolNamespace.MEMORY, evidence_id, ContextSymbolRole.EVIDENCE)
+                for evidence_id in (() if entry.context is None else entry.context.evidence_ids)
+            ),
+        ]
+        if isinstance(entry, AffectCue):
+            references.extend(
+                (ContextSymbolNamespace.MEMORY, event_id, ContextSymbolRole.AFFECT_EVENT)
+                for event_id in entry.event_ids
+            )
+        return tuple(references)
+    references = [
+        (ContextSymbolNamespace.IDENTITY, entry.identity_id, ContextSymbolRole.ACTOR),
+        *(
+            (ContextSymbolNamespace.MEMORY, memory_id, ContextSymbolRole.OBSERVED_IN)
+            for memory_id in entry.memory_ids
+        ),
+    ]
+    if isinstance(entry, NamedActor) and entry.naming_assertion_id is not None:
+        references.append(
+            (
+                ContextSymbolNamespace.MEMORY,
+                entry.naming_assertion_id,
+                ContextSymbolRole.NAMING_ASSERTION,
+            )
+        )
+    return tuple(references)
+
+
+def _context_symbols(bundle: ContextBundle) -> tuple[ContextSymbol, ...]:  # noqa: C901 - one ordered structural symbol scan
+    full_memory_ids = {hit.id for hit in bundle.hits}
+    partial_by_memory_id = {excerpt.source_memory_id: excerpt for excerpt in bundle.excerpts}
+    ordered: list[tuple[ContextSymbolNamespace, str]] = []
+    roles: dict[tuple[ContextSymbolNamespace, str], list[ContextSymbolRole]] = {}
+
+    for _heading, section in bundle._sections():
+        for entry in section:
+            for namespace, stable_id, role in _entry_symbol_references(entry):
+                _add_context_symbol_reference(ordered, roles, namespace, stable_id, role)
+    for excerpt in bundle.excerpts:
+        _add_context_symbol_reference(
+            ordered,
+            roles,
+            ContextSymbolNamespace.MEMORY,
+            excerpt.source_memory_id,
+            ContextSymbolRole.EXCERPT,
+        )
+    for conflict in bundle.conflicts:
+        for memory_id in conflict.memory_ids:
+            _add_context_symbol_reference(
+                ordered,
+                roles,
+                ContextSymbolNamespace.MEMORY,
+                memory_id,
+                ContextSymbolRole.CONFLICT,
+            )
+    for proof in bundle.proofs:
+        for node in proof.nodes:
+            for memory_id in (
+                node.memory_id,
+                *node.sources,
+                *((node.capture_id,) if node.capture_id else ()),
+            ):
+                _add_context_symbol_reference(
+                    ordered,
+                    roles,
+                    ContextSymbolNamespace.MEMORY,
+                    memory_id,
+                    ContextSymbolRole.EVIDENCE,
+                )
+
+    next_number = {ContextSymbolNamespace.MEMORY: 1, ContextSymbolNamespace.IDENTITY: 1}
+    result: list[ContextSymbol] = []
+    for namespace, stable_id in ordered:
+        number = next_number[namespace]
+        next_number[namespace] += 1
+        coverage = _context_symbol_coverage(
+            namespace,
+            stable_id,
+            full_memory_ids,
+            partial_by_memory_id,
+        )
+        result.append(
+            ContextSymbol(
+                symbol=f"{'m' if namespace is ContextSymbolNamespace.MEMORY else 'i'}{number}",
+                namespace=namespace,
+                stable_id=stable_id,
+                coverage=coverage,
+                roles=tuple(roles[(namespace, stable_id)]),
+                selector=(
+                    partial_by_memory_id[stable_id].selector
+                    if coverage is ContextSymbolCoverage.PARTIAL
+                    else None
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def _add_context_symbol_reference(
+    ordered: list[tuple[ContextSymbolNamespace, str]],
+    roles: dict[tuple[ContextSymbolNamespace, str], list[ContextSymbolRole]],
+    namespace: ContextSymbolNamespace,
+    stable_id: str,
+    role: ContextSymbolRole,
+) -> None:
+    key = (namespace, stable_id)
+    if key not in roles:
+        ordered.append(key)
+        roles[key] = []
+    if role not in roles[key]:
+        roles[key].append(role)
+
+
+def _context_symbol_coverage(
+    namespace: ContextSymbolNamespace,
+    stable_id: str,
+    full_memory_ids: Container[str],
+    partial_by_memory_id: Mapping[str, ContextExcerpt],
+) -> ContextSymbolCoverage:
+    if namespace is ContextSymbolNamespace.IDENTITY:
+        return ContextSymbolCoverage.REFERENCE_ONLY
+    if stable_id in full_memory_ids:
+        return ContextSymbolCoverage.FULL
+    if stable_id in partial_by_memory_id:
+        return ContextSymbolCoverage.PARTIAL
+    return ContextSymbolCoverage.REFERENCE_ONLY
+
+
+def _compact_context_text(
+    bundle: ContextBundle,
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    included = len(bundle.hits) + len(bundle.excerpts)
+    lines = [
+        f"# Context: {bundle.goal}",
+        (
+            "Each line is one memory or labelled partial source: [mN] aliases a memory ID and"
+            " [iN] an identity ID. Partial sources include exact offsets and a warning that"
+            " omitted text may qualify them."
+        ),
+        f"Reference time: {bundle.reference_at.isoformat()}",
+        f"Grounding budget: {bundle.chars}/{bundle.budget.max_chars} chars, "
+        f"{included}/{bundle.budget.max_items} items",
+    ]
+    for heading, section in bundle._sections():
+        if not section:
+            continue
+        lines.extend(("", f"## {heading}"))
+        lines.extend(_compact_section_line(entry, symbols) for entry in section)
+    if bundle.excerpts:
+        lines.extend(("", "## Partial sources"))
+        lines.extend(_compact_excerpt_line(excerpt, symbols) for excerpt in bundle.excerpts)
+    if bundle.proofs:
+        lines.extend(("", "## Selected proofs"))
+        lines.extend(proof.render(symbols=symbols) for proof in bundle.proofs)
+    if bundle.conflicts:
+        lines.extend(("", "## Conflicts"))
+        included_ids = {hit.id for hit in bundle.hits}
+        lines.extend(
+            _compact_conflict_line(conflict, included_ids, symbols) for conflict in bundle.conflicts
+        )
+    if bundle.unknowns:
+        lines.extend(("", "## Unknowns"))
+        lines.extend(f"- {item.kind.value}: {item.detail}" for item in bundle.unknowns)
+    if bundle.omitted > 0:
+        lines.extend(("", f"Omitted: {bundle.omitted} lower-ranked candidates"))
+    return "\n".join(lines)
+
+
+def _compact_section_line(
+    entry: SearchHit | NamedActor | ProvisionalActor,
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    if isinstance(entry, SearchHit):
+        return _compact_hit_line(entry, symbols)
+    identity = _symbol(entry.identity_id, ContextSymbolNamespace.IDENTITY, symbols)
+    seen = ", ".join(
+        f"[{_symbol(memory_id, ContextSymbolNamespace.MEMORY, symbols)}]"
+        for memory_id in entry.memory_ids
+    )
+    if isinstance(entry, NamedActor):
+        provenance = (
+            "; named by "
+            f"[{_symbol(entry.naming_assertion_id, ContextSymbolNamespace.MEMORY, symbols)}]"
+            if entry.naming_assertion_id
+            else ""
+        )
+        return f"- [{identity}] {entry.name} present (seen in {seen}{provenance})"
+    return f"- [{identity}] unnamed person present (provisional identity; seen in {seen})"
+
+
+def _compact_hit_line(hit: SearchHit, symbols: Sequence[ContextSymbol]) -> str:
+    confidence = 1.0 if hit.context is None else hit.context.confidence
+    marks = (
+        f"confidence {confidence:.2f}{_compact_basis_and_evidence_marks(hit, symbols)}"
+        f"{_affect_marks(hit)}{_validity(hit)}{_compact_affect_hop(hit, symbols)}"
+    )
+    anchor = _symbol(hit.id, ContextSymbolNamespace.MEMORY, symbols)
+    return f"- [{anchor}] {' '.join(hit.content.split())} ({marks})"
+
+
+def _compact_excerpt_line(
+    excerpt: ContextExcerpt,
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    confidence = 1.0 if excerpt.context is None else excerpt.context.confidence
+    offsets = ", ".join(
+        f"{piece.role}:{piece.start_codepoint}-{piece.end_codepoint}"
+        for piece in excerpt.selector.pieces
+    )
+    occurrence = ""
+    if excerpt.occurred_at is not None:
+        occurrence = f"; occurred {excerpt.occurred_at.isoformat()}"
+        if excerpt.occurred_end is not None:
+            occurrence += f"..{excerpt.occurred_end.isoformat()}"
+    validity = ""
+    if excerpt.context is not None:
+        start = excerpt.context.valid_from
+        end = excerpt.context.valid_until
+        if start is not None or end is not None:
+            validity = (
+                "; valid "
+                f"{start.isoformat() if start is not None else '-inf'}"
+                f"..{end.isoformat() if end is not None else '+inf'}"
+            )
+    source = _symbol(excerpt.source_memory_id, ContextSymbolNamespace.MEMORY, symbols)
+    return (
+        f"- [partial source {source}; omitted text may qualify it; offsets {offsets}] "
+        f"{excerpt.content} (confidence {confidence:.2f}{occurrence}{validity})"
+    )
+
+
+def _compact_basis_and_evidence_marks(
+    hit: SearchHit,
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    context = hit.context
+    if context is None or not context.evidence_ids:
+        return ""
+    marks = "" if isinstance(hit, AffectCue) else f"; basis {context.basis.value}"
+    if not isinstance(hit, AffectCue):
+        marks += f"; evidence {_compact_id_list(context.evidence_ids, symbols)}"
+    return marks
+
+
+def _compact_affect_hop(hit: SearchHit, symbols: Sequence[ContextSymbol]) -> str:
+    if not isinstance(hit, AffectCue):
+        return ""
+    marks = ""
+    evidence_ids = () if hit.context is None else hit.context.evidence_ids
+    if evidence_ids:
+        marks += f"; from {_compact_id_list(evidence_ids, symbols)}"
+    if hit.event_ids:
+        marks += f"; co-occurring events {_compact_id_list(hit.event_ids, symbols)}"
+    return marks
+
+
+def _compact_id_list(
+    memory_ids: Sequence[str],
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    shown = ", ".join(
+        f"[{_symbol(memory_id, ContextSymbolNamespace.MEMORY, symbols)}]"
+        for memory_id in memory_ids[:_MAX_CUE_IDS]
+    )
+    remaining = len(memory_ids) - _MAX_CUE_IDS
+    return shown if remaining <= 0 else f"{shown}, +{remaining} more"
+
+
+def _compact_conflict_line(
+    conflict: ContextConflict,
+    included: Container[str],
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    label = " ".join(part for part in (conflict.subject, conflict.predicate) if part)
+    values = " vs ".join(
+        f'"{value}" [{_symbol(memory_id, ContextSymbolNamespace.MEMORY, symbols)}]'
+        if memory_id in included
+        else (
+            f'"{value}" '
+            f"[{_symbol(memory_id, ContextSymbolNamespace.MEMORY, symbols)}, not included]"
+        )
+        for value, memory_id in zip(conflict.values, conflict.memory_ids, strict=True)
+    )
+    return f"- {label or conflict.lineage_id}: {values}"
+
+
+def _symbol(
+    stable_id: str,
+    namespace: ContextSymbolNamespace,
+    symbols: Sequence[ContextSymbol],
+) -> str:
+    for entry in symbols:
+        if entry.namespace is namespace and entry.stable_id == stable_id:
+            return entry.symbol
+    raise RuntimeError("compact context formatter omitted a structural identifier")
+
+
+def _section_line(entry: SearchHit | NamedActor | ProvisionalActor) -> str:
+    if isinstance(entry, SearchHit):
+        return render_hit_line(entry)
+    if isinstance(entry, NamedActor):
+        return render_named_actor_line(entry)
+    return render_provisional_actor_line(entry)
+
+
+def render_named_actor_line(actor: NamedActor) -> str:
+    """Return the one line `render()` writes for this named actor.
+
+    The compiler charges its length against `ContextBudget.max_chars`, same as
+    `render_hit_line`, so the price and the text come from the same function and cannot drift.
+    """
+    seen = ", ".join(f"[{memory_id}]" for memory_id in actor.memory_ids)
+    provenance = f"; named by [{actor.naming_assertion_id}]" if actor.naming_assertion_id else ""
+    return f"- [{actor.identity_id}] {actor.name} present (seen in {seen}{provenance})"
+
+
+def render_provisional_actor_line(actor: ProvisionalActor) -> str:
+    """Return the one line `render()` writes for this provisional actor.
+
+    The compiler charges its length against `ContextBudget.max_chars`, same as
+    `render_hit_line`, so the price and the text come from the same function and cannot drift.
+    """
+    seen = ", ".join(f"[{memory_id}]" for memory_id in actor.memory_ids)
+    return f"- [{actor.identity_id}] unnamed person present (provisional identity; seen in {seen})"
+
+
+def render_excerpt_line(excerpt: ContextExcerpt) -> str:
+    """Render an exact partial source without presenting it as a complete memory."""
+    confidence = 1.0 if excerpt.context is None else excerpt.context.confidence
+    offsets = ", ".join(
+        f"{piece.role}:{piece.start_codepoint}-{piece.end_codepoint}"
+        for piece in excerpt.selector.pieces
+    )
+    occurrence = ""
+    if excerpt.occurred_at is not None:
+        occurrence = f"; occurred {excerpt.occurred_at.isoformat()}"
+        if excerpt.occurred_end is not None:
+            occurrence += f"..{excerpt.occurred_end.isoformat()}"
+    validity = ""
+    if excerpt.context is not None:
+        start = excerpt.context.valid_from
+        end = excerpt.context.valid_until
+        if start is not None or end is not None:
+            validity = (
+                "; valid "
+                f"{start.isoformat() if start is not None else '-inf'}"
+                f"..{end.isoformat() if end is not None else '+inf'}"
+            )
+    return (
+        f"- [partial source {excerpt.source_memory_id}; omitted text may qualify it;"
+        f" offsets {offsets}] "
+        f"{excerpt.content} (confidence {confidence:.2f}{occurrence}{validity})"
+    )
+
+
+def render_hit_line(hit: SearchHit) -> str:
+    """Return the one line `render()` writes for this hit.
+
+    The compiler charges its length against `ContextBudget.max_chars`, so the price and the text
+    come from the same function and cannot drift.
+    """
+    confidence = 1.0 if hit.context is None else hit.context.confidence
+    marks = (
+        f"confidence {confidence:.2f}{_basis_and_evidence_marks(hit)}"
+        f"{_affect_marks(hit)}{_validity(hit)}{_affect_hop(hit)}"
+    )
+    # One hit is one line, so stored newlines collapse rather than break the section shape.
+    return f"- [{hit.id}] {' '.join(hit.content.split())} ({marks})"
+
+
+def _basis_and_evidence_marks(hit: SearchHit) -> str:
+    """Render typed provenance without claiming that a source entails its assertion."""
+    context = hit.context
+    if context is None or not context.evidence_ids:
+        return ""
+    marks = "" if isinstance(hit, AffectCue) else f"; basis {context.basis.value}"
+    if context.evidence_ids and not isinstance(hit, AffectCue):
+        marks += f"; evidence {_id_list(context.evidence_ids)}"
+    return marks
+
+
+def _affect_marks(hit: SearchHit) -> str:
+    """Render an affect cue's provenance inline, so an inference never reads as a statement."""
+    context = hit.context
+    if not isinstance(hit, AffectCue) or context is None:
+        return ""
+    marks = f"; basis {context.basis.value}"
+    if context.cue_modality is not None:
+        marks += f"; cue {context.cue_modality.value}"
+    if context.valence is not None:
+        marks += f"; valence {context.valence:.2f}"
+    if context.arousal is not None:
+        marks += f"; arousal {context.arousal:.2f}"
+    return marks
+
+
+def _affect_hop(hit: SearchHit) -> str:
+    """Render the cue's own evidence and the events it co-occurs with, as IDs only."""
+    if not isinstance(hit, AffectCue):
+        return ""
+    marks = ""
+    evidence_ids = () if hit.context is None else hit.context.evidence_ids
+    if evidence_ids:
+        marks += f"; from {_id_list(evidence_ids)}"
+    if hit.event_ids:
+        # Named for what the edge is: both records were formed from one observation. It is not
+        # a claim that the event caused the feeling.
+        marks += f"; co-occurring events {_id_list(hit.event_ids)}"
+    return marks
+
+
+def _id_list(memory_ids: Sequence[str]) -> str:
+    """Render an ID list, truncated, so one line's marks stay bounded by a constant.
+
+    A capture with a hundred observations must not turn one memory into a paragraph the budget
+    never charged for. The count of what was dropped is kept, so a truncated line still says
+    that more exists.
+    """
+    shown = ", ".join(f"[{memory_id}]" for memory_id in memory_ids[:_MAX_CUE_IDS])
+    remaining = len(memory_ids) - _MAX_CUE_IDS
+    return shown if remaining <= 0 else f"{shown}, +{remaining} more"
+
+
+def _validity(hit: SearchHit) -> str:
+    """Render a typed memory's world-validity bounds inline, so a stale fact reads as stale.
+
+    `MemoryContext` refuses an end without a start, so the only open form is an open-ended one.
+    """
+    context = hit.context
+    if context is None or context.valid_from is None:
+        return ""
+    start = context.valid_from.isoformat()
+    if context.valid_until is None:
+        return f"; valid from {start}"
+    return f"; valid {start} → {context.valid_until.isoformat()}"
+
+
+def _conflict_line(conflict: ContextConflict, included: Container[str]) -> str:
+    label = " ".join(part for part in (conflict.subject, conflict.predicate) if part)
+    # A conflict may name a candidate the budget could not buy. Marking it keeps the `[id]`
+    # provenance honest: that memory has no line of its own anywhere above.
+    values = " vs ".join(
+        f'"{value}" [{memory_id}]'
+        if memory_id in included
+        else f'"{value}" [{memory_id}, not included]'
+        for value, memory_id in zip(conflict.values, conflict.memory_ids, strict=True)
+    )
+    return f"- {label or conflict.lineage_id}: {values}"

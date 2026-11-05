@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mindbridge import EvidenceBasis, FormationProposal, MemoryKind, SpatialAnchor, SpatialContext
-from mindbridge.kernel.formation import formation_context
-from mindbridge.kernel.predicates import PREDICATES, PredicateDefinition, resolve_predicate
+from sensemem import EvidenceBasis, FormationProposal, MemoryKind, SpatialAnchor, SpatialContext
+from sensemem.kernel.formation import formation_context
+from sensemem.kernel.predicates import PREDICATES, PredicateDefinition, resolve_predicate
 
 
 def _lineage(

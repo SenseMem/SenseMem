@@ -15,7 +15,7 @@ def restored_logging() -> Iterator[None]:
     Autouse rather than opt-in because every entry point under test reaches it: `main()`
     configures logging before it does anything else, so a listing or an offline gate leaves the
     process at INFO behind a handler of `eval`'s own. A test file that runs later then reads
-    MindBridge's INFO lines out of the stream it was asserting on.
+    SenseMem's INFO lines out of the stream it was asserting on.
     """
     root = logging.getLogger()
     saved = (root.level, list(root.handlers), list(root.filters))

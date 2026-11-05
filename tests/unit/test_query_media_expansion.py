@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Blob,
@@ -26,7 +26,7 @@ from mindbridge import (
     RetrievalScope,
     SearchHit,
 )
-from mindbridge.context import evidence_cost
+from sensemem.context import evidence_cost
 
 NOW = datetime(2026, 9, 15, tzinfo=timezone.utc)
 CODE = Blob(b"original code pixels", "image/png")

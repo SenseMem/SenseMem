@@ -18,24 +18,24 @@ from fastapi import status
 from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel
 
-import mindbridge
-from mindbridge import Memory, cli
-from mindbridge.api import app as rest
-from mindbridge.api import content, errors
-from mindbridge.api import mcp as mcp_adapter
-from mindbridge.api.errors import REASON_STATUS, ErrorEnvelope, _public_error
-from mindbridge.exceptions import (
+import sensemem
+from sensemem import Memory, cli
+from sensemem.api import app as rest
+from sensemem.api import content, errors
+from sensemem.api import mcp as mcp_adapter
+from sensemem.api.errors import REASON_STATUS, ErrorEnvelope, _public_error
+from sensemem.exceptions import (
     RETRYABLE_REASONS,
     IndexUnavailableError,
     MemoryNotFoundError,
-    MindBridgeError,
     ModelError,
     ModelOutputTruncatedError,
+    SenseMemError,
     StorageError,
     ValidationError,
 )
-from mindbridge.kernel.contracts import declared_capabilities
-from mindbridge.types import (
+from sensemem.kernel.contracts import declared_capabilities
+from sensemem.types import (
     AffectCue,
     AssetRef,
     ContextBudget,
@@ -336,7 +336,7 @@ def test_the_rest_adapter_protocol_matches_the_sdk_it_dispatches_to() -> None:
             assert parameter.default == real.parameters[name].default, f"{operation}.{name}"
 
 
-def _public_exceptions(root: type[MindBridgeError]) -> list[type[MindBridgeError]]:
+def _public_exceptions(root: type[SenseMemError]) -> list[type[SenseMemError]]:
     found = [root]
     for subclass in root.__subclasses__():
         found.extend(_public_exceptions(subclass))
@@ -344,20 +344,20 @@ def _public_exceptions(root: type[MindBridgeError]) -> list[type[MindBridgeError
 
 
 def test_every_public_exception_is_mapped_on_both_transports() -> None:
-    for error_type in _public_exceptions(MindBridgeError):
+    for error_type in _public_exceptions(SenseMemError):
         error = error_type("failure detail")
         status_code, message = _public_error(error)
 
         assert error.code in mcp_adapter._STABLE_ERROR_CODES, error_type
         # Both transports read one table, so the check is that the table covers the class, not
         # that two calls to the same function agree.
-        assert (error_type.code in errors.MESSAGE_BY_CODE) is (error_type is not MindBridgeError), (
+        assert (error_type.code in errors.MESSAGE_BY_CODE) is (error_type is not SenseMemError), (
             error_type
         )
         # The raise site's own words always survive the mapping.
-        assert message == "failure detail" or error_type is MindBridgeError, error_type
+        assert message == "failure detail" or error_type is SenseMemError, error_type
         # Only the abstract base falls through to "unexpected"; every raised class is classified.
-        assert (status_code == 500) is (error_type is MindBridgeError), error_type
+        assert (status_code == 500) is (error_type is SenseMemError), error_type
 
 
 def test_a_reason_gets_one_status_whatever_raised_it() -> None:
@@ -367,7 +367,7 @@ def test_a_reason_gets_one_status_whatever_raised_it() -> None:
     middleware and 502 from a provider rejecting an oversized asset.
     """
     carriers = (
-        MindBridgeError,
+        SenseMemError,
         ValidationError,
         MemoryNotFoundError,
         ModelError,
@@ -403,7 +403,7 @@ def test_every_reason_a_raise_site_can_produce_has_a_row() -> None:
     `cli.py` and `benchmarks/` are excluded on purpose: their reasons are theirs, reported in the
     CLI's own JSON document, and never reach an HTTP status or a tool error envelope.
     """
-    source = Path(mindbridge.__file__).parent
+    source = Path(sensemem.__file__).parent
     literal = re.compile(r'\breason="([a-z_]+)"|\bdefault_reason\s*[:=][^"]*"([a-z_]+)"')
     raised: dict[str, str] = {}
     for path in sorted(source.rglob("*.py")):
@@ -414,7 +414,7 @@ def test_every_reason_a_raise_site_can_produce_has_a_row() -> None:
 
     missing = {reason: origin for reason, origin in raised.items() if reason not in REASON_STATUS}
     assert not missing, (
-        f"add a row to mindbridge.api.errors.REASON_STATUS for {missing}, "
+        f"add a row to sensemem.api.errors.REASON_STATUS for {missing}, "
         "or the condition falls back to a coarse per-code status"
     )
     assert "backend_not_configured" in raised, "the scan matched nothing; check the pattern"
@@ -456,7 +456,7 @@ def test_result_records_expose_the_same_fields_on_both_transports(
 
 
 def test_an_operation_row_is_one_document_on_both_transports() -> None:
-    """The log row is an audit surface, so REST and `mindbridge operations` print the same keys.
+    """The log row is an audit surface, so REST and `sensemem operations` print the same keys.
 
     REST carried no `proposal`, so a consolidation row read over `--url` named an intent and no
     statement -- and `apply`, which takes a row exactly as it is printed, refused to replay it.
@@ -683,7 +683,7 @@ def test_the_mcp_instructions_publish_the_declared_capability_view() -> None:
     instructions = server.instructions
 
     assert instructions is not None
-    assert instructions.startswith("MindBridge is local multimodal memory")
+    assert instructions.startswith("SenseMem is local multimodal memory")
     assert "Prefer compile_context for task-ready context" in instructions
     # The whole document, so a new capability cannot go unmentioned in the greeting.
     assert json.loads(instructions[instructions.index("{") :]) == CAPABILITIES.document()
@@ -691,11 +691,11 @@ def test_the_mcp_instructions_publish_the_declared_capability_view() -> None:
 
 def test_the_documented_root_import_inventory_contains_every_supported_name() -> None:
     """The reference must document every name added to the public root exports."""
-    page = (Path(mindbridge.__file__).parents[2] / "docs" / "api" / "python-sdk.md").read_text(
+    page = (Path(sensemem.__file__).parents[2] / "docs" / "api" / "python-sdk.md").read_text(
         encoding="utf-8"
     )
     backticked = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", page))
-    missing = [name for name in mindbridge.__all__ if name not in backticked]
+    missing = [name for name in sensemem.__all__ if name not in backticked]
     assert missing == []
 
 

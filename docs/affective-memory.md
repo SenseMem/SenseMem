@@ -1,6 +1,6 @@
 # Affective memory direction
 
-This page defines MindBridge's direction for affective context: what an affect record means, what
+This page defines SenseMem's direction for affective context: what an affect record means, what
 exists at this release, and the gates a richer capability must pass. It does not claim that every
 behavior below is implemented. [Memory types, time, and decay](memory-types-time-and-decay.md)
 owns the typed-record contract, [context compilation](context-compilation.md) owns the bundle,
@@ -8,7 +8,7 @@ owns the typed-record contract, [context compilation](context-compilation.md) ow
 current contracts.
 
 Scope: this is a direction document. The implemented status below refers to this checkout;
-research citations support the design discussion, not a benchmark claim for MindBridge.
+research citations support the design discussion, not a benchmark claim for SenseMem.
 
 ## Positioning
 
@@ -40,7 +40,7 @@ memory system that stores evidence with its perspective can be corrected.
 
 ## Four layers
 
-Affect is not one thing at one time scale. MindBridge separates four, and a change at one layer
+Affect is not one thing at one time scale. SenseMem separates four, and a change at one layer
 does not overwrite another.
 
 | Layer | What it is | Representation |
@@ -116,10 +116,10 @@ that the event produced the affect.
 
 ## Perspective mapping
 
-Affect research distinguishes who is making the claim. MindBridge maps two of the three
+Affect research distinguishes who is making the claim. SenseMem maps two of the three
 perspectives onto existing values and records the third as an open gap.
 
-| Perspective | MindBridge representation |
+| Perspective | SenseMem representation |
 | --- | --- |
 | Self-reported: the person says how they felt | `EvidenceBasis.USER_STATEMENT` |
 | Inferred: a model estimates from cues | `EvidenceBasis.MODEL_INFERENCE` |
@@ -242,7 +242,7 @@ below, with the user controls implemented rather than planned.
 
 ## Required measurements
 
-No MindBridge affect benchmark exists yet. Adding one is part of Phase 1, not a later concern:
+No SenseMem affect benchmark exists yet. Adding one is part of Phase 1, not a later concern:
 without it, every claim in this section is an opinion.
 
 | Axis | Metrics |
@@ -263,8 +263,8 @@ Ablations run in this order, so that each addition is credited only with what it
 6. Dynamics and trait promotion.
 
 Candidate datasets are MME-Emotion, SemEval-2024 Task 3 (emotion-cause pairs in conversation),
-VoiceLongMemEval (arXiv 2609.00570), and a consented MindBridge companion set. External results
-guide hypotheses; only reproducible MindBridge runs select defaults, as
+VoiceLongMemEval (arXiv 2609.00570), and a consented SenseMem companion set. External results
+guide hypotheses; only reproducible SenseMem runs select defaults, as
 [benchmarking](benchmarking.md) requires.
 
 Speech emotion confidence needs explicit calibration before it can gate anything: reported
@@ -320,7 +320,7 @@ kinds, an adapter cannot rely on supersession to clean up its own history. Two d
 as two records. Anything that needs a single current answer belongs in `STATE` or `TRAIT`, with the
 evidence requirements those kinds carry.
 
-## What MindBridge will not build
+## What SenseMem will not build
 
 There will be no second "emotional right brain" store beside SQLite, no storage of a label as a
 fact, and no graph database or background service to hold affect links. Affect uses the same

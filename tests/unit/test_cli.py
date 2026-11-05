@@ -27,20 +27,20 @@ from urllib.request import Request
 import pytest
 from pydantic import TypeAdapter
 
-import mindbridge
-import mindbridge.cli as cli_module
-from mindbridge import Memory, recipes
-from mindbridge.api import app as rest
-from mindbridge.api import content as rest_content
-from mindbridge.api.errors import ErrorEnvelope
-from mindbridge.cli import COMMANDS, EXIT_CODES, OPERATIONS, _parser, main
-from mindbridge.control import dump_operation, load_operation
-from mindbridge.exceptions import MindBridgeError, ValidationError
-from mindbridge.kernel.contracts import declared_capabilities
-from mindbridge.models.base import EmbedTask, ModelInput
-from mindbridge.models.funasr import DEFAULT_FUNASR_MODEL_ID
-from mindbridge.models.openai_sdk import DEFAULT_EMBEDDING_MODEL
-from mindbridge.types import (
+import sensemem
+import sensemem.cli as cli_module
+from sensemem import Memory, recipes
+from sensemem.api import app as rest
+from sensemem.api import content as rest_content
+from sensemem.api.errors import ErrorEnvelope
+from sensemem.cli import COMMANDS, EXIT_CODES, OPERATIONS, _parser, main
+from sensemem.control import dump_operation, load_operation
+from sensemem.exceptions import SenseMemError, ValidationError
+from sensemem.kernel.contracts import declared_capabilities
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.models.funasr import DEFAULT_FUNASR_MODEL_ID
+from sensemem.models.openai_sdk import DEFAULT_EMBEDDING_MODEL
+from sensemem.types import (
     AbstentionReason,
     AnswerResult,
     AssetRef,
@@ -69,9 +69,9 @@ WAV = base64.b64encode(b"RIFF____WAVE").decode("ascii")
 APP_SOURCE = '''
 """A minimal application composition, the way `--app` expects to find one."""
 
-from mindbridge import Memory
-from mindbridge.models.base import EmbedTask
-from mindbridge.types import Modality
+from sensemem import Memory
+from sensemem.models.base import EmbedTask
+from sensemem.types import Modality
 
 DATA_DIR = {data_dir!r}
 
@@ -181,7 +181,7 @@ def test_commands_are_the_sdk_operations_kebab_cased() -> None:
 
 def test_every_cli_gap_is_documented_with_its_reason() -> None:
     """A command left out has to be visible on the page, not only in this file."""
-    page = (Path(mindbridge.__file__).parents[2] / "docs" / "api" / "cli.md").read_text(
+    page = (Path(sensemem.__file__).parents[2] / "docs" / "api" / "cli.md").read_text(
         encoding="utf-8"
     )
 
@@ -211,13 +211,13 @@ def test_the_documented_commands_table_and_count_are_the_real_ones() -> None:
 
 
 def test_every_public_error_code_has_a_stable_exit_status() -> None:
-    def codes(root: type[MindBridgeError]) -> set[str]:
+    def codes(root: type[SenseMemError]) -> set[str]:
         found = {root.code}
         for subclass in root.__subclasses__():
             found |= codes(subclass)
         return found
 
-    assert codes(MindBridgeError) - {MindBridgeError.code} <= set(EXIT_CODES)
+    assert codes(SenseMemError) - {SenseMemError.code} <= set(EXIT_CODES)
     assert len(set(EXIT_CODES.values())) == len(EXIT_CODES)
 
 
@@ -265,7 +265,7 @@ def _record(**overrides: object) -> MemoryRecord:
 
 
 def test_memory_documents_equal_the_rest_response_models() -> None:
-    from mindbridge.cli import _ask, _memory_document
+    from sensemem.cli import _ask, _memory_document
 
     record = _record()
     assert _memory_document(record) == rest.MemoryResponse.model_validate(record).model_dump(
@@ -319,7 +319,7 @@ def test_memory_documents_equal_the_rest_response_models() -> None:
 
 def test_ask_forwards_link_identities_and_defaults_it_when_absent() -> None:
     """`--no-link-identities` must reach the SDK; a bare `Namespace` still defaults to True."""
-    from mindbridge.cli import _ask
+    from sensemem.cli import _ask
 
     seen: list[bool] = []
 
@@ -365,7 +365,7 @@ PART_CASES: tuple[list[dict[str, object]], ...] = (
 
 @pytest.mark.parametrize("parts", PART_CASES, ids=range(len(PART_CASES)))
 def test_parts_decode_exactly_as_rest_decodes_them(parts: list[dict[str, object]]) -> None:
-    from mindbridge.cli import _parts_input
+    from sensemem.cli import _parts_input
 
     assert _parts_input(parts) == rest_content.content_input(_REST_CONTENT.validate_python(parts))
 
@@ -391,7 +391,7 @@ def test_parts_decode_exactly_as_rest_decodes_them(parts: list[dict[str, object]
     ),
 )
 def test_invalid_parts_are_rejected_by_both_surfaces(parts: list[dict[str, object]]) -> None:
-    from mindbridge.cli import _parts_input
+    from sensemem.cli import _parts_input
 
     with pytest.raises(ValidationError):
         _parts_input(parts)
@@ -400,7 +400,7 @@ def test_invalid_parts_are_rejected_by_both_surfaces(parts: list[dict[str, objec
 
 
 def test_the_cli_only_path_part_reaches_memory_as_a_path(tmp_path: Path) -> None:
-    from mindbridge.cli import _parts_input
+    from sensemem.cli import _parts_input
 
     media = tmp_path / "panel.png"
     assert _parts_input([{"type": "input_file", "path": str(media)}]) == (media,)
@@ -562,7 +562,7 @@ def test_quiet_suppresses_only_the_banner(app: str, capsys: pytest.CaptureFixtur
 def test_ordered_atoms_and_stdin_reach_memory_in_order(
     app: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     captured: list[object] = []
 
@@ -716,7 +716,7 @@ def test_recipes_pin_identity_to_the_constants_in_the_source() -> None:
 def test_backend_flags_reach_the_memory_they_compose(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str, keyword: str
 ) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     sentinel = object()
     captured: dict[str, object] = {}
@@ -749,7 +749,7 @@ def test_the_vision_recipe_declares_a_visual_capability_memory_accepts(
 
 def test_every_recipe_slot_has_a_command_line_flag() -> None:
     """Expose a construction flag for every supported model slot."""
-    from mindbridge import cli
+    from sensemem import cli
 
     flags = {action.dest for action in cli._parser()._actions}
     assert set(cli._SLOTS) <= flags
@@ -924,7 +924,7 @@ def test_doctor_sees_a_directory_another_process_owns(
         _status, report, _ = _run(
             capsys, "--url", "http://127.0.0.1:0", "-q", "--explain", "doctor"
         )
-    from mindbridge.cli import _data_dir_state
+    from sensemem.cli import _data_dir_state
 
     assert _data_dir_state(store) == "free"
     assert cast(dict[str, object], report)["url"] == "http://127.0.0.1:0"
@@ -962,7 +962,7 @@ class _Response:
 
 @pytest.fixture
 def calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, str, object]]]:
-    from mindbridge import cli
+    from sensemem import cli
 
     seen: list[tuple[str, str, object]] = []
 
@@ -1223,7 +1223,7 @@ def test_two_sources_for_one_operand_are_refused_before_anything_runs(
 def test_a_remote_failure_envelope_is_forwarded_and_mapped(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     envelope = {
         "code": "model_error",
@@ -1260,7 +1260,7 @@ def test_a_remote_failure_envelope_is_forwarded_and_mapped(
 def test_an_unreachable_owner_is_a_retryable_storage_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     def fake(request: object, *, timeout: float) -> _Response:
         raise URLError("connection refused")
@@ -1281,7 +1281,7 @@ def test_a_remote_timeout_is_a_retryable_storage_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from mindbridge import cli
+    from sensemem import cli
 
     def fake(request: object, *, timeout: float) -> _Response:
         assert timeout == 0.25
@@ -1349,7 +1349,7 @@ def test_capture_settle_and_pending_captures_round_trip(
 
 def test_the_operation_document_carries_the_identity_claim_it_applied() -> None:
     """`operations` is the only audit surface for a rename, so it must show who was named."""
-    from mindbridge.cli import _operation_document
+    from sensemem.cli import _operation_document
 
     record = MemoryOperationRecord(
         operation_id=1,

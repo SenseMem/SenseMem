@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from mindbridge import (
+from sensemem import (
     AnswerPolicy,
     AnswerResult,
     AssetRef,
@@ -27,9 +27,9 @@ from mindbridge import (
     RetrievalMode,
     SearchHit,
 )
-from mindbridge.kernel.ingestion import Ingestion
-from mindbridge.models.base import SpeechAnalysis, SpeechTurn
-from mindbridge.models.sentence_transformers import SentenceTransformersEmbedder
+from sensemem.kernel.ingestion import Ingestion
+from sensemem.models.base import SpeechAnalysis, SpeechTurn
+from sensemem.models.sentence_transformers import SentenceTransformersEmbedder
 
 TEXT = frozenset({Modality.TEXT})
 ALL = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})

@@ -1,6 +1,6 @@
 # Operations
 
-Operate the process that owns `data_dir`, its model backends, and the local filesystem. MindBridge
+Operate the process that owns `data_dir`, its model backends, and the local filesystem. SenseMem
 has no database service, worker queue, or background owner to manage separately.
 
 ## Start and stop
@@ -11,7 +11,7 @@ before returning.
 
 Stop gracefully by calling `Memory.close()`. It rejects new operations, waits for active work,
 releases media leases, closes model and storage resources, and releases the directory lock. The
-`.mindbridge.lock` file remains; only its operating-system lock indicates ownership.
+`.sensemem.lock` file remains; only its operating-system lock indicates ownership.
 
 `close(timeout_seconds=30.0)` bounds the caller's complete wait, including backend cleanup and
 index flush. A timeout raises `StorageError(reason="timeout", stage="close")`. Cleanup continues
@@ -97,7 +97,7 @@ Hydrated-record reuse excludes scoped
 reads, media, and semantic contexts. Its retained UTF-8 content and metadata total at most 8 MiB
 per directory, plus object overhead; the smaller candidate cache retains IDs and occurrence times.
 
-These bounds cover MindBridge-owned submissions, workers, stores, and SQLite handles. The byte
+These bounds cover SenseMem-owned submissions, workers, stores, and SQLite handles. The byte
 budget charges UTF-8 text and media sizes before materialization and releases them on operation
 exit. Inputs whose own cumulative size exceeds 512 MiB raise `ValidationError`; contention for
 otherwise valid input raises retryable `capacity_exceeded`. This is not an RSS or GPU-memory
@@ -155,7 +155,7 @@ Use a stopped-owner snapshot:
 
 1. Stop the owner gracefully and verify that no process still holds the directory lock.
 2. Copy the complete directory, including SQLite side files if any remain.
-3. Store the snapshot with the MindBridge version and model/index configuration that created it.
+3. Store the snapshot with the SenseMem version and model/index configuration that created it.
 4. Restore the snapshot to a new temporary path.
 5. Open that copy with the recorded configuration and verify known text and media records.
 6. Restart the original owner.
@@ -164,7 +164,7 @@ Use a stopped-owner snapshot:
 requires index rebuild time and enough free space. Never omit media: SQLite stores descriptors and
 transcripts, not the original bytes.
 
-Do not treat a copied `.mindbridge.lock` file as evidence that a snapshot is busy. Do not copy only
+Do not treat a copied `.sensemem.lock` file as evidence that a snapshot is busy. Do not copy only
 `state.sqlite3` from a running owner; use a proper SQLite-aware snapshot mechanism if downtime is
 not acceptable.
 
@@ -188,7 +188,7 @@ replays the queue without embedding historical content again. An unsupported sch
 unrecognized model, vector-space, dimension, analysis-space, or index-recipe mismatch fails at
 open instead of mixing state.
 
-Restore with the MindBridge version and configuration that wrote the backup. The current runtime
+Restore with the SenseMem version and configuration that wrote the backup. The current runtime
 accepts only its own schema and model spaces. To use another schema or embedding recipe, read the
 source data with its original runtime and re-ingest it into a fresh directory.
 
@@ -222,7 +222,7 @@ and flushes the collection. Neither operation repairs missing media or converts 
 incompatible embedding space.
 
 Once a collection holds enough vectors for Zvec to build a graph, dense search is approximate and
-nothing in the index reports the neighbours it missed. MindBridge therefore searches at the
+nothing in the index reports the neighbours it missed. SenseMem therefore searches at the
 largest candidate list Zvec accepts. That is chosen per query rather than stored, so it is not
 part of the index recipe and changing it neither rebuilds nor invalidates a store. It costs
 roughly 6 ms of `search()` p50 on a 24,271-vector 2048-dimension store, and the index-only part
@@ -282,7 +282,7 @@ import zvec
 zvec.init(query_threads=4, optimize_threads=2, memory_limit_mb=2048)
 ```
 
-MindBridge does not call `zvec.init()`. Account for several focused dense routes plus one lexical
+SenseMem does not call `zvec.init()`. Account for several focused dense routes plus one lexical
 route, with at most four shared outer search workers per `Memory`. Keep `IndexQuantization.NONE` unless
 measured capacity and retrieval results justify a lossy mode. Changing only quantization rebuilds
 Zvec from stored vectors; `RABITQ` requires dimensions from 64 through 4095 and native support.
@@ -300,7 +300,7 @@ Zvec 0.8 INT8 uses `enable_rotate=False`: the rotated cosine path returned unrel
 in the upgrade evaluation. Grouped retrieval does not support native refinement, so enabling a
 refiner is not a repair for that path. Uniform UINT4/7/8 require L2, and unrotated INT4 reduced
 grouped recall without a demonstrated speed gain. These modes remain outside the public
-configuration. Embedded Jieba is available upstream, but MindBridge retains the stemmed/bigram
+configuration. Embedded Jieba is available upstream, but SenseMem retains the stemmed/bigram
 fields for multilingual and mixed-script recall.
 
 ## Capacity
@@ -333,11 +333,11 @@ additional embedding documents.
 
 ## Telemetry
 
-MindBridge depends on `opentelemetry-api`; without an SDK, spans are no-ops. Install the existing
+SenseMem depends on `opentelemetry-api`; without an SDK, spans are no-ops. Install the existing
 observability extra and configure a provider before constructing `Memory`, or inject a tracer:
 
 ```bash
-uv add "mindbridge[local,observability]"
+uv add "sensemem[local,observability]"
 ```
 
 ```python
@@ -345,7 +345,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
-from mindbridge import SentenceTransformersEmbedder, Memory
+from sensemem import SentenceTransformersEmbedder, Memory
 
 provider = TracerProvider()
 provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
@@ -364,137 +364,137 @@ with Memory(
 provider.shutdown()
 ```
 
-Every span sets `mindbridge.span.kind` to `operation`, `stage`, `model`, or `transport`.
+Every span sets `sensemem.span.kind` to `operation`, `stage`, `model`, or `transport`.
 
 | Level | Useful span names |
 | --- | --- |
-| Operation | `mindbridge.add`, `.add_many`, `.search`, `.ask`, `.delete`, `.reindex`, `.optimize` |
-| Stage | `mindbridge.content.prepare`, `.retrieve`, `.storage.*`, `.index.*`, `.retrieval.score_completion`, `.retrieval.rank`, `.identity.*` |
-| Model | `mindbridge.model.embedding`, `.transcription`, `.face`, `.generation`, `.formation`, `.vision` |
-| Transport | `mindbridge.http.request`, `mindbridge.mcp.request` |
+| Operation | `sensemem.add`, `.add_many`, `.search`, `.ask`, `.delete`, `.reindex`, `.optimize` |
+| Stage | `sensemem.content.prepare`, `.retrieve`, `.storage.*`, `.index.*`, `.retrieval.score_completion`, `.retrieval.rank`, `.identity.*` |
+| Model | `sensemem.model.embedding`, `.transcription`, `.face`, `.generation`, `.formation`, `.vision` |
+| Transport | `sensemem.http.request`, `sensemem.mcp.request` |
 
-Each `add_stream()` item creates an ordinary `mindbridge.add` span. `search(..., explain=True)` and
-speculative prefetch use `mindbridge.search`. `AsyncMemory` preserves tracing context across its
+Each `add_stream()` item creates an ordinary `sensemem.add` span. `search(..., explain=True)` and
+speculative prefetch use `sensemem.search`. `AsyncMemory` preserves tracing context across its
 worker thread. Both buffered `AsyncMemory.ask()` and `AsyncMemory.ask_stream()` record their
 initial executor queue delay.
 
-Inside `mindbridge.ask`, `mindbridge.retrieve` measures the complete prerequisite-to-ranked-hits
+Inside `sensemem.ask`, `sensemem.retrieve` measures the complete prerequisite-to-ranked-hits
 leg: question content preparation, reference-time and temporal parsing, scope normalization,
 required query speech work, query embedding, index lookup, and ranking. Its existing
-`mindbridge.content.prepare`, model, `mindbridge.index.search`, and `mindbridge.retrieval.rank`
+`sensemem.content.prepare`, model, `sensemem.index.search`, and `sensemem.retrieval.rank`
 children remain available for attribution.
 
-Hybrid searches emit `mindbridge.retrieval.score_completion` only when a parent admitted by the
+Hybrid searches emit `sensemem.retrieval.score_completion` only when a parent admitted by the
 lexical route was absent from the bounded ANN result. The stage covers reading that parent's
 persisted document vectors from SQLite and exact local cosine scoring; it makes no model request.
 
-`mindbridge.index.sync` retains one parent span and separates its durable stages without changing
+`sensemem.index.sync` retains one parent span and separates its durable stages without changing
 the SQLite-before-Zvec-before-ack order:
 
 | Child stage | Work measured |
 | --- | --- |
-| `mindbridge.index.sync.sqlite.read` | Read and hydrate the durable SQLite outbox batch. |
-| `mindbridge.index.sync.zvec.apply` | Delete or upsert the derived Zvec documents. |
-| `mindbridge.index.sync.zvec.flush` | Flush the applied Zvec changes; present only in the drain that reaches the flush bound, in `optimize()` and `reindex()`, and at `close()`. |
-| `mindbridge.index.sync.zvec.optimize` | Run the conditional Zvec optimization check after a flush. |
-| `mindbridge.index.sync.sqlite.ack` | Acknowledge the flushed outbox rows in SQLite. |
+| `sensemem.index.sync.sqlite.read` | Read and hydrate the durable SQLite outbox batch. |
+| `sensemem.index.sync.zvec.apply` | Delete or upsert the derived Zvec documents. |
+| `sensemem.index.sync.zvec.flush` | Flush the applied Zvec changes; present only in the drain that reaches the flush bound, in `optimize()` and `reindex()`, and at `close()`. |
+| `sensemem.index.sync.zvec.optimize` | Run the conditional Zvec optimization check after a flush. |
+| `sensemem.index.sync.sqlite.ack` | Acknowledge the flushed outbox rows in SQLite. |
 
 Capture acknowledgement, settle duration, and time to settled are three different numbers and
-are measured separately. `mindbridge.capture` and `mindbridge.settle` are distinct operation
+are measured separately. `sensemem.capture` and `sensemem.settle` are distinct operation
 spans, and the settle span carries the capture-to-settled interval its batch closed:
 
 | Attribute | Meaning |
 | --- | --- |
-| `mindbridge.capture.records_settled` | Records this call made searchable. |
-| `mindbridge.capture.records_failed` | Records that failed and kept their queue row. |
-| `mindbridge.capture.max_time_to_searchable_ms` | Longest capture-to-settled interval this call closed, over every row settled including `add()` recoveries. Absent when nothing settled. |
+| `sensemem.capture.records_settled` | Records this call made searchable. |
+| `sensemem.capture.records_failed` | Records that failed and kept their queue row. |
+| `sensemem.capture.max_time_to_searchable_ms` | Longest capture-to-settled interval this call closed, over every row settled including `add()` recoveries. Absent when nothing settled. |
 
 Model spans include request model, module, batch size, modalities, and
-`mindbridge.model.request_count`. Provider-reported usage is recorded without estimation:
+`sensemem.model.request_count`. Provider-reported usage is recorded without estimation:
 
-`mindbridge.model.request_count` counts logical adapter calls issued by MindBridge. Retries hidden
+`sensemem.model.request_count` counts logical adapter calls issued by SenseMem. Retries hidden
 inside a third-party SDK transport remain included in latency, but cannot be counted separately;
 token totals and completeness cover observable logical responses, not an earlier hidden attempt for
 which the provider returned no usage.
 
 | Attribute | Meaning |
 | --- | --- |
-| `mindbridge.token_usage.expected_request_count` | Requests expected to report token usage. |
-| `mindbridge.token_usage.reported_request_count` | Requests that supplied usage. |
-| `mindbridge.token_usage.complete` | Every expected request supplied a usable total. |
-| `mindbridge.token_usage.total_tokens` | Exact total when complete; otherwise only an exact reported lower bound. |
-| `mindbridge.token_usage.input_tokens.complete` | Every expected request supplied an input-token component. |
-| `mindbridge.token_usage.output_tokens.complete` | Every expected request supplied an output-token component. |
-| `mindbridge.token_usage.cached_input_tokens.complete` | Every expected request supplied a cached-input component. |
-| `mindbridge.token_usage.reasoning_output_tokens.complete` | Every expected request supplied a reasoning-output component. |
-| `mindbridge.token_usage.input_tokens.<modality>` | Exact input tokens for text, image, video, audio, or unattributed input. |
-| `mindbridge.token_usage.output_tokens.<modality>` | Exact output tokens for the same modality set. |
+| `sensemem.token_usage.expected_request_count` | Requests expected to report token usage. |
+| `sensemem.token_usage.reported_request_count` | Requests that supplied usage. |
+| `sensemem.token_usage.complete` | Every expected request supplied a usable total. |
+| `sensemem.token_usage.total_tokens` | Exact total when complete; otherwise only an exact reported lower bound. |
+| `sensemem.token_usage.input_tokens.complete` | Every expected request supplied an input-token component. |
+| `sensemem.token_usage.output_tokens.complete` | Every expected request supplied an output-token component. |
+| `sensemem.token_usage.cached_input_tokens.complete` | Every expected request supplied a cached-input component. |
+| `sensemem.token_usage.reasoning_output_tokens.complete` | Every expected request supplied a reasoning-output component. |
+| `sensemem.token_usage.input_tokens.<modality>` | Exact input tokens for text, image, video, audio, or unattributed input. |
+| `sensemem.token_usage.output_tokens.<modality>` | Exact output tokens for the same modality set. |
 | `gen_ai.usage.cache_read.input_tokens` | Provider-reported cached input tokens. |
 | `gen_ai.usage.reasoning.output_tokens` | Provider-reported reasoning output tokens. |
-| `mindbridge.token_usage.audio_seconds` | Provider- or runtime-reported processed audio duration. |
+| `sensemem.token_usage.audio_seconds` | Provider- or runtime-reported processed audio duration. |
 
 Operation spans roll up descendant model usage. Local backends report request counts and available
 audio duration but do not invent token counts. Cached-input and reasoning-output tokens participate
-in the same model-to-operation rollup. Embedding model spans set `mindbridge.embedding.task` to
+in the same model-to-operation rollup. Embedding model spans set `sensemem.embedding.task` to
 `retrieval.document` or `retrieval.query`, so ingest and retrieval inference can be separated.
 
 OpenAI-compatible model spans record `gen_ai.response.model` and
 `gen_ai.openai.response.system_fingerprint` only when the response supplies a non-empty value.
-Streaming inspects the final usage chunk too. `mindbridge.model.response_models` and
-`mindbridge.model.response_system_fingerprints` retain all distinct values when one span covers
+Streaming inspects the final usage chunk too. `sensemem.model.response_models` and
+`sensemem.model.response_system_fingerprints` retain all distinct values when one span covers
 several responses; the scalar field is `mixed` instead of silently assigning the whole span to the
 last response. These are response provenance, not a copy of the request or response body.
 
 Provider request IDs are recorded as `gen_ai.request.id` for a single request and collected in
-`mindbridge.model.request_ids` when one model span covers multiple requests. They are taken from
+`sensemem.model.request_ids` when one model span covers multiple requests. They are taken from
 the SDK response or provider error, including failure paths; an absent ID is left absent rather
-than invented. A local trace ID identifies the MindBridge operation, while the provider request
+than invented. A local trace ID identifies the SenseMem operation, while the provider request
 ID identifies the upstream call for support. Keep both in protected operator telemetry.
 
 The first-output clocks deliberately use different scopes and units:
 
 | Attribute | Unit | Boundary |
 | --- | --- | --- |
-| `mindbridge.operation.time_to_first_token_ms` | Milliseconds | Start of the complete `mindbridge.ask` operation through its first non-empty visible text yield, including retrieval and generation setup. Absent if no visible text is yielded. |
-| `mindbridge.model.time_to_first_token` | Seconds | Generation-model request through its first non-empty text delta. This preserves the generation-only model baseline and is absent when no model token is produced. |
+| `sensemem.operation.time_to_first_token_ms` | Milliseconds | Start of the complete `sensemem.ask` operation through its first non-empty visible text yield, including retrieval and generation setup. Absent if no visible text is yielded. |
+| `sensemem.model.time_to_first_token` | Seconds | Generation-model request through its first non-empty text delta. This preserves the generation-only model baseline and is absent when no model token is produced. |
 | `gen_ai.response.time_to_first_chunk` | Seconds | OpenAI-compatible streaming request through the first provider chunk, even when that chunk carries no visible text. |
-| `mindbridge.async.queue_time_ms` | Milliseconds | Initial buffered or streaming `AsyncMemory.ask*` executor queue delay. It is also included in the operation TTFT, while remaining available for decomposition. |
+| `sensemem.async.queue_time_ms` | Milliseconds | Initial buffered or streaming `AsyncMemory.ask*` executor queue delay. It is also included in the operation TTFT, while remaining available for decomposition. |
 
 Transport spans measure server-side delivery separately from model and operation timing:
 
 | Transport | Attributes and boundary |
 | --- | --- |
-| REST | `mindbridge.http.request` records the low-cardinality `http.route` template, `mindbridge.transport.response_mode`, `mindbridge.transport.server_time_to_headers_ms`, `mindbridge.transport.server_time_to_first_body_byte_ms` when a non-empty body is sent, and `mindbridge.transport.server_total_ms`. All three times are milliseconds from server request handling; they are not client-observed network latency. |
-| MCP | `mindbridge.mcp.request` records buffered `mindbridge.transport.server_total_ms` in milliseconds. MCP does not stream tool results, so it does not claim TTFT, first-chunk, or first-body timing. |
+| REST | `sensemem.http.request` records the low-cardinality `http.route` template, `sensemem.transport.response_mode`, `sensemem.transport.server_time_to_headers_ms`, `sensemem.transport.server_time_to_first_body_byte_ms` when a non-empty body is sent, and `sensemem.transport.server_total_ms`. All three times are milliseconds from server request handling; they are not client-observed network latency. |
+| MCP | `sensemem.mcp.request` records buffered `sensemem.transport.server_total_ms` in milliseconds. MCP does not stream tool results, so it does not claim TTFT, first-chunk, or first-body timing. |
 
 Providers may also record `gen_ai.response.finish_reasons` on generation model spans.
 
 Watch these degradation and recognition attributes:
 
-- `mindbridge.embedding.elided_parts` counts retrieval keys rejected because media exceeded the
+- `sensemem.embedding.elided_parts` counts retrieval keys rejected because media exceeded the
   embedding model's inline limit.
-- `mindbridge.embedding.video_sampled_inputs` counts video inputs embedded as four ordered stills
+- `sensemem.embedding.video_sampled_inputs` counts video inputs embedded as four ordered stills
   because the model's prompt exceeded its context.
-- `mindbridge.grounding.media_elided_hits` and `mindbridge.grounding.dropped_hits` count evidence
+- `sensemem.grounding.media_elided_hits` and `sensemem.grounding.dropped_hits` count evidence
   removed from OpenAI grounding requests.
-- `mindbridge.recall.shape`, `mindbridge.recall.ops`, `mindbridge.recall.exhaustive_rows`,
-  `mindbridge.recall.complete`, `mindbridge.recall.replan`, and `mindbridge.recall.fallback`
-  describe one `mindbridge.recall` stage, present only when `recall_planning` is on. Every
+- `sensemem.recall.shape`, `sensemem.recall.ops`, `sensemem.recall.exhaustive_rows`,
+  `sensemem.recall.complete`, `sensemem.recall.replan`, and `sensemem.recall.fallback`
+  describe one `sensemem.recall` stage, present only when `recall_planning` is on. Every
   planning failure resolves to the same fallback plan, so `fallback` is the only signal that the
   planner did not decide that question, and `complete` is what licenses a count over the set.
-- Experimental `recall_query_expansion` adds a `mindbridge.recall.ground` stage.
-  `mindbridge.recall.query_count`, `query_failures`, and `query_limited` are cumulative per ask;
-  use the final round rather than summing them. Other `mindbridge.recall.query_*` counts describe
+- Experimental `recall_query_expansion` adds a `sensemem.recall.ground` stage.
+  `sensemem.recall.query_count`, `query_failures`, and `query_limited` are cumulative per ask;
+  use the final round rather than summing them. Other `sensemem.recall.query_*` counts describe
   that round: `candidates` is the distinct returned query hits, `new_candidates` excludes the
   original ranked pool, `selected` counts novel hits offered after per-query row caps,
   `grounded` counts actual additions, `budget_dropped` counts selected hits rejected by character
   or media caps, and `omitted` counts all novel query hits left out. A zero `new_candidates`
   means no expansion beyond the original pool, not proof of corpus completeness. These counts
   precede provider-side media packing and cannot establish correct reader use.
-- `mindbridge.formation.refused_proposals` counts the proposals the kernel refused to ground,
+- `sensemem.formation.refused_proposals` counts the proposals the kernel refused to ground,
   totalled over the whole operation span and present only when formation ran; the model adapter's
-  `mindbridge.formation.dropped_proposals` counts the ones it could not read at all.
-- `mindbridge.identity.faces` and `mindbridge.identity.speakers` report observations, distinct
+  `sensemem.formation.dropped_proposals` counts the ones it could not read at all.
+- `sensemem.identity.faces` and `sensemem.identity.speakers` report observations, distinct
   identities, existing matches, creations, and cache status for each analyzed asset.
 
 Spans never record memory text, media bytes, paths, IDs, metadata, request or response bodies, or
@@ -515,7 +515,7 @@ Grounded fixtures require a single answer word, allowing case, punctuation, and 
 decoration. Negated, conflicting, or additional injected text fails. The report identifies this
 as an answering-only gate: the output-protocol option configures structural calls, but these
 answering fixtures do not establish that an endpoint accepts strict schemas. The companion
-`mindbridge-workflow-quality-v1` gate exercises those stages through the public SDK: relative-date
+`sensemem-workflow-quality-v1` gate exercises those stages through the public SDK: relative-date
 formation with and without a timestamp injection, exact collection counting with a non-fallback
 recall plan, a red-rectangle image carrying an injected instruction, preservation of a
 host-authorized policy during adversarial consolidation, and a Chinese grounded answer. A case
@@ -528,13 +528,13 @@ set `OPENAI_BASE_URL` to the SDK base URL ending in `/v1`, without `/chat/comple
 explicit model snapshot and the output protocol the endpoint supports:
 
 ```bash
-uv run --frozen python -m mindbridge.benchmarks.model_quality \
+uv run --frozen python -m sensemem.benchmarks.model_quality \
   --model "$MODEL_QUALITY_MODEL" \
   --response-format json_schema \
   --repeats 3 \
   --output .benchmarks/model-quality/report.json
 
-uv run --frozen python -m mindbridge.benchmarks.workflow_quality \
+uv run --frozen python -m sensemem.benchmarks.workflow_quality \
   --model "$MODEL_QUALITY_MODEL" \
   --response-format json_schema \
   --repeats 3 \
@@ -564,7 +564,7 @@ remain opt-in through `MODEL_QUALITY_ENABLED=true`. Both aggregate reports are r
 artifact even when answering fails. Review those reports and keep ordinary credential-free CI
 enabled; provider/protocol changes also require comparison with an equivalent baseline.
 
-The formation-time fixture `mindbridge-formation-time-v1` independently tests the snapshot
+The formation-time fixture `sensemem-formation-time-v1` independently tests the snapshot
 `gpt-5-mini-2025-08-07` with strict JSON Schema and a 4096-token output budget. Its synthetic
 source says “I moved to Paris yesterday” with observation time `2026-03-02T12:00:00Z`, no typed
 validity, and no history. The four cases cover observation time despite later creation, creation
@@ -573,7 +573,7 @@ Each runs three times. Dated cases must produce an event whose `valid_from` is M
 without a reference must omit temporal bounds. Every repeat must pass. Run it explicitly with:
 
 ```bash
-MINDBRIDGE_FORMATION_TIME_EVAL=1 uv run --frozen pytest -W error -rP \
+SENSEMEM_FORMATION_TIME_EVAL=1 uv run --frozen pytest -W error -rP \
   tests/integration/test_formation_time_quality.py
 ```
 
@@ -584,7 +584,7 @@ records; transport fixtures alone do not establish model quality.
 
 ## Changing the runtime or stored representations
 
-Before changing MindBridge, model revisions, vector dimensions, transcription or face recipes, or
+Before changing SenseMem, model revisions, vector dimensions, transcription or face recipes, or
 index settings:
 
 1. Create and restore-test a backup.
@@ -596,7 +596,7 @@ index settings:
 Never bypass identity and schema checks by editing `PRAGMA user_version`, `store_metadata`, or the
 outbox.
 
-**Only SQLite schema 20 is accepted.** Startup validates required tables, constraints, and
+**Only SQLite schema 21 is accepted.** Startup validates required tables, constraints, and
 predicate provenance before admitting the store. It never upgrades an older schema or re-embeds
 stored content. A nonempty store must contain all required identity and evidence-policy markers.
 The optional face backend can be enabled for the first time when no face analysis or face-space

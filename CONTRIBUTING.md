@@ -1,12 +1,12 @@
-# Contributing to MindBridge
+# Contributing to SenseMem
 
-Thanks for helping improve MindBridge. This guide covers local setup, quality gates, storage
+Thanks for helping improve SenseMem. This guide covers local setup, quality gates, storage
 invariants, and review expectations. Automated contributors must also follow
 [AGENTS.md](AGENTS.md).
 
 ## Setup
 
-MindBridge supports Python 3.11 through 3.14. The project uses
+SenseMem supports Python 3.11 through 3.14. The project uses
 [uv](https://docs.astral.sh/uv/) and the checked-in `uv.lock`.
 
 Local development accepts uv 0.12.5 or newer; there is no need to downgrade a newer installation.
@@ -14,8 +14,8 @@ CI pins uv 0.12.5 explicitly for reproducibility. Keep the CI version pins and t
 aligned when raising the minimum supported uv version.
 
 ```bash
-git clone https://github.com/EventHorizon-Lab/MindBridge.git
-cd MindBridge
+git clone https://github.com/SenseMem/SenseMem.git
+cd SenseMem
 uv sync --locked --default-index https://pypi.org/simple --all-groups --all-extras
 ```
 
@@ -149,7 +149,7 @@ adapters directly.
 
 ## Public contracts
 
-Public Python imports are re-exported from `mindbridge`. REST routes are under `/v1`, with
+Public Python imports are re-exported from `sensemem`. REST routes are under `/v1`, with
 one error envelope documented in [the REST reference](docs/api/rest.md). The MCP adapter exposes
 thirteen tools documented in [the MCP reference](docs/api/mcp.md). Update tests and docs in the
 same change whenever any surface changes.
@@ -202,7 +202,7 @@ Use a concise imperative commit subject such as `Add index recovery test`. A pul
 
 ## Reporting issues
 
-Open an issue with the MindBridge version, expected behavior, actual behavior, and the smallest
+Open an issue with the SenseMem version, expected behavior, actual behavior, and the smallest
 reproduction. Include the REST `trace_id` when available; it identifies a failing request without
 containing memory content.
 

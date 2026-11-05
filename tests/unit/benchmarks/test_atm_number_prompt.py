@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from mindbridge.benchmarks.eval_adapters import load_task
-from mindbridge.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks.eval_adapters import load_task
+from sensemem.benchmarks.task_catalog import TASKS
 
 
 @pytest.mark.parametrize(
