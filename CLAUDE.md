@@ -1,4 +1,4 @@
-# CLAUDE.md
+# Contributor instructions
 
 Follow [AGENTS.md](AGENTS.md). It contains the binding repository structure, storage invariants,
 public-contract rules, coding style, test requirements, and quality gates.

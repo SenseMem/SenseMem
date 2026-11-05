@@ -41,6 +41,7 @@ not handed.
 | Module | Plane | Owns |
 | --- | --- | --- |
 | `kernel/lifecycle.py` | `Lifecycle` | Operation leases, fork detection, close coordination, and the media leases an operation holds. |
+| `kernel/execution.py` | `Execution` | Bounded worker pools, asynchronous submissions, route concurrency, and pinned answer-stream workers. |
 | `kernel/materialization.py` | `Materializer` | Validating caller content and leasing its media before any model runs. |
 | `kernel/hydration.py` | `Hydrator` | Stored rows to public `MemoryRecord`, `SearchHit`, and `AssetRef` values. |
 | `kernel/recovery.py` | `Recovery` | Validating current store identities before writes, initializing unused face/transcription spaces, replacing derived indexes, and checkpointing recovery work before index creation. |
@@ -199,12 +200,15 @@ flowchart LR
     settle -. failure .-> queued["Count the attempt, store the reason, keep the row queued"]
 ```
 
-A captured record is durable and readable but has no vectors, so it enqueues no index work and
+A new capture is durable and readable but has no vectors, so it enqueues no index work and
 `search()` cannot return it. `settle()` and the `add()` path share one enrichment routine over the
 committed row, so a settled record holds exactly the derived content, vectors, and formation a
 blocking `add()` would have produced. Retrieval and shutdown never settle. A per-record claim
 lets a concurrent `settle()` or `add()` of the same captured content await its completed work,
 while disjoint records can proceed concurrently.
+
+Capturing an existing record leaves its content, vectors, and readiness unchanged and does not
+re-enqueue work.
 
 Enrichment appends. Derived text is added to `memory_records.content` behind a per-asset marker —
 `[transcript:<asset_id>]`, `[visual description:<asset_id>]`, `[facts:<asset_id>]`, or
@@ -350,68 +354,25 @@ merging, splitting, or erasing an identity re-enqueues the affected memories thr
 durable outbox, and a stale field can only cost recall: SQLite reapplies both predicates during
 hydration and decides.
 
-With `recall_planning` enabled, `ask()` adds a second retrieval semantics beside that ranking.
-The answerer is asked for a recall plan -- a question shape and bounded reads -- and the reads
-that are not `similar` are answered by predicate rather than by rank: substring matching over
-`content`, an event-time window, the records adjacent in corpus order, or the records one
-identity is in. A `match` or `window` step may bind its time span to an earlier step
-(`"time": "step:N"`): the span those rows cover, from their event times and the absolute dates
-their text states, so a booking confirmation found first can bound the photos read second even
-though the confirmation itself arrived weeks before the trip. They read SQLite only, hydrate through the same authoritative scoped read as
-every other hit, and are bounded by an explicit row count. Because that bound is applied while
-IDs are selected and bitemporal, spatial and metric scope is applied while they are hydrated,
-each read reports how many records it selected as well as the rows it returned: only the
-selection count can say whether the bound truncated anything. The evidence set is a union with ID
-dedup and no recomputed score -- exhaustive rows in time order, then the ranked window by rank --
-and the answer prompt states which reads produced it and whether the set is complete, because
-completeness is what licenses a count or a list. The ranked window is the one the unplanned path
-would have grounded, `limit` hits and their modality floor, and a plan can only add to it: the
-budget trims exhaustive rows beyond that window and never the window itself. With an explicit
-`evidence_budget_chars`, remaining budget after matched rows admits the original ranked tail even
-without a `similar` step. Without that setting, the plan's ranked depth remains unchanged.
-The window is guaranteed; optional tails can differ when additions consume the budget.
-Completeness stays a statement about the exhaustive reads alone, and
-the note says so, because a top-ranked record is not a record the predicate matched. Two bounds
-decide when a predicate's set is worth holding at all: a read whose predicate selected more than
-a fifth of the active corpus (or more than four times `limit` rows, whichever is larger)
-contributes nothing and says so, because completeness over most of a corpus carries no
-information about the question; and the rows a selective read did return stop at
-`recall_set_max_rows`, chronologically, with the remainder reported as not shown. Any missing
-capability, planner failure, or plan the kernel will not run falls back to the single ranked
-search, which is the default.
+Optional answer policies reuse this retrieval plane:
 
-For image-bearing `ask` inputs, retrieval preserves the first three image-only neighbors per
-query image within its scoped candidate pool. It reuses the query's bare-image vector and
-reconstructable image keys already stored in SQLite. Elided key layouts produce no association.
-`ModelInput.image_retrieval_matches` carries these temporary values through answering; the
-adapter labels only source assets present in the final media grounding. This does not change
-search ranking, write facts, infer an identity, or add model calls. Only image-bearing `ask`
-requests perform this additional document-vector read.
+| Policy | Additional work | Boundary |
+| --- | --- | --- |
+| Recall planning | The answerer proposes bounded similarity, text-match, time-window, adjacency, or identity reads. | SQLite enforces visibility and scope; selectivity, row, media, and character bounds determine which additions are delivered. Failed or unusable plans fall back to ranked search. |
+| Semantic query expansion | Execute bounded alternate text queries with one per-answer cache and query ceiling. | Preserve the caller's scope, reference time, original ranked window, and shared evidence budgets. Query-local scores are not fused. |
+| Evidence expansion | Follow exact query-media sources and existing capture, identity, place, lineage, or evidence links. | Add only scoped records within remaining budgets; linked records do not establish a complete answer set. |
 
-By default, `similar(query, k)` reuses the original ranking and ignores a rewritten query.
-`recall_query_expansion` is a separate, disabled experiment: a per-ask reader caches query
-rankings across replans and permits at most `recall_max_queries` additional searches (default 6), including a deeper read
-of the original question when `k` exceeds its initial ranked depth. Each search uses the shared
-retrieval plane with the original scope, memory type, reference clock and temporal intent.
-Alternate queries are text only. After normal grounding, each executed query may add at most
-`limit` novel rows within the existing character and media budgets. Query-local scores are
-never fused with the original ranking. This applies even when a plan contains only `similar`:
-new candidates must reach grounding to affect an answer. The supplemental note explicitly
-withholds completeness.
+The reader receives the executed-read and omission context needed to distinguish a bounded ranking
+from a complete predicate result. Replanning requires an eligible abstention and stays inside
+`recall_rounds`. A non-abstained answer ends the operation. The
+[configuration reference](configuration.md#local-memory-settings) defines the settings and packing
+order.
 
-With `evidence_expansion` enabled, the grounded window gains a third source beside the ranking
-and the recall program, and it is the one that costs no model call. After the window is grounded,
-`Answering` reads the records it is structurally linked to -- the capture an observation was
-committed under (`memory_semantics.source_id`), a recognized person (the same membership rule the
-identity scope uses), a symbolic `place_id`, a claim's `lineage_id`, or a `memory_evidence` edge in
-either direction -- each edge one read over a column the kernel already wrote, indexed for every
-edge but the capture, whose `memory_semantics.source_id` carries no index yet. Every edge is
-bounded on its own by the recall programs' selectivity rule, per edge rather than per read, so an
-edge that links to a fifth of the corpus is dropped whole and a selective edge beside it survives.
-The rows are admitted after the budget's ranked tail, so expansion can only spend what the ranking
-left unspent, their media rows stop at the same `2 * limit` cap `_budgeted_recall` puts on a plan's,
-and the read reports which edge produced each row so a run can say why the store could answer. `RelatedRead` carries that attribution; the trace carries it as
-`sensemem.expansion.edges`.
+For image-bearing answers, temporary `ModelInput.image_retrieval_matches` can retain up to three
+image-only neighbors per query image from the scoped candidate pool. These associations reuse
+stored image keys and query vectors. They introduce no model call, identity inference, stored
+fact, or change to public search ranking. Attachment labels include only source media delivered
+to the answerer.
 
 `search(..., explain=True)` exposes bounded ranking signals and terminal rejection reasons without
 copying memory content or metadata into the trace. `ask()` uses the same retrieval path, applies

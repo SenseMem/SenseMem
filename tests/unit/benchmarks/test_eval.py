@@ -255,6 +255,7 @@ def test_gallery_keeps_the_question_in_its_official_template_position(
 
 def test_catalog_covers_requested_benchmarks_and_groups() -> None:
     assert {task.benchmark for task in TASKS.values()} == {
+        "AMA-Bench",
         "ATM-Bench",
         "BEAM",
         "CL-Bench",
@@ -4286,6 +4287,7 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
 # and `personamem-v3` went a release reporting no breakdown at all. An empty
 # tuple means the family is expected to have no entry in the product table.
 _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
+    "ama-bench": ("domain", "task_type", "qa_type"),
     "icm-bench": ("category",),
     "locomo-refined": ("category",),
     "m3-bench": ("question_types",),

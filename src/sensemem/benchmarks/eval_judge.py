@@ -369,8 +369,12 @@ async def _judge_call(  # noqa: C901 - retry and provider fallback belong in one
             request["max_tokens"] = plan.max_tokens
     extra_body = dict(plan.extra_body or {})
     model_key = re.sub(r"[^a-z0-9]+", "", config.model.casefold())
-    if "qwen3" in model_key and not (
-        "enable_thinking" in extra_body and judge_model_is_official(sample.task, config.model)
+    if (
+        "qwen3" in model_key
+        and plan.parser != "ama_bench"
+        and not (
+            "enable_thinking" in extra_body and judge_model_is_official(sample.task, config.model)
+        )
     ):
         extra_body.setdefault("chat_template_kwargs", {"enable_thinking": False})
     if extra_body:

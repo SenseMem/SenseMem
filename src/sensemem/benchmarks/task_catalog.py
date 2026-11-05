@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+from sensemem.benchmarks.ama_bench import AMA_ADAPTER_VERSION, AMA_DATA_REVISION, AMA_DATA_SHA256
 from sensemem.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
 from sensemem.benchmarks.es_memeval import ES_MEMEVAL_ADAPTER_VERSION
 from sensemem.benchmarks.icm_bench import ICM_ADAPTER_VERSION, ICM_DATA_REVISION
@@ -153,6 +154,14 @@ def _task(
 TASKS: dict[str, TaskSpec] = {
     task.name: task
     for task in (
+        _task(
+            "ama-bench",
+            "AMA-Bench",
+            "ama-bench/test/open_end_qa_set.jsonl",
+            AMA_ADAPTER_VERSION,
+            ("AMA-bench/AMA-bench", AMA_DATA_REVISION),
+            digest=AMA_DATA_SHA256,
+        ),
         _task(
             "icm-bench",
             "ICM-Bench",

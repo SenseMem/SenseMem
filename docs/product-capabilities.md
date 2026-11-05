@@ -37,28 +37,18 @@ SDK or cross-device synchronization service is bundled. Representative uses incl
 - Edge or private deployments that want local authoritative state while choosing local and remote
   inference capabilities independently.
 
-The product principles connect that vision to current mechanisms and future evidence:
-
-| Principle | Current mechanisms | Validation target |
-| --- | --- | --- |
-| **Smarter** | Optional typed formation, consolidation and correction, shared retrieval, and budgeted context compilation | Better downstream task success, evidence accuracy, and context efficiency under the same model, inputs, and budget |
-| **Swifter** | Explicit backend protocols, model routers, optional extras, and application-owned source adapters | New models and capabilities compose with little or no kernel change; unused optional capabilities add no model work |
-| **Stronger** | Local authoritative state, selectable local or remote inference, and a public-SDK benchmark harness | Verified deployment across hardware classes and reproducible state-of-the-art results on a broad range of tasks |
-
-Hardware coverage and SOTA are targets, established per tested configuration. Current deployment
-requires compatible Python, dependencies, and model runtimes. The content contract supports four
-media families plus spatial metadata; arbitrary future modalities, such as native 3D scene content,
-require a new tested contract. Quality claims must report the task, model, input route, budget,
-runtime, hardware, and dataset identity together. See [design principles](design-principles.md).
+Deployment requires compatible Python, dependencies, and model runtimes. Modality coverage and
+quality depend on the configured backends; spatial metadata does not establish native 3D-scene
+support. See [design principles](design-principles.md) for the product's evaluation criteria.
 
 SenseMem adds the following product properties beyond a raw vector-search component:
 
 | Product choice | Implemented behavior | Why it matters |
 | --- | --- | --- |
 | Memory semantics | Semantic, episodic, and procedural roles; optional typed entity, event, state, relation, affect, trait, and response-policy records | Applications retrieve memories by cognitive role and can preserve how derived knowledge was formed. |
-| Native omni-modality | One ordered content contract for text, image, video, audio, and arbitrary mixed `omni` input | Every modality works alone or in combination, and source media is retained instead of becoming one text surrogate. |
+| Multimodal input | One ordered content contract for text, image, video, audio, and mixed `omni` observations | Configured backends handle supported single or combined inputs while source media remains available. |
 | User-owned input forms | Applications normalize custom capture objects, sensor events, and interaction formats at the boundary | Product-specific input can evolve without widening the memory kernel to unvalidated objects. |
-| Evidence before generation | Retrieval returns canonical records; answers return only the retrieved hits the answer backend actually used | The caller can inspect what supported an answer and handle abstention explicitly. |
+| Evidence before generation | Retrieval returns canonical records; answers report backend-declared evidence and abstention | The caller can inspect the delivered sources and assess whether they support an answer. |
 | Task-ready context | `compile()` selects evidence into typed sections within explicit item, character, and media budgets | An agent can build its own prompt from a structured bundle without requiring SenseMem to generate the answer. |
 | Embodied context | Event intervals, valid time, knowledge time, metric pose, symbolic place, speech, faces, and local identities | Recall can be constrained by when and where something was true or observed, and by who appeared. |
 | Durable local authority | SQLite and immutable media are authoritative; Zvec is a rebuildable search projection | Index loss or stale index IDs do not redefine the stored truth. |
@@ -68,7 +58,7 @@ SenseMem adds the following product properties beyond a raw vector-search compon
 
 ## Capability map
 
-| Area | What ships today | Requirement | Owning documentation |
+| Area | Supported behavior | Requirement | Owning documentation |
 | --- | --- | --- | --- |
 | Capture | `add`, transactional `add_many`, incremental `add_stream`, deferred `capture`/`settle`, and async capture reducers | An embedding backend is required; media handling depends on the selected route | [Core concepts](concepts.md#content-becomes-a-record) |
 | Formation | Optional source-grounded typed memories with lineage, evidence, validity, visibility, and supersession | A `FormationBackend`; disabled when omitted | [Memory formation](configuration.md#automatic-memory-formation) |
@@ -113,174 +103,48 @@ flowchart LR
     identity --> projection
 ```
 
-### 1. Capture and normalization
+### Capture and retrieval
 
-Python accepts text, a regular local `Path`, inline `Blob` bytes, an existing `AssetRef`, or an
-ordered sequence of those atoms. REST and MCP normalize their typed content parts into the same
-contract but never accept a server path or remote URL. A URL-shaped string is ordinary text;
-network fetching remains application policy.
+Use `add()` for a searchable result on return, `add_many()` for an atomic source batch, and
+`add_stream()` for completed observations with a durable prefix if a later item fails.
+`capture()` acknowledges a source before model work; the host later schedules `settle()`.
+Content-addressed IDs make repeated canonical input idempotent.
 
-`add` writes one observation. `add_many` prepares one model batch and commits one SQLite
-transaction. `add_stream` accepts caller-segmented completed observations and commits each item
-before requesting the next, so a later source failure preserves the committed prefix. Record IDs
-cover canonical ordered content, media digests, metadata, event time, memory type, and optional
-observation context; adding the same logical record again is idempotent.
+Native media, source-labelled captions, and transcripts share capability-based routing. Original
+media remains available as evidence. A configured former can propose typed assertions only after
+the source commits; those assertions retain validated evidence and lineage.
 
-Use `ObservationContext` when the producer knows evidence basis, source identity, confidence,
-world-time validity, metric pose, or symbolic `place_id`. Metadata remains uninterpreted
-application JSON and is never an isolation, authorization, or retrieval-filter boundary.
+Search combines the configured dense and lexical routes, then hydrates and filters candidates
+from SQLite. Role, occurrence time, bitemporal validity, person, symbolic place, and metric scope
+can restrict recall. Scores rank evidence within a request; relevance and ambiguity gates can
+return no hits. Optional reranking changes ordering without changing stored embeddings.
 
-### 2. Capability routing and multimodal preparation
+### Context, answers, and maintenance
 
-Every backend declares the atomic modalities it accepts. SenseMem builds aggregate and focused
-model inputs from the content actually present, then selects a supported route. Mixed content keeps
-its supported native media. Source-labelled captions or transcripts can supply text when a
-consumer lacks native support, consistently across writes, query embedding, answers and formation.
-A transcript establishes speech only; original images and videos remain attached to the record.
-`GenerationRouter` selects specialized models from the question and evidence together.
-`EmbeddingRouter` combines encoders only in one explicitly shared vector space, with optional
-joint-input checks. Selection requires no application-side dispatch.
+`compile()` delivers evidence in typed sections under explicit budgets, including source closure,
+conflicts, and unknowns. `ask()` additionally calls a generation backend and reports abstention and
+backend-declared evidence. The default text adapter reports the fitted grounding pool; structured
+answering can report a smaller support subset. Neither establishes factual support by citation alone.
 
-Unsupported content fails explicitly when no supported native or source-backed derived route exists. Omitting an
-optional backend makes its capability unavailable and adds no hidden model call. The precise
-content and fallback rules live in the [Python SDK content
-contract](api/python-sdk.md#content-contract).
+Optional formation and consolidation propose memory changes; the kernel validates and logs their
+accepted effects. Cognitive forgetting and rollback preserve inspection and recovery. Physical
+deletion and retention require host operations and have different recovery limits.
 
-### 3. Source storage and optional formation
+### Identity and continuous input
 
-The raw source commits before formation begins. When a `FormationBackend` is present and declares
-support for the source modalities, it may propose `entity`, `event`, `state`, `relation`, `affect`,
-or `trait` records. A `response_policy` is refused whatever proposes it: standing guidance about
-how to behave toward somebody is a grant only the host makes, through `apply()`, on the basis
-`response_feedback`. SenseMem validates the proposal's source binding, modality, confidence,
-validity interval, spatial frame, and kind-specific fields. The source record is never replaced.
+Configured speech and face backends produce local observations and identities. Naming adds a
+searchable assertion; corroborated voice/face links can be reversed. Consent statements, subject
+exports, biometric erasure, and retention are explicit host operations. Identity matching is
+model-dependent and does not provide authentication or access control.
 
-Accepted derived records carry their source memory in `evidence_ids`, the model and recipe identity,
-and a stable semantic lineage. Derived records, evidence rows, state versions, formation completion
-marker, embeddings, and index work commit together. Conflicting state proposals from one source are
-rejected. A proposal that cites its own derived record is also rejected as a whole; its remaining
-premises are not treated as independent support. Other valid proposals and the original observation
-still commit. Deleting source evidence retracts unsupported derived facts and replays the remaining
-lineage. Formation is opt-in because it adds inference cost and model-derived claims to the write path.
-
-### 4. Authoritative storage and search projection
-
-One `data_dir` contains:
-
-```text
-state.sqlite3       authoritative records, FP32 embeddings, identities, evidence, and outbox
-assets/             authoritative immutable media, addressed by SHA-256
-zvec/               disposable dense and lexical search projection
-.sensemem.lock      operating-system ownership lock target
-```
-
-A durable write commits SQLite before applying Zvec changes. Zvec work is acknowledged only after
-the index flush succeeds, and that flush is batched behind the writes it covers, which are
-searchable as soon as they are applied; startup, add, delete, search, `reindex`, and `optimize`
-drain pending work.
-A missing Zvec collection or a change to current index quantization can be rebuilt from stored
-embeddings without re-embedding content. A different embedding space or older index recipe
-requires re-ingestion into a fresh directory. Search always hydrates candidates from SQLite, so a stale index ID cannot resurrect a
-deleted record. See [write and retrieval consistency](architecture.md#write-consistency) for
-failure ordering and recovery behavior.
-
-### 5. Retrieval and evidence selection
-
-`search` embeds aggregate and focused query keys and combines dense and lexical candidate routes.
-It can filter by `MemoryType`, strict event-time overlap, world time (`valid_at`), knowledge time
-(`known_at`), metric radius in one coordinate frame, and symbolic `place_id`. SQLite reapplies the
-authoritative filters after candidate generation.
-
-Ranking combines semantic or lexical relevance with optional temporal proximity, observation
-confidence, reinforcement, and configured retention decay. The relevance floor controls evidence
-admission; an empty result is normal. With `limit=1`, an unresolved top-two ambiguity can also
-produce no result. `SearchHit.score` ranks hits within one request and is not a probability.
-Lexical route membership does not bypass this check: even complete query-term coverage may match
-conflicting records. Multiple-result requests retain alternatives; `ambiguity_margin=0` disables
-the singleton check.
-
-`search(..., explain=True)`, or `explain=true` on REST and MCP search, returns bounded candidate diagnostics
-and terminal rejection reasons. Traces intentionally exclude memory content and metadata; use the
-returned hits or `get` to inspect evidence.
-
-### 6. Grounded answers and reinforcement
-
-`ask` runs the same retrieval plane, applies the configured grounding policy, and passes canonical
-hits to a generation backend. The returned `AnswerResult` contains only the retrieved hits the
-backend reported, not every candidate and never a provider-fabricated record. A backend can abstain
-with `no_evidence` or `insufficient_evidence`; callers should treat abstention as a normal outcome.
-
-`reinforce` records explicit positive feedback for existing IDs. By default, a successful `ask`
-also reinforces its backend-declared hits. Abstention adds no reinforcement; reported hits do not
-prove factual support or user approval. Reinforcement changes access counts and access time,
-affecting later ranking without altering content or metadata. Recency decay is optional and demotes
-old records without using age alone as a reason to hide otherwise relevant evidence. Evaluation runs can disable automatic answer
-reinforcement for reproducibility.
-
-### 7. Speech, faces, and identity
-
-`perceive` returns separate speech and face collections from configured recognition plugins.
-Speech recognition analyzes stored audio and video into timed speaker segments. A speech-capable backend
-matches local voice exemplars to stable speaker IDs; speech indexing is enabled by default when
-that capability is configured. Face recognition analyzes stored images and video into normalized bounding
-boxes and local identity IDs. Results are cached under stable model-space recipes.
-
-When one asset contains exactly one eligible voice and one eligible face, SenseMem records
-co-occurrence evidence. A face/voice merge requires corroboration across distinct assets (two by
-default), preserves the merged-away ID as an alias, and can be reversed with `unlink_identity`.
-Reversing a merge restores the alias as an unnamed identity and repaints the indexed transcript
-projection in the same commit, so no stored text keeps attributing the words to the other person.
-Applications can attach a name and relationship with `register_identity` and
-resolve either current IDs or aliases with `identity`.
-
-Naming a person records an `ENTITY` assertion bound to that identity, and the recorded name and
-relationship are a projection of it. A name is therefore retrievable knowledge and not a label on
-a registry row: it needs no formation backend, it is visible at once because the host asserted it,
-it is listed by `operations()` and reversed by `rollback()`, and every recompute rewrites the
-indexed transcript text in the same commit. The visible consequence is that naming a person adds
-a searchable memory record, which appears in `list()` and `search()` results. See
-[typed assertions](memory-types-time-and-decay.md#naming-a-person-is-a-typed-assertion).
-
-The projection is recomputed by every path that can change what a bound assertion says,
-including deleting the assertion record like any other memory, so the registry and the indexed
-text never keep a name nothing asserts. Typed claims about a named person are bound to them:
-the kernel resolves the binding from the assertion's canonical subject, deterministically and
-never from a model's choice, so claims about one person converge on one subject even when a
-turn spells the name differently, and undoing a wrong merge re-attributes or unbinds the claims
-made while two people were one instead of leaving them on the wrong person.
-
-A recognized person with no visible naming assertion is *provisional*. `IdentityProfile` reports
-it as `confirmed=False` with the naming evidence in `evidence_ids`, and a compiled context bundle
-lists them in `actors` as a labelled `ProvisionalActor`, so an agent can say that somebody it does
-not recognize is present rather than omitting them. Naming stays host authority: the MCP adapter
-says so in the tool descriptions and can withhold the identity tools entirely with
-`build_mcp_server(memory, identity_operations=False)`, the perception tool with
-`embodied_operations=False`, and explicit add/delete/reinforce tools with `write_operations=False`. Recall can still persist
-caches, reinforcement, and query-failure signals as described in the MCP reference.
-
-`forget_identity` removes the person's biometric exemplars, aliases, naming assertions, and
-indexed name while retaining the surrounding memories, media, and transcript words. It is intentionally different from
-deleting an event. A later encounter can create a new unnamed identity because recognizing a
-forgotten person would require retaining the template that erasure destroys.
-
-### 8. Continuous interaction
-
-`AsyncOmniPrefetch` coalesces evolving query snapshots and confirms the final snapshot. The generic
-`AsyncCaptureStream` treats updates as speculative retrieval, a final event as the durable write,
-and cancellation or incomplete end-of-stream as discard. `AsyncAudioStream` reduces PCM, VAD, ASR
-partials, and acoustic boundaries; `AsyncVisionStream` reduces encoded frames, descriptions, and
-scene boundaries while retaining only the final scene's latest keyframe.
-
-Speculative snapshots are never persisted. A final observation commits through the ordinary
-`Memory.add` path, and retrieval failure after that commit is reported separately without losing the
-observation. Capture, segmentation, sensor control, and turn policy remain application concerns;
-the complete event contracts are in [omni streaming and interaction
-memory](omni-streaming-and-interaction-memory.md).
+Async capture helpers coalesce speculative snapshots and persist only finalized observations.
+Audio and vision reducers accept application-supplied packets and boundaries; device control and
+segmentation remain outside the runtime. See the [streaming guide](omni-streaming-and-interaction-memory.md)
+and [identity contract](api/python-sdk.md#cross-modal-identity-binding) for details.
 
 ## Python, REST, MCP, and CLI surfaces
 
-The table is a navigation map, not a signature reference. Follow the [Python
-SDK](api/python-sdk.md), [REST](api/rest.md), [MCP](api/mcp.md), and [CLI](api/cli.md) references for
+Follow the [Python SDK](api/python-sdk.md), [REST](api/rest.md), [MCP](api/mcp.md), and [CLI](api/cli.md) references for
 arguments, schemas, limits, and errors.
 
 | Capability | Python `Memory` | REST | MCP | `sensemem` CLI |
@@ -363,7 +227,7 @@ and lifecycle.
 
 Applications can compose those objects directly, group them in `MemoryPlugins`, or use
 `Memory.from_config` for the bundled provider catalog. Current bundled adapters cover
-Sentence Transformers embedding and text reranking, Qwen3-VL text/image/video reranking, OpenAI-compatible
+Sentence Transformers embedding and text reranking, local Qwen3-VL and remote vLLM reranking, OpenAI-compatible
 embedding/generation/transcription/formation/vision/consolidation, FunASR speech, and OpenCV face
 analysis. Exact extras, provider fields, model revisions, and license constraints are maintained in
 [configuration](configuration.md).
@@ -409,7 +273,3 @@ capability.
   foundation model, model trainer, GPU scheduler, or automatic edge/cloud router.
 - `AsyncMemory` is a thread-delegating facade over the same synchronous consistency core; it does
   not make synchronous provider SDKs natively asynchronous.
-
-These boundaries keep the product focused on the part it owns: turning heterogeneous observations
-into durable, retrievable, evidence-bearing memory with consistent semantics across agent and
-developer interfaces.

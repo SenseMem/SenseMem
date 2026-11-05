@@ -40,6 +40,13 @@ rights holders before downloading, using, or redistributing EvoEmo.
 
 ## MIT evaluator material
 
+- AMA-Bench, copyright 2026 AMA-Bench Team. `ama_scoring.py` adapts
+  `utils/evaluation_metrics.py`, `utils/extract_final_answer.py` and the single-question answer
+  extraction in `src/memory_interface.py` from
+  `AMA-Bench/AMA-Bench@ddfd319e0be33424288c13806f1eafc63e625b59`.
+  `ama_bench.py` retains the public leaderboard's published weights and aggregation behavior at
+  `AMA-bench/AMA-bench-Leaderboard@da059ea46daf673df766510c121a075e9e97ba01`.
+  SenseMem changes input validation, SDK transport, physical isolation and export serialization.
 - MEMLENS, copyright 2026 Xiyu Ren, Zhaowei Wang, and the MemLens Authors.
 - ATM-Bench, copyright 2026 Jingbiao Mei.
 - Mem-Gallery, copyright 2026 Yuanchen Bei.

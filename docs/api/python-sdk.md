@@ -8,7 +8,7 @@ Jump to [construction](#construction), [content](#content-contract),
 
 ## Surface
 
-The supported root-import SDK is re-exported from `sensemem`. `Memory` is the synchronous
+The public SDK is re-exported from `sensemem`. `Memory` is the synchronous
 execution boundary, and `AsyncMemory` is its async facade. REST, MCP, and the product CLI expose
 subsets of these operations through their own adapters.
 
@@ -83,96 +83,48 @@ Memory(
     data_dir: str | Path = ".sensemem",
     *,
     embedder: EmbeddingBackend,
-    reranker: RerankingBackend | None = None,
     answerer: GenerationBackend | None = None,
     transcriber: SpeechBackend | TranscriptionBackend | None = None,
     vision_describer: VisionDescriptionBackend | None = None,
     face_analyzer: FaceBackend | None = None,
     former: FormationBackend | None = None,
     consolidator: ConsolidationBackend | None = None,
+    reranker: RerankingBackend | None = None,
     config: MemoryConfig | None = None,
     tracer: opentelemetry.trace.Tracer | None = None,
 ) -> None
 ```
 
-`embedder` is required. With a speech-capable `SpeechBackend`, the default `index_speech=True`
-stores transcripts and resolved speaker names with new memories. Setting it to `False` disables
-that optional identity-indexing path; required transcript fallback can still run. Use `perceive()`
-for explicit recognition. `index_quantization` changes only the rebuildable vector
-index; supported values are `none`, `fp16`, `int8`, and `rabitq`. Zvec 0.8 INT8 uses unrotated
-cosine quantization. Older index recipes are rejected; use their original runtime to read source
-data and re-ingest into a fresh directory.
-`retrieval_mode` selects the
-instance candidate route: `hybrid` is the default, `dense` disables full-text candidates, and
-`lexical` disables query embedding and dense candidates and ranks by native normalized full-text
-relevance. An embedder remains required because ingestion still writes durable vector embeddings.
-The similarity, margin,
-relevance, and decay settings are validated when the instance opens. Their behavior and the
-supported provider configuration fields live in [configuration](../configuration.md).
+`embedder` is required. Optional slots enable only their declared capabilities:
 
-A plain `TranscriptionBackend` transcribes supported audio/video during `add` regardless of
-`index_speech`; `SpeechBackend` analysis and identity resolution stay behind the explicit flag.
+| Slot | Purpose | Details |
+| --- | --- | --- |
+| `reranker` | Reorder eligible candidates without changing stored embeddings or bounded hit scores. | [Semantic reranking](../configuration.md#semantic-reranking) |
+| `answerer` | Generate grounded answers and optionally stream them. | [Generation configuration](../configuration.md#provider-fields) |
+| `transcriber` | Transcribe audio/video; a `SpeechBackend` additionally provides speaker observations. | [Speech configuration](../configuration.md#local-speech-with-funasr) |
+| `vision_describer` | Add source-labelled text to visual observations and supply required caption fallbacks. | [Visual descriptions](../configuration.md#visual-descriptions) |
+| `face_analyzer` | Analyze stored images/video for face observations and local identities. | [Identity binding](#cross-modal-identity-binding) |
+| `former` | Propose typed records after a source commits. | [Formation](../configuration.md#automatic-memory-formation) |
+| `consolidator` | Propose changes over an explicit bounded evidence set. | [Memory management](#memory-management-operations) |
 
-`recall_planning` and `evidence_expansion` are opt-in answer policies; neither changes plain
-`search()` or `compile()`. Recall planning adds generation calls and bounded SQLite reads;
-evidence expansion follows stored links without another model call. Their budgets and retry-round
-rules are defined in [local memory settings](../configuration.md#local-memory-settings).
-`recall_query_expansion=True` additionally executes planner `similar.query` strings as bounded
-text searches, including point plans. `recall_max_queries` accepts 1 through 32, default 6,
-and bounds distinct additional queries across the entire operation. Repeated queries reuse their
-cached results. Expansion requires planning, preserves the original `limit`
-window and matched sets, and packs new evidence before the optional ranked tail. It remains
-experimental and disabled by default. It adds query embedding calls in dense/hybrid
-mode; lexical mode uses full-text search only. No HTTP endpoint or MCP tool schema changes.
+`MemoryConfig` holds retrieval, evidence, formation-history, identity, decay, and retention policy.
+See the [settings table](../configuration.md#local-memory-settings) for every field, default, and
+constraint. Configuration is validated before storage opens.
 
-`reranker` optionally reorders the complete eligible candidate pool before the requested
-limit. SQLite hydration, scope, type and time filtering, the relevance gate and the existing
-ambiguity decision precede it. The kernel automatically combines available text, images and videos
-according to the backend's declared capabilities. Captioned media retain their originals.
-The kernel supplies bounded exact source windows and preserves source IDs;
-the backend returns aligned finite raw scores. `SearchHit.score` remains the existing bounded
-score and need not decrease with rank. See [semantic reranking](../configuration.md#semantic-reranking)
-for the bundled adapter and trace behavior.
-`query_vision=True` uses an already-configured image-capable `vision_describer` to add temporary
-query-image/video description and OCR routes to `search`, `ask`, and `compile`. Native query media stay
-intact; descriptions are cached only inside the operation and create no durable memory, identity,
-or caption rows. A missing backend or a failed supplemental description leaves the original
-routes in place. Required caption or transcript fallback for a model that cannot accept original
-media runs automatically, independently of `query_vision`. The same source-backed conversion is
-used for query embedding, answer questions/evidence, and formation; unsupported content without a
-usable derivation raises `unsupported_modality`.
-If a required conversion fails, its original `ModelError` propagates. Optional description
-failures may be skipped, but the operation retains the error so a later stage requiring that same
-description reports it without another model attempt.
-`memory_budget_records` and the query-failure settings govern control-plane candidates.
-`retention` is inert until `apply_retention()` runs. `independent_evidence` selects an experimental
-store-pinned projection and requires a fresh directory when changing an existing store's policy.
+`retrieval_mode` defaults to `hybrid`; `dense` excludes lexical candidates and `lexical` skips
+query embedding. All modes still require document embeddings. `index_quantization` affects only
+the derived index. Representation compatibility is checked on open.
 
-`vision_describer` captions a visual memory so it has a full-text document at all; without one an
-image-only memory is reachable by the dense route alone. It is selected by the declarative `vision`
-slot, which stays off unless it is configured, or supplied directly through `MemoryPlugins`; see
-[configuration](../configuration.md#visual-descriptions). The bundled `OpenAIModels.describe`
-captions one batch per chat completion, sends a video as locally decoded stills rather than
-the file (`vision_video_frames=4`, configurable from 2 to 64), accepts only exactly one non-empty
-caption per input, and retries one malformed reply once. Transport retries use the SDK client's
-budget; the kernel adds no retry loop. If native media or a transcript supplies a usable
-representation, description failure permits storage without a caption. If caption conversion is
-required, the write raises the original error. Failed batches are counted on the vision span as
-`sensemem.vision.failed_batches`.
+`index_speech=True` enables optional speech-identity indexing when a `SpeechBackend` is configured.
+Disabling it does not prevent required transcript fallback. Source-backed caption/transcript
+conversion applies across ingestion, query preparation, generation, and formation. A failed
+required conversion preserves its original error; optional supplemental description can be skipped
+when another usable route exists.
 
-`former` proposes typed memories after a source observation commits; omitting it keeps ordinary
-add behavior and makes no formation model call. The bundled OpenAI former is selected by the
-declarative `formation` slot, which stays off unless it is configured; see
-[configuration](../configuration.md#automatic-memory-formation). `consolidator` proposes the
-control-plane operations `consolidate()` applies; the bundled OpenAI backend is selected by the
-declarative `consolidation` slot, which stays off unless it is configured, and omitting it leaves
-`consolidate()` unavailable and every other operation unchanged. See
-[configuration](../configuration.md#agentic-memory-management).
-
-`index_speech` is on by default and is a no-op unless `transcriber` is a `SpeechBackend`, whose
-analysis has already run by the time `add` reaches the index. Set it to `False` to keep transcripts
-and resolved speaker names out of optional speech-identity indexing and `add`-time identity
-matching. Required text fallback can still retain a transcript.
+`recall_planning`, `recall_query_expansion`, and `evidence_expansion` are opt-in answer policies;
+they do not change `search()` or `compile()`. `query_vision` separately adds transient query
+caption/OCR routes to retrieval. `independent_evidence` pins a support policy to the store.
+Retention is inert until the host calls `apply_retention()`.
 
 `ask()` grounds on the top of the ranking, except that a modality present in the retrieved hits
 and absent from the first `limit` of them contributes its best hit in the last slot, so one
@@ -287,7 +239,8 @@ than it. Metadata is a JSON-compatible mapping with non-empty string keys. `Memo
 
 The stable memory ID covers ordered canonical content, media digests, metadata, event start/end,
 memory type, and optional observation context. Repeating the same canonical input returns the same
-record without another model call.
+record without another model call once its configured ingestion work has completed. A pending
+capture or failed formation can still require model work on retry.
 
 `StreamInput` adds per-item values to a stream:
 
@@ -339,8 +292,8 @@ transaction; each optional per-item sequence must have the same length as `conte
 batch returns `()`. `add_stream` requests one item at a time and makes each yielded record durable
 and searchable before requesting the next. If a later item fails, earlier records remain and the
 error `subject` identifies `contents[N]`. With `capture=True`, `add_stream` commits each item
-through `capture` instead of `add`: every yielded record is durable and readable but has no
-vectors, and the host owes the matching `settle` before any of them is searchable.
+through `capture` instead of `add`: new records are durable and readable but have no vectors
+until settlement. Existing records retain their readiness.
 
 ```text
 capture(
@@ -366,9 +319,10 @@ pending_captures(
 ) -> tuple[PendingCapture, ...]
 ```
 
-`capture` returns after the SQLite commit and before any model call. It returns the same
-content-addressed record `add` returns for the same input, so capturing and then adding the same
-content is one memory. A captured record is durable and readable through `get` and `list`
+`capture` returns after the SQLite commit and before any model call. Capturing an existing
+searchable record preserves its ready state; it does not remove vectors or enqueue new work.
+It returns the same content-addressed record `add` returns for the same input, so capturing and
+then adding the same content is one memory. A new capture is durable and readable through `get` and `list`
 immediately, and invisible to `search`, `ask`, and `compile` until it is settled. It applies the
 same embedder-capability check `add` applies, so content `add` would reject raises here instead of
 becoming a durable record no `settle` could ever finish. Settling appends the text the models
@@ -471,11 +425,11 @@ ANN discovery exhaustive.
 When a quantized candidate's exact winner differs from the ANN-selected part, compiler excerpts
 follow the exact winner; equal-score ties retain the existing match when possible.
 
-`answer_policy` is the caller's, because abstaining is right for one caller and wrong for
-another. The default `"strict"` refuses when the retrieved evidence is thin: `answer` is a fixed
+`answer_policy` controls how the answerer handles insufficient evidence. The default `"strict"`
+abstains when the retrieved evidence is thin: `answer` is a fixed
 sentence, `abstained` is true, and `abstention_reason` says why. `"best_effort"` instructs the
 answerer to commit to the single most likely answer the evidence supports instead -- for a
-multiple-choice question, always one of the offered options -- and to flag the low confidence
+multiple-choice question, it is instructed to choose an offered option -- and to flag low confidence
 with a structured marker, which SenseMem reads and removes. The result then carries the same
 `abstained` and `abstention_reason` alongside a usable `answer`, so nothing about the confidence
 signal is lost. Choose it when an unanswerable question is not a case you need reported, such as
@@ -496,10 +450,10 @@ Historical bounded routes do not establish a cumulative complete answer set.
 `recall_rounds` (default 2) bounds answer attempts. Within the remaining rounds, a
 `"best_effort"` abstention can request another plan; expansion also allows this for a
 `"strict"` abstention. A non-abstained answer ends the operation; an empty or unusable plan
-falls back to ordinary retrieval without itself requesting a follow-up. A round another round may replace is
+falls back to ordinary retrieval without itself requesting a follow-up. A replaceable round is
 held rather than streamed, so the concatenated deltas are the answer the terminal
 `AnswerResult` carries. Structured output additionally buffers its draft until validation and
-rendering complete. See the [recall recipe](../grounded-multimodal-recall.md#bounded-recall-recipe).
+rendering complete. See the [recall settings](../configuration.md#local-memory-settings).
 
 `ask` may run face recognition on a retrieved photo or video to identify who appears in it before
 answering. With the default `link_identities=True`, a voice-and-face pair corroborated across
@@ -733,7 +687,7 @@ retrieval.
 
 #### Data-subject rights
 
-`export` answers the right of access. Name exactly one subject -- `identity_id` for a recognized
+`export` returns retained information for one selected subject. Name exactly one -- `identity_id` for a recognized
 person or `memory_ids` for records a caller already knows -- and it returns an `ExportBundle`
 holding every version of every record involved, including retired and cognitively forgotten ones,
 the identity registry row, and every operation-log row that moved any of it. Media travels as
@@ -743,11 +697,8 @@ the host's decision. It reads only, and an unknown identity raises `IdentityNotF
 **A record two people share is exported to both of them.** One recording containing two
 recognized people is held about each of them, so it appears in each subject's export -- with the
 other person's speech segments, face observations, and transcript attribution embedded in it.
-Trimming it would answer an access request with less than is held, and redacting the other person
-out of shared evidence is not something the kernel can do without rewriting the observation, which
-is the one thing it never does. A host that must hand an export to one subject alone therefore
-owes the second person's interest its own review; SenseMem tells the truth about what is stored
-and does not decide that question. Only shared records cross over: each subject's solo recordings,
+The kernel does not redact other people from original evidence. The host must review shared
+content before disclosing the export. Only shared records cross over: each subject's solo recordings,
 naming assertions, consent statements, and registry row stay theirs.
 
 `apply_retention` is deterministic physical forgetting under the declared
@@ -834,8 +785,8 @@ number of active trigger groups, earlier groups can still occupy every slot; thi
 scheduler with a bounded waiting-time guarantee. It needs no consolidation backend and holds no
 lock, but it is not free: a `QUERY_FAILURE` row costs one query embedding and one ranking pass to
 name the records nearest the failed query,
-so a host that polls this in a tight loop should say so with `memory_budget_records` and
-`query_failure_window_seconds` rather than with the poll interval.
+so polling can spend model work even when no consolidation is applied. Schedule it within the
+host's latency and inference budget.
 
 | `trigger` | Row means | `evidence_count` |
 | --- | --- | --- |
@@ -1025,7 +976,8 @@ confidence that stood during each earlier interval.
 `apply` applies one operation the host supplies, through the same kernel validation a proposal
 gets: the same eligibility checks, the same all-or-nothing rule for multiple targets, and the
 same in-transaction re-check that refuses a target which moved as `"stale"`. It needs no backend
-and calls none. The window is the operation's own cited evidence and named targets, because the
+and never calls the consolidation backend. Applying a derived record or changing an identity
+projection can still invoke the embedder. The window is the operation's own cited evidence and named targets, because the
 host names them and is the authority here as it is for `forget`; every other rejection applies,
 including `"duplicate"`. A refusal raises `ValidationError` whose `reason` is the kernel's own
 rejection reason, because one operation the caller chose has nowhere else to report it.
@@ -1146,8 +1098,9 @@ add_stream(
 ) -> AsyncIterator[MemoryRecord]
 ```
 
-The facade runs the synchronous embedded consistency core with `asyncio.to_thread`; it does not
-turn synchronous provider clients into native async clients.
+The facade submits the synchronous core to bounded worker pools and preserves tracing context.
+It does not turn synchronous provider clients into native async clients. Cancelling an awaiter
+does not stop work already running; capacity stays reserved until that work finishes.
 
 `AsyncOmniPrefetch` coalesces evolving query snapshots for one turn:
 
@@ -1228,8 +1181,9 @@ AsyncVisionStream.consume(
 observation, or `None`. Up to `max_streams` independent `stream_id` values may be active.
 `capture=True` commits each final through `capture` instead of `add`, so acknowledgement leaves
 the model path: automatic retrieval is skipped, and every `StreamCommit` reports
-`pending_settlement=True`, `prefetch=None`, and `retrieval_error=None`. The host then owes
-`settle` before those records are searchable. Use `AsyncOmniPrefetch` separately if speculative
+`pending_settlement=True`, `prefetch=None`, and `retrieval_error=None`. New records require
+`settle` before retrieval; capturing an existing record preserves its readiness. Inspect
+`pending_captures()` for actual outstanding work. Use `AsyncOmniPrefetch` separately if speculative
 retrieval is needed. The default stays the strong `add`. See
 [omni streaming and interaction memory](../omni-streaming-and-interaction-memory.md) for event
 semantics and complete examples.
@@ -1473,9 +1427,8 @@ router class. `EvidenceGeneration` preserves this selection when wrapped around 
 `EvidenceGeneration(backend, selector=None, enricher=None, media_max_items=2)` adds bounded media
 selection and source enrichment independently of the generator provider. `OpenAIModels` implements
 `MediaSelectionBackend` and optional `GenerationMediaBackend` admission;
-`GazetteerEnricher(OfflineGazetteer(...))` implements `SourceMetadataBackend`. This replaces the
-removed `generation_media_policy`, `generation_media_max_items` and `generation_gazetteer` adapter
-arguments. Existing declarative generation keys construct the composition automatically.
+`GazetteerEnricher(OfflineGazetteer(...))` implements `SourceMetadataBackend`. Declarative
+generation keys construct the same composition automatically.
 `ModelInput.source_metadata` and `evidence_sources` are request context and do not affect embedding
 key equality. They contain untrusted metadata and original evidence used for omission accounting.
 
@@ -1524,8 +1477,8 @@ against the source modality and spatial frame, assigns identity, links evidence,
 timestamps. Resolve relative dates against `occurred_at`, falling back to `created_at` when
 event time is absent. These are separate from `context.valid_from` / `valid_until`, which bound
 assertion validity. For example, “I moved to Paris yesterday” observed at
-`2026-03-02T12:00:00Z` supports a move on March 1 even when stored later. Custom callers may omit
-the new fields (all default to `None`); without a timestamp or dated evidence, a former must not
+`2026-03-02T12:00:00Z` supports a move on March 1 even when stored later. These timestamp fields
+default to `None`; without a timestamp or dated evidence, a former must not
 substitute its wall clock. Supplied timestamps must be timezone-aware, and `occurred_end` requires
 an earlier `occurred_at`. The SDK always fills `created_at` from the committed source.
 `FormationInput.history` is a tuple of text-only `MemoryRecord` values; `history_truncated`
@@ -1667,7 +1620,7 @@ VLLMReranker(
     api_key: str | None = None,
     timeout: float = 60.0,
     batch_size: int = 32,
-    modalities: Iterable[Modality] = (Modality.TEXT, Modality.IMAGE, Modality.VIDEO),
+    modalities: Iterable[Modality] = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
     media_candidates: int | None = None,
     media_weight: float = 0.5,
 )
@@ -1749,8 +1702,8 @@ encoder must expose an immutable `_commit_hash` in its model configuration or re
 The transcriber uses an immutable FunASR main revision; its transcription space includes that
 revision and the complete recipe. `ncpu` bounds process-wide PyTorch and BLAS threads;
 `vad_device` and `speaker_device` optionally place those submodels separately from ASR.
-Execution placement does not change the transcription space. Stores created with the previous
-runtime require a fresh directory and replay. See [local speech configuration](../configuration.md#local-speech-with-funasr).
+Execution placement does not change the transcription space. An incompatible transcription space
+requires a fresh directory and replay. See [local speech configuration](../configuration.md#local-speech-with-funasr).
 
 For `google/embeddinggemma-2`, the generic loader uses FP32 and supports `128`, `256`, `512`, or
 `768` dimensions without requiring optional Matryoshka metadata. Query and document prompts come
@@ -1758,11 +1711,11 @@ from the loaded checkpoint. See the [EmbeddingGemma 2 configuration](../configur
 for a complete example and input limits.
 
 `VLLMReranker` uses the `openai` extra's HTTP transport for a hosted `<base_url>/rerank`
-endpoint. It restores input-order finite scores, owns its client and waits for active calls on
+endpoint. It restores input-order finite scores, owns its client (including an injected one), and waits for active calls on
 close. Server deployment owns revision pinning and media/context limits. Optional
 `media_candidates` and `media_weight` enable bounded text/media probability-logit fusion;
 request and usage totals include both passes. See the
-[remote reranking profile](../atm-max-thinking.md#remote-reranking).
+[reranking configuration](../configuration.md#semantic-reranking).
 
 `Qwen3VLReranker` uses the optional `reranking` extra's vLLM pooling runner to rank each
 query/document pair's text, original images and original videos with Qwen3-VL-Reranker, following the
@@ -1874,8 +1827,8 @@ the visual-description recipe and cache identity. It does not change the four-fr
 `generation_answer_style="concise"` asks for only the answer's requested entities, relations,
 values or list items, matching the question's output format and omitting explanations, citations
 and introductory phrases. Time expressions are still resolved internally; dates and durations
-are stated only when requested. In the default text format, `"default"` preserves the existing
-reader prompt byte for byte. Both styles preserve strict and best-effort abstention semantics. Declarative
+are stated only when requested. In the default text format, `"default"` uses the standard
+grounded-reader prompt. Both styles preserve strict and best-effort abstention semantics. Declarative
 configuration exposes this as `generation.answer_style`; it affects answering only and requires
 task-specific quality evaluation before relying on it.
 
@@ -1932,6 +1885,9 @@ recipe identity changes to account for this new input; embedding identity is unc
 
 ### Offline gazetteer
 
+This construction example assumes an open, caller-owned OpenAI client named `client`. Keep it
+open for the owning `Memory` lifetime and close it afterward.
+
 ```python
 from sensemem import (
     EvidenceGeneration,
@@ -1949,7 +1905,10 @@ gazetteer = OfflineGazetteer(
     budget_chars=16000,
 )
 answerer = EvidenceGeneration(
-    OpenAIModels(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})),
+    OpenAIModels(
+        generation_client=client,
+        generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
+    ),
     enricher=GazetteerEnricher(gazetteer),
 )
 ```
@@ -2011,6 +1970,8 @@ The added map context has a separate whole-candidate character budget; the exist
 byte bound remains in force. Enabling this resource changes the available external knowledge,
 requires task-specific quality evaluation and must be declared in comparisons.
 
+### OpenAI request behavior
+
 The default `generation_response_format="json_schema"` sends strict schemas for structural model
 operations: formation, consolidation, visual descriptions, media diagnosis, and recall planning.
 Explicit `"json_object"` supports compatible endpoints that implement only JSON mode. Both retain local
@@ -2071,6 +2032,8 @@ remain unchanged. The image pixel setting above also allows large source images 
 conversion. Grounded answer text is capped at 4 MiB. Answer fitting reserves media capacity for
 the question, keeps highest-ranked evidence that fits, and leaves overflow evidence as text when
 possible. Use a provider-specific upload adapter when the original media must be supplied whole.
+
+### Named recipes
 
 Named recipes are available through the supported `sensemem.recipes` submodule, not as a root
 re-export:

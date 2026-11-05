@@ -25,7 +25,7 @@ git diff --check
      run the full suite unless explicitly requested. Remove commands you did not run. -->
 
 - [ ] Quality gates pass
-- [ ] New behavior has a regression test that was verified to fail without the change
+- [ ] New behavior has a regression test, or the change is documentation only
 - [ ] Local-store tests use distinct temporary `data_dir` paths
 - [ ] Retrieval or index changes include relevant recall and performance evidence
 - [ ] Markdown lint and link checks pass, if documentation changed

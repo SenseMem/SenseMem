@@ -99,8 +99,13 @@ lychee --no-progress --root-dir "$PWD" \
 
 The Markdown configuration excludes the ignored installability and wheel-test environments, so
 local checks do not lint third-party packages installed there. It does not exclude source
-documentation. For changed headings, also check local fragments with
-`lychee --offline --include-fragments` using the same paths.
+documentation. After changing headings, also validate local fragments:
+
+```bash
+lychee --offline --include-fragments --no-progress --root-dir "$PWD" \
+  --exclude-path 'docs/research/' \
+  './*.md' './docs/**/*.md' './.github/**/*.md'
+```
 
 ## Test standards
 
@@ -193,20 +198,10 @@ Public guides must stand alone without links into that directory and use the pub
 checkout. A documentation review should compare signatures, defaults, exports, transport switches,
 and example configurations against their implementations, not only check Markdown.
 
-Remove superseded implementation specifications once the owning guides and regression tests cover
-their shipped behavior. Keep agent checklists, review transcripts, build output, and logs out of
-versioned documentation; retain reproducible research evidence and its limitations locally.
-Store temporary implementation plans and review notes under the ignored `.superpowers/` directory.
-The former `docs/superpowers/` location is ignored to prevent completed work plans from returning
-to the documentation tree.
-
-Repository cleanup may remove generated `build/`, `dist/`, Python bytecode, tool caches, and
-validation logs. Check for running jobs before deleting their outputs. Hash-named cache entries
-are disposable; hashes used for asset identity, idempotency, integrity checks, or reproducibility
-are part of the current contract. Keep source snapshots, benchmark results, model revision pins,
-dataset checksums, and research manifests used to reproduce archived measurements. Files inside
-a live SQLite or Zvec data directory, including RocksDB `.log` files, are storage data rather
-than disposable logs.
+Keep implementation plans and review notes in the ignored `.superpowers/` directory. Public
+pages should describe supported behavior and reproducible usage, with detailed contracts in one
+owning guide. Preserve model revisions, dataset checksums, source snapshots, and manifests needed
+to reproduce measurements; private research artifacts remain local-only.
 
 ## Pull requests
 

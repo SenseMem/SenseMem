@@ -8,8 +8,7 @@ assignees: ''
 
 ## The problem
 
-<!-- What you are trying to do and where SenseMem gets in the way. Describe the problem rather
-than a solution — the best fix is often not the one that first comes to mind. -->
+<!-- Describe the application scenario, required behavior, and where SenseMem gets in the way. -->
 
 ## What you do today
 

@@ -1,5 +1,7 @@
 # Copy to an ignored local directory and replace all service URLs and input paths.
 # Supply generation and judge credentials through the documented environment variables.
+# Requires a local ATM SGM corpus; this profile does not generate fused descriptions.
+# Run with sensemem-bench eval --config <local-copy.yaml> after starting compatible services.
 embedding:
   provider: openai
   base_url: http://127.0.0.1:8000/v1

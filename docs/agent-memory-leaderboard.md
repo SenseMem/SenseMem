@@ -127,8 +127,7 @@ underlying SDK's input and backend capability limits still apply and can reject 
 inputs; there is no adapter text truncation.
 
 Invalid payloads return 422, invalid credentials return 401, and model/storage failures use
-the [shared HTTP error mapping](api/rest.md#errors-and-limits). The health endpoint reports process
-readiness.
+the [shared HTTP error mapping](api/rest.md#errors-and-limits). The health endpoint reports adapter readiness; it is not an end-to-end retrieval or model probe.
 
 ## Isolation and data lifecycle
 

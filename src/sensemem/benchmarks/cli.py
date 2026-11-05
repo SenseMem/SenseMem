@@ -12,6 +12,10 @@ INTERRUPT_EXIT_CODE = 130
 PROGRAM = "sensemem-bench"
 
 RUNNERS: dict[str, tuple[str, str]] = {
+    "ama-bench": (
+        "sensemem.benchmarks.ama_bench",
+        "Export complete AMA-Bench results for its official leaderboard",
+    ),
     "control-plane": (
         "sensemem.benchmarks.control_plane",
         "Measure the slow loop's consolidation quality",

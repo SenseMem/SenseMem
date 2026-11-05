@@ -1,14 +1,15 @@
 # SenseMem documentation
 
-SenseMem is a **unified Context & Memory layer for agents, across devices, modalities, and models**.
+SenseMem is a **unified context and memory layer for agents, across devices, modalities, and models**.
 It connects incoming context, evolving memory, task-specific recall, and context construction.
 Smarter / Swifter / Stronger guide its [product goals](design-principles.md#smarter--swifter--stronger).
 
-Use the shortest path that matches your task. Start with tutorials for a working loop, references
-for exact contracts, and operational guides for deployment. Direction pages describe future goals separately from supported behavior.
+Start with the quick start for a working example, use the references for exact contracts, and
+follow the operational guides for deployment and recovery.
 
-The guides and API references describe this checkout's `0.3.0` package and Python 3.11–3.14
-contract. The release is tracked under [Unreleased](../CHANGELOG.md#unreleased).
+These guides describe SenseMem `0.3.0` on Python 3.11–3.14. See the
+[changelog](../CHANGELOG.md#unreleased) for release changes. Direction pages identify design goals
+separately from supported behavior.
 
 ## Choose a path
 
@@ -67,26 +68,17 @@ contract. The release is tracked under [Unreleased](../CHANGELOG.md#unreleased).
 ## Understand the direction
 
 - [Context OS direction](context-os.md) — the long-term product boundary, fast and slow context
-  planes, agentic memory management, context compilation, and the evolution gates the current
-  release is working through.
+  planes, memory management, and context compilation.
 - [Product goals and design principles](design-principles.md) — the unified Context & Memory
   positioning and Smarter / Swifter / Stronger criteria. States direction, not implemented status.
 - [Plugin architecture](plugin-architecture.md) — the kernel/plugin boundary and the admission rule
   a new public capability must satisfy.
-- [Affective memory direction](affective-memory.md) — how affect is stored as sourced, timed
-  hypothesis rather than fact, what exists today, and the gates a richer capability must pass.
+- [Affective memory](affective-memory.md) — sourced affect cues, trait visibility, response-policy
+  authority, and the limits of model inference.
 
 ## Evaluate
 
 - [Benchmarking](benchmarking.md) — behavior evaluation, local-index measurement, and SDK load tests.
-- [ATM maximum-thinking profile](atm-max-thinking.md) — concise evidence review and remote
-  text/media reranking with a reusable concurrency-16 configuration.
-- [Fused ATM-Bench retrieval](atm-fused-retrieval.md) — caller-supplied descriptions and raw
-  media, native visual reranking, and a portable evaluation recipe.
-- [Grounded multimodal recall](grounded-multimodal-recall.md) — bounded semantic routes,
-  transient query vision, optional concise answers, and native-media transport.
-- [Offline semantic support audit](semantic-support-audit.md) — atomic-claim review, evidence
-  localization, withdrawal residue and verification costs before changing formation admission.
 - [Model quality gate](operations.md#model-quality-gate) — synthetic real-model regression cases,
   explicit snapshots, safe artifacts, and optional scheduled evaluation.
 - [Example catalog](examples/README.md) — prerequisites and intended use for every committed YAML
@@ -94,12 +86,3 @@ contract. The release is tracked under [Unreleased](../CHANGELOG.md#unreleased).
 
 For repository setup and quality gates, see [CONTRIBUTING.md](../CONTRIBUTING.md). When a fact
 changes, update its owning page and link to it elsewhere instead of copying it.
-
-## Maintain these documents
-
-Verify Python contracts against `src/sensemem/__init__.py`, `memory.py`, `types.py`, and
-`exceptions.py`; configuration against `configuration.py` and `plugins.py`; transport contracts
-against `api/` and `cli.py`; evaluation behavior against `benchmarks/`. Tests are executable
-contracts. Update the owning reference when behavior changes.
-
-Keep this entry focused on product guides, API references, and operational instructions.

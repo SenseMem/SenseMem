@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Literal, Protocol, cast
 
+from sensemem.benchmarks._official import ama_scoring
 from sensemem.benchmarks._official import personamem_v3_scoring as pm3
 from sensemem.benchmarks._official.atm_score import (
     deterministic_accuracy as atm_deterministic_accuracy,
@@ -120,6 +121,7 @@ class JudgePlan:
         "openeqa",
         "es_memeval",
         "worldmemarena",
+        "ama_bench",
     ]
     calls: tuple[tuple[JudgeMessage, ...], ...]
     max_tokens: int | None = None
@@ -129,6 +131,7 @@ class JudgePlan:
 
 
 _PROTOCOLS = {
+    "ama-bench": ama_scoring.SCORER_VERSION,
     "icm-bench": "icm_semantic_equivalence_10f02babe3c7_user_only_v2",
     "locomo-refined": "locomo_refined_judge_887091190789",
     "m3-bench": "m3_agent_judge_0e3e41939bd8_system_v1",
@@ -150,6 +153,7 @@ _PROTOCOLS = {
 }
 
 _OFFICIAL_JUDGE_MODELS = {
+    "ama-bench": "qwen3-32b",
     "icm-bench": "gemini-3-flash-preview",
     "locomo-refined": "qwen3-14b",
     "m3-bench": "gpt-4o-2024-11-20",
@@ -177,6 +181,7 @@ _OFFICIAL_JUDGE_MODELS = {
 # upstream number. The families that publish no deterministic metric beyond their judge output
 # are still listed, so an empty entry means "judge metrics only" rather than "not yet audited".
 _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
+    "ama-bench": frozenset({"accuracy", "llm_judge_score", "exact_match", "token_f1"}),
     "icm-bench": frozenset({"accuracy"}),
     # `evaluate.py` keeps the F1 and BLEU-1 of the accepted reference beside its judge label.
     "locomo-refined": frozenset({"llm_judge", "token_f1", "bleu_1"}),
@@ -253,6 +258,7 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
 _OFFICIAL_METRIC_PREFIXES: dict[str, tuple[str, ...]] = {"personamem-v3": ("pr_",)}
 
 _JUDGE_METRICS = {
+    "ama-bench": frozenset({"accuracy", "llm_judge_score"}),
     "icm-bench": frozenset({"accuracy"}),
     "locomo-refined": frozenset({"llm_judge"}),
     "m3-bench": frozenset({"accuracy"}),
@@ -338,6 +344,7 @@ def task_primary_metric(task: str) -> str:
     if family is None:
         return "accuracy"
     return {
+        "ama-bench": "accuracy",
         "icm-bench": "accuracy",
         "locomo-refined": "llm_judge",
         "m3-bench": "accuracy",
@@ -492,6 +499,12 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
         )
         score = float(parsed_choice == expected_choice)
         return {metric: score}
+    if family == "ama-bench":
+        normalized = ama_scoring.extract_answer(prediction)
+        return {
+            "exact_match": ama_scoring.exact_match(normalized, references[0]),
+            "token_f1": ama_scoring.f1_score(normalized, references[0]),
+        }
     if family == "videozerobench":
         return local_metrics(cast(int, metadata["level"]), references[0], prediction, metadata)
     if family == "longmemeval-v2":
@@ -659,6 +672,29 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             candidate_metrics=candidate_metrics,
         )
     reference = references[0]
+    if family == "ama-bench":
+        normalized = ama_scoring.extract_answer(prediction)
+        return JudgePlan(
+            protocol,
+            "ama_bench",
+            (
+                (
+                    JudgeMessage(
+                        "user",
+                        ama_scoring.judge_prompt(
+                            question,
+                            reference,
+                            normalized,
+                            task=str(metadata["task_description"]),
+                            task_type=str(metadata["task_type"]),
+                            episode_id=str(metadata["episode_id"]),
+                        ),
+                    ),
+                ),
+            ),
+            max_tokens=2048,
+            details={"prediction": normalized, "reference": reference},
+        )
     if family == "icm-bench":
         prompt = SEMANTIC_EQUIVALENCE_PROMPT.format(
             question=question,
@@ -853,6 +889,11 @@ def parse_judge_response(  # noqa: C901 - mirrors seven incompatible upstream pa
     plan: JudgePlan, response: str
 ) -> dict[str, float]:
     """Parse one response exactly as the pinned upstream evaluator does."""
+    if plan.parser == "ama_bench":
+        score = ama_scoring.parse_judgement(
+            response, plan.details["prediction"], plan.details["reference"]
+        )
+        return {"llm_judge_score": score, "accuracy": float(score == 1.0)}
     if plan.parser == "locomo":
         payload = _json_object(response)
         label = str(payload.get("label", "")).strip().upper()

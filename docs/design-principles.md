@@ -1,393 +1,128 @@
 # Product goals and design principles
 
-SenseMem's product direction is a **unified Context & Memory layer for agents, across devices,
-modalities, and models**. Context can come from chatbots, coding agents, smart glasses, phones,
-robots, or other intelligent products. These are applications of one architecture rather than
-separate product definitions.
+SenseMem connects incoming context, durable memory, task-specific recall, and context construction
+through one embedded runtime. Applications supply goals, actions, and source integrations; SenseMem
+maintains memory semantics, evidence, retrieval, and local consistency.
 
-SenseMem organizes information from digital interactions and the physical world into evolving
-memory, then provides useful context for the current task. The host owns goals, actions, and device
-integration; SenseMem owns memory semantics, evidence, retrieval, and context construction.
-
-> This page defines product direction and the criteria for future design decisions. It is not a
-> claim that every target is implemented in the current release. See
-> [product capabilities](product-capabilities.md) for what ships today,
-> [architecture](architecture.md) for its invariants, and
-> [plugin architecture](plugin-architecture.md) for today's extension boundary. The API and configuration references define the supported release contract.
-
-## What the direction means
-
-**Context** is information an agent needs for its current task. **Memory** is information retained
-and organized across time. The lifecycle connects them:
-
-**Receive context → form and maintain memory → recall for a task → build useful context.**
-
-Current interactions and temporary observations belong in this picture even when they should not
-become durable memory. The application decides what to submit for persistence; SenseMem also
-accepts transient queries and speculative recall snapshots. Broader working-context scheduling is
-part of the [Context OS direction](context-os.md), not an implicit background service today.
-
-| Dimension | Commitment |
-| --- | --- |
-| Across devices and applications | Normalize different sources at application-owned boundaries and preserve the same memory semantics across supported deployments. |
-| Across modalities | Preserve original evidence and meaningful time, identity, and spatial relationships; every supported modality works alone or in a supported ordered combination. |
-| Across models | Compose replaceable inference capabilities through explicit contracts while the kernel preserves memory identity, provenance, and durable consistency. |
-
-Native 3D scenes and other future modalities are extension goals. Today's text, image, video, and
-audio content contract and spatial metadata do not establish support for every future input.
+This page explains the design criteria. [Product capabilities](product-capabilities.md) describes
+supported behavior, [architecture](architecture.md) describes its implementation, and
+[Context OS direction](context-os.md) describes the broader lifecycle goals.
 
 ## Smarter / Swifter / Stronger
 
-These three principles are the top-level product decision criteria:
-
-| Principle | Commitment | Evidence |
+| Principle | Goal | How to assess it |
 | --- | --- | --- |
-| **Smarter** | Improve memory formation, enrichment, revision, organization, and recall to give agents useful context. | Compare downstream task success, evidence accuracy, contradiction handling, and context efficiency with the same models, inputs, and budgets. |
-| **Swifter** | Let users freely combine capabilities, choose models, and extend implementations through plugins. | Measure integration effort and kernel changes needed for a new source, model, or capability; verify optional components can be enabled independently. |
-| **Stronger** | Deploy across hardware classes and pursue state-of-the-art results across a broad range of benchmarks. | Publish tested deployment configurations and reproducible quality, latency, and resource results per task and modality. |
-
-Swifter emphasizes ease of composition and adaptation. End-to-end speed and resource efficiency
-remain engineering requirements, measured alongside quality on each deployment. Concise APIs,
-structured agent interfaces, and explicit configuration support all three principles.
-
-"Everything is a plugin" means replaceable capabilities around a consistent kernel. Models,
-perception, and proposal generation can vary; evidence authority, memory identity, validation, and
-durable writes stay with the kernel. Today plugins are explicit typed objects, and memory policies
-remain kernel-owned; arbitrary policy replacement is not a shipped hook.
-
-Smarter uses formation and consolidation to propose evidence-linked changes. The kernel validates
-them and records the accepted operations; the host decides when maintenance runs.
-
-Stronger sets an ambition for broad hardware coverage and benchmark quality. Each supported
-configuration still needs verification, and each SOTA claim needs a named task and reproducible
-comparison. Fixed-model comparisons should distinguish SenseMem's contribution from the model's.
-
-## Design goals
-
-### Readable behavior and predictable contracts
-
-The [Transformers tenets](https://huggingface.co/spaces/transformers-community/Transformers-tenets)
-inform how we keep implementations understandable. Model-specific request construction, prompts
-and response semantics stay beside their adapter; memory evidence policy stays in its kernel
-owner. Generic resource ownership may be shared independently of either. We do not introduce a
-base-class hierarchy or duplicate durable writes to satisfy a slogan about file count.
-
-Strategic local repetition is acceptable when it makes buffered, streamed or provider-specific
-behavior easier to read. Share pure infrastructure and authoritative persistence; do not hide
-business decisions behind generic dispatch or merge operations solely to reduce method count.
-
-The common constructor accepts backends and one `MemoryConfig`, following the ecosystem's
-configuration-object convention, exemplified by Transformers'
-[GenerationConfig](https://huggingface.co/docs/transformers/main_classes/text_generation#transformers.GenerationConfig).
-Capability documents expose executable native combinations, and perception results preserve
-execution coverage even when detections are empty. Contract tests enforce the same Python and
-transport values. This follows consistent interfaces without pretending all backends accept
-every combination in the union of their modalities.
-
-SenseMem retains the repository's current policy allowing breaking API changes and removal of
-obsolete interfaces. Adopting these design tenets does not silently adopt Transformers' separate
-backwards-compatibility promise.
-
-### One memory surface for every supported modality
-
-Applications should use the same memory operations regardless of which modalities are present.
-Users control the input composition and ordering; SenseMem chooses a route from the actual atomic
-modalities and the configured backend capabilities.
-
-| Available input | Intended route |
-| --- | --- |
-| Text only | Text embedding, retrieval, and generation |
-| Image with text | Native image-text route |
-| Video, with optional text | Native video-text route |
-| Audio, with optional text | Native audio-text route, or explicit transcription fallback when required |
-| Multiple media families | Omni route that retains every supported evidence type |
-
-The product-direction default is an omni-capable embedding and generation composition when the
-deployment can run it. Omni-first does not mean always invoking the largest model: a text-only
-request should remain on the text path, and absent modalities must not add work. Unsupported media
-must never be discarded silently.
-
-Input form belongs to the user: capture formats, sensor records, interaction events, and application
-objects may be defined freely outside SenseMem. They normalize into canonical content at an
-adapter boundary so the core API remains small, typed, and validatable instead of accepting
-unvalidated `Any` values.
-
-### End-to-end memory and search speed
-
-Performance is the elapsed time experienced by the agent, not an isolated model or database
-microbenchmark. The complete path includes any configured ASR, embedding, face or emotion
-recognition, media preparation, durable writes, index visibility, retrieval, and grounded
-generation.
-
-Each relevant deployment should report at least:
-
-- Ingestion latency from accepted input to durable, searchable memory, plus sustained throughput.
-- Search latency at p50, p95, and p99, query throughput, and retrieval quality at the same settings.
-- ASR real-time factor and inference latency for configured perception capabilities.
-- End-to-end answer latency and time to first token when the selected generation backend streams.
-- CPU, GPU or NPU utilization, memory, storage growth, and edge-device power where applicable.
-
-An optimization counts only when it improves a measured bottleneck without weakening retrieval
-quality, durability, or modality coverage. Concurrency, batching, quantization, caching, and native
-runtimes are tools to apply after the end-to-end trace identifies the limiting stage.
-
-### Portable deployment, stable semantics
-
-SenseMem targets device classes rather than one vendor or accelerator. Representative targets
-include RK3588-class systems, NVIDIA Jetson Orin, Intel/OpenVINO devices, Apple silicon Macs,
-RTX 4090/5090 workstations, and L20-class servers.
-
-Platform-specific runtimes, compiled artifacts, batch sizes, precision, and calibration thresholds
-may vary. Content semantics, memory identity, embedding-space compatibility, failure behavior, and
-durability rules may not. A platform adapter should remain thin and exist only after that platform
-has a measured requirement.
-
-Runtime selection may be explicit or automatic. Explicit user configuration always wins. An
-automatic selector must be deterministic from declared capabilities and observed device facts,
-must expose the selected model/runtime and reason, and must fail clearly rather than silently
-changing modality coverage or quality. Hardware-sensitive batch, concurrency, and calibration
-controls remain overrideable.
-
-### State-of-the-art quality across modality routes
-
-SenseMem aims for state-of-the-art memory quality in text, image-text, video-text, audio-text, and
-omni settings. This is a research and engineering target, not an unqualified release claim. A strong
-text score cannot stand in for multimodal quality, and a model demo cannot stand in for memory-system
-quality.
-
-A quality claim must identify the dataset and revision, official split and evaluator, input route,
-model and runtime revisions, retrieval settings, hardware, and measured latency and resource cost.
-Results must come through the public product path and be replayable. Benchmark-specific shortcuts
-that do not improve a real agent scenario are out of scope. See [benchmarking](benchmarking.md) for
-the current harness and reporting rules.
-
-### Developer- and agent-friendly interfaces
-
-A developer should reach the first durable add/search loop in minutes. An agent should be able to
-choose and call a SenseMem operation from its schema without interpreting prose or scraping
-terminal output. Both consumers use the same memory semantics.
-
-The [Mem0 open-source documentation](https://docs.mem0.ai/open-source/overview) is a developer
-experience reference: it demonstrates a short add/search path, consistent memory verbs,
-progressive component configuration, and dedicated agent integrations. SenseMem should match that
-time-to-first-success while retaining its own boundaries. In particular, it does not copy hidden
-provider construction, logical `user_id` scoping, or metadata-based isolation; model clients remain
-explicit and one physical `data_dir` remains one memory domain.
-
-The SDK, MCP, product CLI, and REST API share one execution plane: the application-composed
-`Memory` instance and its domain operations. The SDK exposes that plane directly. Other surfaces may
-normalize transport input and serialize output, but they must not implement their own modality
-routing, retrieval, persistence, provider selection, defaults, or error policy. See
-[architecture](architecture.md#public-and-trust-boundaries).
-
-For developers:
-
-- The common path is one explicit `Memory`, followed by `add`, `search`, and optionally `ask`;
-  continuous sources use `add_stream`. The [command line](api/cli.md) is the same path without an
-  editor: one composition flag, one command.
-- The common path is a small vocabulary — `add`, `add_stream`, `search`, `ask`, `get`, `list`, and
-  `delete` — and a caller who needs nothing else should never have to learn anything else. That is
-  a property of the *default* path, not the size of the surface: the full inventory is larger and
-  lives in [the Python SDK reference](api/python-sdk.md#memory-operations). Growth beyond the common
-  path is justified per operation, not by convenience. `perceive` reads stored media, invokes configured recognizers, and persists identity evidence.
-  It returns distinct typed speech and face observations through one entry point. Batching
-  (`add_many`), identity naming, explicit
-  feedback (`reinforce`), and index maintenance (`reindex`, `optimize`) are each their own verb for
-  the same reason. So are the three operations that split acknowledgement from enrichment
-  (`capture`, `settle`, `pending_captures`) and the four that manage stored memory rather than add
-  to it (`consolidate`, `forget`, `rollback`, `operations`): each changes when work happens or what
-  authority applies it, not just the shape of a result. `compile` is the one that pays for itself
-  on the common path, because an agent assembling its own prompt otherwise re-derives structure and
-  budget from a flat hit list. An operation that only reshapes an existing result is not one of
-  them.
-- The SDK is the canonical capability inventory. MCP and the product CLI expose the same product
-  operations unless a transport limitation is documented explicitly; a gap is implementation work,
-  not permission to create different behavior.
-- Python, REST, MCP, CLI, and future adapters preserve the same IDs, field meanings, pagination,
-  idempotency, defaults, and error semantics for every operation they share.
-- Inputs and outputs are typed, defaults are safe, advanced configuration is progressively
-  disclosed, and examples run against the current public API.
-- A caller does not need to understand SQLite, the media store, the outbox, or Zvec to remember and
-  retrieve content.
-
-For agents:
-
-- The schema is the contract: MCP exposes typed tool schemas, REST exposes OpenAPI, and the product
-  CLI emits one stable machine-readable JSON document per invocation.
-- Tool names and descriptions are self-contained and state when to call an operation, its side
-  effects, result limits, and whether retrying it is safe.
-- Results and failures are structured. An agent never has to parse a human log line to recover an
-  ID, cursor, error code, or grounding source.
-- Outputs are bounded and pageable. Stable IDs, opaque cursors, deterministic ordering, and
-  idempotent writes make retries and multi-step plans predictable.
-- The product CLI is non-interactive and composable: data goes to stdout, diagnostics go to stderr,
-  exit codes are stable, and stdin can carry generated input without shell quoting tricks.
-- MCP and the product CLI derive their operations from the SDK. Transport-specific encoding may
-  differ, but capability, side effects, defaults, and results remain aligned. Today the CLI reaches
-  every SDK operation except `ask_stream`, and MCP reaches a documented subset; see
-  [current release and direction](#current-release-and-direction).
-- The CLI surface is two console scripts, not one command tree: `sensemem` for product
-  operations and `sensemem-bench` for benchmarks. Product commands dispatch to `Memory`;
-  benchmark commands exercise the public SDK and never define an alternate product path. The split
-  is required, not stylistic: the packaging guard scans string constants, so a single dispatcher
-  could not name the benchmark package even to import it lazily, and product modules must not
-  import benchmark modules.
-- Published documentation should provide stable deep links, downloadable schemas, and an
-  agent-readable index such as `llms.txt` when a documentation site exists.
-
-Agent integrations may add optional lifecycle hooks or skills that retrieve context before a turn
-and store outcomes afterward. Such automation must make writes observable, preserve the distinction
-between user statements and agent-generated conclusions, and remain outside the core memory
-semantics. `AsyncOmniPrefetch` implements the narrow Python-side speculative-recall lifecycle;
-capture, turn detection, derived-memory extraction, and agent prompting remain application work.
-MCP and the `sensemem` CLI are the implemented transport-facing agent surfaces.
-
-### Developer-friendly extensibility
-
-Applications should be able to replace inference implementations and add optional perception or
-reasoning capabilities without forking memory semantics. Examples include text, visual, or speech
-emotion recognition and face recognition. These are optional derived capabilities, not new core
-modalities and not requirements imposed on every deployment.
-
-An extension is successful when omitting it leaves the normal API unchanged, configuring it is
-explicit, and its cost and failure behavior are visible. A rich extension ecosystem should come
-from a few stable capability contracts rather than a large framework of task-specific hooks.
-
-## Design principles
-
-### Route by capability, not by provider name
-
-Every backend declares the atomic modalities and operation it actually supports. Routing uses those
-declarations, never a model-name heuristic. The same provider may implement several narrow
-operations, and different providers may be composed for embedding, generation, transcription, or
-future analysis.
-
-Fallbacks must preserve information. For example, when audio is transcribed for a text-only
-operation, supported image or video evidence stays on its native route. If no valid route remains,
-SenseMem fails before inference.
-
-### Keep memory semantics independent of inference runtimes
-
-Models and runtimes will change faster than stored memory. Stable operation contracts isolate that
-change while durable model and embedding-space identities prevent incompatible representations from
-being mixed.
-
-Fun-ASR-Nano illustrates the desired runtime range: the upstream ecosystem documents
-[PyTorch and vLLM paths](https://github.com/modelscope/FunASR/blob/main/docs/vllm_guide.md) and a
-[llama.cpp/GGUF edge runtime](https://github.com/modelscope/FunASR/tree/main/runtime/llama.cpp).
-The current `FunASRTranscriber` uses `funasr.AutoModel` only. Supporting another runtime requires a
-separate, tested adapter behind the same speech contract; upstream availability alone is not a
-SenseMem support claim.
-
-### Prefer explicit configuration and observable automation
-
-Applications own provider clients, credentials, and deployment policy. SenseMem accepts explicit
-backend objects and validates their capabilities and durable identities. Future automatic selection
-is a policy over the same explicit candidates, not a hidden provider registry.
-
-Selected models, revisions, runtimes, precision, and route-affecting settings belong in benchmark
-artifacts and operational telemetry. Automatic fallback must not make two equivalent requests
-irreproducible or silently migrate an embedding space.
-
-### Reuse the ecosystem before writing infrastructure
-
-Blind novelty and duplicate infrastructure are maintenance failures. For a general capability, use
-this order:
-
-1. The provider's official SDK or runtime.
-2. A portable, maintained ecosystem such as Hugging Face or Sentence Transformers.
-3. A target platform's native acceleration stack.
-4. An already-installed mature dependency or the Python standard library.
-5. The smallest local adapter only when the preceding choices leave a demonstrated gap.
-
-This is why OpenAI-compatible calls use the official OpenAI SDK, local embedding uses Sentence
-Transformers, FunASR execution stays behind the upstream runtime, and benchmark datasets use
-`huggingface_hub` where the dataset is published there. SenseMem should innovate in memory
-semantics, routing, retrieval, and consistency, not in another HTTP client, downloader, codec, model
-loader, or generic queue.
-
-Reuse is not automatic approval. A dependency must still fit the supported Python and hardware
-matrix, license and security requirements, performance envelope, and maintenance boundary.
-
-### Add extensions as narrow, optional capabilities
-
-The extension surface is the set of explicit backend protocols listed in
-[architecture](architecture.md#model-boundary); that page owns the inventory and this one
-does not repeat it. Applications can pass those objects directly to `Memory`; `Memory.from_config`
-provides a typed convenience layer for the bundled implementations and delegates to the same
-constructor. Explicit objects remain the third-party plugin mechanism; there is no global runtime
-plugin registry.
-
-`StreamingGenerationBackend` is the shape a narrow capability should take. It adds one method, stays
-optional, is selected by a structural check rather than a provider name, and leaves the
-`GenerationBackend` contract unchanged for backends that do not implement it.
-
-Face analysis demonstrates the admission rule: its public contract arrived with a concrete local
-OpenCV implementation and end-to-end identity use case. A future public capability such as emotion
-analysis must likewise declare accepted modalities, typed output, provenance, configuration,
-resource lifecycle, concurrency behavior, privacy boundary, and failure mapping; the phased plan
-for that one, and the reason it starts inside the existing formation contract, is in
-[affective memory](affective-memory.md). It must not create provider branches inside `Memory` or
-treat metadata as an execution or isolation mechanism. The rule and current examples are described in
-[plugin architecture](plugin-architecture.md#admission-rule).
-
-### Preserve evidence, privacy, and durability
-
-Embodied memory contains sensitive media and identity-derived representations. Local processing and
-storage are the preferred baseline; a remote model call must be an explicit deployment choice.
-Optional biometric or emotion plugins must not export source media or derived identities implicitly.
-
-SQLite and the content-addressed media store remain authoritative, while Zvec is a rebuildable search
-projection. A durable write commits before the projection changes, and a faster path is invalid if it
-can acknowledge data that cannot be recovered. Performance work must preserve these invariants.
-
-### Keep the product path small and measurable
-
-The best design is the smallest one that satisfies a current, measured need. Do not add a registry,
-factory, service, queue, cache, or compatibility layer for a hypothetical deployment. Add one thin
-boundary when a real second implementation proves the existing boundary insufficient.
-
-Quality and performance benchmarks exercise the public SDK. A benchmark adapter may translate a
-dataset, but it must not become an alternate memory implementation. Code, model, dataset, and runtime
-revisions must be reproducible before a result guides a default.
-
-## Current release and direction
-
-The status table describes this checkout's `0.3.0` surface. Earlier design proposals and
-structural scores do not establish that every proposed path ships today.
-
-Every "current release" cell below is a statement about code that exists today, and each defers to
-an owning reference for detail. A cell that stops being true is a defect in this page.
-
-| Concern | Current release | Product direction |
-| --- | --- | --- |
-| Input | Ordered text, image, video, and audio through `ContentInput`; lazy completed observations through `StreamInput`/`add_stream`; deferred enrichment through `capture`/`settle`; async speculative omni recall | More capture formats normalize into the same canonical contract |
-| Embedding | Caller explicitly selects a backend and model; Sentence Transformers uses standard inputs | Omni-capable recommended composition with route-specific execution |
-| Generation | Optional caller-supplied backend with explicit capabilities | Omni-capable recommended composition where the deployment supports it |
-| Speech runtime | Built-in FunASR adapter uses `AutoModel` | Additional measured runtime adapters, selected explicitly or by observable policy |
-| Extensions | The explicit model protocols in [architecture](architecture.md#model-boundary), including optional `ConsolidationBackend` for the memory control plane; no registry. Declarative configuration builds a subset of the slots; the rest are object injection only | Optional domain capabilities after a real implementation establishes the contract |
-| Hardware | Runs where Python, dependencies, and the selected models are supported | Verified device-class matrix with published quality, latency, and resource evidence |
-| Developer interfaces | Typed Python API, OpenAPI-documented REST adapter, and a JSON-only product CLI over the same composition | Same small vocabulary and time-to-first-success across supported transports |
-| Execution plane | Python SDK, REST, MCP, and the `sensemem` CLI all dispatch to one `Memory`; none of them implements its own routing, persistence, or defaults | Every surface reaches the operations the SDK publishes, with no transport gap left undocumented |
-| Agent interfaces | Typed MCP tools and a `sensemem` CLI whose commands are the SDK operations kebab-cased plus `doctor`. The common path — `add_memory`, `search_memories`, `ask_memory`, `compile_context`, `get_memory`, `list_memories`, `delete_memory` — plus the embodied and identity operations an agent driving a robot needs: `perceive_memory`, `register_identity`, `get_identity`, `unlink_identity`, `forget_identity`, `reinforce_memories`. Erasure is exposed, so a privacy request reaches an agent surface, and the composition's capability view is the server instructions rather than a tool. What MCP still does not expose is batching, streaming, index maintenance, deferred capture, and the memory control plane; each is listed with its reason in [the MCP reference](api/mcp.md#operations-without-a-tool) | SDK-derived MCP and CLI capability parity, machine-readable schemas, and lifecycle integrations |
-
-This distinction is deliberate: goals guide what to build next, while current API and deployment
-documentation remain the source of truth for what users can run now.
-
-## Decision checklist
-
-Before adding or changing a model, runtime, plugin, or performance path, answer:
-
-- Which Smarter, Swifter, or Stronger commitment does the change advance, and how will it be verified?
-- Which real agent scenario and modality route improves?
-- What is the fallback when a requested modality is unsupported?
-- Which end-to-end quality, latency, throughput, and resource measurements justify the change?
-- Which model, runtime, data, and embedding-space identities must remain reproducible?
-- Which official SDK, upstream runtime, or existing dependency was evaluated first?
-- Does the change preserve evidence, privacy, durability, and explicit configuration?
-- Can a developer discover the common path and an agent execute it from structured contracts alone?
-- Does every public surface dispatch to the same `Memory` operation instead of duplicating policy?
-- Can the same result be achieved with less code or one existing extension contract?
-- Is the new contract reachable from the product path a user actually calls, or only from a narrower
-  one? An exported protocol with no reachable caller is an unfinished change, not an extension
-  point.
+| **Smarter** | Give agents useful context through formation, enrichment, revision, organization, and recall. | Compare downstream task success, evidence accuracy, contradiction handling, and context cost with the same models, inputs, and budgets. |
+| **Swifter** | Make capabilities easy to compose, models easy to select, and integrations easy to extend. | Measure integration effort and verify that optional components can be enabled independently. |
+| **Stronger** | Support more deployment environments and improve quality across memory and multimodal tasks. | Publish tested configurations with reproducible quality, latency, and resource measurements. |
+
+Hardware coverage and state-of-the-art quality are goals evaluated per configuration. Neither a
+model's capabilities nor a score on one dataset establishes support or superiority elsewhere.
+
+## One memory surface across modalities
+
+Text, images, video, and audio use the same `add`, `search`, `ask`, and `compile` operations.
+Ordered combinations preserve the caller's text and original media as one observation.
+Application-specific capture objects normalize into this content contract at the source boundary.
+
+Routing uses declared capabilities and the modalities actually present. Text-only requests do not
+need multimodal inference. Native media routes preserve original signals; source-labelled captions
+or transcripts can supply text for backends that require it. Unsupported content fails explicitly
+when no usable route exists.
+
+Spatial metadata augments these observations. It does not imply native 3D-scene support, sensor
+drivers, localization, or coordinate transforms. See the [content contract](api/python-sdk.md#content-contract).
+
+## Evidence before interpretation
+
+Raw observations remain distinct from derived assertions. Model output carries source evidence,
+basis, confidence, model, recipe, and temporal context. The kernel validates proposals before they
+affect durable state; a model never grants itself authority to change runtime policy.
+
+`search()` returns evidence. `compile()` selects an evidence-closed context bundle and reports
+conflicts and missing information. `ask()` adds grounded generation and explicit abstention.
+Citations and confidence values remain inspectable claims, rather than proofs of truth.
+
+Corrections preserve the distinction between what was observed and what was inferred. Cognitive
+forgetting, validity expiration, ranking decay, and physical deletion have different effects and
+must remain distinguishable in the API and operation history. See
+[memory types, time, and decay](memory-types-time-and-decay.md).
+
+## Explicit composition around one kernel
+
+Replaceable computation belongs behind narrow, typed backend protocols. The kernel owns identity,
+validation, evidence policy, routing, persistence, and final hydration. A plugin's protocol grants
+no storage authority; custom Python code still runs with the host process's privileges.
+
+Applications choose bundled providers through `Memory.from_config()`, pass a `MemoryPlugins`
+bundle, or inject backend objects directly. Composition stays fixed for one `Memory` lifetime.
+Changing it requires closing and reopening the owner; changing a durable representation also
+requires a compatible space or source replay into a fresh directory.
+
+Optional capabilities add no model call when omitted. New capabilities need a concrete adapter,
+a reachable product use case, explicit lifecycle and failure behavior, and tests through the public
+API. Reuse an existing protocol before adding another. [Plugin architecture](plugin-architecture.md)
+defines this boundary and its admission rule.
+
+## One execution plane across interfaces
+
+The Python SDK, REST, MCP, and CLI call the same `Memory` operations. Transports decode inputs and
+serialize results; they do not choose independent retrieval policies, models, or storage semantics.
+Shared operations preserve IDs, defaults, pagination, idempotency, and error meanings.
+
+The common path is small: create one owner, add observations, retrieve evidence, and optionally
+compile context or ask a question. Advanced operations remain discoverable in typed signatures,
+OpenAPI, MCP schemas, and structured CLI output.
+
+Transport authority is explicit. REST and MCP expose documented subsets and switches; memory
+management and index maintenance stay with the owning process. Model capabilities and granted
+administrative authority are different concerns. The [surface map](product-capabilities.md#python-rest-mcp-and-cli-surfaces)
+lists the supported operations.
+
+## Durable local authority
+
+SQLite owns records, FP32 embeddings, store metadata, and pending index work. Immutable original
+media stays in the local asset store. Zvec is a derived projection that can be rebuilt without
+re-embedding stored content.
+
+Durable writes commit SQLite before changing Zvec. Outbox work is acknowledged only after the
+corresponding index flush succeeds. Retrieval hydrates candidates from SQLite, so a stale index ID
+cannot resurrect a deleted record.
+
+One physical `data_dir` has one live owner. Applications needing separate memory domains allocate
+separate directories; metadata never substitutes for isolation or access control. These
+[architecture invariants](architecture.md) also apply to optimized and asynchronous paths.
+
+## Observable performance and quality
+
+Measure the path an application experiences: input preparation, configured perception, embedding,
+durable commit, search visibility, retrieval, and generation. Capture acknowledgement and time to
+searchable are separate milestones. Report warm and cold behavior, latency percentiles,
+throughput, memory, storage, and accelerator use on named hardware.
+
+Performance changes must preserve durability, evidence, and modality coverage. Batching,
+quantization, caching, and concurrency earn their complexity by improving a measured bottleneck.
+Quality comparisons use the public SDK with fixed model, data, scorer, and runtime identities.
+[Benchmarking](benchmarking.md) defines the reporting and comparison rules.
+
+## Privacy and host authority
+
+Local authoritative storage does not imply local inference. Every remote backend receives inputs
+for its configured operation. Credentials, memory content, model responses, and provider exception
+bodies stay out of ordinary logs.
+
+The host grants sensitive operations, collects consent, controls source capture, and protects
+network and filesystem access. Inferred affect cannot authorize a response policy, and a model
+cannot manufacture consent. Physical deletion changes live state but does not guarantee secure
+erasure from snapshots or backups. See [Security](../SECURITY.md).
+
+## Reuse and scope
+
+Use official SDKs, maintained model runtimes, existing dependencies, and the standard library before
+building infrastructure. New dependencies require a public use case and belong in the narrowest
+optional extra.
+
+SenseMem does not provide agent planning, robot control, device synchronization, a hosted database,
+or a worker service. Add abstractions when a concrete requirement demonstrates a gap in the
+existing boundary. Keep benchmark code outside product dependencies and exercise product behavior
+through the public SDK.

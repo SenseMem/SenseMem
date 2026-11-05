@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from sensemem import AnswerPolicy, MemoryConfig, SenseMemConfig
+from sensemem.benchmarks.ama_bench import result_summary as ama_result_summary
 from sensemem.benchmarks.eval_adapters import LoadedTask
 from sensemem.benchmarks.eval_arms import (
     BLIND_PROMPT_VERSION,
@@ -71,6 +72,7 @@ _MANDATORY_CONTROLS = ("random_ranker", "blind", "recall_at_20")
 # invisible in a results document, so `tests/unit/benchmarks/test_eval.py`
 # pins this table against the metadata the adapters actually emit.
 _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "ama-bench": ("domain", "task_type", "qa_type"),
     "icm-bench": ("category",),
     "locomo-refined": ("category",),
     "m3-bench": ("question_types",),
@@ -341,6 +343,11 @@ def _metrics(
                     "structured-action, threaded-cluster, and paired-row protocols are unavailable"
                 )
             }
+    result.update(
+        ama_result_summary(samples, full_dataset_selected=full_dataset_selected)
+        if task.spec.name == "ama-bench"
+        else {}
+    )
     if task.spec.name == "supermemory-vqa" and scored:
         result["answerability"] = {
             "official_metric": official("answerability"),

@@ -3,9 +3,8 @@
 SenseMem provides a unified Context & Memory layer through an embedded runtime. The host
 application supplies content and model capabilities; one local `Memory` owns persistence,
 retrieval, context compilation, and grounded-answer orchestration.
-This page gives the mental model. Start with [product capabilities](product-capabilities.md) for the
-implemented use-case map. [Architecture](architecture.md) owns implementation invariants, and the
-[Python SDK](api/python-sdk.md) owns exact signatures.
+Use [product capabilities](product-capabilities.md) to choose an integration, [architecture](architecture.md)
+for consistency guarantees, and the [Python SDK](api/python-sdk.md) for exact signatures.
 
 ## Context and memory
 
@@ -26,11 +25,11 @@ content -> model preparation -> SQLite commit -> Zvec projection
 query   -> selected dense/lexical routes -> SQLite hydration -> ranked evidence
 ```
 
-**Contract:** SQLite is authoritative for records, embeddings, metadata, and pending index work.
+SQLite is authoritative for records, embeddings, metadata, and pending index work.
 Zvec is a derived search projection. Search results are hydrated from SQLite, and a missing Zvec
 index can be rebuilt from stored embeddings without re-embedding content.
 
-**Guidance:** Treat `Memory` as one embedded runtime boundary. Do not build application state by
+Treat `Memory` as one embedded runtime boundary. Do not build application state by
 reading SQLite, `assets/`, or Zvec directly.
 
 `capture()` commits the source before model work; `settle()` later enriches and indexes it.
@@ -70,7 +69,7 @@ media remains until no record or active lease references it. API deletion is not
 from SQLite free pages, WAL files, snapshots, or backups; see the
 [security model](../SECURITY.md#storage-deletion-and-backups).
 
-**Contract:** Metadata is JSON application payload. SenseMem stores and returns it but does not
+Metadata is JSON application payload. SenseMem stores and returns it but does not
 interpret it as a retrieval filter, tenant identifier, authorization rule, or isolation boundary.
 
 ## A data directory is one memory domain
@@ -90,10 +89,10 @@ data_dir/
 | `zvec/` | Rebuildable search projection |
 | `.sensemem.lock` | Operating-system lock target; its presence does not imply a live owner |
 
-**Contract:** Exactly one live `Memory` may own a physical directory. Different live owners must
+Exactly one live `Memory` may own a physical directory. Different live owners must
 use different directories.
 
-**Guidance:** Allocate separate directories for applications, accounts, benchmark cases, or any
+Allocate separate directories for applications, accounts, benchmark cases, or any
 other data domains that must not share records. Use filesystem permissions and the deployment
 boundary for access control. See [deployment](deployment.md) and [operations](operations.md) for
 process, backup, and recovery procedures.
@@ -139,7 +138,7 @@ probability.
 generation model. Its character and item budgets differ from `ask()`'s grounding window. Use
 [context compilation](context-compilation.md) when the host constructs its own prompt.
 
-**Guidance:** Handle empty search results and answer abstention as ordinary outcomes. Use
+Handle empty search results and answer abstention as ordinary outcomes. Use
 `search(..., explain=True)` for one local ranking investigation; normal telemetry intentionally omits
 candidate identifiers.
 

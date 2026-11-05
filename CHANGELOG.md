@@ -1,12 +1,12 @@
 # Changelog
 
 Notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-SenseMem is pre-1.0; backward compatibility is not maintained. This file describes the final
-release behavior; the [documentation index](docs/README.md) links to detailed contracts.
+SenseMem is pre-1.0; backward compatibility is not maintained. See the
+[documentation index](docs/README.md) for supported contracts.
 
 ## Unreleased
 
-This checkout targets `0.3.0` and replaces the unreleased service-oriented `0.1.0` design.
+Changes for version `0.3.0`.
 
 ### Breaking changes
 
@@ -51,7 +51,7 @@ This checkout targets `0.3.0` and replaces the unreleased service-oriented `0.1.
 - SDK-aligned REST, thirteen default MCP tools with authority switches, and a JSON product CLI.
 - Dataset evaluation with isolated stores, baseline arms, official or explicitly identified
   scorers, response caches, resume, quality diagnostics, rejudging, and performance comparisons.
-  New adapters include VideoZeroBench and LongMemEval-V2; see [benchmarking](docs/benchmarking.md).
+  See [benchmarking](docs/benchmarking.md) for tasks and protocol boundaries.
 - OpenTelemetry stage, model, and transport measurements, plus credential-free contract checks
   and separate real-model answering/workflow gates.
 
@@ -74,8 +74,6 @@ This checkout targets `0.3.0` and replaces the unreleased service-oriented `0.1.
 
 - PostgreSQL/pgvector, Celery, Redis, S3, service workers, logical tenant/request scoping,
   automatic schema migration, and obsolete SDK/CLI aliases.
-- Superseded benchmark adapters, unused experiment launchers, compatibility readers, and
-  intermediate implementation specifications. Private research remains local-only.
 
 ### Known limits
 

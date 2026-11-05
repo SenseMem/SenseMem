@@ -23,6 +23,7 @@ def test_global_help_lists_only_supported_runners_without_importing_them(
 
     printed = capsys.readouterr().out
     assert set(cli.RUNNERS) == {
+        "ama-bench",
         "control-plane",
         "eval",
         "local-index",
@@ -46,6 +47,7 @@ def test_dispatch_lazily_calls_each_supported_runner(
     locomo = ModuleType("locomo")
     evaluation = ModuleType("evaluation")
     review = ModuleType("review")
+    ama = ModuleType("ama")
 
     def local_main(argv: Sequence[str], *, prog: str | None = None) -> int:
         calls.append(("local-index", tuple(argv), prog))
@@ -63,12 +65,19 @@ def test_dispatch_lazily_calls_each_supported_runner(
         calls.append(("review-samples", tuple(argv), prog))
         return 0
 
+    def ama_main(argv: Sequence[str], *, prog: str | None = None) -> int:
+        calls.append(("ama-bench", tuple(argv), prog))
+        return 0
+
     local.main = local_main  # type: ignore[attr-defined]
     locomo.main = locomo_main  # type: ignore[attr-defined]
     evaluation.main = eval_main  # type: ignore[attr-defined]
     review.main = review_main  # type: ignore[attr-defined]
+    ama.main = ama_main  # type: ignore[attr-defined]
 
     def imported(name: str) -> ModuleType:
+        if name.endswith("ama_bench"):
+            return ama
         if name.endswith("eval_review"):
             return review
         if name.endswith("locomo_refined_cli"):
@@ -81,6 +90,7 @@ def test_dispatch_lazily_calls_each_supported_runner(
     assert cli.main(["locomo-refined", "--limit", "2"]) == 0
     assert cli.main(["eval", "--tasks", "video-mme-v2"]) == 0
     assert cli.main(["review-samples", "--samples", "samples.jsonl"]) == 0
+    assert cli.main(["ama-bench", "export"]) == 0
     assert calls == [
         ("local-index", ("--rows", "10"), "sensemem-bench local-index"),
         (
@@ -90,6 +100,7 @@ def test_dispatch_lazily_calls_each_supported_runner(
         ),
         ("eval", ("--tasks", "video-mme-v2"), "sensemem-bench eval"),
         ("review-samples", ("--samples", "samples.jsonl"), "sensemem-bench review-samples"),
+        ("ama-bench", ("export",), "sensemem-bench ama-bench"),
     ]
 
 

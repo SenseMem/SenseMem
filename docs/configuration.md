@@ -15,7 +15,7 @@ retrieval semantics stay the same whichever path you choose.
 | `Memory.from_plugins()` | The application already groups constructed backends and settings |
 | `Memory(...)` | The application injects individual backends or owns SDK clients directly |
 
-**Contract:** All three paths open the same embedded kernel. `EmbeddingBackend` is required;
+All three paths open the same embedded kernel. `EmbeddingBackend` is required;
 generation, reranking, speech, face, vision-description, formation, and consolidation capabilities are
 optional.
 
@@ -78,7 +78,7 @@ with Memory.from_config(config) as memory:
 `AsyncMemory.from_config()` accepts the same shape. Use `SenseMemConfig.model_validate()` when a
 host needs validation before opening storage.
 
-**Contract:** Unknown fields, providers, and values outside the declared constraints are rejected.
+Unknown fields, providers, and values outside the declared constraints are rejected.
 Counts, thresholds, and policy flags use the strict constraints declared by their field schemas. Declarative composition owns and closes every adapter it
 creates.
 
@@ -104,15 +104,17 @@ runner's `--config` flag handles YAML itself through the `benchmarks` extra.
 
 ### Provider fields
 
-In this table, connection fields are `base_url`, `api_key`, `timeout`, and `max_retries`:
+For OpenAI slots, connection fields are `base_url`, `api_key`, `timeout`, and `max_retries`. Each defaults to `None`,
+delegating to the OpenAI client's defaults and environment lookup:
 
 | Slot and provider | Required | Optional defaults |
 | --- | --- | --- |
 | `embedding: sentence-transformers` | `model` | `revision=None`, `dimension=None`, `device=None`, `batch_size=32` |
 | `reranking: sentence-transformers` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=1024` |
 | `reranking: qwen3-vl` | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=8192`, `gpu_memory_utilization=0.9`, `image_limit=8`, `video_limit=2`, `image_max_pixels=262144`, `video_frames=8` |
+| `reranking: vllm` | `model`, `base_url` | `api_key=None`, `timeout=60.0`, `batch_size=32`, `modalities=[text,image,video]`, `media_candidates=None`, `media_weight=0.5` |
 | `embedding: openai` | — | `model=text-embedding-3-small`, `dimension=1536`, `space=None`, `modalities=[text]` (at least one), `request_format=input`, `image_max_pixels=None`, plus connection fields |
-| `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `request_max_bytes=None`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
+| `generation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `answer_style=default`, `request_max_bytes=None`, `answer_format=text`, `source_metadata_key=source_id`, `video_limit=8`, `min_video_seconds=None`, `image_max_pixels=None`, `media_policy=all`, `media_max_items=2`, `routes=()`, `offline_gazetteer=None`, `extra_body=None`, plus connection fields |
 | `formation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `image_max_pixels=None`, `extra_body=None`, plus connection fields |
 | `vision: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[image]` (image and/or video only), `video_frames=4` (2–64), `image_max_pixels=None`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `extra_body=None`, plus connection fields |
 | `consolidation: openai` | — | `model=gpt-5-mini-2025-08-07`, `modalities=[text]`, `temperature=None`, `seed=None`, `max_tokens=None`, `response_format=json_schema`, `store=False`, `stream=False`, `extra_body=None`, plus connection fields |
@@ -135,6 +137,11 @@ unless `generation.answer_format=structured` is enabled. A compatible endpoint t
 `response_format="json_object"`; this guarantees JSON syntax, not response shape or meaning.
 Both modes retain local validation, and a strict schema is never silently downgraded.
 
+SenseMem does not load `.env` files automatically. Hosts can load them explicitly, for example
+with `uv run --env-file .env python application.py`. The repository's
+[environment example](../.env.example) distinguishes SDK lookup from benchmark-only variables.
+The product REST and MCP adapters rely on host-provided inbound authentication.
+
 Every chat-completion request, including streaming and structural calls, explicitly sends the
 configured storage policy, defaulting to `store=False`. Set the slot's strict boolean `store`
 field to `True` only when provider-side
@@ -143,7 +150,7 @@ not disable provider abuse-monitoring retention or establish Zero Data Retention
 provider's account-level [data controls](https://developers.openai.com/api/docs/guides/your-data).
 Local deletion and retention cannot erase copies already held by a model provider.
 
-The bundled generation default pins the previously evaluated snapshot rather than a moving alias.
+The bundled generation default names an explicit snapshot rather than a moving alias.
 Explicit model names remain caller-owned: pin a compatible model's deployment revision and
 re-evaluate it before changing that deployment. Returned model identity and request IDs remain
 available on traces. Changing the default model or output protocol changes formation, vision and
@@ -159,7 +166,7 @@ answers. Model snapshots make quality comparisons reproducible; changing a model
 requires the [quality gate](operations.md#model-quality-gate).
 
 `generation.answer_style` accepts `default` or `concise`. In the default text format, `default`
-keeps the existing reader prompt unchanged. `concise` asks the reader to return only the entities,
+uses the standard grounded-reader prompt. `concise` asks the reader to return only the entities,
 relations, values or list
 items the question requests, without explanations, citations or introductory phrases, and to
 honor a requested output format. It still resolves relative times internally, but includes dates
@@ -168,9 +175,9 @@ their existing meanings. This is an opt-in presentation policy, not an establish
 improvement; evaluate it with the chosen model and task. Formation, visual description and
 consolidation do not accept this answer-only control.
 
-The concise style also privately checks source roles, event and capture times, local dates,
-units, quantities and list conditions before rendering the requested answer. See the
-[ATM maximum-thinking profile](atm-max-thinking.md) for an evaluation configuration using it.
+The concise prompt also instructs the model to check source roles, event and capture times, local
+dates, units, quantities, and list conditions. This is model guidance rather than a deterministic
+validator. Evaluate these instructions with the selected reader and task.
 
 `generation.answer_format` accepts `text` (default) or `structured`. Structured answering asks
 the model for a typed draft, then renders it against the final evidence that actually fits the
@@ -266,8 +273,9 @@ references remain unchanged. An undecodable or oversized image fails embedding, 
 answer fitting can omit it from retrieved evidence, but a required question attachment raises an
 error. Missing or changed source files still raise integrity errors. The pixel setting joins the
 embedding-space identity even when `space` is explicit, and joins the visual-description and formation recipes.
-Enabling or changing it for a persisted capability requires a fresh data directory and replay;
-`None` preserves the previous identity.
+Changing it on the embedding slot requires a fresh data directory and replay. On vision and
+formation slots it changes the derivation recipe; existing embedded records are not automatically
+backfilled. `None` leaves image resizing disabled.
 
 The adapter recognizes GPT-5/GPT-6 reasoning names and snapshots and the `o1`, `o3`, and `o4`
 families. GPT-5 Chat names and unrelated compatible model names retain generic sampling controls.
@@ -341,7 +349,7 @@ in the answer request. A provider media rejection does not trigger another diagn
 `media_max_items` limits only `on_demand` diagnosis. Diagnosis has its own model span and request
 and token costs. SDK construction uses
 `EvidenceGeneration(model, selector=model, media_max_items=2)` around `OpenAIModels`; geography uses
-an independent `GazetteerEnricher`. The declarative keys stay on `generation`. This mechanism has local tests, not benchmark evidence of accuracy or cost gains.
+an independent `GazetteerEnricher`. The declarative keys stay on `generation`. Evaluate accuracy, omissions, latency, and request costs for the selected task before enabling it.
 
 `generation.request_max_bytes` optionally bounds the complete final answer request JSON body in
 bytes, including inline base64 media, UTF-8 text, merged `extra_body`, and streaming fields. It
@@ -390,13 +398,19 @@ reranking:
 The client sends text and native media to `<base_url>/rerank`. The server owns the model
 revision, context limits and preprocessing. `media_candidates` optionally refines a text-ranked
 shortlist with native media; `media_weight` combines their probability logits. Omit
-`media_candidates` to score the original multimodal pairs directly. See the
-[remote profile](atm-max-thinking.md#remote-reranking) for the complete policy.
+`media_candidates` to score the original multimodal pairs directly.
+
+`base_url` is the server base, with `/rerank` appended; do not supply the complete operation URL.
+The URL must be absolute HTTP(S), without a query or fragment. `api_key=None` sends no
+authorization header and does not read `OPENAI_API_KEY`. Counts and timeout must be positive;
+`media_weight` must be in `(0, 1]`. Modalities contain at least one of text, image, or video.
+The server owns revision pinning, context length, templates, and preprocessing, so this provider
+accepts no local `revision`, `device`, or `max_length` option. Keep the server identity with results.
 
 For a local Qwen3-VL model, install the `reranking` extra's vLLM runtime:
 
 ```bash
-uv sync --locked --default-index https://pypi.org/simple --all-groups --extra local --extra reranking
+uv add "sensemem[local,reranking]"
 ```
 
 ```yaml
@@ -539,12 +553,12 @@ transcription recipe must still match when a producer is configured. Omitting th
 preserves cached transcripts, speech identities and the recorded recipe; it does not prevent
 opening the directory for other capabilities.
 
-**Contract:** Compatibility is determined by embedding space and dimension. Bundled adapters
+Compatibility is determined by embedding space and dimension. Bundled adapters
 include the resolved model/revision and input recipe in that space identity. A different
 diagnostic model name alone does not make an explicitly shared space incompatible. SenseMem
 refuses representation mismatches instead of mixing spaces.
 
-**Guidance:** Start a new data directory when intentionally changing embedding space; see
+Start a new data directory when intentionally changing embedding space; see
 [store metadata mismatch](troubleshooting.md#store-metadata-mismatch).
 
 ### EmbeddingGemma 2
@@ -613,16 +627,14 @@ Matryoshka truncation. Keep the checkpoint's own chat template on the server. Th
 own vector-space identity, separate from generic messages requests and the local Sentence
 Transformers recipe. Use a fresh data directory when switching; existing unprompted EmbeddingGemma
 2 messages stores fail the metadata check. A custom `space` overrides that identity and must
-describe the actual server checkpoint and input recipe. Record the server's resolved model identity for deployment comparisons. HTTP fixture tests verify request construction and SDK wiring; live vLLM
-numerical parity has not been tested in this checkout.
+describe the actual server checkpoint and input recipe. Record the server's resolved model identity for deployment comparisons. Validate numerical parity against your deployed server before treating local and served embeddings
+as equivalent.
 
 ## Local speech with FunASR
 
-The `local` and `all` extras install FunASR from the immutable main-branch commit
+The `local` and `all` extras install FunASR from the immutable commit
 [`940b0d2463141a2e9ace8a9fd965b4aea93f2db5`](https://github.com/modelscope/FunASR/commit/940b0d2463141a2e9ace8a9fd965b4aea93f2db5).
-Git is required when installing these extras. This includes the upstream speaker-overlap,
-CAM++ clustering, Nano punctuation-timestamp, and resampled speaker-input fixes that are absent
-from the 1.4.16 PyPI release. The default model recipe remains pinned Fun-ASR-Nano, FSMN-VAD,
+Git is required when installing these extras. The default model recipe pins Fun-ASR-Nano, FSMN-VAD,
 and CAM++; Nano covers Chinese, English, and Japanese, not the separate MLT checkpoint's
 31-language contract.
 
@@ -649,9 +661,8 @@ calls to one transcriber: SenseMem serializes inference over its loaded FunASR p
 
 The transcription-space identity includes the pinned FunASR source revision and the complete
 model recipe. Device placement and CPU budgets do not create another semantic space. This
-revision replaces the previous speech space: opening an old directory with the new transcriber
-fails with a transcription-space metadata mismatch. Allocate a fresh `data_dir` and replay the
-original inputs; old speaker assignments are not reused or migrated.
+recipe must match persisted speech derivations. An incompatible transcription space fails at
+open; allocate a fresh `data_dir` and replay original inputs when changing it.
 
 ## Automatic memory formation
 
@@ -758,15 +769,14 @@ The kernel checks cited records again in the commit transaction. If a cited reco
 or its latest recorded version became hidden or retired during formation, derived records do not
 commit and a `ModelError` with `reason="response_invalid"`, `stage="form"` reports that the
 observation remains stored.
-The formation prompt change changes `formation_space`; existing derived records remain available.
-Reprocessing the same source under the new recipe may create additional derived records.
+Changing the formation model or prompt changes `formation_space`; existing derived records remain
+available. Reprocessing a source under a different recipe may create additional derived records.
 
 ## Visual descriptions
 
-The `vision` slot is omitted by default and, like `formation`, must stay omitted unless the
-deployment wants it. Configuring it adds one chat completion per write batch that carries a
-not-yet-described image or video, and buys the derived text that lets the lexical half of
-retrieval reach a visual memory at all.
+The optional `vision` slot adds one chat completion per write batch containing applicable,
+not-yet-described visuals. Its derived text makes image-only content available to lexical retrieval
+while original media remains available to native routes.
 
 ```python
 config = {
@@ -804,7 +814,7 @@ registers the name against the recognized identity, so every later clip resolvin
 person is indexed under it. Custom plain `describe()` strings are observation data, including
 any `Fact:` text. Identity proposals require the optional `describe_analysis()` protocol returning
 `VisualDescription` and explicit `SpeakerName` values; the identity plane owns the resulting
-validated writes. Description caches use the typed-v1 format and recompute older entries.
+validated writes. Description caches use the typed-v1 format.
 
 These controls bound what it costs and what it can do:
 
@@ -886,9 +896,9 @@ with Memory.from_config(
     report = memory.consolidate_pending()
 ```
 
-`consolidate_pending()` is that loop: it asks `consolidation_candidates()` what the store's own state says
-is due, consolidates each row under the row's trigger, and repeats until nothing is due. The
-primitives stay available for a host that wants to schedule the two halves itself.
+`consolidate_pending()` asks `consolidation_candidates()` what is due, consolidates each candidate
+under its trigger, and repeats until no work remains or `max_rounds` is reached. Hosts can call
+the two primitives separately to control scheduling.
 
 Consolidation stays off when the slot is omitted. An explicit evidence pass or due candidate
 raises `ModelError(reason="backend_not_configured")`; an empty candidate loop does no model work. Declaring
@@ -1015,9 +1025,8 @@ when query expansion is enabled. A non-abstained answer ends the operation, even
 an empty or unusable plan falls back to ordinary retrieval without itself triggering a
 follow-up. `recall_rounds` bounds answer attempts.
 Streaming releases only the selected answer; a replaceable attempt is buffered. No new
-model or service is configured by these switches. See the
-[recall recipe](grounded-multimodal-recall.md#bounded-recall-recipe) and evaluate
-the chosen models before relying on a quality improvement.
+model or service is configured by these switches. Evaluate the chosen models before relying
+on a quality improvement.
 
 `minimum_relevance` uses the selected route's relevance scale: dense cosine in `dense`, native
 normalized full-text relevance in `lexical`, and the documented hybrid fusion in `hybrid`. Keep
@@ -1271,20 +1280,23 @@ The kernel keeps source identity and filtering authoritative; the plugin supplie
 fill `answerer=`, `former=`, and `consolidator=`:
 
 ```python
-models = OpenAIModels(generation_model="gpt-5-mini-2025-08-07")
-memory = Memory(
-    "./data/assistant",
-    embedder=SentenceTransformersEmbedder(
-        model_id="google/embeddinggemma-2",
-    ),
-    answerer=models,
-    former=models,
-    consolidator=models,
-)
+with OpenAI(timeout=30.0, max_retries=3) as client:
+    models = OpenAIModels(
+        generation_client=client,
+        generation_model="gpt-5-mini-2025-08-07",
+    )
+    with Memory(
+        "./data/assistant",
+        embedder=SentenceTransformersEmbedder(model_id="google/embeddinggemma-2"),
+        answerer=models,
+        former=models,
+        consolidator=models,
+    ) as memory:
+        print(memory.capabilities.operations)
 ```
 
 `Memory` closes each distinct adapter once, so passing one object to several slots is safe.
-Omitting `consolidator=` leaves `consolidate()` unavailable and every other operation unchanged;
+Omitting `consolidator=` leaves `consolidate()` unavailable and other operations available;
 see [the memory management loop](memory-types-time-and-decay.md#memory-management-loop) for what a
 consolidator is allowed to propose.
 

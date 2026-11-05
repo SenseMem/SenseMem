@@ -17,14 +17,10 @@ the host builds it with `identity_operations=True` and `embodied_operations=True
 transport input, calls the injected synchronous memory, and serializes the public SDK values; it
 is not a separate storage or retrieval implementation.
 
-The fast-capture plane -- `capture`, `settle`, and `pending_captures` -- is always on: it is an
-ordinary application operation on the caller's own records, not administrative authority over a
-person, so it needs no opt-in switch. Naming, reading, splitting, or erasing an identity, and
-running face or speech analysis, are different: both switches default to off, mirroring
-`build_mcp_server`'s tool groups, because REST is a network surface and the
-[interfaces model](../context-os.md#interfaces) keeps that authority host-side unless the host
-opts in. A switched-off route is never registered, so a caller gets 404 rather than 403 and cannot
-discover through the error what an enabled deployment would offer:
+`capture`, `settle`, and `pending_captures` are available by default. Identity administration
+and perception require explicit host opt-in. Both REST switches default to `False`; MCP enables
+its corresponding tool groups by default. A disabled route is not registered and returns 404.
+For example, a trusted host can enable both groups:
 
 ```python
 from sensemem.api import create_app
@@ -317,8 +313,9 @@ budgets. Historical `scope.known_at` keeps full provenance. Disabled or historic
 an empty `proofs` array. No endpoint changes.
 
 `captureMemory` commits without calling any model; the returned `MemoryResponse` is the same
-content-addressed record `createMemory` would return for identical input. It is durable and
-readable through `getMemory` immediately and invisible to `searchMemories` until settled.
+content-addressed record `createMemory` would return for identical input. A new capture is durable
+and readable through `getMemory` immediately, but is invisible to `searchMemories` until settled.
+An existing record retains its readiness and is not enqueued again.
 `settleCaptures` enriches, embeds, indexes, and forms up to `limit` queued records in enqueue
 order and returns how many settled; a record that has already failed `max_attempts` times is
 skipped rather than retried, so one poisoned capture cannot block the queue, and naming it in
@@ -349,8 +346,9 @@ its effective score components (`dense_relevance`, `dense_confidence`, `lexical_
 `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
 `reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score`, `rank`) and, when it
 did not become a hit, a `rejected_by` value of `stale_index`, `occurrence_range`, `missing_memory`,
-`memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is how many
-candidates were fetched, `trace.exhaustive` says whether that bound was reached, and
+`memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is the final
+candidate depth requested per native route. `trace.exhaustive` is true when every route returned
+fewer candidates than its bound; it does not make approximate search exact.
 `trace.ambiguous` says whether the result was suppressed for being too close to call. Without
 `explain`, `trace` is `null` and no extra work is done. A trace names candidates and scores only; it
 never carries evidence content.
@@ -407,8 +405,8 @@ some other way is an ordinary answer. See
 
 `answer_policy` is `strict` or `best_effort` and belongs to the caller. `strict`, the default,
 returns a fixed refusal sentence when the evidence is thin. `best_effort` returns the most likely
-answer the evidence supports instead -- for a multiple-choice question, always one of the options
--- and still sets `abstained` and `abstention_reason`, so a client whose protocol gives no credit
+answer the evidence supports and instructs the model to choose an offered option for multiple
+choice. It still sets `abstained` and `abstention_reason`, so a client whose protocol gives no credit
 for "unknown" keeps the confidence signal alongside a usable answer. It also costs one more
 generation call than the default on a question that grounds nothing, where `strict` refuses
 without calling the model. On `POST
@@ -550,7 +548,7 @@ answer evidence or select a provider with sufficient capacity; an identical retr
 Answer requests are not retried after silently trimming evidence. This reason is distinct from
 the adapter's byte-based `payload_too_large` and the output limit's `output_truncated`.
 An upstream HTTP 413, including a non-JSON proxy rejection, maps to `payload_too_large` and
-REST HTTP 413 with `retryable=false`; it previously surfaced as an unclassified HTTP 502.
+REST HTTP 413 with `retryable=false`.
 `quota_exhausted` includes exhausted credits and provider project or organization spend/usage
 limits. `provider_unavailable` covers temporary upstream server failures after the SDK's own retry
 budget; callers still need a bounded retry policy.
@@ -572,11 +570,9 @@ Every classified retryable reason maps to 503, but an unclassified storage failu
 | 502 | `auth_failed`, `quota_exhausted`, `request_rejected`, `model_refused`, `response_invalid`, `output_truncated`, `asset_unavailable`, `asset_changed`, `model_failed`, or a `model_error` with no reason |
 | 503 | `capacity_exceeded`, `connection_failed`, `timeout`, `rate_limited`, `provider_unavailable`, `data_dir_in_use`, `flush_failed`, `index_missing`, or a `storage_error` with no reason |
 
-Two rows are worth stating explicitly, because both used to answer twice. `payload_too_large` is
-one condition seen from two sides and both are fixed by sending less, so the provider path no
-longer reports 502. `io_failed` describes database, filesystem, asset-store or persisted-data
-decoding failures and is deliberately not retryable, so it reports 500. Programming errors retain
-their Python exception internally and use the transport's generic `unexpected` envelope.
+`io_failed` covers database, filesystem, asset-store, and persisted-data decoding failures and
+is not retryable. Programming errors retain their Python exception internally and use the
+transport's generic `unexpected` envelope.
 
 ### Operations without a route
 
@@ -588,11 +584,8 @@ REST has no route for these Python operations:
 | `reindex`, `optimize` | Index maintenance an operator schedules |
 | `consolidation_candidates`, `consolidate`, `consolidate_pending`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | No route and no MCP tool; the memory control plane stays under host authority |
 
-`exportSubject` is the one place a control-plane value reaches a transport: an export carries the
-operation-log rows that moved the subject's records, because the right of access covers how the
-data was processed and not only what is held. It is read-only and gated on `identity_operations`,
-so nothing about the control plane's authority changes -- no route proposes, applies, or reverses
-an operation.
+`exportSubject` includes operation-log rows related to the selected records. It is read-only and
+gated on `identity_operations`; it cannot propose, apply, or reverse operations.
 
 A record containing two recognized people is returned for both of their exports, with the other
 person's observations embedded in it, for the reasons the
@@ -612,10 +605,8 @@ have routes, listed in [Endpoints](#endpoints) -- but only when the host enables
 the operations it gates, exactly as the table above describes for the operations no switch can
 turn on.
 
-Use the [Python SDK](python-sdk.md) in the owning process, or the MCP adapter where the table
-names a tool. `ask_stream` is exposed as SSE at `POST /v1/answers/stream`. The remaining entries
-are not REST limitations: the adapter runs in the process that owns `Memory`, so a route is
-unwritten work rather than an impossibility.
+Use the [Python SDK](python-sdk.md) or local CLI for owner-only operations. `ask_stream` is
+exposed as SSE at `POST /v1/answers/stream`.
 
 ### Input limits
 

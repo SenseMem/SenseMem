@@ -337,7 +337,7 @@ def test_prepare_rejects_question_count_drift(
     monkeypatch.setattr(runner, "_BackendPool", denied)
     config_path = tmp_path / "config.yaml"
     payload = yaml.safe_load(
-        (repository / "docs/examples/atm-sgm-detail-qwen3-vl.yaml").read_text()
+        (repository / "docs/examples/atm-sgm-max-thinking-vllm.yaml").read_text()
     )
     payload["benchmark"]["run"]["run_id"] = "count-guard"
     config_path.write_text(yaml.safe_dump(payload))

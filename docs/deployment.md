@@ -9,29 +9,18 @@ traffic fails.
 
 ## Upgrading to SenseMem
 
-SenseMem 0.3.0 uses the `sensemem` distribution and Python import package. Install the extras you
-need, update imports to `from sensemem import Memory`, and replace branded configuration and error
-classes with `SenseMemConfig` and `SenseMemError`. The commands are `sensemem` and `sensemem-bench`;
-benchmark environment variables use `SENSEMEM_*`. Provider-standard variables such as
-`OPENAI_API_KEY` keep their names. Repository links point to
-[SenseMem/SenseMem](https://github.com/SenseMem/SenseMem).
+Use the `sensemem` distribution, root Python imports, and the `sensemem` and `sensemem-bench`
+commands. Install the extras required by the selected adapters and review
+[configuration](configuration.md) before changing a deployment.
 
-The default data directory is `.sensemem` with ownership lock `.sensemem.lock`. SQLite schema 21
-and derived identifiers use the new namespace. Earlier schemas are refused without migrating or
-rewriting stored records. Start with a fresh physical directory and re-ingest source observations;
-renaming an existing directory does not convert its format.
+The current runtime accepts SQLite schema 21 and its declared representation identities.
+It does not migrate older schemas or convert incompatible model spaces. Read source data with
+its original runtime, then re-ingest into a fresh physical directory. Renaming a directory does
+not convert its format. Keep the original runtime and a tested backup until verification is complete.
 
-Keep running experiments on their original checkout or frozen snapshot, Python environment,
-configuration, data directory, output directory, and environment variables until they finish.
-Prepare the rename in a separate checkout and virtual environment. Do not rename, overwrite,
-reinstall, or synchronize an active experiment's files, even when its Python process is already
-running: lazy imports and subprocesses may still need them. Different runtime versions must never
-share a data directory because their lock filenames differ.
-
-New evaluations use schema 23, `sensemem` arm names and `sensemem_version`. Existing result and cache
-files remain evidence of their original run; do not rewrite them to adopt the new branding or pass
-them to the new runner as current-format inputs. Keep source snapshots, commit IDs and manifests
-with those results. Prompts, model settings and scoring policies are unchanged by the rename.
+Run one version and one owner per data directory. Evaluation artifacts also have explicit schema
+and scorer identities; retain their original manifests and use compatible inputs for new runs.
+See [representation changes](operations.md#changing-the-runtime-or-stored-representations).
 
 ## Choose a topology
 

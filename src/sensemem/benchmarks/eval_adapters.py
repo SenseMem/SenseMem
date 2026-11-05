@@ -1416,6 +1416,54 @@ def _text_memories(
     )
 
 
+def _ama_bench(
+    spec: TaskSpec,
+    dataset: Path,
+    resolver: MediaResolver,
+    root: Path,
+    limit: Limit,
+    offset: int,
+) -> tuple[EvalUnit, ...]:
+    from sensemem.benchmarks.ama_bench import load_ama_bench
+
+    del spec, resolver, root
+    return tuple(
+        EvalUnit(
+            str(episode.episode_id),
+            (
+                *_text_memories("task", f"Task: {episode.task}"),
+                *(
+                    memory
+                    for index, step in enumerate(episode.trajectory)
+                    for memory in _text_memories(f"step-{index}", step.text())
+                ),
+            ),
+            tuple(
+                EvalQuestion(
+                    question.question_uuid,
+                    (
+                        f"## Questions\nQuestion 1: {question.question}\n\n"
+                        "## Instructions\nProvide a direct and concise answer.\n\n"
+                        "Answer[1]: [your answer here]",
+                    ),
+                    references=(question.answer,),
+                    source_question=question.question,
+                    metadata={
+                        "episode_id": str(episode.episode_id),
+                        "task_description": episode.task,
+                        "task_type": episode.task_type,
+                        "domain": episode.domain,
+                        "qa_type": question.type,
+                        "question_index": index,
+                    },
+                )
+                for index, question in enumerate(episode.qa_pairs)
+            ),
+        )
+        for episode in _selected(load_ama_bench(dataset), limit, offset)
+    )
+
+
 def _longmemeval_v2(
     spec: TaskSpec,
     dataset: Path,
@@ -1793,6 +1841,7 @@ def _split_parts(text: str) -> tuple[str, ...]:
 
 
 _LOADERS = {
+    "ama-bench": _ama_bench,
     "icm-bench": _icm_bench,
     "locomo-refined": _locomo,
     "m3-bench-robot": _m3,

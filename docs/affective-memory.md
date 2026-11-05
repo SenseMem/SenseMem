@@ -1,331 +1,118 @@
-# Affective memory direction
+# Affective memory
 
-This page defines SenseMem's direction for affective context: what an affect record means, what
-exists at this release, and the gates a richer capability must pass. It does not claim that every
-behavior below is implemented. [Memory types, time, and decay](memory-types-time-and-decay.md)
-owns the typed-record contract, [context compilation](context-compilation.md) owns the bundle,
-[plugin architecture](plugin-architecture.md) owns the admission rule, and the API references own
-current contracts.
+SenseMem represents affect as a sourced, timed assessment, with confidence and an explicit evidence
+basis. A model estimate does not establish a person's internal state. Preserve the observation,
+the estimate, and the person's own statement as distinct evidence.
 
-Scope: this is a direction document. The implemented status below refers to this checkout;
-research citations support the design discussion, not a benchmark claim for SenseMem.
+This page describes the supported representation and its limits. The
+[SDK reference](api/python-sdk.md) defines the values, [memory lifecycle guide](memory-types-time-and-decay.md)
+defines visibility and withdrawal, and [context compilation](context-compilation.md) defines delivery.
 
-## Positioning
+## Representation
 
-The product goal is not to recognize a person's true emotion. A model's estimate is not a direct measurement of a person's internal state. The goal is narrower and achievable: preserve
-affective evidence from text, speech, vision, and the person's own statements; track it over time;
-and keep it traceably associated with people, events, objects, and later feedback.
-
-An affect record is therefore a sourced, timed, confidence-bearing hypothesis with a perspective.
-It is never an unconditional fact about how somebody felt.
-
-The design draws on four research results:
-
-- Russell describes core affect through pleasantness and activation. SenseMem uses valence and
-  arousal to retain comparable dimensions alongside descriptive labels
-  ([Russell 2003](https://pubmed.ncbi.nlm.nih.gov/12529060/)).
-- Facial movements are not reliable diagnostic indicators of emotional state; the same configuration
-  occurs across states and cultures
-  ([Barrett et al. 2019](https://pubmed.ncbi.nlm.nih.gov/31313636/)).
-- K-EmoCon supplies separate self, partner, and external-observer annotations. SenseMem's design
-  treats perspective as information to preserve, rather than assuming the labels are interchangeable
-  ([K-EmoCon](https://www.nature.com/articles/s41597-020-00630-y)).
-- Text and speech agree mainly on valence, and the agreement varies by content genre, so fusing
-  modalities into one label discards the disagreement that carries information
-  ([Lindevelt, Verberne, and Broekens, EACL 2026 Findings](https://aclanthology.org/2026.findings-eacl.136/)).
-
-A memory system that stores a label as truth inherits every one of these errors permanently. A
-memory system that stores evidence with its perspective can be corrected.
-
-## Four layers
-
-Affect is not one thing at one time scale. SenseMem separates four, and a change at one layer
-does not overwrite another.
-
-| Layer | What it is | Representation |
+| Information | Representation | Meaning |
 | --- | --- | --- |
-| Affective cue | A raw observation containing affective information: the words used, the audio, the frames | An ordinary `OBSERVATION` record; the media stays authoritative |
-| Affective state | A situated estimate of how somebody was at one time | `AFFECT`, with valence, arousal, cue modality, confidence, and basis |
-| Emotional event | What the affect was about, in the same capture | An `EVENT` record plus the evidence association |
-| Long-horizon disposition | A pattern supported across independent captures | `TRAIT`; formation or consolidation can propose it, with additional visibility rules for model inferences |
-
-Three statements about the same moment are three different things:
-
-- "the voice rose" is an observation;
-- "the user may be anxious" is model inference;
-- "the user says they were nervous, not angry" is a user statement.
-
-None of the three overwrites the other two. The observation stays as evidence, the inference stays
-as a separate record with its own basis and confidence, and the user statement adds explicit
-first-person evidence. `AFFECT` records do not automatically supersede one another. This is the general lifecycle rule in
-[Context OS direction](context-os.md), applied to affect.
-
-## What exists today
-
-Everything in this section is current behavior at this release. Each row names the reference that
-owns it.
-
-| Capability | State | Owner |
-| --- | --- | --- |
-| `MemoryKind` carries `AFFECT`, `EVENT`, `TRAIT`, and `RESPONSE_POLICY` | Implemented | [Python SDK](api/python-sdk.md) |
-| `EvidenceBasis` carries `observation`, `user_statement`, `model_inference`, and `response_feedback`, the basis every host-authored `RESPONSE_POLICY` is stored with | Implemented | [Python SDK](api/python-sdk.md) |
-| `FormationProposal` carries `valence` in [-1, 1], `arousal` in [0, 1], one `cue_modality`, a validity interval, `confidence`, and `subject` | Implemented | [Python SDK](api/python-sdk.md) |
-| `AFFECT` is an episodic record, so it ranks and decays as an episode | Implemented | [Memory types, time, and decay](memory-types-time-and-decay.md) |
-| SQLite stores affect fields authoritatively; Zvec stays a rebuildable projection | Implemented | [Architecture](architecture.md) |
-| `compile()` gives affect its own bundle section, separate from `traits` | Implemented | [Context compilation](context-compilation.md) |
-
-Five properties of the current implementation matter more than the field list.
-
-**One atomic cue modality, and it must be real.** A proposal's `cue_modality` is a single atomic
-modality; `omni` is rejected. The kernel additionally refuses an `AFFECT` proposal whose cue
-modality is absent from the source observation's own modalities, so a text-only observation cannot
-yield a claim about tone of voice.
-
-**The only affect producer is a prompt.** The bundled OpenAI-compatible `FormationBackend` asks a
-model for typed proposals, and affect is one of the kinds it may propose. There is no prosody
-analysis, no facial-expression analysis, and no acoustic affect model anywhere in `src/`.
-The default formation route sees text. Explicitly declared media support can carry native
-signals, but does not establish calibrated affect quality. The roadmap therefore starts with
-per-modality estimates and evaluation.
-
-**Cues do not reconcile against each other.** Functional conflict detection covers `STATE` and
-user-stated `TRAIT`; `RELATION` values can accumulate. `AFFECT` is deliberately excluded. Two cues from different
-modalities at the same moment are two separate records, not a contradiction to resolve: a situated
-cue is a report about one channel at one time, not a standing assertion about the world. Keeping
-them apart is what preserves the disagreement the EACL result says is informative.
-
-**Traits need independent evidence.** A model-inferred `TRAIT` stays hidden from active retrieval
-until two independent evidence groups support the same normalized claim; a trusted user
-statement is visible at once. A group is a capture (the observation context's `source_id`),
-falling back to the observation record when no capture was named, and a derived record inherits
-the groups of its own sources. So several cues extracted from one capture are one group, not
-two, and a single talkative turn cannot promote a disposition on its own. [Memory types, time, and decay](memory-types-time-and-decay.md) owns that
-rule.
-
-**Affect is associated with events through existing evidence links.** There is no affect-specific
-edge. An `EVENT` and an `AFFECT` formed from the same committed observation share that source, and
-the `memory_evidence` rows record it. The compiler exposes that association in the compiled bundle:
-an affect entry reports `event_ids` beside its own `context.evidence_ids`, and renders its basis,
-confidence, cue modality, valence, and arousal so a reader can judge the estimate instead of
-reading a bare label.
-[Context compilation](context-compilation.md) owns the bundle contract.
-
-That association is co-occurrence within one capture. It is not an attributed cause. A cue and an
-event that share a source were observed together; nothing in the current implementation establishes
-that the event produced the affect.
-
-## Perspective mapping
-
-Affect research distinguishes who is making the claim. SenseMem maps two of the three
-perspectives onto existing values and records the third as an open gap.
-
-| Perspective | SenseMem representation |
-| --- | --- |
-| Self-reported: the person says how they felt | `EvidenceBasis.USER_STATEMENT` |
-| Inferred: a model estimates from cues | `EvidenceBasis.MODEL_INFERENCE` |
-| Observed: another person judges how somebody seemed | No distinct basis today |
-
-The observed perspective is a real gap, not an oversight to close by adding an enum member.
-`EvidenceBasis` is a public contract, and a new member changes storage, every transport schema, and
-every consumer's exhaustiveness. It is admitted when a caller exists that can produce third-party
-judgements and a product path consumes them, and not before.
-
-## Design rules
-
-These are the affect-specific readings of rules the rest of the documentation already states.
-
-**Per-modality estimates stay separate.** Store one record per cue channel. Late fusion is a
-compilation-time reading over those records; it is never stored as a truth.
-
-**A user statement does not delete an affect inference.** It adds a separate sourced record.
-Automatic affect supersession is not implemented. Use host correction or deletion when an
-incorrect inference must leave recall, and retain the source evidence for review.
-
-**Abstention is a valid output.** A backend that cannot distinguish states on the evidence it was
-given proposes nothing. An emitted label with no discriminating power is worse than silence: it
-costs storage, it enters recall, and it looks like knowledge.
-
-**Discrete labels for expression, dimensions for change.** A discrete label may describe the cue as
-observed. Valence and arousal are what make two moments comparable and a trajectory measurable.
-
-**Cause must link to an event record.** Evidence identifiers are provenance, not causation. A claim
-that something caused an affect state is an assertion about the world and needs its own record with
-its own basis.
-
-**Mood is a long-interval `AFFECT`, not a new kind.** The validity interval already expresses the
-difference between a momentary cue and a day-long mood.
-
-**Rate, duration, and change points are proposed derived analyses.** There is no built-in
-trajectory or change-point API today; a future implementation must retain its source series.
-
-**Affect is never a primary retrieval key.** Ranking is driven by relevance, person, time, and
-task. Affect may inform a bounded rerank at most, and retrieval must preserve emotional diversity
-in its results. A store that preferentially returns memories matching the current mood builds a
-mood-congruent feedback loop, which is a product defect and not a feature.
-
-**`RESPONSE_POLICY` comes only from explicit feedback.** Inferred affect is not consent to change
-how the system behaves toward somebody. The kernel refuses a `RESPONSE_POLICY` proposed by a
-formation or consolidation backend, whatever basis the proposal claims; only an operation the host
-applies itself through `apply()` writes one, and the stored record carries `response_feedback`. The
-authorization is stamped on that record and not on the proposal, which the operation log keeps
-exactly as it was handed over so a logged row replays to the same derived record.
-
-Model-originated formation and control-plane operations also cannot modify a standing policy or
-its transitive active evidence graph. SQLite checks this in the same transaction as the write:
-reinforcement, correction, forgetting, source replacement and implicit lineage supersession are
-refused as `unauthorized`. This includes partially superseding an ancestor's validity interval.
-Automatic formation drops a refused derivation while preserving its observation and unrelated
-sibling proposals. Explicit host `apply()`, `forget()`, rollback, deletion and retention retain
-their authority to update or withdraw policy and supporting evidence.
-
-**Arousal-weighted consolidation priority stays capped.** High arousal may raise the priority of
-deliberation, bounded, so that a single intense episode cannot dominate the slow loop. If such a
-weight ever reaches ranking, it must be a `MemoryConfig` flag that defaults off, because a benchmark
-run has to be reproducible.
-
-## Event boundaries
-
-Affect change is one boundary signal for segmenting experience into events. It is not the only one
-and not the strongest one. Turn and scene end, actor change, place change, topic change, and
-activity change are all boundary evidence, consistent with Event Segmentation Theory. A segmenter
-that cuts only on affect change produces events that no other query can find.
-
-## Roadmap with gates
-
-Each phase has an exit criterion. A phase that widens the public surface must satisfy the
-[admission rule](plugin-architecture.md#admission-rule) in full: a concrete implementation in
-`src/`, a reachable caller on a product path, declared modalities and typed output, documented
-provenance and privacy and failure behavior, and product-path tests.
-
-### Phase 0: make what exists legible
-
-No public-contract widening beyond exposing fields that are already stored. Affect entries in the
-compiled bundle report their basis, confidence, cue modality, valence, arousal, and the event and
-source identifiers that already exist as evidence rows. The independence rule for inferred traits
-is tightened so cues from one capture count once.
-
-**Exit:** contract tests pin the exposed fields and the independence rule, and a companion-dialogue
-evaluation shows the bundle changes downstream answers.
-
-### Phase 1: one real optional affect adapter
-
-One local formation adapter that actually looks at the signal, reusing `FormationBackend` rather
-than introducing a protocol. It must emit per-modality outputs, report input quality, be calibrated,
-abstain when it cannot discriminate, and record model and recipe provenance. Heavy dependencies stay
-outside the core install, in the narrowest optional extra.
-
-A new `AffectBackend` protocol is admitted only if `FormationBackend` provably cannot express that
-contract. "Provably" means a written contract that the existing protocol cannot carry, not a
-preference for a dedicated name.
-
-**Exit:** the adapter ships in `src/`, is reachable through configuration, and its calibration and
-abstention behavior are measured against the text-only baseline.
-
-### Phase 2: richer affect structure
-
-Per-modality estimate, quality, and disagreement fields; an explicit `perspective`; and typed
-`about` and `triggered_by` links. Every one of these waits for Phase 0 and Phase 1 evidence that
-the current representation loses something measurable. Existing evidence edges are reused first. A
-narrow `affect_links` table is added only when traversal is a measured problem, not because a graph
-shape reads more naturally.
-
-**Exit:** a measurement showing the current representation loses information the new fields recover.
-
-### Phase 3: dynamics
-
-Per-identity baseline, deviation from it, change points, recovery time, and per-topic trajectory,
-all derived from the stored series. `TRAIT` promotion requires cross-session, cross-context
-independent evidence, and the person can confirm, correct, roll back, or forget any promoted trait.
-
-**Exit:** change-point detection and trait promotion measured against the false-promotion rate
-below, with the user controls implemented rather than planned.
-
-## Required measurements
-
-No SenseMem affect benchmark exists yet. Adding one is part of Phase 1, not a later concern:
-without it, every claim in this section is an opinion.
-
-| Axis | Metrics |
-| --- | --- |
-| Perception | CCC and MAE on valence and arousal; Macro-F1 on discrete labels |
-| Calibration | ECE, Brier score, selective risk against abstention rate |
-| Association | Emotion-cause pair F1, target accuracy, evidence citation accuracy |
-| Dynamics | Change-point F1 and latency, false alarm rate, false trait promotion rate |
-| Memory and interaction | Recall@5 and MRR on affect-conditioned queries, affect QA accuracy, factual regression against the text baseline, user correction rate, human ratings of appropriateness and creepiness |
-
-Ablations run in this order, so that each addition is credited only with what it adds:
-
-1. Text-only baseline.
-2. Raw multimodal input, no affect typing.
-3. A single fused affect label.
-4. Per-modality calibrated affect.
-5. Event and cause association.
-6. Dynamics and trait promotion.
-
-Candidate datasets are MME-Emotion, SemEval-2024 Task 3 (emotion-cause pairs in conversation),
-VoiceLongMemEval (arXiv 2609.00570), and a consented SenseMem companion set. External results
-guide hypotheses; only reproducible SenseMem runs select defaults, as
-[benchmarking](benchmarking.md) requires.
-
-Speech emotion confidence needs explicit calibration before it can gate anything: reported
-SER confidence must be evaluated rather than assumed calibrated
-([Chou et al., Interspeech 2023](https://www.isca-archive.org/interspeech_2023/chou23_interspeech.html)). A confidence
-field that is not calibrated is a number, not a probability, and must not drive visibility.
-
-## Safety boundary
-
-Affect inference is among the most sensitive things this product can do. The boundary is a
-precondition for the roadmap, not a later compliance pass.
-
-- Consent is per modality, and the recording state is visible to the person being recorded. Consent
-  to transcription is not consent to vocal affect analysis.
-- Local processing is the default. A remote call that carries affective media or derived affect is
-  an explicit, disclosed deployment choice, consistent with
-  [design principles](design-principles.md).
-- Retention and deletion are separate for raw media, derived affect, and biometric
-  representations. Deleting derived affect must not require deleting the source, and deleting the
-  source must recompute or remove what depended on it.
-- Prohibited uses: clinical or psychiatric diagnosis, workplace or education evaluation, individual
-  risk scoring, and engagement manipulation.
-
-The host must assess applicable restrictions and transparency requirements before enabling
-affect processing. The [EU AI Act's official text](https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng)
-is one relevant source; this SDK does not determine a deployment's legal classification or
-provide compliance certification.
-
-## Known hazards for implementers
-
-Four properties of the current tree will silently defeat a naive acoustic-affect implementation.
-
-**The bundled speech adapter strips special tokens.** `FunASRTranscriber` removes every `<|...|>`
-tag from transcribed text. A SenseVoice-style model that signals emotion as `<|HAPPY|>` would have
-those tags removed with no error and no warning. An acoustic-affect adapter must not route its
-output through that filter; it needs its own typed return path.
-
-**Formation sees text only by default.** The `formation` slot's `modalities` defaults to text, and
-source-backed captions or transcripts may still make an observation usable by that text route. Acoustic affect therefore requires
-declaring the audio modality in configuration; otherwise the audio never reaches the former and the
-absence looks like a model that found nothing.
-
-**A badly grounded affect proposal is refused individually.** If its cue modality is absent
-from the source, the kernel drops that proposal and increments
-`sensemem.formation.refused_proposals`. Other valid proposals can still commit. A malformed
-batch envelope remains a call failure.
-
-**Affect never becomes a standing assertion by accident.** Because `AFFECT` is outside the conflict
-kinds, an adapter cannot rely on supersession to clean up its own history. Two disagreeing cues stay
-as two records. Anything that needs a single current answer belongs in `STATE` or `TRAIT`, with the
-evidence requirements those kinds carry.
-
-## What SenseMem will not build
-
-There will be no second "emotional right brain" store beside SQLite, no storage of a label as a
-fact, and no graph database or background service to hold affect links. Affect uses the same
-records, the same evidence edges, the same versioning, and the same authority model as everything
-else; if it cannot be expressed there, the representation is wrong and a parallel store would only
-hide that. [VoiceMem](https://arxiv.org/abs/2608.26005) is the source of three ideas taken up here:
-splitting momentary state from long-horizon disposition, cross-linking affect with people, topics,
-and events, and using streaming cues to drive speculative retrieval. Three of its implementation
-choices are declined: triggering only on negative affect, falling back to a VAD-quadrant label with
-no semantic content, and upserting affect state without versions. Each would cost exactly the
-auditability that makes an affect hypothesis correctable.
+| Original words, audio, or frames | `OBSERVATION` | Source evidence retained independently of an interpretation. |
+| Situated affect assessment | `AFFECT` | An episodic record with optional valence, arousal, cue modality, confidence, and validity. |
+| Co-occurring event | `EVENT` | An event assertion linked to its source observation. |
+| Longer-horizon characteristic | `TRAIT` | A semantic claim with additional support requirements for model inferences. |
+| Response guidance | `RESPONSE_POLICY` | Procedural guidance authorized by a host operation with response-feedback provenance. |
+
+For example, “the voice rose,” “the person may be anxious,” and “the person says they were
+nervous” make different claims. Storing one does not overwrite the others. `AFFECT` records do not
+automatically supersede each other or become standing state assertions.
+
+`FormationProposal` accepts `valence` in `[-1, 1]`, `arousal` in `[0, 1]`, a single atomic
+`cue_modality`, confidence, subject, and validity bounds. A cue cannot use `omni` or name a modality
+absent from its source. Text-only input therefore cannot support a claim about vocal tone.
+Confidence is an operational assessment, not a calibrated probability.
+
+## Producing affect records
+
+The bundled OpenAI-compatible `FormationBackend` can propose affect and trait records after a
+source observation commits. Formation is disabled unless configured. Its native modalities default
+to text; source-labelled captions and transcripts can also provide a text route.
+
+There is no bundled prosody, facial-expression, or acoustic-affect recognizer. Declaring audio or
+visual support on the formation slot only controls which inputs reach the model; it does not
+establish affect-recognition quality. A custom adapter can use the existing formation contract.
+See [formation configuration](configuration.md#automatic-memory-formation).
+
+Keep one estimate per cue channel when the channels disagree. The kernel excludes `AFFECT` from
+functional conflict reconciliation, so two simultaneous cues remain separate records. Use an
+explicit host correction or deletion to withdraw an incorrect inference while retaining its source.
+A backend with insufficient evidence can return no proposal.
+
+The evidence basis records whether a claim is an observation, user statement, model inference, or
+response feedback. It has no separate value for another person's judgment about how somebody
+seemed. Applications must not present such a judgment as the subject's own statement.
+
+## Trait visibility
+
+A model-inferred `TRAIT` stays hidden from active retrieval until two independent evidence groups
+support the normalized claim. A trusted `USER_STATEMENT` trait is visible immediately.
+
+Capture identity determines independence: an observation uses its `ObservationContext.source_id`,
+or its record ID when no source ID was supplied. Derived records inherit the groups of their
+sources. Several cues from one capture count as one group. Jointly cited sources are one support
+assessment; listing more source IDs does not create independent corroboration.
+
+Evidence changes recompute confidence and visibility. `get()` and `list()` can still expose a
+hidden trait with `context.visible=False`; ordinary retrieval excludes it. The
+[support rules](memory-types-time-and-decay.md#typed-context-and-formation) define clause withdrawal
+and the optional independent-evidence projection.
+
+## Compiled context
+
+`compile()` places affect and traits in separate sections. An `AffectCue` carries the hit's stored
+context and `event_ids` for eligible events sharing source evidence. Rendered affect lines show
+basis, confidence, cue modality, valence, arousal, and bounded source/event identifiers when present.
+
+Shared evidence establishes co-occurrence, not cause or emotional target. An event ID does not
+mean that the event caused the affect, nor does it deliver the event's content. Event enrichment
+is optional and can be skipped after the compilation deadline. See
+[affect cues](context-compilation.md#affect-cues) for rendering and limits.
+
+No built-in trajectory, change-point, per-person baseline, or affect-specific ranking API is
+provided. Ordinary relevance, time, scope, and evidence rules determine retrieval.
+
+## Response-policy authority
+
+Inferred affect does not authorize a change in how an agent should behave toward somebody.
+Formation and consolidation backends cannot create `RESPONSE_POLICY` records, regardless of the
+basis their proposals claim. Only a host-authored `apply()` operation can authorize one; the
+stored record carries `response_feedback`.
+
+Model-originated writes also cannot modify an active response policy or its transitive support
+graph through reinforcement, correction, forgetting, source replacement, or implicit lineage
+supersession. SQLite checks that boundary in the write transaction. Host administration retains
+its documented authority to change or withdraw the policy and its evidence.
+
+## Adapter considerations
+
+Declare the modalities the adapter actually analyzes. A text route over a transcript does not
+analyze acoustic cues. The bundled FunASR transcriber strips `<|...|>` tags from transcription;
+an affect adapter must return typed proposals rather than rely on emotion tags surviving that
+text filter.
+
+The kernel refuses an ungrounded affect proposal individually and counts it in
+`sensemem.formation.refused_proposals`; other valid proposals and the source can remain durable.
+A malformed batch envelope still fails the call. Preserve model and recipe identity whenever
+changing the analysis or prompt.
+
+## Evaluation and privacy
+
+SenseMem does not publish a calibrated affect benchmark result. Evaluate a proposed adapter on
+held-out, representative, appropriately authorized inputs before relying on its estimates. Useful
+measurements include valence/arousal error, label accuracy, calibration, abstention, false trait
+promotion, correction behavior, and downstream task quality against a text-only baseline.
+Report the model revision, source population, modality, annotation basis, and costs.
+
+The host controls recording disclosure, consent, remote inference, retention, and access. Consent
+to transcription does not by itself authorize every derived analysis. SenseMem's identity-consent
+mechanism is not a complete per-modality consent workflow. Affect estimates must not be presented
+as clinical diagnoses or verified psychological traits.
+
+New analysis capabilities follow the [plugin admission rule](plugin-architecture.md#admission-rule).
+They use the same authoritative records, evidence links, and lifecycle as other derived memory.
+See [Security](../SECURITY.md) for model-data and deletion boundaries.

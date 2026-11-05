@@ -1,6 +1,8 @@
 # Replace localhost endpoints and configure credentials outside this committed example.
 # Run: sensemem-bench eval --config docs/examples/mem-gallery-qwen-wemm.yaml --gen-kwargs temperature=0.7
-# Evaluation starting point; see docs/grounded-multimodal-recall.md for policy and transport limits.
+# See docs/configuration.md for recall settings and media transport limits.
+# Requires Mem-Gallery data and compatible embedding, generation, and image-description services.
+# Explicit defaults make the intended evaluation composition visible.
 consolidation: null
 embedding:
   base_url: http://127.0.0.1:8000/v1

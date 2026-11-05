@@ -4,12 +4,11 @@
 [![Python 3.11–3.14](https://img.shields.io/badge/Python-3.11%E2%80%933.14-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-3DA639.svg)](LICENSE)
 
-**A unified Context & Memory layer for agents, across devices, modalities, and models.**
+**A unified context and memory layer for agents, across devices, modalities, and models.**
 
 SenseMem turns information from digital interactions and the physical world into evolving memory,
-then builds evidence-backed context for the task an agent is working on. Chatbots, coding agents,
-smart glasses, phones, robots, and other intelligent products are all part of that product vision.
-Applications connect their sources through one content contract.
+then builds evidence-backed context for an agent's current task. Applications connect chat,
+software tools, and device observations through one content contract.
 
 Context is the information an agent needs now. Memory is information retained and organized across
 time. SenseMem connects them in a continuous loop:
@@ -25,8 +24,8 @@ adapters, OpenAI-compatible endpoints, or custom typed backends; a remote backen
 inputs required for its operation. Deployment depends on support for Python, dependencies, and the
 selected models. Device capture and synchronization remain application responsibilities.
 
-This checkout declares package version `0.3.0`. Start with the
-[documentation index](docs/README.md) for current guides and API contracts.
+The documentation describes version `0.3.0`. Start with the [quick start](docs/quickstart.md)
+or browse the [documentation index](docs/README.md).
 
 ## Why SenseMem
 
@@ -38,10 +37,7 @@ Three principles guide the product:
 | **Swifter** | Let users compose capabilities, choose models, and extend implementations through explicit plugin contracts. |
 | **Stronger** | Deploy across hardware classes and pursue state-of-the-art results across a broad range of memory and multimodal tasks. |
 
-These principles guide development. Hardware coverage and quality advantages require reproducible
-results for named configurations; they are not universal support or leaderboard claims.
-
-Today, SenseMem lets you:
+SenseMem lets you:
 
 - **Preserve multimodal evidence.** Store ordered text, images, video, and audio as one
   observation, with original media retained locally.
@@ -67,37 +63,29 @@ semantics, evidence, durable local consistency, retrieval, and context construct
 
 ## Installation
 
-SenseMem supports Python 3.11 through 3.14. Install only the surfaces you use:
-
-The base package provides local storage, retrieval, public types and Zvec. Model runtimes and
+SenseMem supports Python 3.11 through 3.14. The base package provides local storage, retrieval,
+public types and Zvec. Model runtimes and
 transports live in optional extras; the [configuration guide](docs/configuration.md#install-only-the-surfaces-you-use)
-maintains their complete dependency catalog.
-
-Common choices:
+maintains their complete dependency catalog. In a Python project, choose the integrations you need:
 
 ```bash
-uv add "sensemem[all]"                       # every optional integration
-uv add sensemem                              # bring your own embedder
-uv add "sensemem[local]"                     # first local add/search loop
-uv add "sensemem[local,reranking]"           # local embedding and Qwen3-VL reranking
-uv add "sensemem[openai]"                    # OpenAI-compatible models
-uv add "sensemem[local,server]"              # local models plus REST
-uv add "sensemem[openai,mcp]"                # remote models plus MCP
-uv add "sensemem[benchmarks,local,openai]"   # evaluation environment
+uv add "sensemem[local]"          # local embedding and speech
+uv add "sensemem[openai]"         # OpenAI-compatible model endpoints
+uv add "sensemem[local,server]"   # local models and REST
+uv add "sensemem[openai,mcp]"     # remote models and MCP
 ```
 
 With `pip`, the same extras apply:
 
 ```bash
-python -m pip install "sensemem[all]"
 python -m pip install "sensemem[local]"
 ```
 
 `sensemem[all]` installs the complete optional dependency surface. It does not configure model
 providers, download benchmark datasets, or supply the YuNet and SFace model files.
 
-Transport extras do not choose a model backend. The base package always requires an application
-supplied embedder.
+Use the base `sensemem` package when supplying your own embedder. Installing a transport extra
+does not configure a model backend.
 
 `SentenceTransformersEmbedder` loads the selected model at construction with
 `trust_remote_code=False`. The example below selects EmbeddingGemma 2 with Apache-2.0 weights.
@@ -108,8 +96,8 @@ durable embedding-space rules.
 
 ## Basic usage
 
-Save the following as `example.py` after installing `sensemem[local]`. It stores a fact, proves
-idempotent identity, and retrieves it with no database service or model API key:
+Save the following as `example.py` after installing `sensemem[local]`. It stores and retrieves
+a fact without a database service or model API key:
 
 ```python
 from sensemem import Memory
@@ -184,11 +172,11 @@ The [documentation index](docs/README.md) is the complete task-oriented map.
 ## Benchmarks
 
 `sensemem-bench eval` evaluates memory quality and end-to-end behavior through the public SDK.
-Its executable catalog covers eighteen benchmark families across long-horizon conversation,
+Its executable catalog covers long-horizon conversation,
 personalization, multimodal video and lifelog QA, embodied scene memory, and grounded retrieval.
 Separate utilities produce raw LoCoMo-Refined predictions and measure the local SQLite-to-Zvec
 index path. Copy the [evaluation example](docs/examples/eval.example.yaml) to `eval.yaml` and
-select an embedding model before executing a SenseMem run.
+configure the embedding, generation, and judge endpoints and credentials before running it.
 
 ```bash
 sensemem-bench eval --list-tasks
@@ -205,9 +193,8 @@ sensemem-bench eval \
 request. Results record dataset and implementation pins, digests, confidence intervals, latency,
 resources, tokens, abstentions, mandatory controls, and a noise floor.
 
-This README makes no performance or leaderboard claim: a number is meaningful only with its
-dataset, scorer, model, runtime, hardware, and validity fields. Read
-[Benchmarking](docs/benchmarking.md) before downloading data or comparing runs.
+Compare results with their dataset, scorer, model, runtime, hardware, and validity fields.
+[Benchmarking](docs/benchmarking.md) documents dataset preparation and reproducible comparisons.
 
 ## Operational boundaries
 

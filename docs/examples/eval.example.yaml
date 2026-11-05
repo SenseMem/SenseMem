@@ -1,195 +1,93 @@
-# SenseMem evaluation configuration -- annotated example.
+# Evaluation configuration. Copy to .benchmarks/configs/my-run.yaml and customize.
+# Run: sensemem-bench eval --config .benchmarks/configs/my-run.yaml --limit 1
+# --limit counts dataset-specific units, which can contain many questions.
+# See docs/benchmarking.md and docs/configuration.md for the complete contracts.
 #
-# Copy it, edit it, and pass it to the harness:
-#
-#   mkdir -p .benchmarks/configs
-#   cp docs/examples/eval.example.yaml .benchmarks/configs/my-run.yaml
-#   sensemem-bench eval --tasks locomo-refined --config .benchmarks/configs/my-run.yaml
-#
-# `.benchmarks/` is gitignored, so credentials you put under `.benchmarks/configs/` stay local.
-# Never edit this file with a real key: it is committed.
-#
-# ---------------------------------------------------------------------------------------------
-# How a run actually works
-# ---------------------------------------------------------------------------------------------
-# A benchmark task is a list of memory *units*. Each unit gets its own physical `data_dir`,
-# because one directory is one running SenseMem instance -- there is no logical scope that
-# substitutes for that isolation. Per unit, the harness:
-#
-#   1. WRITES the unit's content through the public SDK. Each observation is embedded by the
-#      `embedding` backend and committed to SQLite, which is authoritative; the Zvec vector index
-#      is derived from it and can always be rebuilt. Audio and the audio track of video first go
-#      through the `speech` backend to become text. If `formation` is declared, one extra LLM
-#      round-trip per observation proposes typed memories (entity, event, state, relation, ...)
-#      that are stored *alongside* the raw observation, never instead of it.
-#   2. READS by embedding the question and retrieving candidates, then hydrating them from SQLite
-#      so that stale index entries are dropped rather than returned.
-#   3. ANSWERS with the `generation` backend, given the retrieved evidence. For media evidence it
-#      re-fetches the original source file rather than a pre-cut derivative.
-#   4. SCORES the answer with the task's official scorer, and with a judge model for open-ended
-#      tasks.
-#
-# So the three blocks below are the three stages: `embedding` decides what can be found,
-# `speech` decides whether sound becomes searchable text, and `generation` decides what is said
-# about what was found.
-#
-# ---------------------------------------------------------------------------------------------
-# Where a setting may come from
-# ---------------------------------------------------------------------------------------------
-# Command-line flag  >  this file  >  environment variable  >  built-in default
-#
-# A flag wins because it is typed for one run; this file beats the environment because it is the
-# reviewable artifact. The embedding section is required; other sections use their documented
-# defaults. The harness never chooses a local embedding model implicitly.
-#
-# See docs/benchmarking.md for the flags and docs/configuration.md for the full product schema.
+# Precedence: command-line flag > explicit file value > environment > built-in default.
+# The runner allocates a separate physical data_dir per independent unit.
 
-# =============================================================================================
-# Product composition -- the same shape `Memory.from_config()` accepts.
-# `data_dir` is deliberately absent: the harness replaces it with per-unit directories.
-# =============================================================================================
-
-# What gets embedded, and therefore what can ever be retrieved. Retrieval quality is bounded
-# here, not in the ranker: content this backend cannot represent is content no ranking can
-# recover.
 embedding:
-  # `openai` reaches any OpenAI-compatible server, including a local vLLM.
-  # Alternative: `sentence-transformers` (requires `model`; `revision` is optional).
-  # With no revision, local loaders resolve the current Hub commit and record its identity.
   provider: openai
   base_url: http://127.0.0.1:8000/v1
-  # Local servers usually accept any non-empty string; omit the field to let the SDK read
-  # OPENAI_API_KEY instead.
+  # Replace or remove placeholders; explicit api_key values override environment lookup.
   api_key: local-server-ignores-this
   model: your-embedding-model
-  # Must equal the server's real vector width. Read it back from the server rather than guessing:
-  #   curl -s $BASE_URL/embeddings -H 'Content-Type: application/json' \
-  #     -d '{"model":"your-embedding-model","input":"probe"}' \
-  #     | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"][0]["embedding"]))'
+  # Must match the endpoint's actual vector width.
   dimension: 1024
-  # Declaring a modality routes that kind of memory here. An empty set would build a Memory whose
-  # every write fails, so at least one is required; declaring one the server cannot accept makes
-  # those writes fail instead of falling back.
   modalities: [text]
-  # `input` is the plain embeddings payload. `messages` is the request shape multimodal servers
-  # read media parts from -- switch to it when this model embeds images or video.
+  # Use messages for a compatible multimodal embeddings server.
   request_format: input
   timeout: 600.0
   max_retries: 3
 
-# Turns audio, and the audio track of video, into searchable text. Omit the block to skip
-# transcription entirely; media then contributes only what the visual path produces.
+# Optional local speech analysis. Omit when the corpus needs no speech backend.
 speech:
-  # `funasr` runs locally and is pinned to the Fun-ASR-Nano recipe, so there is no model field.
-  # `--device` overrides this at the command line.
   provider: funasr
   device: auto
 
-# Answers questions from retrieved evidence. The harness overwrites `base_url`, `model`,
-# `timeout`, `modalities`, `temperature`, and `seed` from the resolved run settings, so declaring
-# them here is how you *supply* them -- they are not ignored, they are the source.
 generation:
   provider: openai
   base_url: https://your-endpoint.example/v1
-  # Every OpenAI-compatible slot carries its own credential, which is what lets `embedding` above
-  # talk to a local server while this one talks to a hosted endpoint. Unset falls back to
-  # SENSEMEM_GENERATION_API_KEY, then to the SDK's own OPENAI_API_KEY lookup. The value is a
-  # secret type: it never appears in `model_dump`, in a `repr`, or in a written results file.
+  # Remove to use SENSEMEM_GENERATION_API_KEY, then OPENAI_API_KEY.
   api_key: replace-me
   model: your-vlm
-  # Only declared modalities are sent to the model. Video here means the harness may hand it
-  # whole clips; without it, video evidence degrades to its transcript and captions.
+  # Declare only modalities the endpoint accepts.
   modalities: [text, image, video]
-  # Omitted on purpose: the request then carries no token ceiling at all. Set a positive integer
-  # only to impose one. Note that a thinking model needs its reasoning budget inside any ceiling
-  # you set, or every response ends as `finish_reason=length`.
+  # Optional output ceiling; reasoning tokens also consume it on reasoning models.
   # max_tokens: 4096
-  # Cap on how many video evidence items one answer may carry; question media has priority.
   video_limit: 8
-  # Anything else the endpoint accepts in the request body. This is where a thinking model is
-  # turned off -- reasoning models otherwise spend their whole budget before answering. It is the
-  # same setting `--gen-kwargs enable_thinking=false` writes, so declare it here and drop the flag.
+  # Provider-specific setting: remove or adapt it for other model servers.
   extra_body:
     chat_template_kwargs:
       enable_thinking: false
-  # `temperature` and `seed` are deliberately absent and are rejected if you add them: a
-  # reproducible sweep pins temperature to 0 and takes the seed from `benchmark.run.seed`.
+  # Sampling is harness-owned: use --gen-kwargs temperature=0.7 and benchmark.run.seed.
+  # generation.temperature and generation.seed are not accepted in evaluation files.
 
-# Optional, and off by default: it adds an LLM round-trip to every write. It buys the typed
-# memory plane (entity, event, state, relation, affect, trait), each linked back
-# to its source as evidence. A text-only former can use source-backed captions/transcripts;
-# native media requires a declared modality. Response policies require host authorization.
+# Optional formation runs after source commit and adds evidence-linked typed records.
 # formation:
 #   provider: openai
 #   base_url: https://your-endpoint.example/v1
 #   api_key: replace-me
 #   model: your-llm
 #   modalities: [text, image]
-#   # Formation returns JSON and treats a truncated response as a hard error, so too small a
-#   # budget fails the whole batch rather than parsing partially.
 #   max_tokens: 4096
 
-# Retrieval and ranking behaviour. Every field is optional; the SDK defaults are named in the
-# comments, and only `evidence_budget_chars` below departs from them.
 settings:
-  # Index transcribed speech as retrievable text. On by default, and a no-op unless the speech
-  # slot is a SpeechBackend; without it a video memory's searchable text is only what the visual
-  # path wrote.
   index_speech: true
-  # Relevance floor for a hit, default 0.10. Lowering it trades precision for recall. It gates
-  # `gate_relevance`, not the `score` a hit reports.
+  # Admission uses gate_relevance, not the final SearchHit.score.
   minimum_relevance: 0.10
-  # How close the top two hits must be before retrieval is treated as ambiguous. Default 0.01.
   ambiguity_margin: 0.01
-  # Character budget for evidence handed to the answerer. SDK default 24000; None grounds on
-  # the ranked `limit` window, with source closure and optional planning/expansion still applied.
-  # Mandatory raw observations can exceed this soft allowance.
+  # Soft grounding budget, below the SDK's 24000 default. Mandatory raw hits can exceed it;
+  # derived assertions require their eligible source closure to fit. This is not a token cap.
   evidence_budget_chars: 12000
-  # `reinforce_on_answer` is deliberately absent: the runner forces it off whatever this file
-  # says, because reinforcing mid-run makes one question's retrieval depend on which earlier
-  # questions answered, and under concurrency on the order their updates committed.
+  # The evaluator disables automatic answer reinforcement for reproducible question ordering.
 
-# =============================================================================================
-# Harness-only section. These have no field in `SenseMemConfig` and must not gain one:
-# judge credentials, corpus acquisition, server observation, and regression budgets exist only
-# in the benchmark harness. Product endpoint credentials stay with their own slots above.
-# =============================================================================================
+# Harness settings are removed before passing the composition to Memory.from_config().
 benchmark:
-  # Nothing about the generation endpoint lives here -- not even the short-video floor, which is
-  # `generation.min_video_seconds` in the product block above. A setting with two homes is a
-  # setting whose effective value nobody can read off the file.
-
-  # Judging exists only in the harness, so it has no product block. Omit this to reuse the
-  # generation endpoint, which is what an unset judge has always meant.
+  # Omit this section to reuse the generation endpoint as judge. Official metrics can require
+  # a different named judge; --list-tasks identifies it.
   judge:
     model: your-judge-model
     base_url: https://your-endpoint.example/v1
+    # Remove to use SENSEMEM_JUDGE_API_KEY, then the resolved generation key.
     api_key: replace-me
     timeout_seconds: 600
 
-  # Optional vLLM Prometheus endpoints. Deltas are process-global and therefore explicitly marked
-  # non-exclusive; leave either URL null when that server does not expose `/metrics`.
+  # Optional process-global vLLM observations. Shared traffic can affect these deltas.
   server_metrics:
     generation_url: null
     embedding_url: null
     timeout_seconds: 5
 
-  # Where corpora are read from and downloaded to.
   download:
-    # Defaults to the checkout's `.benchmarks`, resolved from the repository rather than the
-    # process directory -- a run started inside a Git worktree still reaches the one populated
-    # copy. Set it to share a corpus between checkouts.
+    # Defaults: <repository>/.benchmarks and <benchmarks_root>/data.
     # benchmarks_root: /corpus/.benchmarks
-    # Defaults to <benchmarks_root>/data.
     # data_root: /corpus/.benchmarks/data
-    # Mirrors HF_HOME and HF_ENDPOINT. Both are published back to the process environment once
-    # resolved, because `huggingface_hub` reads them when it is first imported.
     # hf_home: /corpus/huggingface
     hf_endpoint: https://huggingface.co
-    # Throttle between YouTube-sourced media fetches, in seconds.
     youtube_sleep_seconds: 30
 
-  # Optional maximum relative regressions. These require `run.compare` or `--compare`.
+  # Maximum relative regression, requiring run.compare or --compare.
   # performance_budgets:
   #   answer_e2e_ttft_p95: 0.10
   #   answer_e2e_latency_p95: 0.10
@@ -197,109 +95,66 @@ benchmark:
   #   tokens_per_call: 0.05
   #   answer_throughput: 0.10
 
-  # Every run tunable the command line exposes, so one file can describe a whole sweep. A flag
-  # still wins over anything here. Each key mirrors the flag of the same name; the value shown is
-  # the built-in default, so an omitted key behaves exactly as an unset flag.
   run:
-    # Which tasks to run: names or groups, comma separated. Required, by flag or here.
     tasks: locomo-refined,clbench
-
-    # Which arms answer: sensemem (the product), blind (no evidence), full-context (the corpus
-    # stuffed into one prompt), random (shuffled candidates, retrieval metrics only), compile
-    # (Memory.compile's rendered bundle). Baseline arms share one ingest and are never official.
-    # `--blind` labels a whole run as the control and stays a flag, so it refuses to run alongside
-    # an arm selection made here.
+    # sensemem, blind, full-context, random, compile; baseline scores are non-official.
     arms: sensemem
-    # Character budget the full-context arm stuffs into one prompt.
     full_context_chars: 128000
-    # ContextBudget the compile arm compiles against; defaults match the SDK's own ContextBudget.
     compile_max_items: 24
     compile_max_chars: 16000
-    # Opt into exact raw excerpts when complete parents do not fit the compile-arm budget.
     compile_allow_partial_sources: false
-    # How memories reach the store: add (Memory.add_many/add, the strong default) or capture
-    # (Memory.capture then Memory.settle -- exercises the fast plane so capture acknowledgement
-    # and time-to-searchable are measured from a real run instead of reading empty).
+    # add returns searchable; capture measures capture followed by explicit settlement.
     ingest: add
-    # `all` (or -1) for every unit, a 0-1 fraction, or an absolute count.
+    # all (or -1), a fraction between 0 and 1, or an absolute unit count.
     limit: all
     offset: 0
 
-    # Throughput. `unit_concurrency` is the strongest lever: tasks run serially by design so that
-    # timing stays clean, and this overlaps the units inside one task.
     unit_concurrency: 1
-    # Static corpora only; values above 1 require add, no deliberate, formation, speech, or face.
+    # Above 1 requires static corpora, add mode, and no deliberation/formation/speech/face.
     ingest_concurrency: 1
     request_concurrency: 4
-    # SDK surface, separate from generation.stream and stream_results. False uses buffered ask,
-    # allowing request_concurrency: 16 against one store within the 28-operation admission budget.
+    # false uses buffered ask; true uses ask_stream and exposes caller TTFT.
     stream_answers: true
     judge_concurrency: 8
     batch_size: auto
     max_batch_size: 64
-
-    # How many memories one question may retrieve. Capped at 100.
     recall_limit: 20
-    # null keeps each task's answer protocol; strict or best_effort overrides it for the run.
+    # null keeps the task's policy; strict or best_effort overrides it.
     answer_policy: null
 
-    # One integer, or three, or four. One value fills all four slots.
+    # One integer fills all four RNG slots; three- and four-integer forms are also supported.
     seed: 0
     bootstrap_samples: 2000
-    # Zero-based label for this independent invocation; run at least three fresh-store repeats.
     repeat_index: 0
-
-    # Local model placement. `device` overrides the devices declared in the blocks above;
-    # `device_lock` serialises pools that share one CUDA device.
     device: null
     device_lock: true
 
-    # Artifacts. `output_path` defaults to <benchmarks_root>/results/<run_id>, and `run_id`
-    # defaults to a UTC timestamp.
+    # Defaults: UTC timestamp run_id and <benchmarks_root>/results/<run_id> output.
     run_id: null
     output_path: null
     overwrite: false
     log_samples: false
-    # Reuse model answers across runs; a directory or a .db file.
+    # Response cache directory or .db path; cached runs are not performance baselines.
     use_cache: null
-
-    # Skip scoring and only record predictions.
     predict_only: false
-    # Judge and print each task as it finishes (the default). Set this false only when a
-    # measurement protocol requires every inference phase to finish before any judge traffic.
+    # Judge and report each completed task; false defers judging until all tasks finish.
     stream_results: true
-    # Fetch missing pinned annotations and selected media.
     download: true
-    # Accept a corpus whose digest is not pinned. Off by default for a reason.
     allow_unverified_data: false
-    # SenseMem's own log level. Dependencies are held at WARNING unless this is
-    # DEBUG, which opens the whole process. The results table prints either way.
     verbosity: INFO
     quiet: false
 
-    # Regression gate against a prior result directory or samples.jsonl.
     compare: null
     fail_on_regression: false
     regression_threshold: 0.0
 
-    # Per-task input overrides, keyed by concrete task name.
+    # Per-task input overrides:
     # task_data:
     #   clbench: /corpus/clbench/custom.json
     # media_root:
     #   video-mme-v2: /corpus/video-mme-v2/videos
-    # media_manifest: /corpus/.benchmarks/results/prepared/media-manifest.jsonl
+    # media_manifest: /corpus/prepared/media-manifest.jsonl
 
-# ---------------------------------------------------------------------------------------------
-# Not expressible here, and why
-# ---------------------------------------------------------------------------------------------
-# These inputs stay on the command line:
-#
-#   --config              this file's own path
-#   --list-tasks          modes that do something other than evaluate, so they are actions
-#   --check-integrity     rather than settings
-#
-# The three `*-args` strings (--model-args, --gen-kwargs, --judge-model-args) are shorthand only.
-# Everything they can set has a typed home above: --model-args writes generation.base_url /
-# generation.model / generation.timeout / generation.min_video_seconds,
-# --gen-kwargs writes generation.max_tokens and generation.extra_body, and --judge-model-args
-# writes benchmark.judge.
+# Invocation-only flags include --resume, --blind, --blind-baseline, --deliberate,
+# --fallback-reference-at, --list-tasks, and --check-integrity.
+# --gen-kwargs also selects supported sampling controls and provider-specific generation fields.

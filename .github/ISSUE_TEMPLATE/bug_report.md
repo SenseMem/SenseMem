@@ -38,7 +38,8 @@ assignees: ''
 
 ## Logs
 
-<!-- Redact credentials, memory content, metadata, and local paths that identify users. -->
+<!-- Include stable error fields and trace/request IDs. Redact credentials, memory content,
+     metadata, provider response bodies, biometric vectors, and identifying local paths. -->
 
 ```text
 

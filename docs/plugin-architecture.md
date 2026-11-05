@@ -1,6 +1,6 @@
 # Plugin architecture
 
-## Decision
+## Kernel and capability model
 
 **Swifter** means users can compose capabilities, choose models, and extend implementations.
 SenseMem applies the "everything is a plugin" principle to replaceable capabilities around one
@@ -10,9 +10,8 @@ SenseMem uses a stable memory kernel with explicit, typed computation plugins. I
 global registry, arbitrary pipeline hooks, automatic package installation, or a second execution
 plane.
 
-This keeps the product rich without making the API sprawling: applications define their own input
-and capture forms at the edge, while replaceable model plugins implement narrow capabilities behind
-the same memory operations.
+Applications normalize input and capture formats at their boundary. Replaceable model plugins
+implement narrow capabilities behind the same memory operations.
 
 The kernel owns memory identity and semantics, capability routing, validation, SQLite and media-CAS
 durability, the index outbox, SQLite hydration, and final context construction. A plugin may perform
@@ -138,13 +137,17 @@ Request-local reranking scores are not persisted derivations and need no `*_spac
 `reranking_model` property identifies the loaded model for diagnostics. Changing a reranker
 requires reopening the instance but does not change stored embeddings or require re-ingestion.
 
+`VLLMReranker` implements the same contract over HTTP. It owns and closes its transport, including
+an injected client; the server owns model loading, revision pinning, and media preprocessing.
+Declare that server's capabilities and retain its identity with evaluation results.
+
 `VisionDescriptionBackend.describe` returns plain observation text. Text beginning with `Fact:`
 has no identity side effect. The optional `VisionAnalysisBackend.describe_analysis` returns typed
 `VisualDescription(text, facts, speaker_names)` values. `SpeakerName(speaker_label, name)` is an
 explicit proposal about the source-local diarised label. The identity plane validates those
 proposals, preserves existing names, and owns auditable, reversible `IDENTIFY` writes and all
 cross-modal merges. The bundled OpenAI adapter translates its provider output into these values.
-The kernel uses the `typed-v1` description-cache format; old cache rows are recomputed.
+The kernel stores typed descriptions in the `typed-v1` cache format.
 
 `EvidenceGeneration` composes any generation backend with independent `MediaSelectionBackend`
 and `SourceMetadataBackend` implementations. The kernel owns bounded selection and evidence
@@ -200,12 +203,13 @@ their complexity through SenseMem's own measured retrieval results. A paper's ar
 benchmark score is not by itself a reason to replace the flat durable representation.
 
 Interaction memory uses the existing semantic, episodic, and procedural roles. The current
-`FormationBackend` can propose affect and trait records; richer per-modality analysis follows the
-gates in [affective memory](affective-memory.md). Response policies require host-authorized
-operations. Derived records retain evidence provenance and use the kernel's validated write path; plugins may not write around
-durability or reinterpret metadata as routing, isolation, or trust.
+`FormationBackend` can propose affect and trait records; additional analysis must preserve the
+representation described in [affective memory](affective-memory.md). Response policies require
+host-authorized operations. Derived records use the kernel's validated write path and retain
+evidence provenance. Plugins cannot bypass durability or reinterpret metadata as routing,
+isolation, or trust.
 
-## Trade-offs and revisit triggers
+## Extending the runtime
 
 Typed declarative construction makes bundled adapters concise; explicit construction keeps custom
 dependencies, lifecycle, privacy, and hardware selection visible. Both require reopening `Memory`

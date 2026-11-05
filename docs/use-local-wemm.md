@@ -1,9 +1,8 @@
 # Use a local WeMM embedding service
 
-This guide assumes an already-running WeMM service; SenseMem does not install its serving
-runtime. SenseMem can use an OpenAI-compatible local WeMM embedding service through the same public
-configuration used for hosted providers. Keep the embedding service local and configure generation
-separately when a remote Qwen endpoint answers questions.
+Connect an already-running WeMM service through the OpenAI-compatible embedding adapter. This
+example expects a `messages` endpoint serving `tencent/WeMM-Embedding-2B` with 2,048-dimensional
+vectors. Configure generation separately. SenseMem does not install or launch either model service.
 
 ```yaml
 data_dir: /absolute/path/to/a-new-sensemem-store
@@ -21,7 +20,7 @@ embedding:
 
 generation:
   provider: openai
-  base_url: http://your-qwen-endpoint.example/v1
+  base_url: https://your-qwen-endpoint.example/v1
   api_key: replace-me
   model: Qwen3.8-27B
   modalities: [text, image, video]
@@ -58,8 +57,9 @@ from sensemem import Memory
 
 config = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 with Memory.from_config(config) as memory:
-    # Add records and ask questions through this one physical memory directory.
-    pass
+    stored = memory.add("The spare key is in the blue toolbox.")
+    print(stored.id)
+    print(memory.search("Where is the spare key?").hits)
 ```
 
 Give every live instance a different `data_dir`. The directory is the durable memory domain and
@@ -71,15 +71,14 @@ audio into searchable text, then keep `index_speech` enabled. This adds ASR work
 
 Verify your service's batch, inline-byte, and video-frame limits before ingestion. The SDK's
 own transport bounds remain in force; see the [adapter limits](api/python-sdk.md#bundled-adapters).
-An experiment cache proxy is not part of the public SDK configuration.
 
 The local server runtime, model checkpoint, and service script are machine-managed dependencies;
 they are not installed by SenseMem. Use the official
 [WeMM-Embedding-2B model card](https://huggingface.co/tencent/WeMM-Embedding-2B) to obtain the
 checkpoint and its serving prerequisites, then configure the service to expose the `messages`,
 2048-dimension contract shown above. Keep its runtime and model files outside the SenseMem
-environment, and keep the service's logs and cache in a fresh deployment directory when restarting
-it.
+environment. Pin its model revision and serving recipe so reopening a store uses the same
+embedding space; a matching model alias alone does not establish compatibility.
 
 ## Optional typed-memory formation
 
@@ -90,7 +89,7 @@ reasoning settings explicitly:
 ```yaml
 formation:
   provider: openai
-  base_url: http://your-qwen-endpoint.example/v1
+  base_url: https://your-qwen-endpoint.example/v1
   api_key: replace-me
   model: Qwen3.8-27B
   modalities: [text]
@@ -122,11 +121,12 @@ with Memory.from_config(config) as memory:
 
     # After addressing a formation failure, resume its committed sources.
     pending = memory.pending_captures()
-    memory.settle(memory_ids=[item.memory_id for item in pending])
+    if pending:
+        memory.settle(memory_ids=[item.memory_id for item in pending])
 ```
 
-SenseMem does not impose a formation batch size. Set the batch size and token limit for the
-endpoint you operate. A source is committed before its formation call, so a formation failure does
+Choose a batch size within the SDK's 1,024-input `add_many()` limit and the endpoint's request
+and output budgets. A source is committed before its formation call, so a formation failure does
 not discard the source. Inspect `memory.pending_captures()` and, after addressing the failure,
 resume the returned memory IDs with `memory.settle`. Settlement can retry model work; its attempt
 and selection controls are documented with the

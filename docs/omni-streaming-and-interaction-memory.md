@@ -131,7 +131,7 @@ final snapshot. It then closes that per-turn prefetcher.
 
 Snapshots accept immutable text, `Blob`, and `AssetRef` values. Raw `Path` values are rejected
 because the file may change after submission. If a turn is abandoned, `await prefetch.close()`
-drops queued work and waits for any search already dispatched through `asyncio.to_thread`.
+drops queued work and waits for any search already dispatched to the SDK's worker pool.
 Cancelling that task would not stop its synchronous model or index call, so the helper drains it.
 
 Prefetch never stores or reinforces a snapshot. Call `reinforce` only after the application has
@@ -177,8 +177,10 @@ complete path from continuous observation to acknowledgement: a `FINAL` acknowle
 SQLite commit, and enrichment deferred to `settle()`. In capture mode, automatic `UPDATE` and
 `FINAL` retrieval is skipped so query models cannot delay the acknowledgement; use a separate
 `AsyncOmniPrefetch` for speculative retrieval. Every `StreamCommit` then reports
-`pending_settlement=True`, `prefetch=None`, and `retrieval_error=None`, and the record stays out of `search()`
-until the host settles it. A `StreamInput` transcript or description is folded in at capture time,
+`pending_settlement=True`, `prefetch=None`, and `retrieval_error=None`. New records stay out of
+`search()` until settlement. The flag identifies capture mode; an idempotent capture of an existing
+record preserves its readiness. Use `pending_captures()` to inspect actual outstanding work.
+A `StreamInput` transcript or description is folded in at capture time,
 so the deferred commit lands on the same content-addressed record the strong path would have
 written. The default is unchanged: without the flag, a final still commits through `add()` and is
 searchable when the commit yields.
@@ -347,31 +349,15 @@ Metadata and evidence IDs do not create an authorization or isolation boundary.
 
 ## Automatic memory formation
 
-Configure an optional `FormationBackend` to turn a committed observation into typed semantic
-proposals. The former cannot write storage. The kernel assigns IDs, validates the proposed evidence, and
-owns conflict semantics:
+Configure a `FormationBackend` to propose typed records from completed observations on the same
+`add` or `settle` path. The source commits first. The kernel validates source modality, spatial
+binding, and evidence, then commits accepted derivations with embeddings and formation progress.
+A failed formation leaves the source durable and pending for retry through `settle()`.
 
-```python
-from sensemem import Memory, OpenAIModels
-
-models = OpenAIModels(
-    embedding_client=embedding_client,
-    generation_client=generation_client,
-)
-
-with Memory("./data", embedder=models, former=models) as memory:
-    source = memory.add(observation.content, context=observation.context)
-```
-
-The raw source commits first. Formation then validates every proposal against the source modality
-and spatial frame, assigns deterministic derived IDs, links evidence, versions state, embeds the new
-records, and records the durable formation recipe in one SQLite transaction. If formation fails, the
-source stays durable and repeating the same add can complete the missing projection. `OpenAIModels`
-sends model content but never stable memory or CAS IDs, nor exact spatial values.
-
-The typed kinds refine the existing semantic, episodic, and procedural `MemoryType` roles; they do
-not create eight stores. Their meanings and assigned memory types are in
-[typed context and formation](memory-types-time-and-decay.md#typed-context-and-formation).
+Formation refines the existing semantic, episodic, and procedural roles; it creates no separate
+store. Use [formation configuration](configuration.md#automatic-memory-formation) to select a
+backend and [typed context](memory-types-time-and-decay.md#typed-context-and-formation) for the
+resulting record and support rules.
 
 ## Affect and personality evidence
 
@@ -400,8 +386,7 @@ only from host-authorized operations with response-feedback provenance.
 A spatial pose recorded on a stream observation is retrieved with `RetrievalScope`; see
 [spatial scope](memory-types-time-and-decay.md#spatial-scope) for the same-frame rule and
 [valid time and transaction time](memory-types-time-and-decay.md#valid-time-and-transaction-time)
-for the historical axes. Formation introduces no graph database, and the gate a graph projection
-would have to pass is in the [benchmark protocol](benchmarking.md#mandatory-controls).
+for the historical axes. Formation uses the same SQLite evidence and lifecycle rules as other derived records.
 
 ## Observability
 

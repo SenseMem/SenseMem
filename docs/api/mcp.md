@@ -19,12 +19,8 @@ It does not own storage, provider selection, or the injected memory. Finalized m
 through ordinary content parts; live audio and vision packet ingestion, and `StreamEvent`
 reduction, stay Python-only because a tool call is a finite request.
 
-The tools cover the common memory path, one context-compilation tool, and the embodied and
-identity operations: an agent driving a companion robot can compile a budgeted context bundle for
-its next turn, ask who spoke and who was seen, name them, reverse a wrong face-and-voice merge,
-erase a person on request, and record which memories were useful. `build_mcp_server` runs
-inside the process that holds the `Memory` it is given and every tool is one call on it, so an
-embodied operation is no less reachable here than `add_memory` is.
+Tools cover ingestion, retrieval, grounded answers, context compilation, perception, identity
+administration, and feedback. The host chooses which groups an agent may call.
 
 Naming a person is host authority. `register_identity` asserts a name on
 the host's behalf: the assertion is a versioned memory record, it is written to the operation
@@ -34,8 +30,8 @@ stays auditable; `get_identity` reads the current profile without changing it.
 
 ### Withholding a group of tools
 
-Three keyword switches decide which authority an agent holds. Each defaults to True, and each
-False withholds its group by never registering it, so calling one of its tools fails as an
+Three keyword switches decide which authority an agent holds. Each defaults to `True`; setting
+one to `False` withholds its group by never registering it, so calling one of its tools fails as an
 unknown tool rather than as a refusal. The server instructions name the missing groups, because
 an agent should not discover a boundary by failing.
 
@@ -104,9 +100,8 @@ build_mcp_server(
 ```
 
 `deliberate_every` is the opt-in slow loop described in
-[configuration](../configuration.md#running-the-loop-inside-a-server-process). `run("stdio")`
-blocks for the life of the process and no tool reaches the control plane, so without it the
-`QUERY_FAILURE` signals these tools record are collected and never weighed.
+[configuration](../configuration.md#running-the-loop-inside-a-server-process). It runs in the
+server lifespan and is disabled by default. No tool exposes consolidation directly.
 
 `build_mcp_server` reads `memory.capabilities` once and publishes it as the server `instructions`,
 so a connecting agent learns the configured modalities, embedding identity, and backends without
@@ -199,7 +194,7 @@ injected memory; without one it returns `model_error/backend_not_configured`. Wi
 `reinforce_on_answer=True`, a non-abstained result also reinforces backend-declared hits; an
 abstained result records the query failure without reinforcement. Its `answer_policy`
 is `strict` or `best_effort`: the default refuses when the evidence is thin, while `best_effort`
-commits to the most likely answer -- for a multiple-choice question, always one of the options --
+asks the model for the most likely answer, choosing an offered option for multiple choice,
 and still reports `abstained`, so an agent that must produce an answer keeps the confidence
 signal without losing the answer. Under `best_effort` a question that grounds nothing spends a
 generation call too, where the default returns without one.
@@ -234,8 +229,8 @@ The embodied and identity tools follow the SDK operation they dispatch to:
   caches identity evidence and may apply a corroborated cross-modal merge.
 - `register_identity` names any recognized face or voice identity. It replaces an existing name
   and preserves `relationship` when omitted. An unknown ID returns `identity_not_found`.
-- `get_identity` follows merge aliases and returns `identity: null` when no registered profile is
-  found, including for an unknown ID.
+- `get_identity` follows merge aliases and returns a profile for a recognized identity, including
+  one without a confirmed name. An unknown ID returns `identity: null`.
 - `unlink_identity` reverses one face-and-voice merge and returns the restored ID, or `null` when
   no record names which modality was contributed. It resets that pair's accumulated evidence and
   does not suppress the pair: a voice and face that keep co-occurring are merged again.
@@ -250,10 +245,6 @@ The embodied and identity tools follow the SDK operation they dispatch to:
   once and unknown IDs are skipped, so `reinforced` below the number sent means the rest do not
   exist.
 
-Tool descriptions are published through `inspect.cleandoc`, so the text an agent reads is
-identical on every supported interpreter. CPython 3.13 strips a docstring's common indentation at
-compile time and earlier versions do not, and the description is public contract.
-
 Every tool and every tool argument carries a published description. Read those before guessing at
 coordinate frames, units, or media sources; they are part of the tool schema, not a separate guide.
 
@@ -265,8 +256,9 @@ with its effective score components (`dense_relevance`, `dense_confidence`, `lex
 `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
 `reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score`, `rank`) and, when it
 did not become a hit, a `rejected_by` value of `stale_index`, `occurrence_range`, `missing_memory`,
-`memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is how many
-candidates were fetched, `trace.exhaustive` says whether that bound was reached, and
+`memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is the final
+candidate depth requested per native route. `trace.exhaustive` is true when every route returned
+fewer candidates than its bound; it does not make approximate search exact.
 `trace.ambiguous` says whether the result was suppressed for being too close to call. Without
 `explain`, `trace` is `null` and no extra work is done.
 
@@ -312,8 +304,9 @@ deliveries return `proofs=[]`. The MCP surface still contains thirteen tools.
 
 Perception, identity, and erasure results publish the SDK values returned by `Memory.perceive`,
 `Memory.identity`, and `Memory.forget_identity`, field for field:
-`bounding_box` is `[x, y, width, height]` normalized within the frame, `identity_score` and
-`speaker_name` are `null` until an identity is resolved and named, and `observed_at_ms` is the
+`bounding_box` is `[x, y, width, height]` normalized within the frame. `identity_score` is the
+match score when available; `speaker_name` is `null` until a visible naming assertion names the
+speaker. `observed_at_ms` is the
 offset within a video. A `speaker_id` or `identity_id` from the perception tool is accepted by
 `get_identity`, `register_identity`, `unlink_identity`, and
 `forget_identity`.
@@ -370,17 +363,15 @@ details are still never serialized.
 
 ### Operations without a tool
 
-Twenty Python operations have no MCP tool. Two are transport limitations and the rest are
-decisions; none is withheld because it touches owner-process state, since every tool already
-does.
+The remaining Python operations use the SDK, local CLI, or the REST routes listed below.
 
 | Operation | Why, and what to call instead |
 | --- | --- |
 | `add_stream` | **Transport limitation.** It consumes a lazy iterable and yields records as it goes, and one tool call is a finite request with one response, so a stream cannot be started, fed, and drained through it. Call `add_memory` for each completed observation, or use the SDK for a live source. |
 | `ask_stream` | **Transport limitation.** One MCP tool call has one finite response. Call `ask_memory` for the completed answer, or use the Python SDK or REST `POST /v1/answers/stream` when time to first token matters. |
-| `add_many` | Every item is already reachable through `add_memory`, so this buys one model batch rather than a capability. Its parallel arrays must line up with `contents` position by position, and a misalignment stores real memories under the wrong timestamps, which is a worse failure than slower ingestion. Use `POST /v1/memories/batch` for bulk loading. |
+| `add_many` | Use the SDK or `POST /v1/memories/batch` for an atomic source batch. Use `add_memory` for individual observations. |
 | `reindex` | Rebuilds the whole search projection from SQLite. The duration grows with the store and has no upper bound, so it does not belong behind a client that expects one timely response. It is also an operator decision, not a caller's. |
-| `optimize` | Merges staged vectors into the index. An agent has no basis for deciding when that is worth doing, and the operator scheduling it has the CLI. |
+| `optimize` | Operator-scheduled index maintenance through the SDK or local CLI. |
 | `capture`, `settle`, `pending_captures` | Deferred enrichment is the owning process's scheduling decision: how long a record may stay unsearchable is a property of that host's loop, not of a caller's request. Use `add_memory`, which returns searchable. |
 | `record_consent`, `consent` | Consent is a statement its subject makes, relayed by the host. An agent that could record one could manufacture permission to process a person, which is the same reason a `CONSENT` operation proposed by a model is refused as `unauthorized`. A host application collects the statement and calls the SDK, or `POST /v1/identities/{identity_id}/consent` behind its own `identity_operations` switch. |
 | `export`, `apply_retention` | The two remaining data-subject rights, and both are host authority over a person's whole record: an export is everything held about somebody, and retention physically deletes. They stay with the process that owns the `data_dir`, and reach a network only through REST's `identity_operations` switch. |

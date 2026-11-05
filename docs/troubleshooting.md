@@ -1,6 +1,7 @@
 # Troubleshooting
 
-Diagnose the stable error fields before reading the message:
+Use the structured error fields to identify the failing boundary. This example assumes an open
+`memory` with a configured answerer:
 
 ```python
 from sensemem import SenseMemError
@@ -148,7 +149,7 @@ edit the SQLite descriptor.
 
 ### Backend is not configured
 
-Every `Memory` needs an embedder. `ask()` also needs an answerer. Automatic `perceive()` uses the
+Every `Memory` needs an embedder. `ask()` also needs an answerer. With `kinds=None`, `perceive()` uses the
 configured speech and face backends; inspect its `coverage` to distinguish skipped assets from
 completed analysis with no detections. Explicit `kinds` require the matching capability. Add the
 missing declarative slot, inject the backend, or use a configured operation. See

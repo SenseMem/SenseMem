@@ -194,8 +194,7 @@ used.
 
 The context compiler conservatively includes the union of the surviving complete clauses; it does
 not solve for a smallest witness set. Clauses record logical dependency, not calibrated truth
-probabilities. This is ordinary truth-maintenance and how-provenance bookkeeping rather than a
-claim that Boolean support expressions are new. The compiler's cycle guard remains conservative:
+probabilities. The compiler's cycle guard remains conservative:
 it may refuse a cyclic evidence union even when another clause grounds the record independently.
 
 SQLite stores current clauses, their ordered members, and append-only clause versions.
@@ -214,22 +213,21 @@ derived record remains only when at least one complete clause is grounded. Unsup
 cycles cannot keep each other alive, while a cycle reached from an independent observation can
 survive.
 
-A proposal that fails one of those per-proposal rules — an `AFFECT` cue naming a modality the
-source never carried, a pose in another coordinate frame — is dropped, counted on the
-`sensemem.formation.refused_proposals` span attribute, and costs only itself: the observation's
-remaining proposals commit and the write succeeds. One badly grounded opinion must not fail a write
-whose source is already durable, because every retry would re-run the model and fail the same way.
-Two proposals from one source that contradict each other — one record proposed twice with different
-content, or two overlapping states in one lineage — are refused the same way, and the first of the
-pair stands. Only damage to the batch envelope — a backend returning the wrong number of results,
-or a shape that is not a batch of proposals — fails the write. A refusal is final for that
-formation recipe: the source is marked formed, so nothing retries the proposal and re-adding the
-same content forms nothing new.
+The kernel drops individually ungrounded proposals, such as an absent cue modality or an
+incompatible spatial frame, and reports `sensemem.formation.refused_proposals`. Other valid
+proposals and the committed observation remain. Conflicting proposals within one source are
+refused individually; the first accepted proposal stands. Refusals complete that source's
+formation recipe and are not automatically retried.
+
+Invalid batch structure or evidence declarations can fail the call. Model, embedding, and
+commit failures also retain their documented errors; a committed source can remain pending for
+settlement. [Formation configuration](configuration.md#automatic-memory-formation) describes
+validation and retry behavior.
 
 Formation never rewrites the caller's source record. A derived record inherits its primary source's
-event time, valid interval, metric pose, symbolic `place_id`, and `metadata`, so a place-scoped or
-place-scoped recall reaches the knowledge formed in a room and not only the raw observation it
-came from. Extra declared witnesses do not merge identity, time, pose, place, or metadata. An
+event time, valid interval, metric pose, symbolic `place_id`, and `metadata`, so place-scoped recall
+reaches formed knowledge as well as its raw source. Extra declared witnesses do not merge
+identity, time, pose, place, or metadata. An
 `ENTITY`, `RELATION`, inferred `TRAIT`, or `RESPONSE_POLICY` written separately from several
 primary sources is one shared record; when those primary sources disagree, the shared record keeps
 neither place nor metadata rather than guessing a hard retrieval filter. Both columns follow the
@@ -451,8 +449,7 @@ point of keeping it. Use `delete` to remove the live record; storage remnants an
 ## Memory management loop
 
 Formation reads one committed observation. The memory management loop reads a bounded set of
-records that already exist and proposes what should change about them. It is one loop with a
-stable vocabulary, not a swarm of specialized agents, and it needs a `consolidator`:
+records that already exist and proposes what should change about them. A `consolidator` supplies the proposals:
 
 ```python
 from sensemem import MemoryTrigger

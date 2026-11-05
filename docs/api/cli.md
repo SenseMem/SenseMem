@@ -86,7 +86,7 @@ server's owner.
 | `funasr` | `--transcriber` | pinned FunASR model and component revisions |
 | `openai` | `--embedder`, `--answerer`, `--former`, `--consolidator`, `--transcriber`, `--vision` | `text-embedding-3-small`, `gpt-5-mini-2025-08-07`, `gpt-5-mini-2025-08-07`, `gpt-5-mini-2025-08-07`, `whisper-1`, `gpt-5-mini-2025-08-07` |
 
-Only `openai` accepts a model suffix, for example `--former openai:gpt-5-mini`. Selecting a former
+Only `openai` accepts a model suffix, for example `--former openai:gpt-5-mini-2025-08-07`. Selecting a former
 opts into one formation model call after each source observation commits; omitting `--former`
 keeps formation off. `--consolidator` is what the `consolidate` command needs, and it costs
 nothing until that command runs: unlike a former it is not on the write path. `--vision` selects
@@ -111,7 +111,7 @@ sensemem --embedder openai --former openai --vision openai add @panel.png
 | `settle` | optional `MEMORY_ID...`; `--limit`; `--max-attempts` | `{"settled":int}` | yes |
 | `pending-captures` | optional `MEMORY_ID...`; `--limit` | `{"pending":[...]}` | yes |
 | `search` | content; `--explain`; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--occurred-from`; `--occurred-until` | `{"hits":[...],"trace":null}` (or the requested trace) | yes |
-| `ask` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--link-identities`/`--no-link-identities` | answer object | yes (`--link-identities` is local-only) |
+| `ask` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--link-identities`/`--no-link-identities` | answer object | yes (the server controls linking) |
 | `compile` | content; `--max-chars`; `--max-items`; `--max-media-items`; repeatable `--memory-type`; `--min-confidence`; `--freshness-seconds`; `--max-latency-ms`; `--reference-at`; `--scope`; `--allow-partial-sources`; `--selected-proofs` | context bundle plus `rendered` | yes |
 | `get` | `MEMORY_ID` | memory object | yes |
 | `perceive` | `MEMORY_ID`; optional repeatable `--kind speech` / `--kind faces` | `{"speech":[...],"faces":[...],"coverage":[...]}` | yes when the owner enables `embodied_operations` |
@@ -169,7 +169,7 @@ commits, the `correct` that `unlink-identity` logs, and the irreversible `forget
 row asserted and `consent` the state a `consent` row recorded, so a row about a person always says
 what it said about them. `outcome` and `outcome_note` are `null` until `record-outcome` names the
 operation, are post-hoc and never fed back into a decision, and a later `record-outcome` call
-replaces an earlier judgement the same way `rollback` replaces a standing operation.
+replaces the earlier judgement without reversing the operation.
 
 `consolidation-candidates`'s `--idle` declares an approved idle window, admitting lineages
 nothing has ever weighed; the CLI never infers idleness from a clock. `consolidate-pending` runs
@@ -232,7 +232,8 @@ retyped on each invocation.
 `--freshness-seconds` must be positive, finite, and representable as a Python `timedelta`; invalid
 values use the CLI's `validation_error` exit status without sending a remote request.
 
-`forget` is cognitive forgetting, reversible with `rollback`; `delete` is erasure. With the
+`forget` is cognitive forgetting, reversible with `rollback`; `delete` removes live records and
+unreferenced media, without a secure-erasure guarantee. With the
 default `reinforce_on_answer=True`, a non-abstained `ask` also reinforces backend-declared hits;
 abstention adds no reinforcement. Use `--app` to construct a memory with that policy disabled.
 
@@ -292,12 +293,8 @@ CLI's single-document stdout result. It is therefore for finite JSONL; use
 
 ### Operations without a command
 
-One Python operation has no command. `ask-stream` does not exist because the value of
-[`Memory.ask_stream`](python-sdk.md#memory-operations) is delivery of the answer while the model
-is still producing it, and this CLI emits one stable JSON document per invocation. Collecting the
-deltas to fit that contract would produce exactly what `ask` already prints, so the command would
-be a second spelling of `ask` rather than a streaming one. Use `ask` here, and the SDK when time
-to first token matters.
+`ask-stream` is not a CLI command because each invocation returns one JSON document. Use `ask`
+for a completed answer, or SDK `ask_stream()` and the REST SSE endpoint for incremental delivery.
 
 ### Output
 
@@ -322,8 +319,8 @@ settled or unknown, and `get` tells the two apart.
 
 `settle` accepts the same memory IDs. Naming records settles only those and ignores
 `--max-attempts` for them, which is how a capture parked at the retry ceiling is retried by hand.
-`add-stream --capture` commits each item through `capture` rather than `add`, so the items are
-durable but unsearchable until `settle` runs.
+`add-stream --capture` commits each item through `capture` rather than `add`. New records require
+`settle` before retrieval; existing records retain their readiness.
 
 Unless `--quiet` is set, commands write the resolved composition as one JSON document on stderr
 before executing. `--url` forwards successful owner response objects unchanged, except for the
@@ -405,8 +402,8 @@ route boundary is listed in
 Local `--app` and `--embedder` mode applies the Python bounds: at most 128 content parts, 65,536
 combined normalized text characters, 262,144 UTF-8 metadata bytes, 512 MiB per local asset, and
 search, answer, or page limits from 1 through 100. `--url` applies the REST bounds, including 16
-content parts and the 8 MiB request body. Local JSONL has no separate item-count cap; remote
-`add-many` is capped at 100 items by REST.
+content parts and the 8 MiB request body. Local `add-many` accepts at most 1,024 items through the SDK; `add-stream` has no total item-count
+cap and collects its results for one JSON document. Remote `add-many` accepts at most 100 items.
 
 There is no configuration file, `SENSEMEM_*` composition variable, plugin registry, interactive
 prompt, streaming stdout, output-format switch, `serve` command, capture-event reducer, or

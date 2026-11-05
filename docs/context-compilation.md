@@ -60,8 +60,8 @@ window came back full and the bundle still lost evidence, `unknowns` carries a
 By default, for a derived hit, `compile()` follows its actual `context.evidence_ids` recursively and admits
 the assertion only with the complete finite dependency closure. Every member is hydrated under the
 same scope, type, confidence, freshness, active, and knowledge-time bounds. A missing, filtered,
-cyclic, or bounded dependency refuses the anchor and emits `evidence_unavailable`; this strict
-first version can therefore omit a claim whose historical or differently typed source a request
+cyclic, or bounded dependency refuses the anchor and emits `evidence_unavailable`. This can omit
+a claim whose historical or differently typed source a request
 excluded. The default delivery closes the full flattened audit union rather than selecting from
 SQLite's OR-of-AND assessments. Dependencies receive score `0.0`, which means supporting evidence rather
 than an independently query-ranked result. Their rendered lines retain basis and bounded evidence
@@ -95,7 +95,7 @@ become support or cause.
 knowledge. Each delivered derived assertion carries `ContextProof` witnesses in `bundle.proofs`.
 Their `ContextProofNode` values identify one complete AND assessment or a raw capture, including
 its assessment confidence and capture group. A witness is acyclic and contains every required
-member. Count and confidence are separate obligations: selection buys their combined witnesses,
+member. Count and confidence are separate obligations: selection includes their combined witnesses,
 which can require three or four proofs. Intermediate derived records must also justify their own
 delivered confidence. Shared captures and shared intermediate assertions cannot corroborate each
 other, and alternatives of one top-level clause cannot establish independence.
@@ -311,10 +311,8 @@ Remaining slots are filled by score. One oversized hit does not close the bundle
 lower-ranked candidate can still fit. `omitted` counts every candidate that passed the filters
 but did not fit, and `chars` is what the included hits cost.
 
-This split is a default, not a measured optimum. Gate 4 of [the Context OS plan](context-os.md)
-still owes a downstream-utility measurement against the no-memory, full-context, and
-retrieval-only baselines; that measurement decides whether the halving point is right or whether
-the floor round should go entirely.
+This selection policy is a default, not a measured optimum. Evaluate downstream task quality
+against no-memory, full-context, and retrieval baselines before relying on a diversity benefit.
 
 `ContextBundle` also reports `occurred_from` and `occurred_until` over the included hits and
 excerpts, `frames`
@@ -336,6 +334,7 @@ a thin bundle explains itself instead of looking like an empty store.
 | `scope_empty` | A `scope` was supplied and retrieval matched nothing; the entry names the bounds |
 | `modality_unsupported` | The goal carries media this composition's embedder cannot search |
 | `stage_skipped` | An optional stage the `max_latency_ms` deadline skipped |
+| `consent_withheld` | Current consent policy prevented actor delivery; source memories can still remain eligible |
 | `candidates_exhausted` | Retrieval filled its candidate window and the bundle still lost evidence, so the counts bound the window and not the store |
 
 ## Named and provisional actors
@@ -371,10 +370,9 @@ line per entry, after the ranked actors.
 
 ## Affect cues
 
-An affect entry asserts how somebody felt, which is the one section where the difference between
-a model's guess and a person's own words changes what an agent may say. So `affect` carries
-`AffectCue`: every `SearchHit` field, plus `event_ids`, and `render()` prints the provenance on
-the line instead of leaving it in `context` for a caller who may never look.
+An affect entry reports a situated assessment with its evidence basis. `affect` carries
+`AffectCue`: every `SearchHit` field plus `event_ids`. `render()` prints the provenance so callers
+can distinguish a model inference from the person's own statement.
 
 | On the line | Read from | Meaning |
 | --- | --- | --- |

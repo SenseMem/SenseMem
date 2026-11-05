@@ -597,36 +597,20 @@ stored content. A nonempty store must contain all required identity and evidence
 The optional face backend can be enabled for the first time when no face analysis or face-space
 markers exist; startup records its two space identities together.
 
-Operation logs use the complete current JSON payload, including explicit nulls and empty arrays.
-Readers do not supply missing fields from older payloads, including proposal evidence and spatial
-coordinates. An incomplete payload raises `StorageError`; there is no legacy decoder or automatic
-migration. Replay source observations into a fresh directory when adopting a different format.
+Operation logs require the complete current payload, including explicit nulls and empty arrays.
+Incomplete or incompatible payloads raise `StorageError`; there is no legacy decoder. Replay
+original sources into a fresh directory when adopting a different format.
 
-`memory_semantics.predicate` retains the original model wording; `predicate_key`,
-`predicate_registry`, and `predicate_match` record the stable identifier, registry revision, and
-resolution method. Custom lineage IDs remain unchanged. Rebuilding Zvec cannot change semantic
-keys, evidence policy, or model spaces.
+| Change | Required action |
+| --- | --- |
+| Embedding space or dimension | Re-ingest original inputs into a fresh directory. |
+| Persisted transcription or face space | Use a compatible backend or replay into a fresh directory. |
+| Index quantization within the current recipe | Rebuild from stored FP32 vectors; allow time and disk space. |
+| Missing Zvec index | Reopen to rebuild from SQLite without model inference. |
+| Evidence projection policy | Use a fresh directory when changing the store-pinned policy. |
+| SQLite schema | Use its original runtime to read sources; the current runtime performs no migration. |
 
-Current clauses remain the authoritative `OR` of complete `AND` member sets; the flat
-`memory_evidence` rows project their active members. Zvec remains derived: rebuilding a missing
-index reads the SQLite embeddings and current clause projection without calling the embedding
-model again.
-
-Clause versions are append-only transaction history. An inverse written by operation rollback
-points to the exact predecessor version it restores. This lets operations reverse newest first
-while an unrelated later update, including an equal-valued one, still blocks an older rollback.
-Physical `delete()` remains unlogged and irreversible; clause history does not recreate erased
-records.
-
-A derived record whose basis is not a host assertion is visible only while it has an active
-evidence clause. Such a record stays stored and readable by ID, but drops out of retrieval until
-evidence is added or it is deleted.
-
-The schema declares `embedding_text_selectors` and `embedding_text_span_pieces`. A selector belongs
-to one pure-text raw embedding part and stores a parent-content digest, reconstructed
-embedding-input digest, recipe, and ordered code-point ranges with piece digests. It does not
-duplicate parent text. Reopening a current-schema store is idempotent.
-A partial or incompatible
-selector-table shape is refused after checking primary keys, foreign keys, check constraints, and
-the piece index, and nothing is written. Deleting an embedding cascades its selectors. Zvec rebuild
-reads existing SQLite vectors and does not create selectors or re-embed content.
+Index rebuilds do not change semantic keys, evidence clauses, historical versions, or text-span
+selectors. Physical deletion cannot be reversed by clause history or operation rollback.
+[Architecture](architecture.md#durable-state) describes these stored representations, and the
+[SDK reference](api/python-sdk.md) defines their public values.

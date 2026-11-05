@@ -42,7 +42,7 @@ List the current task groups, pinned revisions, and local-data readiness:
 sensemem-bench eval --list-tasks
 ```
 
-The catalog currently covers LoCoMo-Refined, ES-MemEval, M3-Bench, Video-MME-v2, WorldMemArena,
+The catalog currently covers AMA-Bench, LoCoMo-Refined, ES-MemEval, M3-Bench, Video-MME-v2, WorldMemArena,
 VideoZeroBench, EgoTempo, MemLens, MM-Lifelong, SuperMemory-VQA, ATM-Bench, Mem-Gallery, LongMemEval-V2, CL-Bench,
 BEAM, PersonaMem-v3, OpenEQA, and ICM-Bench. Use the listing command
 instead of copying task names from this page; it is generated from the catalog used by the
@@ -83,9 +83,8 @@ speaker-labeled transcripts never enter the model input. Evidence annotations ma
 retrieval recall against them is a diagnostic, not exhaustive proof coverage.
 
 The scorer sends only the pinned upstream semantic-equivalence prompt as a user message and uses
-the exact `Yes` verdict parser. Protocol `icm_semantic_equivalence_10f02babe3c7_user_only_v2`
-removes an unintended M3 system message from the earlier adapter; scores from that earlier
-protocol require rejudging before comparison with this protocol.
+the exact `Yes` verdict parser. Its protocol is `icm_semantic_equivalence_10f02babe3c7_user_only_v2`; compare results only under
+the same protocol, or rejudge saved predictions.
 Its released default judge is `gemini-3-flash-preview`; another judge is marked as a proxy.
 Generation backends that turn video into frames do not thereby receive native audio or implement
 face/voice identity binding. Report effective modalities and identity configuration with results.
@@ -169,11 +168,7 @@ priority-keyframe injection. `protocol_notes` and `cross_harness_comparable=fals
 distinction in the report. `official_metric` describes the scoring formula, not a claim that the
 entire run reproduces the upstream input protocol or leaderboard.
 
-Validation used the pinned 500-question annotation file: 6,488 answer/temporal/spatial cases matched
-the pinned upstream functions, including overlapping evidence, answer tags, missing predictions
-and fenced answers. Synthetic SDK fixtures also check hint boundaries and joint-score denominators.
-No real model revision was evaluated for this integration; full video download and real-service
-quality checks were not run. Dataset terms are CC BY-NC-ND 4.0; do not redistribute modified data.
+Dataset terms are CC BY-NC-ND 4.0; do not redistribute modified data.
 See the [scorer notices](../src/sensemem/benchmarks/_official/NOTICE.md#videozerobench).
 
 ## Run an evaluation
@@ -219,18 +214,14 @@ over the latest memory timestamp. An omitted year uses the corpus year. The exec
 dates in adapter instructions do not override the original question.
 
 Mem-Gallery uses `mem_gallery_official_v3` and `mem_gallery_query_v2`. The complete query template
-is rendered in order, keeping the original question after its question heading and before the
-official category constraint. Earlier adapters moved the question before the template, leaving
-that heading followed only by a constraint. Old predictions keep their original protocol and
-need regeneration for a comparison using the repaired input; rescoring cannot repair them.
-References, clues, query images and the answer scorer are unchanged.
+places the original question after its heading and before the official category constraint.
+Compare predictions with matching adapter and query identities; rejudging cannot change the
+inputs a reader originally received.
 
 ATM adapters use `atm_bench_official_v4` and one shared answer-only/list-ID query instruction
 (`atm_bench_query_v3`) for every question. The shared instruction reproduces the pinned official
 Oracle wording, including the `Unknown` refusal. `qtype`, reference answers, and annotated evidence
-remain scorer-side labels. Dates and combined date/time answers are no longer constrained to
-"the number alone". Older predictions retain their original identities and need regeneration
-before comparison with v4; changing their scores does not repair their original inputs.
+remain scorer-side labels. Dates and combined date/time answers retain the format requested by the question.
 
 ATM answer scoring follows `JingbiaoMei/ATM-Bench@ef4e5dff1a47` without repairing or normalizing
 the released reference answers. This includes the upstream whitespace-separated ID-list edge
@@ -238,15 +229,10 @@ case; no alternative normalized-ID answer score is emitted. The judge prompt and
 interpretation follow the same revision. The judge's boolean or string `true` verdict scores one;
 other structured verdicts score zero. Numeric partial credit belongs to deterministic list scores,
 which the official summary clamps to 0--1 after the judge verdict has been converted to a boolean.
-The scorer identity is `atm_bench_scorer_ef4e5dff1a47_minimal_v3`; v2 confused these two stages
-and scored string `true` verdicts zero. Saved responses can be reparsed under v3; runs that did
-not retain responses need both comparison arms rejudged. The configured judge model remains selectable and is recorded independently;
+The scorer identity is `atm_bench_scorer_ef4e5dff1a47_minimal_v3`. The configured judge model
+is selectable and recorded independently;
 using another model is still marked non-official. Retrieval and joint metrics remain separate
 SenseMem diagnostics and do not replace the official answer score.
-
-Parity fixtures cover unchanged ID-list references, scalar/list dispatch, the exact upstream
-judge prompt, boolean/string verdicts before summary coercion, and the shared query/refusal
-instruction. These checks establish protocol parity, not answer quality.
 
 The judge request requires a boolean `accuracy` through a strict JSON schema. This preserves the
 official response contract; saved responses still use the official conversion described above,
@@ -275,8 +261,7 @@ Report this input condition as raw media plus released source annotations. It di
 raw-only evaluation and the text-only SGM task, so its score cannot establish a raw-only algorithm gain.
 
 Use the [model quality gate](operations.md#model-quality-gate) for credentialed reader checks
-through the public SDK. ATM adapter contract tests pin the shared official query instruction,
-including numeric and temporal questions; they do not establish real-model answer quality.
+through the public SDK. Protocol parity alone does not establish real-model answer quality.
 
 ### LongMemEval-V2
 
@@ -497,7 +482,7 @@ A run owns supported generation temperature and seed settings, so `generation.te
 `generation.extra_body` cannot override temperature, sampling, seed or output-token controls.
 Other completion slots, including `vision.temperature`, retain their separate configured values.
 `generation.answer_style: concise` selects the optional answer-only reader style for both the
-product and answer-generating baseline arms. Its default preserves the previous prompt; the
+product and answer-generating baseline arms. Its default uses the standard grounded-reader prompt; the
 resolved configuration and response-cache identity include the choice. Dataset query templates
 and official output constraints remain unchanged. Evaluate this presentation policy with the
 chosen model rather than assuming it improves task scores.
@@ -518,10 +503,10 @@ Use `--gen-kwargs temperature=0.7` for a sampled run; its effective temperature,
 style are recorded in artifacts and cache identities. Product and baseline arms honor the same
 sampling and optional `generation.answer_style`. Seeds do not guarantee identical remote output.
 
-The [ATM raw example](examples/atm-raw-qwen-wemm.yaml) and
-[Mem-Gallery example](examples/mem-gallery-qwen-wemm.yaml) preserve the verified task-specific
-budgets with replaceable localhost endpoints and no stored credentials. Run them with the
-documented temperature override.
+The [ATM configuration](examples/atm-sgm-max-thinking-vllm.yaml) and
+[Mem-Gallery configuration](examples/mem-gallery-qwen-wemm.yaml) illustrate task-specific
+budgets with replaceable localhost endpoints and no stored credentials. Review their declared
+models, provider controls, input requirements, and concurrency before running a local copy.
 
 ATM `number` questions request the complete value, including requested dates, times, ranges,
 units and currencies. This adapter instruction does not change questions, references or the
@@ -578,31 +563,14 @@ and answer policy are identical. Artifacts record the delivery mode and effectiv
 Buffered calls have no caller-observed first-token latency. This option is separate from
 `stream_results`, which controls reporting, and `generation.stream`, which controls provider transport.
 
-Unless `--quiet` is set, `eval` reports ingest, sample, and judge progress to stderr. On a
-terminal those are live progress bars with an ETA. While a sample is still rebuilding, ingesting,
-deliberating, or answering, the sample bar keeps its honest completed-sample count but refreshes
-its elapsed time and labels the active phase. Concurrent units are summarized by phase rather than
-letting a completed unit leave a stale label behind.
+Unless `--quiet` is set, `eval` reports ingest, sample, and judge progress to stderr. Terminal
+progress bars show counts, elapsed time, ETA, and active phases. A task can spend substantial time
+ingesting before its first answer; use the ingest count to distinguish that work from a stalled
+sample. File and pipe output emits periodic lines at most once a minute, plus initial and final
+counts.
 
-A unit writes every memory a question is allowed to have seen before it answers that question, so
-a task whose questions carry no cutoff writes its whole corpus first and the sample bar honestly
-reads zero for as long as that takes -- hours, on a video task. The ingest bar beneath it is what
-shows those hours moving: it counts memories written across every unit of the task, against the
-number those units will reach at their latest cutoff. A resumed run starts it at the checkpoint
-rather than at zero, and a unit answered entirely from the response cache completes its share
-without writing, so the bar still finishes.
-
-When stderr is a file or a pipe, where a redrawn bar is unreadable, the same counts and ETA are
-written as one line at most once a minute, plus the first and the last completion, so a stalled
-run says so immediately and the log always ends on the final count.
-
-`--verbosity` sets the log level for the run and claims the root handler before an imported
-dependency can raise it: `funasr`, `modelscope`, `numba` and others each turn their own logging
-up when imported. It applies to SenseMem's own loggers; a dependency has to reach `WARNING` to
-be heard, so a successful HTTP request logs nothing and a benchmark run does not carry anyone
-else's INFO. `--verbosity DEBUG` is the exception and opens the whole process, per-request
-transport lines included. The results table is printed regardless; `--quiet` (or
-`--verbosity ERROR`) is what suppresses it.
+`--verbosity` controls logging. Dependency logs are limited to warnings unless `DEBUG` is selected.
+`--quiet` or `--verbosity ERROR` suppresses the result table.
 
 `--limit` accepts `-1`, a fraction between zero and one, or an absolute adapter-unit count. Use an
 integer for a count; a non-integral value above one is truncated to an integer by the current
@@ -610,46 +578,28 @@ loader selection. Its unit is adapter-specific: OpenEQA limits episodes and reta
 in a selected episode, while EgoTempo limits questions. Use `--check-integrity` or the completed
 `results.jsonl` instead of assuming that `--limit` equals `question_count`.
 
-## RTX 5090, Qwen3.8, and WeMM reference baseline
+## Measure performance across repeats
 
-Two checked-in profiles encode the reference composition with the explicit non-secret `EMPTY`
-sentinel, so an ambient `OPENAI_API_KEY` is never forwarded to these endpoints:
-
-- [text profile](examples/baselines/rtx5090-qwen38-wemm9b-text.yaml) for the text memory suites;
-- [media profile](examples/baselines/rtx5090-qwen38-wemm9b-media.yaml) for native image, video,
-  and local FunASR paths.
-
-They use generation model `Qwen3.8-27B` at `http://xyrobot-vl.xyrobot.com/v1` and embedding model
-`tencent/WeMM-Embedding-9B` at `https://xyrobot-embed.xyrobot.com/v1`, dimension 4096. A bare host
-such as `xyrobot-embed.xyrobot.com` is deliberately rejected: every endpoint must name its scheme.
-Both product clients disable hidden SDK retries. Adapter-level fallbacks remain explicitly counted,
-so request counts, token completeness, and failure status describe the observable provider
-attempts. The VLM keeps the baseline's declared HTTP transport; switching it to HTTPS is a different
-network/TTFT baseline. Run one independent invocation per repeat:
+Use the same configuration, inputs, services, and hardware for each independent repeat:
 
 ```bash
 for repeat in 0 1 2; do
   uv run --frozen sensemem-bench eval \
-    --config docs/examples/baselines/rtx5090-qwen38-wemm9b-text.yaml \
+    --config eval.yaml \
     --repeat-index "$repeat" \
-    --run-id "rtx5090-text-r${repeat}" \
-    --output-path ".benchmarks/results/rtx5090-text-r${repeat}"
+    --run-id "baseline-r$repeat" \
+    --output-path ".benchmarks/results/baseline-r$repeat"
 done
 ```
 
-Each invocation creates new physical stores. It performs one query-embedding warmup after model
-construction and before telemetry starts, performs no generation warmup, and records the actual
-warmup count. A vision-description cache, when configured, is shared only inside that invocation,
-so a later repeat cannot silently skip write-path model calls. Do not use `--use-cache` for a
-performance baseline; cached samples are excluded from performance denominators and cached runs
-are rejected by performance comparison.
+Each invocation creates new physical stores. Query-embedding warmup runs after model construction
+and before telemetry; generation has no warmup. Artifacts record the actual warmup count.
+An invocation-local vision cache does not skip calls in a later repeat. Response caches invalidate
+performance comparisons, so leave `--use-cache` unset for these measurements.
 
-The RTX 5090 metadata and sampled GPU values describe the benchmark client. The configured VLM
-and embedding URLs are remote services, so their GPU hardware is not attributed to the 5090.
-Their configured `/metrics` endpoints instead provide process-global vLLM deltas and are marked
-non-exclusive because other traffic may occur in the same interval. For a publishable baseline,
-reserve both endpoints and the local GPU, record three or more repeats, and compare the same
-repeat protocol rather than treating one run as noise-free.
+Client GPU telemetry describes the benchmark host. Remote model hardware must be recorded
+separately. Provider `/metrics` deltas are process-wide and can include other traffic; reserve the
+services for publishable measurements. Report at least three repeats with their variability.
 
 ## Baseline arms
 
@@ -722,8 +672,8 @@ subsets separately alongside the unchanged overall official metric.
 renders the bundle with `bundle.render()`, and feeds that rendered text to the same generator call
 the `full-context` arm uses (`compile()` never generates text itself, so a compiled answer has to
 leave the product path the same way the two text baselines do). Reading it beside `blind`,
-`full-context`, and `sensemem` is exactly the no-memory/full-context/retrieval-only comparison
-[Context OS gate 4](context-os.md#evolution-gates) asks for. Its per-sample `compile_bundle_chars`
+`full-context`, and `sensemem` provides the downstream comparison described in
+[Context OS product measurements](context-os.md#product-measurements). Its per-sample `compile_bundle_chars`
 and `compile_bundle_items` (in `metrics`) are the bundle's own size, evidence-size denominators for a downstream-utility comparison. Pair them with the question's
 answer-quality metric; characters and items are not provider tokens. The runner does not compute
 a universal utility-per-token ratio.
@@ -758,8 +708,8 @@ still be described concurrently.
 
 ## Supported benchmark categories and primary metrics
 
-The executable catalog currently contains 18 benchmark families expanded to 33 concrete tasks.
-They fall into three dataset categories and one local systems microbenchmark. Classification follows
+The catalog groups dataset tasks into three workload categories. A separate local systems
+microbenchmark measures storage and index behavior. Classification follows
 the primary workload; several suites deliberately overlap categories.
 
 | Category | What it measures | Use it when |
@@ -785,6 +735,7 @@ from `sensemem.benchmarks.task_catalog`; `--list-tasks` remains authoritative.
 
 | Benchmark and selector | What it measures and when to use it | Primary result and scoring requirement | Data requirement |
 | --- | --- | --- | --- |
+| AMA-Bench (`ama-bench`) | Action/observation trajectories across six agent domains; recall, causal inference, state updating and abstraction | `accuracy`; official `Qwen/Qwen3-32B` judge, exact EM/token F1 diagnostics, and the public Space's rounded and weighted scores | Pinned Hugging Face open-ended test JSONL, 208 episodes and 2,496 questions; automatic; see [submission export](#export-a-leaderboard-submission) |
 | LoCoMo-Refined (`locomo-refined`) | Multi-session dialogue QA, temporal questions, captioned-image turns, and exact source-ID retrieval; use for conversational long-term memory | `llm_judge`; judge `qwen3-14b` | Pinned GitHub JSON; automatic |
 | MemLens (`memlens`: 32K/64K/128K/256K) | Information extraction, multi-session and temporal reasoning, knowledge updates, and refusal over dated conversations; use for scaling context length | `accuracy`; judge `qwen3-235b-judge` | Pinned Hugging Face JSON, 195-question subset, and the release's 229 MB `release_images/` tree; automatic. A turn's image is ingested as media when its file is present, so a run needs a model that declares the image capability; without the images the published captions are ingested alone |
 | LongMemEval-V2 (`longmemeval-v2`: small/medium) | Web and enterprise trajectory memory: static recall, dynamic state, procedures, gotchas and flawed-premise awareness | `accuracy`; phrase/choice rules and `gpt-5.2` judges with medium reasoning | Pinned Hugging Face JSONL, ordered haystacks and screenshots; automatic; image-capable models required |
@@ -1183,17 +1134,10 @@ nested `sensemem.ask` service boundary. `AsyncMemory` includes executor queueing
 TTFT; the outer caller metric additionally includes time spent waiting for the harness request
 semaphore. Per-sample `latency_ms` starts after admission and therefore remains response latency.
 
-`capture`, `time_to_searchable_ms`, and `formation` name what [Context OS](context-os.md#fast-context-plane)
-calls the fast plane's acknowledge-then-enrich contract: `capture()` acknowledges after the SQLite
-commit, so its own span *is* capture-acknowledgement latency; `time_to_searchable_ms` is the delay
-until a `settle()` call actually made a record searchable; `formation` is the model-dependent work
-one `settle()` call paid, distinct from any scheduling delay before it ran. All three report a
-`count` of `0` under the default `--ingest add`, because nothing calls `capture()`/`settle()` on
-that path -- that is the harness telling the truth about what it measured, not a bug. Speculative
-first-hit latency (the fifth quantity Context OS names) has no dedicated span today: the streaming
-prefetch path (`AsyncOmniPrefetch`) issues an ordinary `Memory.search()`, indistinguishable in
-telemetry from any other `search()` call, and this harness does not exercise streaming ingest at
-all, so it is not measurable by `eval` yet.
+Capture metrics separate acknowledgement, scheduling delay, and enrichment work.
+`time_to_searchable_ms` measures capture commit through successful settlement, while `formation`
+measures the `settle()` work itself. These distributions have `count=0` under `--ingest add`.
+The evaluator does not exercise streaming capture or measure speculative first-hit latency.
 
 `recall` is how a run proves the planner ran. Every planning failure resolves to the fallback
 plan on purpose -- no planning capability, a planner error, a plan the kernel will not run -- so
@@ -1264,8 +1208,7 @@ growth due to source media.
 ## Mandatory controls
 
 A score is not interpretable on its own, so `results.jsonl` reports three controls per task in a
-`controls` block and the console table renders each of them as its own column. Each of these has
-independently invalidated a conclusion on this project.
+`controls` block and the console table renders each of them as its own column. Use them to assess what the score can establish.
 
 | Control | Why it is mandatory |
 | --- | --- |
@@ -1302,10 +1245,13 @@ instead of being scored as zero.
 A gold evidence label is a set of memory **source IDs** — the `source_id` an adapter gives each
 stored memory, which comes back on every retrieved hit. Only a family that can name those IDs can
 have `recall_at_1`, `recall_at_20`, or a random-ranker control at all; the rest print `MISSING`,
-which is the honest state and not a defect to paper over.
+because the required labels are unavailable.
 
 | Family | What the release publishes | Verdict |
 | --- | --- | --- |
+| `ama-bench` | Question answers and trajectory metadata | No per-question source-evidence labels |
+| `icm-bench` | Published evidence clip IDs | Exact clip-ID join; annotations may be incomplete |
+| `videozerobench` | Time intervals and bounding boxes | Localization metrics; no gold source-record ID list |
 | `locomo-refined` | `qa[].evidence`, a list of `dia_id` values | Exact: `dia_id` is the stored source ID |
 | `longmemeval-v2` | Question-level answers and evaluation functions; ordered trajectory IDs identify the haystack | Not derivable: haystack membership is not gold evidence |
 | `es-memeval` | QA `evidence` turn IDs; event IDs are scorer-only annotations | Exact at the published session retrieval granularity: a session is gold when it contains at least one labelled visible turn |
@@ -1313,19 +1259,19 @@ which is the honest state and not a defect to paper over.
 | `mem-gallery` | `clue_ids`, the clue round IDs | Exact |
 | `worldmemarena` | Gold `image_id` and scorer-authored `memory_id` points | Exact for image IDs; `mp_*` memory points are unresolved rather than leaked into memory |
 | `mm-lifelong` | `total_intervals`, and `clue_intervals[].video_id` on the week and month splits | Interval-level only, and already reported as the official `ref_at_300`. The clue video IDs cannot be joined: prepared clips are keyed by file stem, not by release video ID |
-| `supermemory-vqa` | `question_evidence.time_spans[].video_id`, kept as `source_video_ids` | Source-video level only. The join exists — `prepare_media` writes `<video_id>-video-#####` — and the group operator ("any clip of each gold video") now exists as `evidence_groups`, but the adapter does not yet emit the clip groups. Not wired |
+| `supermemory-vqa` | `question_evidence.time_spans[].video_id`, kept as `source_video_ids` | Source-video labels are retained, but this adapter does not emit gold clip groups; source-ID recall is unavailable |
 | `m3-bench` | `timestamp` and `before_clip` | Not derivable: both say when the question is asked, not where the answer is |
 | `memlens` | `answer_session_ids`, the sessions holding the answer, on every row; refusal rows list none | Exact at session level. One memory is one turn, so each answer session is one group of stored turn IDs (`evidence_groups`) and counts as retrieved when any of them is ranked; the random-ranker row uses the matching hypergeometric expectation |
 | `clbench` | `context_id`, which names the whole unit | Not derivable: a label equal to the unit cannot separate rankers |
 | `beam` | Rubrics and reference answers; `turns[].id` is a turn's own index and no question refers to one | Not derivable |
-| `personamem-v3` | Slate-internal `_origin` and `_held_out_persona_item` | Unresolved. Those fields are deliberately excluded from the rendered slate because they are the answer; whether `_origin` names a `source_object_id` that matches an `event_id` needs a check against the corpus |
+| `personamem-v3` | Slate-internal `_origin` and `_held_out_persona_item` | Unresolved: slate labels are scorer-only and are not treated as gold source-memory IDs |
 | `egotempo` | One clip per unit | Degenerate: a one-candidate pool cannot separate rankers |
 | `openeqa` | `episode_history`, which is the unit | Not derivable |
 | `video-mme-v2` | Nothing beyond the answer | Not derivable |
 
-So exact retrieval quality is measurable on five families in the catalog, plus the image-labelled
-subset of WorldMemArena. Its `recall_at_20` remains a diagnostic for those compatible source-ID
-labels, not a universal benchmark metric.
+Source-ID recall is available only where the table identifies compatible labels. ICM-Bench's
+published clip annotations may be incomplete. `recall_at_20` is a diagnostic against those labels,
+not a universal measure of complete evidential support.
 
 LoCoMo-Refined publishes a separate evidence list that has to be matched onto the stored turns, so an
 evidence ID naming no stored turn is counted in `retrieval.unresolved_gold_evidence_ids` instead of
@@ -1419,6 +1365,33 @@ reader/model revision and scorer: original evidence only, stored representation 
 evidence and actual prepared context. Keep gold inputs outside normal retrieval and generation.
 Record the intervention and denominator; post-hoc coverage alone cannot establish causality.
 
+### Offline semantic support
+
+Structural provenance checks do not establish that evidence entails a proposed claim. The offline
+scorer consumes independently annotated atomic claims and observed SDK admission and withdrawal
+outcomes:
+
+```bash
+uv run --frozen python -m sensemem.benchmarks.semantic_support \
+  --input benchmarks/semantic_support.example.json \
+  --output /tmp/sensemem-semantic-support.json
+```
+
+The fixture runs without providers or storage. It documents the input schema; invalid input exits
+with code 2. Preserve the evidence snapshot as `fixture_version`, the formation recipe as
+`producer_revision`, and any verifier recipe as `reviewer_revision`. Gold labels are
+`entailment`, `contradiction`, or `unknown`; missing support alone is not contradiction.
+
+Each claim records its actual `admitted` outcome separately from the verifier's `predicted` label.
+Evidence locations use half-open Unicode offsets, frame indices, or audio milliseconds; media
+locations also require the original asset ID. Inner `gold_locations` lists are required sets
+(AND); outer alternatives are OR.
+
+The output reports unsupported admissions, classification and localization coverage, withdrawal
+residue, and measured costs. Unobserved outcomes remain unknown. The aggregate omits source and
+claim IDs; private evidence and annotations stay local. The supplied scripted fixture illustrates
+metric calculation and does not estimate real-model error rates.
+
 ## Results and reproducibility
 
 Each completed `eval` output directory contains:
@@ -1477,8 +1450,8 @@ instead of waiting for all six inference phases. The interim tables use the same
 final document, minus the standalone search replay, which still runs once at the end, and every
 answer is judged exactly once.
 
-`--no-stream-results` (or `benchmark.run.stream_results: false`) restores the former run-global
-judging pass when a protocol requires every inference phase to finish before any judging begins. It
+`--no-stream-results` (or `benchmark.run.stream_results: false`) selects run-global
+judging when a protocol requires every inference phase to finish before any judging begins. It
 also defers every task table until the end. Under the default cadence, client resource sampling and
 optional model-server counter deltas split around each judge pass, so judge work is excluded from
 the product measurement window. `--stream-results` remains accepted as an explicit spelling of the
@@ -1496,9 +1469,8 @@ Several result fields carry a caveat that decides whether they can be quoted:
 - **`abstentions` undercounts.** It counts two things: the opaque marker the answer backend emits
   when it declines, and -- for a task whose own prompt mandates a refusal wording -- an answer
   equal to that wording. A model that refuses in its own free wording, on a task that mandates
-  none, is still not counted. Measured under the older exact-sentence detector, an EgoLifeQA slice
-  reported 2 of 51 while 14 of 51 answers read as refusals; treat the field as a lower bound and
-  read the predictions before drawing a conclusion about refusal rates.
+  none, is still not counted. Treat the field as a protocol-specific lower bound and inspect predictions before
+  interpreting it as a refusal rate.
 - **Some tasks request a best-effort answer rather than a refusal.**
   `sensemem.benchmarks.prompts.task_answer_policy` maps each task to the `answer_policy` the
   runner passes into `Memory.ask`. `m3-bench-robot`, `icm-bench`, and the four `mm-lifelong-*`
@@ -1523,11 +1495,7 @@ Several result fields carry a caveat that decides whether they can be quoted:
   only from retrieved hits, uses no outside knowledge, and abstains when they are thin -- the
   contract for a question whose answer is in memory. PersonaMem-v3's chatbot, agentic, and
   proactive families instead ask for an assistant's response -- write a post in the user's
-  voice, answer a how-to question, decide whether to nudge -- and are judged as one. Measured on
-  the 2026-09-11 baseline run under `ask`, abstention was 84 % on `proactive_actions`, 46 % on
-  `chatbot_response`, 42 % on `agentic`, and every abstained row on a personalize or agentic
-  task type scored zero (on `over_personalization` a refusal scores above an answer, which is a
-  quirk of that family's rubric, not evidence the surface fits). On a `compile` task the product
+  voice, answer a how-to question, decide whether to nudge -- and are judged as one. On a `compile` task the product
   arm calls `Memory.compile` under the `--compile-max-*` budget, renders the bundle, and hands it
   to the configured generator under a harness-owned assistant prompt, versioned
   `sensemem_compile_surface_v1`: general knowledge allowed, no facts about the user the
@@ -1611,14 +1579,8 @@ measured latency and resource cost. `results.jsonl` records each of those:
 
 Scores are comparable only against runs of this harness at the same runner version, dataset
 revision, and scorer protocol. Every task row therefore carries `cross_harness_comparable: false`
-and a `comparability_note`. Vendor and third-party numbers for the same dataset are not
-comparable: LoCoMo has ranged from 28.0 to 92.5 across harnesses on identical data. Report which
-harness produced a number, and never place two harnesses' numbers in one column.
-
-The task-family table used for metric breakdowns comes only from
-`sensemem.benchmarks.official_scorers.task_family`. A second copy in the runner previously
-drifted and crashed report generation for four benchmarks; a unit test now pins every declared
-breakdown family against that single table.
+and a `comparability_note`. Report the harness and input protocol with each result. Cross-harness numbers require a separate
+protocol audit before comparison.
 
 Questions sharing one memory are clustered as one independent unit. Confidence intervals and
 regression significance remain unavailable when fewer than two independent units are present;
@@ -1656,16 +1618,16 @@ response cache or contain a product or retrieval-diagnostic error.
 
 ```bash
 sensemem-bench eval \
-  --config docs/examples/baselines/rtx5090-qwen38-wemm9b-text.yaml \
-  --compare .benchmarks/results/rtx5090-text-r0 \
+  --config eval.yaml \
+  --compare .benchmarks/results/baseline-r0 \
   --performance-budget answer_e2e_ttft_p95=0.10 \
   --performance-budget answer_e2e_latency_p95=0.10 \
   --performance-budget retrieval_e2e_latency_p95=0.15 \
   --performance-budget tokens_per_call=0.05 \
   --performance-budget answer_throughput=0.10 \
   --fail-on-regression \
-  --run-id rtx5090-text-candidate \
-  --output-path .benchmarks/results/rtx5090-text-candidate
+  --run-id candidate \
+  --output-path .benchmarks/results/candidate
 ```
 
 The fraction is the maximum tolerated relative regression. Lower is better for latency and token
@@ -1723,6 +1685,30 @@ recorded before the interruption are carried into the resumed run's `unwritten` 
 A resumed run is not a performance baseline: it skips ingest another invocation paid for and
 inherits that run's warm description cache. The result document records `resume`, and comparing
 either side of a `--compare` pair that carries it is refused.
+
+## Export a leaderboard submission
+
+AMA-Bench submission export uses a completed, judged `ama-bench` evaluation. Configure the
+official `Qwen/Qwen3-32B` judge and run the complete dataset with `--limit all`; the limit unit is
+an episode. Partial and `--predict-only` runs cannot produce a complete submission.
+
+```bash
+sensemem-bench ama-bench export \
+  --dataset .benchmarks/data/ama-bench/test/open_end_qa_set.jsonl \
+  --samples .benchmarks/results/ama-bench/samples.jsonl \
+  --output .benchmarks/results/ama-bench/submission.jsonl
+```
+
+Export requires the pinned dataset and scorer, the official judge, and one successful SenseMem
+prediction per question. It rejects missing, duplicate, failed, or mismatched results. Output rows
+contain `episode_id`, `question_uuid_list`, `answer_list`, and
+`llm_as_judge_score_list`. The task result's `official_evaluation` and `leaderboard` blocks
+report the evaluator aggregates and the pinned leaderboard's weighted projection respectively;
+`token_f1` remains a separate text-overlap diagnostic.
+
+Export creates a local file. Submit it through the benchmark's
+[official leaderboard](https://huggingface.co/spaces/AMA-bench/AMA-bench-Leaderboard);
+the organizers determine public verification and rank.
 
 ## Produce raw LoCoMo-Refined predictions
 

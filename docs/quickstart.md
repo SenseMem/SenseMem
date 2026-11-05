@@ -1,9 +1,8 @@
 # Quick start
 
-This guide teaches the smallest complete SenseMem loop: store a memory, close the process-local
-runtime, reopen it, and retrieve the same memory. The main example needs no database service or API
-key. Optional steps then add grounded answers, typed events, and omni-modal input one concept at a
-time.
+Store a memory, close and reopen the runtime, and retrieve the persisted record. The main example
+uses local embedding and needs no database service or API key. Optional examples add grounded
+answers, event times, and multimodal input.
 
 ## 1. Install SenseMem
 
@@ -18,12 +17,6 @@ With `pip`:
 
 ```bash
 python -m pip install "sensemem[local]"
-```
-
-For every optional integration, install the union of extras instead:
-
-```bash
-uv add "sensemem[all]"
 ```
 
 | Install | Choose it when |
@@ -57,7 +50,7 @@ config = {
         "model": "google/embeddinggemma-2",
     },
     # These two zeroes make this one-record tutorial deterministic.
-    # Remove the settings block to use the production defaults.
+    # Remove this block to use the default retrieval thresholds.
     "settings": {
         "minimum_relevance": 0.0,
         "ambiguity_margin": 0.0,
@@ -135,9 +128,9 @@ with Memory.from_config(answer_config) as memory:
         print("evidence:", [hit.id for hit in result.hits])
 ```
 
-`AnswerResult.hits` is the evidence used by the answer backend. Treat abstention as a normal result,
-not an exception. In this composition, records and embeddings remain local, while the question and
-retrieved evidence are sent to the configured OpenAI endpoint.
+`AnswerResult.hits` contains the evidence reported by the answer backend; it does not prove factual
+support. Treat abstention as a normal result. In this composition, records and embeddings remain
+local, while the question and retrieved evidence are sent to the configured OpenAI endpoint.
 
 ## 4. Add one capability at a time
 
