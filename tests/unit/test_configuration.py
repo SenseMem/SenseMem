@@ -844,12 +844,14 @@ def test_declarative_consolidation_slot_reaches_the_control_plane(
             "data_dir": tmp_path,
             "embedding": {"provider": "openai", "model": "tiny-test", "dimension": 4},
             "consolidation": {"provider": "openai", "model": "gpt-5-mini"},
+            "settings": {"memory_budget_records": 1},
         }
     ) as memory:
         assert "consolidate" in memory.capabilities.operations
         assert memory.capabilities.document()["consolidation_model"] == "tiny-consolidator"
         source = memory.add("Ada moved to Berlin in March.")
-        report = memory.consolidate(evidence_ids=(source.id,))
+        memory.add("An unrelated standing note.")
+        report = memory.consolidate(evidence_ids=(source.id,), trigger=MemoryTrigger.PRESSURE)
 
     assert backend.shown == [(source.id,)]
     assert [record.operation.intent for record in report.operations] == [MemoryIntent.FORGET]

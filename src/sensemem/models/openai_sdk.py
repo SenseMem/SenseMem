@@ -552,7 +552,27 @@ one cited evidence item must list that identity, because a name may only be clai
 the cited evidence contains. Do not target an observation with reinforce or correct; do not cite
 one index as both target and evidence, except for the retirement targets consolidate names among
 its own evidence; do not invent evidence, restate an assertion that already holds, or propose an
-operation the shown evidence cannot ground. Return an empty list instead."""
+operation the shown evidence cannot ground.
+
+context.evidence_indices names the shown items a derived claim already depends on;
+sources_not_shown_count counts its other sources. These are provenance links, not independent
+observations. A claim and the observations in its own evidence_indices need no new consolidation.
+
+Preserve unique standing facts. Consolidation combines repeated or overlapping statements of
+the same single claim, not unrelated facts about the same subject. A unique observation does
+not need a new typed restatement. Every consolidation must cite at least two independent
+original observations. Never turn a single source into a differently worded record, including
+when you name no retirement target; return no operation for that source instead.
+Do not bundle a person's job, preferences and events into one
+summary or retire those sources together. A derived claim and its own source are not a new pair
+of duplicate observations. Retire detail only when the new claim preserves all of that detail.
+
+For conflicting functional states or user-stated traits with the same subject and predicate,
+distinguish a later explicit correction or changed preference from a repeated older statement.
+Keep the current claim, and use correct with the current claim as counterevidence for the old
+one. Do not consolidate both incompatible values into one claim or silently choose a value in a
+summary. If time or applicability cannot resolve the conflict, leave both intact.
+Return an empty list whenever no supported operation is needed."""
 _CONSOLIDATION_FIELDS = frozenset(
     {"intent", "evidence", "targets", "proposal", "claim", "rationale"}
 )
@@ -3441,13 +3461,18 @@ def _consolidation_content(
         for record in evidence
     )
     payloads = []
+    evidence_indices = {record.id: index for index, record in enumerate(evidence)}
     media_position = 0
     for index, (record, assets) in enumerate(zip(evidence, attached, strict=True)):
         aliases = tuple(
             f"media_{position}" for position in range(media_position, media_position + len(assets))
         )
         media_position += len(aliases)
-        payloads.append(_consolidation_evidence_payload(record, index, media_aliases=aliases))
+        payloads.append(
+            _consolidation_evidence_payload(
+                record, index, evidence_indices=evidence_indices, media_aliases=aliases
+            )
+        )
     if not any(attached):
         return _json_text({"trigger": trigger.value, "evidence": payloads})
     # One part is emitted per attachment below, so the same asset cited by two evidence items
@@ -3469,6 +3494,7 @@ def _consolidation_evidence_payload(
     record: MemoryRecord,
     index: int,
     *,
+    evidence_indices: Mapping[str, int],
     media_aliases: Sequence[str] = (),
 ) -> dict[str, object]:
     context = record.context
@@ -3481,6 +3507,7 @@ def _consolidation_evidence_payload(
         "modality": record.modality.value,
         "media_order": list(media_aliases),
         "occurred_at": (None if record.occurred_at is None else record.occurred_at.isoformat()),
+        "created_at": record.created_at.isoformat(),
         # Who this evidence contains. An identify claim may only name one of these, so the
         # model needs to see them rather than infer an identifier it cannot know.
         "speaker_ids": list(speakers),
@@ -3499,6 +3526,14 @@ def _consolidation_evidence_payload(
                 None if context.valid_until is None else context.valid_until.isoformat()
             ),
             "source_count": len(context.evidence_ids),
+            "evidence_indices": [
+                evidence_indices[source]
+                for source in context.evidence_ids
+                if source in evidence_indices
+            ],
+            "sources_not_shown_count": sum(
+                source not in evidence_indices for source in context.evidence_ids
+            ),
         }
     return payload
 

@@ -135,6 +135,8 @@ adds no media; provider rejection does not rerun diagnosis. This adds model requ
 Diagnosis uses the lower of `max_tokens` (when set) and `media_max_tokens`; a truncated response
 selects no media and reports its diagnostic failure.
 Direct composition uses `EvidenceGeneration(model, selector=model, media_max_items=2)`.
+For direct adapters, `generation_media_max_tokens` sets the independent diagnosis ceiling;
+`generation_max_tokens` remains the overall output ceiling.
 
 `request_max_bytes` bounds the final answer JSON, including base64, UTF-8 text, provider fields,
 and streaming fields, excluding headers/framing. Existing fitting is preserved when unset or the

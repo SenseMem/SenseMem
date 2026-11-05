@@ -978,6 +978,16 @@ class ControlPlane(Traced):
         # pass down.
         if prepared.memory_id in operation.evidence_ids:
             raise RejectedOperation("target_is_evidence")
+        if (
+            not host_authored
+            and len(sources) > 1
+            and any(
+                source.context is not None
+                and set(operation.evidence_ids) <= {source.id, *source.context.evidence_ids}
+                for source in sources
+            )
+        ):
+            raise RejectedOperation("dependent_evidence")
         logged = self._formation.commit(
             tuple((prepared, source.id, proposal.confidence) for source in sources),
             (),

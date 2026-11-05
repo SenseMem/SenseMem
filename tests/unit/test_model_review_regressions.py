@@ -11,7 +11,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from test_memory_control_plane import ScriptedConsolidator
-from test_openai_sdk import _sdk_client, _search_hit
+from test_openai_sdk import _consolidation_evidence, _sdk_client, _search_hit
 
 from sensemem import (
     FormationProposal,
@@ -70,6 +70,12 @@ def test_incomplete_answer_never_succeeds_or_reinforces(
 def test_extra_body_cannot_replace_owned_generation_controls(field: str) -> None:
     with pytest.raises(ValidationError):
         OpenAIModels(generation_model="compatible-model", generation_extra_body={field: 1})
+
+
+@pytest.mark.parametrize("limit", [True, 0, -1])
+def test_media_diagnosis_rejects_invalid_budgets(limit: int) -> None:
+    with pytest.raises(ValidationError, match="generation_media_max_tokens"):
+        OpenAIModels(generation_media_max_tokens=limit)
 
 
 @pytest.mark.parametrize(
@@ -163,14 +169,12 @@ def test_model_correction_requires_shown_counterevidence_and_keeps_it_in_the_log
         if reason is not None:
             assert report.rejected == ((correction, reason),)
             assert not report.operations
-            assert memory.get(target).context is not None
-            assert memory.get(target).context.retired_at is None  # type: ignore[union-attr]
         else:
             assert report.operations[0].operation.evidence_ids == (contrary.id,)
             assert memory.operations()[0].operation.evidence_ids == (contrary.id,)
             assert memory.rollback(report.operations[0].operation_id)
-            assert memory.get(target).context is not None
-            assert memory.get(target).context.retired_at is None  # type: ignore[union-attr]
+        context = memory.get(target).context
+        assert context is not None and context.retired_at is None
 
 
 @pytest.mark.parametrize(
@@ -203,3 +207,63 @@ def test_model_forgetting_requires_host_pressure_and_cannot_go_below_budget(
             next_report = memory.consolidate(evidence_ids=(second.id,), trigger=trigger)
             assert next_report.rejected[0][1] == "stale"
             assert memory.get(second.id).forgotten_at is None
+
+
+def test_derived_claim_and_its_own_source_are_not_independent_duplicates(tmp_path: Path) -> None:
+    consolidator = ScriptedConsolidator()
+    with Memory(tmp_path, embedder=TinyEmbedder(), consolidator=consolidator) as memory:
+        source = memory.add("The toolbox is blue.")
+        original = memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.CONSOLIDATE,
+                evidence_ids=(source.id,),
+                proposal=FormationProposal(
+                    kind=MemoryKind.EVENT, content="The toolbox is blue.", confidence=0.9
+                ),
+            )
+        )
+        target = original.created_ids[0]
+        operation = MemoryOperation(
+            intent=MemoryIntent.CONSOLIDATE,
+            evidence_ids=(source.id, target),
+            target_ids=(source.id, target),
+            proposal=FormationProposal(
+                kind=MemoryKind.EVENT, content="The blue toolbox was observed.", confidence=0.9
+            ),
+        )
+        consolidator._scripts.append((operation,))
+        report = memory.consolidate(evidence_ids=(source.id, target))
+        assert report.rejected == ((operation, "dependent_evidence"),)
+        assert memory.get(source.id).forgotten_at is None
+        assert memory.get(target).forgotten_at is None
+        assert memory.apply(operation).created_ids
+
+
+def test_consolidation_shows_source_relationships_without_inventing_missing_indices() -> None:
+    source, derived = _consolidation_evidence()
+    assert derived.context is not None
+    derived = replace(
+        derived, context=replace(derived.context, evidence_ids=(source.id, "omitted"))
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        evidence = json.loads(json.loads(request.content)["messages"][1]["content"])["evidence"]
+        assert evidence[0]["created_at"] == source.created_at.isoformat()
+        assert evidence[1]["context"]["evidence_indices"] == [0]
+        assert evidence[1]["context"]["sources_not_shown_count"] == 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"content": '{"operations":[]}'},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+        model = OpenAIModels(_sdk_client(transport))
+        assert model.consolidate((source, derived), trigger=MemoryTrigger.MANUAL) == ()

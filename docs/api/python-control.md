@@ -76,6 +76,22 @@ One consolidation's cited set is a joint support clause; separate operations add
 Evidence linkage is model-declared provenance, not semantic proof. Intent-specific rules appear
 under apply below.
 
+Model-proposed corrections must cite standing, shown counterevidence disjoint from their targets;
+the citations remain in the operation log and idempotency key. Missing citations are rejected as
+`counterevidence_required`. The apply transaction rechecks those premises. Host-authored
+`apply()` corrections may omit counterevidence because the caller supplies the authority.
+
+Standalone model `FORGET` operations require `trigger=MemoryTrigger.PRESSURE` and an explicit
+`MemoryConfig.memory_budget_records`. The SQLite transaction refuses a batch that would leave
+fewer unforgotten records than that budget, including when another operation already relieved
+the pressure; it reports `stale` without partial changes. Other model forgetting is
+`unauthorized`. Manual `forget()` and host-authored `apply()` retain their explicit authority.
+
+Consolidation inputs expose shown source indices and omitted-source counts. A model cannot
+consolidate a derived claim together with only its own sources as if they were independent
+duplicates; that proposal is `dependent_evidence`. This check preserves the sources for later
+correction or genuine new evidence. Host-authored `apply()` may explicitly re-express them.
+
 ## consolidate_pending
 
 ```text

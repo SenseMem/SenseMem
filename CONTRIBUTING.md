@@ -203,6 +203,12 @@ pages should describe supported behavior and reproducible usage, with detailed c
 owning guide. Preserve model revisions, dataset checksums, source snapshots, and manifests needed
 to reproduce measurements; private research artifacts remain local-only.
 
+Keep one-off experiment runners, ablation recipes, and their supporting tests in `docs/research/`.
+Tracked benchmarks and tests should exercise supported behavior rather than preserve an
+experiment's measured limitations. Generated distributions, isolated installability environments,
+Python/tool caches, logs, and manuscript build intermediates are disposable; keep source files,
+finished documents, local data, and reproducibility evidence when cleaning the workspace.
+
 ## Pull requests
 
 Use a concise imperative commit subject such as `Add index recovery test`. A pull request should:

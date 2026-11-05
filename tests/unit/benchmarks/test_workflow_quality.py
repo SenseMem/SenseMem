@@ -27,6 +27,7 @@ def _consolidation_reply(content: str, broken: str | None) -> str:
             for row in evidence
             if row.get("context", {}).get("kind") == "trait"
             and " says their only seat" in row["content"]
+            and " now says " not in row["content"]
         ]
         newer = [
             row["index"]
@@ -43,7 +44,10 @@ def _consolidation_reply(content: str, broken: str | None) -> str:
                 }
             )
         drinks = [
-            row["index"] for row in evidence if "morning" in row["content"] and "context" not in row
+            row["index"]
+            for row in evidence
+            if "morning" in row["content"]
+            and row.get("context", {}).get("kind", "observation") == "observation"
         ]
         if len(drinks) == 2:
             operations.append(

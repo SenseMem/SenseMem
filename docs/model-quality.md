@@ -30,6 +30,12 @@ Each case also requires its expected model stage. Workflow requests use an 8192-
 ceiling, a 120-second timeout, and no SDK retries. Every case/repeat has a fresh physical directory
 and must pass.
 
+The control-plane case reuses the seeded benchmark with one person and at most two rounds.
+Undefined rates fail, so returning no operations cannot pass. Its deterministic formation and
+embedding isolate consolidation quality. The media case has no cached caption and must select
+the original image; its independent 8192-token diagnosis ceiling includes reasoning and remains
+bounded by the configured overall output ceiling.
+
 ## Run the answering and workflow gates
 
 Set `OPENAI_API_KEY` through a secret manager or the process environment. For a compatible server,

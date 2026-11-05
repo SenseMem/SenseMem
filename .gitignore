@@ -15,6 +15,11 @@ htmlcov/
 build/
 dist/
 *.log
+# Root-level manuscript build intermediates; keep sources and finished documents.
+/paper.aux
+/paper.fdb_latexmk
+/paper.fls
+/paper.out
 .env
 .env.local
 # Local model checkout used by the WeMM deployment guide.
