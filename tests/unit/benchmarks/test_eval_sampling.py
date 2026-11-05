@@ -132,7 +132,7 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
     assert recorded["generation_answer_style"] == (configured_style or "default")
     for request in requests:
         messages = cast(list[dict[str, str]], request["messages"])
-        assert ("Give only the answer to the question" in messages[0]["content"]) == (
+        assert ("Give the shortest complete answer" in messages[0]["content"]) == (
             configured_style == "concise"
         )
 

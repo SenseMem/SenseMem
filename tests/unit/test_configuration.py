@@ -1003,7 +1003,7 @@ def test_declarative_generation_slot_carries_every_control_through_the_real_fact
                 },
             )
         assert (
-            "Give only the answer to the question"
+            "Give the shortest complete answer"
             in json.loads(request.content)["messages"][0]["content"]
         )
         if not json.loads(request.content).get("stream"):
