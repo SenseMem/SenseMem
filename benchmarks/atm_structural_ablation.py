@@ -106,9 +106,23 @@ class Recipe(BaseModel):
     raw_media: bool = False
     raw_media_root: Path | None = None
     source_store: Path | None = None
-    stage: Literal["full", "ingest", "reranking-probe"] = "full"
+    selection_path: Path | None = None
+    stage: Literal["full", "ingest", "reranking-probe", "reader-probe"] = "full"
     preflight: bool = False
     measure_search_replay: bool = True
+
+
+class _SelectedQuestion(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    question_id: str = Field(min_length=1)
+
+
+class _QuestionSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source_samples_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cases: tuple[_SelectedQuestion, ...] = Field(min_length=1, max_length=1012)
 
 
 @contextmanager
@@ -277,9 +291,11 @@ def embedding_fingerprint(  # noqa: C901 - one SQLite snapshot includes each typ
     }
 
 
-def _prepare(path: Path) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
+def _prepare(
+    path: Path, expected_count: int = 1013, gen_kwargs: str = ""
+) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
     parser = _build_parser(None)
-    parsed = parser.parse_args(["--config", str(path), "--resume"])
+    parsed = parser.parse_args(["--config", str(path), "--resume", "--gen-kwargs", gen_kwargs])
     config, overrides = _load_memory_config(path)
     if config is None:
         raise ValueError("an explicit memory configuration is required")
@@ -288,8 +304,10 @@ def _prepare(path: Path) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
     )
     arguments = _arguments(parser, parsed, download, overrides=overrides)
     task = runner._load_tasks(arguments, None, None)[0]
-    if len(task.units) != 1 or len(task.units[0].questions) != 1013:
-        raise ValueError("full ATM main coverage requires exactly 1,013 questions")
+    if len(task.units) != 1 or len(task.units[0].questions) != expected_count:
+        if expected_count == 1013:
+            raise ValueError("full ATM main coverage requires exactly 1,013 questions")
+        raise ValueError(f"targeted ATM coverage requires exactly {expected_count} questions")
     model = _evaluation_config(_model_config(arguments.model_args, memory_config=config), (task,))
     resolved = _evaluation_memory_config(
         config, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
@@ -328,7 +346,7 @@ async def _ingest(
                 memory,
                 task.units[0].memories,
                 batch_size=_batch_size(arguments, task),
-                ingest_concurrency=16,
+                ingest_concurrency=arguments.ingest_concurrency,
                 on_failure=failures.append,
                 on_chunk=committed,
             )
@@ -342,12 +360,21 @@ async def _ingest(
 def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run lifecycle owns its cleanup
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recipe", type=Path, required=True)
+    parser.add_argument(
+        "--gen-kwargs", default="", help="generation controls for scoring and reader qualification"
+    )
     cli = parser.parse_args(argv)
     recipe = Recipe.model_validate_json(cli.recipe.read_text())
     recipe = recipe.model_copy(
         update={
             name: value.expanduser().resolve()
-            for name in ("base_config_path", "artifact_root", "source_store", "raw_media_root")
+            for name in (
+                "base_config_path",
+                "artifact_root",
+                "source_store",
+                "raw_media_root",
+                "selection_path",
+            )
             if (value := getattr(recipe, name)) is not None
         }
     )
@@ -356,12 +383,27 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
         != recipe.base_config_sha256
     ):
         raise ValueError("base configuration SHA-256 differs from the frozen recipe")
+    selection = None
+    selection_sha256 = None
+    selected_ids: frozenset[str] | None = None
+    if recipe.selection_path is not None:
+        selection_bytes = recipe.selection_path.read_bytes()
+        selection = _QuestionSelection.model_validate_json(selection_bytes)
+        selected_ids = frozenset(case.question_id for case in selection.cases)
+        if len(selected_ids) != len(selection.cases):
+            raise ValueError("question selection must not repeat IDs")
+        selection_sha256 = hashlib.sha256(selection_bytes).hexdigest()
+    question_count = 1013 if selected_ids is None else len(selected_ids)
     directory = recipe.artifact_root / recipe.variant
     directory.mkdir(parents=True, exist_ok=True)
-    if recipe.stage == "reranking-probe":
+    if recipe.stage == "reranking-probe" and not recipe.preflight:
         from multimodal_reranking_probe import run_probe
 
         return run_probe(recipe.base_config_path, directory)
+    if recipe.stage == "reader-probe" and not recipe.preflight:
+        from atm_reader_role_probe import run_probe as run_reader_probe
+
+        return run_reader_probe(recipe.base_config_path, directory, gen_kwargs=cli.gen_kwargs)
     config_path = directory / "input.yaml"
     payload = yaml.safe_load(recipe.base_config_path.read_text())
     if not isinstance(payload, dict) or not isinstance(payload.get("benchmark"), dict):
@@ -371,19 +413,22 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
     run_settings = benchmark.setdefault("run", {})
     if not isinstance(download, dict) or not isinstance(run_settings, dict):
         raise ValueError("benchmark download/run sections must be mappings")
+    for name in (
+        "request_concurrency",
+        "unit_concurrency",
+        "ingest_concurrency",
+        "judge_concurrency",
+    ):
+        run_settings.setdefault(name, 16)
     download["data_root"] = str(directory / "stores")
     run_settings.update(
         {
             "tasks": "atm-bench-main-sgm",
             "arms": "sensemem",
-            "limit": "all",
+            "limit": "all" if selected_ids is None else question_count,
             "offset": 0,
             "run_id": recipe.variant,
             "output_path": str(directory / "results"),
-            "request_concurrency": 16,
-            "unit_concurrency": 16,
-            "ingest_concurrency": 16,
-            "judge_concurrency": 16,
             "use_cache": None,
             "predict_only": False,
             "log_samples": True,
@@ -403,17 +448,43 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             collected.append(self)
 
     def ablation_loader(*args: object, **kwargs: object) -> LoadedTask:
-        task = original_loader(*args, **kwargs)
-        if not recipe.raw_media:
-            return task
-        root = cast(Path, kwargs["root"])
-        raw = load_task(TASKS["atm-bench-main"], root=root, media_root=recipe.raw_media_root)
-        return attach_raw_media(task, raw)
+        # Native result metadata retains the subset limit, but source assembly always loads
+        # the pinned full QA and complete archive before selecting questions alone.
+        loading = {**kwargs, "limit": None, "offset": 0} if selected_ids is not None else kwargs
+        task = original_loader(*args, **loading)
+        if recipe.raw_media:
+            root = cast(Path, kwargs["root"])
+            raw = load_task(TASKS["atm-bench-main"], root=root, media_root=recipe.raw_media_root)
+            task = attach_raw_media(task, raw)
+        if selected_ids is not None:
+            if (
+                len(task.units) != 1
+                or len(task.units[0].questions) != 1013
+                or len(task.units[0].memories) != 11034
+            ):
+                raise ValueError("question selection requires full 1,013 QA and 11,034 memories")
+            unit = task.units[0]
+            questions = tuple(
+                question for question in unit.questions if question.question_id in selected_ids
+            )
+            if len(questions) != question_count:
+                raise ValueError("question selection contains IDs absent from the full QA")
+            task = replace(
+                task,
+                units=(replace(unit, questions=questions),),
+                input_sha256={
+                    **task.input_sha256,
+                    "question_selection": cast(str, selection_sha256),
+                },
+            )
+        return task
 
     vars(runner)["load_task"] = ablation_loader
     vars(runner)["EvaluationTelemetry"] = RecordedTelemetry
     try:
-        arguments, config, task = _prepare(config_path)
+        arguments, config, task = _prepare(
+            config_path, expected_count=question_count, gen_kwargs=cli.gen_kwargs
+        )
         manifest: dict[str, object] = {
             "variant": recipe.variant,
             "stage": recipe.stage,
@@ -423,8 +494,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             "input_sha256": dict(task.input_sha256),
             "implementation_sha256": runner._implementation_identity(),
             "source_store": None if recipe.source_store is None else str(recipe.source_store),
-            "question_count": 1013,
-            "concurrency": 16,
+            "question_count": question_count,
+            "complete_main": selected_ids is None,
+            "full_qa_sha256": task.dataset_sha256,
+            "selection_path": (
+                None if recipe.selection_path is None else str(recipe.selection_path)
+            ),
+            "selection_sha256": selection_sha256,
+            "selection_source_samples_sha256": (
+                None if selection is None else selection.source_samples_sha256
+            ),
+            "concurrency": arguments.request_concurrency,
+            "generation_kwargs": arguments.gen_kwargs,
             "all_predictions_fresh": True,
             "all_judges_fresh": True,
             "recipe_sha256": hashlib.sha256(cli.recipe.read_bytes()).hexdigest(),
@@ -436,7 +517,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             (directory / "preflight.json").write_text(json.dumps(manifest, indent=2) + "\n")
             print(
                 json.dumps(
-                    {"status": "preflight_passed", "variant": recipe.variant, "questions": 1013}
+                    {
+                        "status": "preflight_passed",
+                        "variant": recipe.variant,
+                        "questions": question_count,
+                        "complete_main": selected_ids is None,
+                    }
                 ),
                 flush=True,
             )
@@ -491,11 +577,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one native run l
             return 0
         (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         with _search_replay(recipe.measure_search_replay):
-            status = runner.main(["--config", str(config_path), "--resume"])
+            status = runner.main(
+                ["--config", str(config_path), "--resume", "--gen-kwargs", cli.gen_kwargs]
+            )
         result = json.loads((directory / "results/results.jsonl").read_text())
         row = result["tasks"][0]
         summary = {
             "variant": recipe.variant,
+            "complete_main": selected_ids is None,
             "score": row["score"]["mean"],
             "questions": row["question_count"],
             "score_valid": row["score_valid"],

@@ -302,6 +302,31 @@ class _BorrowedBackend:
         return None
 
 
+class _BorrowedEmbeddingBackend(_BorrowedBackend):
+    """Expose required members to Python's static runtime-protocol inspection."""
+
+    @property
+    def embedding_capabilities(self) -> frozenset[Modality]:
+        return cast(EmbeddingBackend, self._backend).embedding_capabilities
+
+    @property
+    def embedding_model(self) -> str:
+        return cast(EmbeddingBackend, self._backend).embedding_model
+
+    @property
+    def embedding_space(self) -> str:
+        return cast(EmbeddingBackend, self._backend).embedding_space
+
+    @property
+    def embedding_dimension(self) -> int:
+        return cast(EmbeddingBackend, self._backend).embedding_dimension
+
+    def embed(
+        self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+    ) -> tuple[tuple[float, ...], ...]:
+        return cast(EmbeddingBackend, self._backend).embed(inputs, task=task)
+
+
 class _BorrowedRerankingBackend(_BorrowedBackend):
     """Preserve the runtime protocol without giving a store ownership of the model."""
 
@@ -595,7 +620,7 @@ class _BackendPool:
         resolved = resolve_memory_config(memory_config)
         self._resolved_config = resolved
         plugins = resolved.plugins
-        self._embedder = cast(EmbeddingBackend, _BorrowedBackend(plugins.embedder))
+        self._embedder = cast(EmbeddingBackend, _BorrowedEmbeddingBackend(plugins.embedder))
         self._answerer = (
             None
             if plugins.answerer is None

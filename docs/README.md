@@ -79,6 +79,8 @@ contract. The release is tracked under [Unreleased](../CHANGELOG.md#unreleased).
 ## Evaluate
 
 - [Benchmarking](benchmarking.md) — behavior evaluation, local-index measurement, and SDK load tests.
+- [ATM maximum-thinking profile](atm-max-thinking.md) — concise evidence review and remote
+  text/media reranking with a reusable concurrency-16 configuration.
 - [Fused ATM-Bench retrieval](atm-fused-retrieval.md) — caller-supplied descriptions and raw
   media, native visual reranking, and a portable evaluation recipe.
 - [Grounded multimodal recall](grounded-multimodal-recall.md) — bounded semantic routes,

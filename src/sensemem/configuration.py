@@ -52,6 +52,7 @@ from sensemem.models.sentence_transformers import (
     SentenceTransformersEmbedder,
     SentenceTransformersReranker,
 )
+from sensemem.models.vllm_reranking import VLLMReranker, _server_base_url
 from sensemem.plugins import MemoryConfig, MemoryPlugins
 from sensemem.types import Modality, RetentionPolicy
 
@@ -158,6 +159,25 @@ class Qwen3VLRerankingConfig(_ConfigModel):
     video_limit: _PositiveInt = 2
     image_max_pixels: _PositiveInt = 262144
     video_frames: Annotated[int, Field(strict=True, ge=2, le=64)] = 8
+
+
+class VLLMRerankingConfig(_ConfigModel):
+    provider: Literal["vllm"]
+    model: _Text
+    base_url: _Text
+    api_key: SecretStr | None = None
+    timeout: _PositiveFloat = 60.0
+    batch_size: _PositiveInt = 32
+    media_candidates: _PositiveInt | None = None
+    media_weight: Annotated[float, Field(strict=True, gt=0, le=1)] = 0.5
+    modalities: Annotated[
+        frozenset[Literal[Modality.TEXT, Modality.IMAGE, Modality.VIDEO]], Field(min_length=1)
+    ] = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str) -> str:
+        return _server_base_url(value)
 
 
 class _OpenAICompletionConfig(_OpenAIConfig):
@@ -300,7 +320,7 @@ EmbeddingProviderConfig = Annotated[
     Field(discriminator="provider"),
 ]
 RerankingProviderConfig = Annotated[
-    SentenceTransformersRerankingConfig | Qwen3VLRerankingConfig,
+    SentenceTransformersRerankingConfig | Qwen3VLRerankingConfig | VLLMRerankingConfig,
     Field(discriminator="provider"),
 ]
 SpeechProviderConfig = Annotated[
@@ -370,28 +390,7 @@ def resolve_memory_config(
         answerer = None if config.generation is None else _build_generation(config.generation)
         if answerer is not None:
             cleanup.callback(answerer.close)
-        reranker: RerankingBackend | None = None
-        if isinstance(config.reranking, Qwen3VLRerankingConfig):
-            reranker = Qwen3VLReranker(
-                model_id=config.reranking.model,
-                revision=config.reranking.revision,
-                device=config.reranking.device,
-                batch_size=config.reranking.batch_size,
-                max_length=config.reranking.max_length,
-                gpu_memory_utilization=config.reranking.gpu_memory_utilization,
-                image_limit=config.reranking.image_limit,
-                video_limit=config.reranking.video_limit,
-                image_max_pixels=config.reranking.image_max_pixels,
-                video_frames=config.reranking.video_frames,
-            )
-        elif config.reranking is not None:
-            reranker = SentenceTransformersReranker(
-                model_id=config.reranking.model,
-                revision=config.reranking.revision,
-                device=config.reranking.device,
-                batch_size=config.reranking.batch_size,
-                max_length=config.reranking.max_length,
-            )
+        reranker = None if config.reranking is None else _build_reranking(config.reranking)
         if reranker is not None:
             cleanup.callback(reranker.close)
         former = None if config.formation is None else _build_formation(config.formation)
@@ -426,6 +425,40 @@ def resolve_memory_config(
         )
         cleanup.pop_all()
     return MemoryComposition(config.data_dir, plugins, settings)
+
+
+def _build_reranking(config: RerankingProviderConfig) -> RerankingBackend:
+    if isinstance(config, VLLMRerankingConfig):
+        return VLLMReranker(
+            model_id=config.model,
+            base_url=config.base_url,
+            api_key=None if config.api_key is None else config.api_key.get_secret_value(),
+            timeout=config.timeout,
+            batch_size=config.batch_size,
+            modalities=config.modalities,
+            media_candidates=config.media_candidates,
+            media_weight=config.media_weight,
+        )
+    if isinstance(config, Qwen3VLRerankingConfig):
+        return Qwen3VLReranker(
+            model_id=config.model,
+            revision=config.revision,
+            device=config.device,
+            batch_size=config.batch_size,
+            max_length=config.max_length,
+            gpu_memory_utilization=config.gpu_memory_utilization,
+            image_limit=config.image_limit,
+            video_limit=config.video_limit,
+            image_max_pixels=config.image_max_pixels,
+            video_frames=config.video_frames,
+        )
+    return SentenceTransformersReranker(
+        model_id=config.model,
+        revision=config.revision,
+        device=config.device,
+        batch_size=config.batch_size,
+        max_length=config.max_length,
+    )
 
 
 def _with_retention(config: SenseMemConfig) -> MemoryConfig:
@@ -652,5 +685,6 @@ __all__ = [
     "SentenceTransformersEmbeddingConfig",
     "SentenceTransformersRerankingConfig",
     "SpeechProviderConfig",
+    "VLLMRerankingConfig",
     "resolve_memory_config",
 ]

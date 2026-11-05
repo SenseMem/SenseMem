@@ -168,6 +168,10 @@ their existing meanings. This is an opt-in presentation policy, not an establish
 improvement; evaluate it with the chosen model and task. Formation, visual description and
 consolidation do not accept this answer-only control.
 
+The concise style also privately checks source roles, event and capture times, local dates,
+units, quantities and list conditions before rendering the requested answer. See the
+[ATM maximum-thinking profile](atm-max-thinking.md) for an evaluation configuration using it.
+
 `generation.answer_format` accepts `text` (default) or `structured`. Structured answering asks
 the model for a typed draft, then renders it against the final evidence that actually fits the
 request. Source-list drafts select local evidence aliases; the runtime resolves them through
@@ -368,8 +372,28 @@ the vision slot.
 
 ## Semantic reranking
 
-The optional `reranking` slot loads a local query-document scorer. It is disabled when the slot
-is absent. Install the `reranking` extra for Qwen3-VL's vLLM runtime:
+The optional `reranking` slot selects a local or remote query-document scorer. It is disabled
+when the slot is absent. A remote vLLM service uses the `openai` extra's HTTP transport:
+
+```yaml
+reranking:
+  provider: vllm
+  model: Qwen3-VL-Rerank-8B
+  base_url: http://127.0.0.1:8002
+  api_key: EMPTY
+  batch_size: 32
+  media_candidates: 40
+  media_weight: 0.5
+  timeout: 240.0
+```
+
+The client sends text and native media to `<base_url>/rerank`. The server owns the model
+revision, context limits and preprocessing. `media_candidates` optionally refines a text-ranked
+shortlist with native media; `media_weight` combines their probability logits. Omit
+`media_candidates` to score the original multimodal pairs directly. See the
+[remote profile](atm-max-thinking.md#remote-reranking) for the complete policy.
+
+For a local Qwen3-VL model, install the `reranking` extra's vLLM runtime:
 
 ```bash
 uv sync --locked --default-index https://pypi.org/simple --all-groups --extra local --extra reranking
@@ -1237,7 +1261,8 @@ it at finality when the embedder lacks native image support and no external `Vis
 supplied a description, so speculative retrieval has a query before finality.
 
 `reranker=` accepts a `RerankingBackend`; `MemoryPlugins.reranker` exposes the same injection
-point. Declarative `reranking: qwen3-vl` constructs `Qwen3VLReranker`;
+point. Declarative `reranking: vllm` constructs `VLLMReranker`;
+`reranking: qwen3-vl` constructs `Qwen3VLReranker`;
 `reranking: sentence-transformers` constructs `SentenceTransformersReranker`.
 The kernel keeps source identity and filtering authoritative; the plugin supplies one score per
 `ModelInput` candidate in input order, using its declared modalities.

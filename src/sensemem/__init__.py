@@ -55,6 +55,7 @@ from sensemem.models.sentence_transformers import (
     SentenceTransformersEmbedder,
     SentenceTransformersReranker,
 )
+from sensemem.models.vllm_reranking import VLLMReranker
 from sensemem.perception import SpeakerName, VisualDescription
 from sensemem.plugins import MemoryConfig, MemoryPlugins
 from sensemem.streams import (
@@ -292,6 +293,7 @@ __all__ = [
     "TextSpanSelector",
     "TranscriptionBackend",
     "VADPacket",
+    "VLLMReranker",
     "ValidationError",
     "VisionAnalysisBackend",
     "VisionBoundary",

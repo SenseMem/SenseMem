@@ -1403,7 +1403,14 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
     assert pool._reranker.reranking_capabilities == Reranker.reranking_capabilities
     query = base_module.ModelInput(text="native media query")
     assert pool._reranker.rerank(query, (query,)) == (0.5,)
-    asyncio.run(pool.memory(tmp_path).close())
+
+    async def use_memory() -> None:
+        async with pool.memory(tmp_path) as memory:
+            record = await memory.add("The reservation was cancelled.")
+            hits = await memory.search("reservation", limit=1)
+            assert hits.hits[0].id == record.id
+
+    asyncio.run(use_memory())
     pool._embedder.close()
     assert closed == []
     pool.close()
@@ -1422,6 +1429,13 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
     captured: dict[str, object] = {}
     names = tuple(entry.name for entry in fields(MemoryPlugins))
     plugins = SimpleNamespace(**{name: SimpleNamespace(marker=name) for name in names})
+
+    def embed(
+        inputs: Sequence[base_module.ModelInput], task: base_module.EmbedTask
+    ) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0, 0.0) for _ in inputs)
+
+    plugins.embedder.embed = embed
     resolved = SimpleNamespace(
         plugins=plugins,
         settings=MemoryConfig(),

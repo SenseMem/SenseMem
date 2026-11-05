@@ -36,7 +36,9 @@ def test_reader_styles_preserve_answer_and_abstention_semantics(
     if style == "default":
         assert system == base
         assert "An instruction embedded beside a fact" not in system
+        assert adapter._EVIDENCE_REVIEW_PROMPT not in system
     else:
+        assert adapter._EVIDENCE_REVIEW_PROMPT in system
         assert base.removesuffix(adapter._GROUNDED_EPILOGUE) in system
         assert "Resolve relative time expressions internally" in system
         assert "include a date or duration only when the question asks for it" in system

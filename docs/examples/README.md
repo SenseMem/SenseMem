@@ -11,11 +11,12 @@ environment in [Contributing](../../CONTRIBUTING.md#setup).
 | [eval.example.yaml](eval.example.yaml) | Annotated evaluation template | Configure an embedding endpoint and reader; optional local speech requires `local` |
 | [atm-raw-qwen-wemm.yaml](atm-raw-qwen-wemm.yaml) | Raw ATM-Bench media with descriptions and bounded recall | Compatible WeMM and Qwen endpoints, `benchmarks,openai`, and the ATM corpus |
 | [atm-sgm-detail-qwen3-vl.yaml](atm-sgm-detail-qwen3-vl.yaml) | Fused source descriptions plus native visual reranking | Caller-supplied fused corpus, embedding/reader/judge endpoints, and CUDA reranking; see the [recipe](../atm-fused-retrieval.md) |
+| [atm-sgm-max-thinking-vllm.yaml](atm-sgm-max-thinking-vllm.yaml) | Fused ATM corpus, maximum reader thinking, and remote text/media reranking | WeMM, DeepSeek, vLLM rerank and judge endpoints; see the [profile](../atm-max-thinking.md) |
 | [mem-gallery-qwen-wemm.yaml](mem-gallery-qwen-wemm.yaml) | Image-dialogue evaluation with query vision | Compatible WeMM and Qwen endpoints, `benchmarks,openai`, and Mem-Gallery inputs |
 | [baselines/rtx5090-qwen38-wemm9b-text.yaml](baselines/rtx5090-qwen38-wemm9b-text.yaml) | Reference text-workload measurement profile | Access to the declared remote services; review the [baseline protocol](../benchmarking.md#rtx-5090-qwen38-and-wemm-reference-baseline) |
 | [baselines/rtx5090-qwen38-wemm9b-media.yaml](baselines/rtx5090-qwen38-wemm9b-media.yaml) | Reference media-workload profile with local speech | The same services plus local FunASR, media tools, and the selected corpora |
 
-All six files contain a harness-owned `benchmark` section and are inputs to
+All seven files contain a harness-owned `benchmark` section and are inputs to
 `sensemem-bench eval --config`. To use a file with `Memory.from_config()`, decode it in the host,
 remove `benchmark`, and set the application's own `data_dir`. Product configuration accepts no
 `benchmark` key. The evaluator replaces `data_dir` with physically isolated per-unit stores.

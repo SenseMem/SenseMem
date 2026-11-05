@@ -1247,7 +1247,7 @@ The supported names exported by `sensemem` are:
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
 | Enums and literal aliases | `AnswerPolicy`, `PerceptionKind`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
 | Backend protocols and values | `EmbeddingBackend`, `EmbeddingRoute`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `VisionAnalysisBackend`, `EmbeddingInputSupport`, `MediaSelectionBackend`, `SourceMetadataBackend`, `GenerationMediaBackend`, `GenerationRoutingBackend`, `VisualDescription`, `SpeakerName`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
-| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `OpenAIModels`, `GenerationRouter`, `EmbeddingRouter`, `EvidenceGeneration`, `GazetteerEnricher`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
+| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `VLLMReranker`, `OpenAIModels`, `GenerationRouter`, `EmbeddingRouter`, `EvidenceGeneration`, `GazetteerEnricher`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
 | Exceptions | `SenseMemError`, `ValidationError`, `MemoryNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |
 
 ### Public values
@@ -1659,6 +1659,19 @@ SentenceTransformersReranker.load(
     max_length: int = 1024,
 ) -> SentenceTransformersReranker
 
+VLLMReranker(
+    client: httpx2.Client | None = None,
+    *,
+    model_id: str,
+    base_url: str,
+    api_key: str | None = None,
+    timeout: float = 60.0,
+    batch_size: int = 32,
+    modalities: Iterable[Modality] = (Modality.TEXT, Modality.IMAGE, Modality.VIDEO),
+    media_candidates: int | None = None,
+    media_weight: float = 0.5,
+)
+
 Qwen3VLReranker(
     engine=None,
     *,
@@ -1743,6 +1756,13 @@ For `google/embeddinggemma-2`, the generic loader uses FP32 and supports `128`, 
 `768` dimensions without requiring optional Matryoshka metadata. Query and document prompts come
 from the loaded checkpoint. See the [EmbeddingGemma 2 configuration](../configuration.md#embeddinggemma-2)
 for a complete example and input limits.
+
+`VLLMReranker` uses the `openai` extra's HTTP transport for a hosted `<base_url>/rerank`
+endpoint. It restores input-order finite scores, owns its client and waits for active calls on
+close. Server deployment owns revision pinning and media/context limits. Optional
+`media_candidates` and `media_weight` enable bounded text/media probability-logit fusion;
+request and usage totals include both passes. See the
+[remote reranking profile](../atm-max-thinking.md#remote-reranking).
 
 `Qwen3VLReranker` uses the optional `reranking` extra's vLLM pooling runner to rank each
 query/document pair's text, original images and original videos with Qwen3-VL-Reranker, following the

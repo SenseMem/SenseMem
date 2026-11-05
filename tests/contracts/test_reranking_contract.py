@@ -1,8 +1,10 @@
 """The public scorer contract uses resolved multimodal values and aligned scores."""
 
+import hashlib
 from collections.abc import Sequence
 from pathlib import Path
 
+import httpx2 as httpx
 import pytest
 
 from sensemem import (
@@ -12,10 +14,14 @@ from sensemem import (
     Qwen3VLReranker,
     RerankingBackend,
     ValidationError,
+    VLLMReranker,
 )
 
 
-def test_public_reranker_accepts_media_only_and_mixed_pairs_without_a_mode(tmp_path: Path) -> None:
+@pytest.mark.parametrize("remote", [False, True])
+def test_public_reranker_accepts_media_only_and_mixed_pairs_without_a_mode(
+    tmp_path: Path, remote: bool
+) -> None:
     class Engine:
         def score(
             self,
@@ -31,12 +37,14 @@ def test_public_reranker_accepts_media_only_and_mixed_pairs_without_a_mode(tmp_p
         def close(self) -> None:
             pass
 
+    (tmp_path / "image.png").write_bytes(b"i")
+    (tmp_path / "video.mp4").write_bytes(b"v")
     image = AssetRef(
         "image",
         modality=Modality.IMAGE,
         media_type="image/png",
         size_bytes=1,
-        sha256="a" * 64,
+        sha256=hashlib.sha256(b"i").hexdigest(),
         path=tmp_path / "image.png",
     )
     video = AssetRef(
@@ -44,11 +52,31 @@ def test_public_reranker_accepts_media_only_and_mixed_pairs_without_a_mode(tmp_p
         modality=Modality.VIDEO,
         media_type="video/mp4",
         size_bytes=1,
-        sha256="b" * 64,
+        sha256=hashlib.sha256(b"v").hexdigest(),
         path=tmp_path / "video.mp4",
     )
     candidates = (ModelInput(text="source"), ModelInput(text="caption", assets=(video, image)))
-    with_model = Qwen3VLReranker(Engine(), model_id="org/model", revision="a" * 40)
+    with_model: RerankingBackend
+    if remote:
+
+        def respond(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"index": 1, "relevance_score": 0.9},
+                        {"index": 0, "relevance_score": 0.2},
+                    ]
+                },
+            )
+
+        with_model = VLLMReranker(
+            httpx.Client(transport=httpx.MockTransport(respond)),
+            model_id="org/model",
+            base_url="https://fixture.test",
+        )
+    else:
+        with_model = Qwen3VLReranker(Engine(), model_id="org/model", revision="a" * 40)
     assert isinstance(with_model, RerankingBackend)
     assert with_model.rerank(ModelInput(assets=(image,)), candidates) == (0.2, 0.9)
     with pytest.raises(ValidationError, match="ModelInput"):

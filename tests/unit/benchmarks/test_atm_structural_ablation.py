@@ -10,13 +10,14 @@ import socket
 import sqlite3
 import struct
 from collections.abc import Callable, Sequence
-from contextlib import AbstractContextManager, closing
+from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol, cast
 
 import pytest
+import yaml
 from PIL import Image
 
 from sensemem import EmbedTask, Memory, Modality, ModelInput, SenseMemConfig
@@ -29,6 +30,7 @@ from sensemem.benchmarks.eval_config import (
     _model_config,
 )
 from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
+from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.task_catalog import TASKS, TaskSpec
 
 
@@ -36,27 +38,81 @@ class _ExecutionResult(Protocol):
     def execution_result(self) -> dict[str, object]: ...
 
 
-def test_portable_retrieval_recipe_preflights_without_models_or_storage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("concurrency", [16, 32])
+@pytest.mark.parametrize("selected", [False, True])
+@pytest.mark.parametrize("stage", ["full", "reranking-probe", "reader-probe", "native-entry"])
+@pytest.mark.parametrize("answer_format", ["text", "structured"])
+@pytest.mark.parametrize("gen_kwargs, temperature", [("", 0.0), ("temperature=0.3", 0.3)])
+def test_portable_retrieval_recipe_resolves_controls_without_models_or_storage(  # noqa: C901 - one fixture covers preflight and native-entry configuration
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    concurrency: int,
+    selected: bool,
+    stage: str,
+    answer_format: str,
+    gen_kwargs: str,
+    temperature: float,
 ) -> None:
     repository = Path(__file__).parents[3]
-    recipe_path = Path("recipe.json")
-    config_path = Path("docs/examples/atm-sgm-detail-qwen3-vl.yaml")
-    destination = tmp_path / config_path
-    destination.parent.mkdir(parents=True)
-    destination.write_bytes((repository / config_path).read_bytes())
-    recipe = {
-        "base_config_path": str(config_path),
-        "base_config_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
-        "artifact_root": ".benchmarks/atm-runs",
+    recipe_path = Path("benchmarks/atm_ablation_recipe.json")
+    source_config = repository / "docs/examples/atm-sgm-max-thinking-vllm.yaml"
+    source_bytes = source_config.read_bytes()
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    recipe: dict[str, object] = {
         "variant": "native-image-video-pooled",
         "raw_media": True,
-        "raw_media_root": ".benchmarks/atm-inputs/atm-bench/data/raw_memory",
-        "source_store": ".benchmarks/atm-source-store",
-        "stage": "full",
-        "preflight": True,
         "measure_search_replay": False,
     }
+    config_path = Path("fixtures/retrieval.yaml")
+    destination = tmp_path / config_path
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(source_bytes)
+    recipe["base_config_path"] = str(config_path)
+    recipe["artifact_root"] = ".benchmarks/fixture-runs"
+    recipe["source_store"] = ".benchmarks/fixture-source"
+    recipe["raw_media_root"] = ".benchmarks/fixture-raw"
+    recipe["selection_path"] = None
+    recipe["preflight"] = stage != "native-entry"
+    recipe["stage"] = "full" if stage == "native-entry" else stage
+    payload = yaml.safe_load(destination.read_text())
+    payload["embedding"].pop("api_key", None)
+    payload["generation"].pop("api_key", None)
+    payload["generation"]["answer_format"] = answer_format
+    payload["benchmark"]["judge"].pop("api_key", None)
+    payload["benchmark"]["download"]["benchmarks_root"] = ".benchmarks/atm-inputs"
+    payload["settings"].update(
+        evidence_budget_chars=64_000,
+        recall_rounds=2,
+        recall_max_queries=2,
+        recall_set_budget_chars=64_000,
+        recall_set_max_rows=100,
+    )
+    payload["benchmark"]["run"]["recall_limit"] = 20
+    for name in (
+        "request_concurrency",
+        "unit_concurrency",
+        "ingest_concurrency",
+        "judge_concurrency",
+    ):
+        payload["benchmark"]["run"][name] = concurrency
+    destination.write_text(yaml.safe_dump(payload))
+    recipe["base_config_sha256"] = hashlib.sha256(destination.read_bytes()).hexdigest()
+    selection_path = tmp_path / "selection.json"
+    selected_ids = tuple(str(index * 7) for index in range(12))
+    if selected:
+        selection_path.write_text(
+            json.dumps(
+                {
+                    "source_samples_sha256": "a" * 64,
+                    "cases": [
+                        {"question_id": question_id, "qtype": "fixture"}
+                        for question_id in reversed(selected_ids)
+                    ],
+                }
+            )
+        )
+        recipe["selection_path"] = str(selection_path)
+    (tmp_path / recipe_path).parent.mkdir(parents=True)
     (tmp_path / recipe_path).write_text(json.dumps(recipe))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-embedding-key")
@@ -74,18 +130,29 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     functions = runpy.run_path(str(repository / "benchmarks/atm_structural_ablation.py"))
     main = cast(Callable[[list[str]], int], functions["main"])
     prepare = cast(
-        Callable[[Path], tuple[_Arguments, SenseMemConfig, LoadedTask]], functions["_prepare"]
+        Callable[[Path, int, str], tuple[_Arguments, SenseMemConfig, LoadedTask]],
+        functions["_prepare"],
     )
     prepared: list[tuple[_Arguments, SenseMemConfig, LoadedTask]] = []
 
-    def observe_prepare(path: Path) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
-        result = prepare(path)
+    def observe_prepare(
+        path: Path, expected_count: int = 1013, gen_kwargs: str = ""
+    ) -> tuple[_Arguments, SenseMemConfig, LoadedTask]:
+        result = prepare(path, expected_count, gen_kwargs)
         prepared.append(result)
         return result
 
     image = tmp_path / "original.jpg"
     image.write_bytes(b"original fixture media with metadata")
     item = MemoryItem("20300101_120000", ("Already fused source description",))
+    memories = (
+        (
+            item,
+            *(MemoryItem(f"source-{index}", ("Archive source",)) for index in range(11033)),
+        )
+        if selected
+        else (item,)
+    )
     questions = tuple(
         EvalQuestion(str(index), ("Question",), ("Reference",)) for index in range(1013)
     )
@@ -93,13 +160,18 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
         TASKS["atm-bench-main-sgm"],
         tmp_path / "qa.json",
         "fixture-dataset-hash",
-        (EvalUnit("main_sgm", (item,), questions),),
+        (EvalUnit("main_sgm", memories, questions),),
         {"memory": "fixture-memory-hash", "dataset": "fixture-dataset-hash"},
     )
     raw = replace(
         task,
         spec=TASKS["atm-bench-main"],
-        units=(replace(task.units[0], memories=(replace(item, content=(image,)),)),),
+        units=(
+            replace(
+                task.units[0],
+                memories=tuple(replace(memory, content=(image,)) for memory in memories),
+            ),
+        ),
         input_sha256={"memory": "fixture-raw-memory-hash"},
     )
     loads: list[str] = []
@@ -108,19 +180,75 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
         assert root.resolve() == tmp_path / ".benchmarks/atm-inputs"
         loads.append(spec.name)
         if spec.name == "atm-bench-main":
-            assert (
-                kwargs["media_root"]
-                == tmp_path / ".benchmarks/atm-inputs/atm-bench/data/raw_memory"
-            )
+            assert kwargs["media_root"] == tmp_path / ".benchmarks/fixture-raw"
             return raw
+        assert not selected or (kwargs["limit"] is None and kwargs["offset"] == 0)
         return task
 
     monkeypatch.setattr(runner, "load_task", load_fixture)
     monkeypatch.setitem(main.__globals__, "load_task", load_fixture)
     monkeypatch.setitem(main.__globals__, "_prepare", observe_prepare)
-    assert main(["--recipe", str(recipe_path)]) == 0
+    if stage == "native-entry":
+
+        class NativeConfigurationObserved(Exception):
+            pass
+
+        async def ingest_fixture(
+            _arguments: _Arguments,
+            _config: SenseMemConfig,
+            _task: LoadedTask,
+            run: BenchmarkRun,
+        ) -> Path:
+            store = run.unit_dir("main_sgm")
+            store.mkdir(parents=True, exist_ok=True)
+            return store
+
+        def observe_native_configuration(
+            *_args: object, memory_config: SenseMemConfig, **_kwargs: object
+        ) -> None:
+            assert memory_config.generation is not None
+            assert memory_config.generation.temperature == temperature
+            assert memory_config.generation.seed == 0
+            assert memory_config.generation.max_tokens is None
+            raise NativeConfigurationObserved
+
+        monkeypatch.setitem(main.__globals__, "_ingest", ingest_fixture)
+        monkeypatch.setitem(main.__globals__, "verify_store", lambda *_args: {})
+        monkeypatch.setitem(main.__globals__, "embedding_fingerprint", lambda *_args: {})
+        monkeypatch.setattr(
+            Memory,
+            "from_config",
+            lambda _config: nullcontext(SimpleNamespace(reindex=lambda: len(memories))),
+        )
+        monkeypatch.setattr(runner, "prepare_task_media", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(runner, "_execute", observe_native_configuration)
+        recipe["source_store"] = None
+        (tmp_path / recipe_path).write_text(json.dumps(recipe))
+        with pytest.raises(NativeConfigurationObserved):
+            main(["--recipe", str(recipe_path), "--gen-kwargs", gen_kwargs])
+        assert vars(runner)["load_task"] is load_fixture
+        return
+    assert main(["--recipe", str(recipe_path), "--gen-kwargs", gen_kwargs]) == 0
     arguments, config, loaded = prepared[0]
-    assert loaded.units[0].questions is questions
+    if selected:
+        assert tuple(question.question_id for question in loaded.units[0].questions) == selected_ids
+        assert all(
+            question is questions[int(question.question_id)]
+            for question in loaded.units[0].questions
+        )
+        assert len(loaded.units[0].memories) == 11034
+        assert tuple(memory.source_id for memory in loaded.units[0].memories) == tuple(
+            memory.source_id for memory in memories
+        )
+        assert arguments.limit == 12 and arguments.offset == 0
+        assert loaded.dataset_sha256 == task.dataset_sha256
+        assert (
+            loaded.input_sha256["question_selection"]
+            == hashlib.sha256(selection_path.read_bytes()).hexdigest()
+        )
+    else:
+        assert loaded.units[0].questions is questions
+        assert arguments.limit == -1
     assert loaded.units[0].memories[0].content == (*item.content, image)
     assert loads == ["atm-bench-main-sgm", "atm-bench-main"]
     assert config.embedding.provider == "openai"
@@ -128,16 +256,13 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     assert config.generation is not None and config.generation.provider == "openai"
     assert config.generation.api_key is not None
     assert config.generation.api_key.get_secret_value() == "fixture-generation-key"
-    assert config.generation.answer_format == "text"
+    assert config.generation.answer_format == answer_format
+    assert config.generation.temperature == temperature and config.generation.seed == 0
     assert config.generation.request_max_bytes == 33_554_432
     assert config.vision is None and config.generation.offline_gazetteer is None
-    assert config.reranking is not None and config.reranking.provider == "qwen3-vl"
-    assert config.reranking.revision == "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
-    assert (config.reranking.batch_size, config.reranking.max_length) == (32, 8192)
-    assert config.reranking.gpu_memory_utilization == 0.9
-    assert (config.reranking.image_limit, config.reranking.video_limit) == (8, 2)
-    assert config.reranking.image_max_pixels == 262144
-    assert config.reranking.video_frames == 8
+    fixture_config, _ = _load_memory_config(tmp_path / config_path)
+    assert fixture_config is not None and fixture_config.reranking is not None
+    assert config.reranking == fixture_config.reranking
     assert config.settings.evidence_budget_chars == 64_000
     assert (
         config.settings.recall_rounds,
@@ -151,17 +276,73 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
         arguments.unit_concurrency,
         arguments.ingest_concurrency,
         arguments.judge_concurrency,
-    ) == (16, 16, 16, 16)
-    directory = tmp_path / ".benchmarks/atm-runs/native-image-video-pooled"
+    ) == (concurrency, concurrency, concurrency, concurrency)
+    directory = tmp_path / ".benchmarks/fixture-runs/native-image-video-pooled"
     manifest = json.loads((directory / "preflight.json").read_text())
-    assert manifest["source_store"] == str(tmp_path / ".benchmarks/atm-source-store")
+    assert manifest["source_store"] == str(tmp_path / ".benchmarks/fixture-source")
     assert manifest["raw_media"] is True
     assert manifest["measure_search_replay"] is False
+    assert manifest["concurrency"] == concurrency
+    assert manifest["generation_kwargs"] == arguments.gen_kwargs
+    assert manifest["question_count"] == (12 if selected else 1013)
+    assert manifest["complete_main"] is not selected
+    assert manifest["full_qa_sha256"] == task.dataset_sha256
+    assert manifest["selection_sha256"] == (
+        hashlib.sha256(selection_path.read_bytes()).hexdigest() if selected else None
+    )
     assert not (directory / "stores").exists()
     local, overrides = _load_memory_config(directory / "input.yaml")
     assert local is not None
     judge = _judge_config(_model_config("", memory_config=local), arguments, overrides=overrides)
     assert judge.model == "gpt-5-mini" and judge.api_key == "fixture-judge-key"
+    assert hashlib.sha256(source_config.read_bytes()).hexdigest() == source_sha256
+
+
+@pytest.mark.parametrize("expected_count", [1013, 13])
+def test_prepare_rejects_question_count_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expected_count: int
+) -> None:
+    repository = Path(__file__).parents[3]
+    functions = runpy.run_path(str(repository / "benchmarks/atm_structural_ablation.py"))
+    prepare = cast(
+        Callable[[Path, int], tuple[_Arguments, SenseMemConfig, LoadedTask]],
+        functions["_prepare"],
+    )
+    task = LoadedTask(
+        TASKS["atm-bench-main-sgm"],
+        tmp_path / "qa.json",
+        "fixture-dataset-hash",
+        (
+            EvalUnit(
+                "main_sgm",
+                (MemoryItem("source", ("Archive text",)),),
+                tuple(
+                    EvalQuestion(str(index), ("Question",), ("Reference",)) for index in range(12)
+                ),
+            ),
+        ),
+    )
+
+    def load_fixture(*_args: object, **_kwargs: object) -> tuple[LoadedTask, ...]:
+        return (task,)
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("count drift must fail without model or storage initialization")
+
+    monkeypatch.setattr(runner, "_load_tasks", load_fixture)
+    monkeypatch.setattr(socket.socket, "connect", denied)
+    monkeypatch.setattr(socket.socket, "connect_ex", denied)
+    monkeypatch.setattr(sqlite3, "connect", denied)
+    monkeypatch.setattr(Memory, "from_config", denied)
+    monkeypatch.setattr(runner, "_BackendPool", denied)
+    config_path = tmp_path / "config.yaml"
+    payload = yaml.safe_load(
+        (repository / "docs/examples/atm-sgm-detail-qwen3-vl.yaml").read_text()
+    )
+    payload["benchmark"]["run"]["run_id"] = "count-guard"
+    config_path.write_text(yaml.safe_dump(payload))
+    with pytest.raises(ValueError, match="requires exactly"):
+        prepare(config_path, expected_count)
 
 
 def test_portable_recipe_rejects_yaml_drift_before_loading_inputs(
