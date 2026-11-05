@@ -173,7 +173,7 @@ def _server() -> None:
 
 
 def _mcp() -> None:
-    """Build the real MCP server and resolve the fifteen supported tool schemas."""
+    """Build the real MCP server and resolve the thirteen supported tool schemas."""
     import asyncio
 
     from sensemem import Memory
@@ -187,8 +187,6 @@ def _mcp() -> None:
     tools = asyncio.run(server.list_tools())
     assert {tool.name for tool in tools} == {
         "add_memory",
-        "analyze_faces",
-        "analyze_speech",
         "ask_memory",
         "compile_context",
         "delete_memory",
@@ -196,8 +194,8 @@ def _mcp() -> None:
         "get_identity",
         "get_memory",
         "list_memories",
+        "perceive_memory",
         "register_identity",
-        "register_speaker",
         "reinforce_memories",
         "search_memories",
         "unlink_identity",
