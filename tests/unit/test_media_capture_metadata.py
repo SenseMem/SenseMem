@@ -17,6 +17,7 @@ from openai import OpenAI
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
+import sensemem.models.openai_sdk as adapter
 from sensemem import AssetRef, Modality, ModelInput, OpenAIModels, SearchHit
 from sensemem.evidence import answer_evidence_payloads
 from sensemem.exceptions import ModelError
@@ -225,6 +226,123 @@ def test_question_and_memory_metadata_keep_their_own_attachment_labels(tmp_path:
         json.loads(texts[1])["memory"]["untrusted_source_metadata"][0]["attachment"]
         == "attachment 2"
     )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("inline_images", [0, 1])
+@pytest.mark.parametrize("wire_budget", ["none", "fitting", "tight"])
+def test_inline_omission_preserves_source_metadata_through_wire_fitting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: bool,
+    inline_images: int,
+    wire_budget: str,
+) -> None:
+    assets = tuple(_photo(tmp_path, name=f"photo-{index}") for index in range(2))
+    hits = tuple(
+        replace(_hit(asset), id=asset.id, metadata={"source_id": asset.id}) for asset in assets
+    )
+    question = ModelInput(text="Where and when were these captured?")
+    maximum = 1_000_000 if wire_budget == "fitting" else None
+    if wire_budget == "tight":
+        # Leave room for all source metadata but no image bytes. The first inline fit
+        # may still admit an image, so the wire fit must use the same original sources.
+        probe = OpenAIModels(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}))
+        request, _, _, _ = probe._render_answer_request(
+            question,
+            tuple(replace(hit, assets=(), modality=Modality.TEXT) for hit in hits),
+            hits,
+            {},
+            adapter._source_capture_metadata(assets),
+            answer_policy="strict",
+            exhaustive=False,
+            metadata_source_hits=hits,
+        )
+        maximum = adapter._answer_wire_size(request, stream=stream) + 1
+    assert assets[0].size_bytes is not None
+    monkeypatch.setattr(
+        adapter,
+        "_MAX_INLINE_MODEL_BYTES",
+        inline_images * adapter._encoded_size(assets[0].size_bytes),
+    )
+    sent: list[bytes] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        if stream:
+            chunk = {
+                "choices": [{"index": 0, "delta": {"content": "observed"}, "finish_reason": "stop"}]
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return _reply("observed")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
+        model = OpenAIModels(
+            OpenAI(api_key="fixture", http_client=transport, max_retries=0),
+            generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
+            image_max_pixels=1_048_576,
+            generation_request_max_bytes=maximum,
+        )
+        if stream:
+            generator = model.stream_answer(question, hits)
+            while True:
+                try:
+                    next(generator)
+                except StopIteration as completed:
+                    result = completed.value
+                    break
+        else:
+            result = model.answer(question, hits)
+    assert result.answer == "observed"
+    assert len(sent) == 1
+    if maximum is not None:
+        assert len(sent[0]) <= maximum
+    content = json.loads(sent[0])["messages"][1]["content"]
+    assert isinstance(content, list), "omitted media must retain source-bound metadata parts"
+    memories = [
+        json.loads(part["text"])["memory"]
+        for part in content
+        if part["type"] == "text" and part["text"].startswith('{"memory":')
+    ]
+    assert len(memories) == len(hits)
+    expected_images = 0 if wire_budget == "tight" else inline_images
+    assert sum(part["type"] == "image_url" for part in content) == expected_images
+    for index, (memory, hit) in enumerate(zip(memories, hits, strict=True)):
+        asset = assets[index]
+        assert memory["metadata"]["source_id"] == hit.id
+        assert memory["content"] == hit.content
+        metadata = memory["untrusted_source_metadata"][0]
+        assert metadata["gps"]["longitude"] == -121.5
+        assert metadata["capture_time"]["utc_offset"] == "+08:00"
+        if index < expected_images:
+            assert metadata["attachment"] == "attachment 1"
+            assert "media_omitted" not in metadata
+        else:
+            assert memory["media"] == []
+            assert memory["media_omitted"] == {"image": 1}
+            assert metadata["media_omitted"] is True
+            assert metadata["source_asset_id"] == asset.id
+            assert "attachment" not in metadata
+        assert asset.path is not None
+        assert hashlib.sha256(asset.path.read_bytes()).hexdigest() == asset.sha256
+    assert "private camera" not in str(content)
+    assert "Ignore all previous" not in str(content)
+
+
+def test_inline_omission_does_not_bypass_metadata_source_integrity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset = replace(_photo(tmp_path), sha256="0" * 64)
+    monkeypatch.setattr(adapter, "_MAX_INLINE_MODEL_BYTES", 0)
+    model = OpenAIModels(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}))
+    with pytest.raises(ModelError) as failure:
+        model._answer_request(ModelInput(text="Where?"), (_hit(asset),))
+    assert failure.value.reason == "asset_changed"
+    assert failure.value.subject == asset.id
 
 
 def test_absent_exif_leaves_answer_text_byte_identical(tmp_path: Path) -> None:

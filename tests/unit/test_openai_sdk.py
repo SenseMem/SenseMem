@@ -5071,13 +5071,8 @@ def test_embedding_width_mismatch_names_both_widths() -> None:
     assert "returned 3 values but the configured dimension is 2" in str(failure.value)
 
 
-def test_consolidation_drops_the_citation_a_correct_may_not_carry() -> None:
-    """A `correct` that also cites its evidence degrades to one valid operation.
-
-    The prompt asks `correct` to name what the evidence contradicts, so a model naming that
-    evidence too is being accurate; the value type still rejects the pair, and failing the whole
-    reply discarded every other operation in the batch over it.
-    """
+def test_consolidation_keeps_correction_counterevidence_and_rejects_unknown_indices() -> None:
+    """Counterevidence remains auditable instead of being silently discarded."""
 
     def respond(request: httpx.Request) -> httpx.Response:
         return _completion(
@@ -5117,11 +5112,10 @@ def test_consolidation_drops_the_citation_a_correct_may_not_carry() -> None:
 
     assert correct.intent is MemoryIntent.CORRECT
     assert correct.target_ids == ("derived-1",)
-    assert correct.evidence_ids == ()
+    assert correct.evidence_ids == ("raw-1",)
     assert forget.intent is MemoryIntent.FORGET
     assert forget.target_ids == ("raw-1",)
-    # Dropping the value does not stop resolving it: a cited index outside the evidence list is
-    # still a miscount that fails the whole response.
+    # A cited index outside the evidence list fails the whole response.
     assert failure.value.reason == "response_invalid"
 
 

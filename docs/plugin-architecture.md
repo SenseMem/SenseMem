@@ -52,10 +52,10 @@ dependency. Reusing one object for several protocols is supported by the object 
 OpenAI adapter does exactly that.
 
 Declarative configuration reaches a slot when there is a bundled implementation for its closed
-provider catalog to name; [configuration](configuration.md#declarative-configuration) owns the
+provider catalog to name; [configuration](configuration.md#2-declare-a-composition) owns the
 current list of accepted keys. A protocol with no bundled implementation deliberately has no key,
 and is composed by passing an object to `Memory`, `Memory.from_plugins`, or `MemoryPlugins` — see
-[the Python SDK reference](api/python-sdk.md#backend-protocols) for the signatures.
+[the Python backend reference](api/python-backends.md) for the signatures.
 
 Composition is fixed for one `Memory` lifetime. Changing an adapter requires closing and reopening
 the instance; changing the embedder also requires a compatible durable space or a new directory.
@@ -181,10 +181,10 @@ but nothing else is exported surface area with no user, and it costs the same to
 that works.
 
 `VisionDescriptionBackend` meets the rule through `OpenAIModels.describe`, the optional
-[`vision` configuration](configuration.md#visual-descriptions), and the `add`/`add_many` product path.
+[`vision` configuration](configuration/models.md#visual-descriptions), and the `add`/`add_many` product path.
 
 `RerankingBackend` meets it through `Qwen3VLReranker` and `SentenceTransformersReranker`, the optional
-[`reranking` configuration](configuration.md#semantic-reranking), and the shared retrieval path
+[`reranking` configuration](configuration/models.md#semantic-reranking), and the shared retrieval path
 used by `search`, `ask` and `compile`. The plugin supplies aligned relevance scores; the kernel owns
 source identity, filtering and result ordering. Both adapters pin checkpoint revisions, disable
 remote code and close with their owning `Memory`. Their dependencies and runtime controls live

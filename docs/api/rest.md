@@ -401,7 +401,7 @@ wrong two numbers. `minimum_relevance` and `ambiguity_margin` are fixed when the
 `null`. `abstained` reports that the answerer emitted the reserved `[insufficient_evidence]`
 token, or that grounding found no usable evidence at all; a model that declines in its own words
 some other way is an ordinary answer. See
-[the SDK contract](python-sdk.md#public-values) for the exact rule.
+[the SDK contract](python-values.md) for the exact rule.
 
 `answer_policy` is `strict` or `best_effort` and belongs to the caller. `strict`, the default,
 returns a fixed refusal sentence when the evidence is thin. `best_effort` returns the most likely
@@ -589,7 +589,7 @@ gated on `identity_operations`; it cannot propose, apply, or reverse operations.
 
 A record containing two recognized people is returned for both of their exports, with the other
 person's observations embedded in it, for the reasons the
-[SDK contract](python-sdk.md#data-subject-rights) states. Over a network that matters more than it
+[SDK contract](python-identity.md#data-subject-rights) states. Over a network that matters more than it
 does in-process: a host serving this route decides who receives the response, and the response
 may contain a second person's data.
 
@@ -631,4 +631,4 @@ exposed as SSE at `POST /v1/answers/stream`.
 8,192-character source field. The transport has no local-path input, remote fetch, upload endpoint,
 client-streaming capture route, coordinate-frame transform, logical scope, or authentication
 policy. The owner-side Python input ceiling is 512 MiB per asset, but configured backends may be
-lower; the [OpenAI adapter](python-sdk.md#bundled-adapters) has smaller inline request budgets.
+lower; the [OpenAI adapter](python-adapters.md) has smaller inline request budgets.

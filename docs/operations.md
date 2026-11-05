@@ -1,213 +1,108 @@
 # Operations
 
-Jump to [startup and shutdown](#start-and-stop), [concurrency](#concurrency-and-overload),
-[backup](#backup), [restore](#restore), [index repair](#index-maintenance-and-repair),
-[capacity](#capacity), [telemetry](#telemetry), [model quality](#model-quality-gate),
-or [representation changes](#changing-the-runtime-or-stored-representations).
+Operate the process that owns the local data directory. SenseMem has no separate database
+service, queue, or background owner. Use [deployment](deployment.md) for topology and
+[troubleshooting](troubleshooting.md) for error diagnosis.
 
-Operate the process that owns `data_dir`, its model backends, and the local filesystem. SenseMem
-has no database service, worker queue, or background owner to manage separately.
+| Task | Procedure |
+| --- | --- |
+| Start, stop, or check liveness | [Lifecycle](#start-and-stop), [health](#health) |
+| Handle load or capacity errors | [Concurrency](#concurrency-and-overload), [capacity](#capacity) |
+| Preserve or recover data | [Backup](#backup), [restore](#restore) |
+| Repair derived search state | [Index maintenance](#index-maintenance-and-repair) |
+| Change models or runtime | [Representation changes](#changing-the-runtime-or-stored-representations) |
+| Inspect timing, usage, or quality | [Observability](observability.md), [model quality](model-quality.md) |
 
 ## Start and stop
 
-Start one owner with the same model and index recipes that created the store. Opening validates the
-SQLite schema and compatibility metadata, opens or creates Zvec, and drains durable index work
-before returning.
+Open one owner with the store's schema, model spaces, and index recipe. Startup validates
+compatibility, opens/creates Zvec, and drains durable index work. It does not settle captures.
 
-Stop gracefully by calling `Memory.close()`. It rejects new operations, waits for active work,
-releases media leases, closes model and storage resources, and releases the directory lock. The
-`.sensemem.lock` file remains; only its operating-system lock indicates ownership.
+Use a context manager or call `Memory.close()`. Close rejects new work, waits for active calls,
+releases leases/resources, and releases the directory lock. The lock file may remain; its
+operating-system lock determines ownership.
 
-`close(timeout_seconds=30.0)` bounds the caller's complete wait, including backend cleanup and
-index flush. A timeout raises `StorageError(reason="timeout", stage="close")`. Cleanup continues
-on one closing thread; the instance rejects new work and retains directory ownership until its
-workers and resources actually stop. Call `close()` again to wait for that same cleanup. Never
-delete its lock file to work around a timeout. Synchronous provider calls cannot be forcibly
-cancelled safely; configure finite provider timeouts as well.
+`close(timeout_seconds=30.0)` bounds the full caller wait, including backend cleanup and flush.
+Timeout raises `StorageError(reason="timeout", stage="close")`; cleanup continues and retains
+ownership. Call close again to wait for that cleanup. Never delete a lock file to bypass ownership.
+Configure finite provider timeouts because running synchronous calls cannot be forcibly cancelled.
 
-Before first deployment or after composition changes, use the CLI doctor described in the
-[command-line reference](api/cli.md#doctor-and-explain). It checks configuration and loaders
-without writing memory. A remote doctor checks the REST liveness endpoint.
+Before deployment/composition changes, use [doctor](api/cli.md#doctor-and-explain) to check configuration
+and loaders without writing memory. Remote doctor checks REST liveness.
 
 ## Concurrency and overload
 
-Each physical `data_dir` owns its admission limits and worker leases. Process budgets are shared
-across directories. The fixed runtime bounds are:
+Fixed directory/process budgets bound operations, model work, async submission, stream workers,
+index routes, SQLite connections, input materialization, and captures. See
+[runtime limits](runtime-limits.md) for the complete table and worker semantics.
 
-| Resource | Limit |
-| --- | --- |
-| Active memory operations across SDK, REST, and MCP | 32 per directory; 128 per process |
-| Operations that can invoke a model | 28 per directory and per process |
-| Submitted asynchronous SDK calls, including live vision descriptions | 32 per directory; 128 per process |
-| Pinned answer-stream workers shared by AsyncMemory and REST | 8 per directory; 32 per process |
-| Index-route workers | 4 per directory; 16 per process |
-| Speech-overlap workers | 2 per directory; 8 per process |
-| SQLite connections, including borrowed and idle handles | 32 per directory; 128 per process |
-| REST `/v1` requests and MCP tool calls sharing one directory | 32 per directory; 128 per process |
-| Open local stores | 16 per process |
-| Cached candidate identity projections | 1,024 per directory |
-| Cached hydrated plain-text records | 1,024 per directory; at most 2,048 content and metadata characters each |
-| Materialized input text and media retained by active operations | 512 MiB per operation and per process |
-| Inputs in one SDK `add_many()` | 1,024 |
-| Captures awaiting enrichment or formation | 10,000 per directory |
+Overload raises retryable `StorageError(reason="capacity_exceeded", stage="admission")`.
+REST returns 503 with `Retry-After: 1`; MCP preserves reason/retryability. Bound producers and
+retry with bounded backoff. Health checks stay outside admission.
 
-Admission is immediate: overload raises `StorageError(reason="capacity_exceeded",
-stage="admission")`, which is retryable. REST returns the shared 503 envelope with
-`Retry-After: 1`; MCP reports the same reason and retryability. Apply bounded backoff when
-retrying. `/healthz` remains outside request admission.
-
-Model work leaves four of a directory's operation slots available to lightweight reads. The
-process model budget also leaves room in shared SDK and framework worker pools; it does not
-guarantee progress through backend locks or unrelated host work. Local model adapters retain
-their inference safety locks. Formation calls over distinct sources may overlap; concurrent
-writes of the same source share one formation call, and application remains serialized and
-transactionally checked. Naming and identity rollback commit registry names, speech text,
-vectors, and repair outbox together, including when embedding fails.
-
-REST reads a request body within 30 seconds total and allows at most 30 seconds for each response
-send. Body timeout returns the usual retryable 503 `timeout` envelope. A send timeout ends the
-response and returns request capacity. A terminal answer releases its pinned worker before
-network delivery. MCP tool admission runs before framework worker dispatch; HTTP connection and
-MCP session limits still belong to the serving host.
-
-Index routes use batches of at most four per admitted operation; temporal supplements reuse
-the same pool. At most 128 route jobs and 32 speech-overlap jobs can be pending or running.
-Each route obtains its directory's quota before entering the shared worker pool, so waiting for
-that quota does not occupy another directory's worker. A failed submission still waits for any
-earlier routes to finish before releasing the operation's assets.
-Parent asynchronous calls use a separate pool so they cannot occupy the workers their child
-routes need. Cancelling an asynchronous waiter retains capacity until its synchronous work
-actually stops. Stream workers remain pinned through queued cleanup and are reusable before
-the terminal result is delivered. Close an abandoned stream with `close()` or `aclose()`.
-
-The process shares 64 asynchronous parent threads, 16 index threads, eight speech threads, and
-at most 32 pinned stream threads, created as needed and reused across directories. Closing one
-directory waits for its own jobs without shutting down another directory's workers. Each closing
-directory can also use one cleanup thread. File-descriptor exhaustion is reported as
-`capacity_exceeded`, including during open, rather than as a missing search index.
-SQLite connection opens and native index allocations share one descriptor admission lock and
-preserve filesystem descriptor headroom before allocating; the numeric connection ceiling is
-also subject to the process's actual file-descriptor limit.
-SQLite retains at most 64 idle connections across the process. Every handle remains in its own
-directory's pool. Each directory's first four idle handles are protected from idle-budget
-eviction; spare budget lets a busy directory retain more. The oldest surplus handles close when
-that budget fills. Active requests can reclaim idle handles before reporting process overload.
-Directory closure waits for both its borrowers and any eviction already closing one of its
-handles. The active limits remain 32 per directory and 128 per process.
-Handles already being closed by eviction still count toward the directory limit.
-
-Read caches admit stable working sets, bypass active writes, and invalidate when a write transaction
-ends. A working set larger than the cache bound disables its cache until the next write generation.
-Hydrated-record reuse excludes scoped
-reads, media, and semantic contexts. Its retained UTF-8 content and metadata total at most 8 MiB
-per directory, plus object overhead; the smaller candidate cache retains IDs and occurrence times.
-
-These bounds cover SenseMem-owned submissions, workers, stores, and SQLite handles. The byte
-budget charges UTF-8 text and media sizes before materialization and releases them on operation
-exit. Inputs whose own cumulative size exceeds 512 MiB raise `ValidationError`; contention for
-otherwise valid input raises retryable `capacity_exceeded`. This is not an RSS or GPU-memory
-ceiling. Caller-owned buffers and threads, framework bodies,
-decoded media, native model/Zvec allocations, backend request sizes, and provider quotas still
-need host sizing. A full capture backlog refuses new queued records atomically; settle existing
-captures before retrying. Duplicate captures remain idempotent at the limit.
-The limits are conservative safety bounds, not measured optimal throughput settings.
-Use the [local SDK load test](benchmarking.md#measure-local-sdk-concurrency) to measure throughput,
-tail latency, and overload rejections for a physical store before tuning its producers.
-Use backend timeouts and bound the host's own producers. At the HTTP server boundary,
-Uvicorn's [concurrency limit](https://uvicorn.dev/server-behavior/#resource-limits) can
-also reject excess requests based on open connections and in-flight tasks. A worker count alone
-does not bound queued submissions;
-Python's [executor documentation](https://docs.python.org/3/library/concurrent.futures.html)
-also describes nested-pool deadlocks and cancellation limits.
+Close abandoned streams; cancelling a waiter retains capacity until its synchronous work stops.
+These limits do not cap process RSS, GPU memory, provider quotas, or framework queues. Measure
+successful throughput, tail latency, and rejection rates with
+[the local SDK load test](benchmarks/local.md#measure-local-sdk-concurrency) before sizing producers.
 
 ## Health
-
-The REST adapter exposes an unauthenticated liveness endpoint outside `/v1`:
 
 ```bash
 curl --fail http://127.0.0.1:8000/healthz
 ```
 
-`/healthz` does not call a model, inspect pending outbox rows, or run retrieval. It proves only that
-the current process can serve the request; its response also includes the injected `Memory`'s live
-embedding, generation, transcription, vision, face, formation, reranking, and speaker-recognition
-capabilities, with optional operations filtered to those REST serves. Initial store and index opening happened before the app was constructed. Run any
-end-to-end canary against a separate directory so production memory is not polluted.
+The unauthenticated endpoint proves process liveness and reports configured capabilities narrowed
+to REST operations. It calls no model, inspects no outbox, and performs no retrieval.
+Run end-to-end canaries in a separate directory.
 
 ## Backup
 
 ### Capture backlog before a snapshot
 
-A stopped-owner backup preserves queued captures, including failed work. It does not make them
-searchable. Before stopping, inspect the queue through the existing owner:
+A backup preserves queued work without making it searchable. Inspect through the existing owner:
 
 ```python
-pending = memory.pending_captures(limit=100)
-for item in pending:
+for item in memory.pending_captures(limit=100):
     print(item.memory_id, item.awaiting, item.attempts, item.last_error)
 ```
 
-`awaiting="enrichment"` means the record has no searchable vectors; `"formation"` means it is
-already searchable and owes typed formation only. The report is bounded: naming IDs asks about
-those records specifically. To finish a batch, call `memory.settle(limit=100)` from the host's
-approved model-work window. A failed batch may still settle other records; inspect the queue
-again after an error. Naming a failed ID in `settle(memory_ids=[...])` bypasses its retry ceiling.
-Neither startup nor shutdown drains this queue automatically.
+Enrichment rows lack vectors; formation rows are searchable and owe only typed formation.
+The page is bounded; a full page may indicate more backlog. Track enqueue age, attempts, and stage.
+Call settle only during the host's approved model-work window. Failed batches can still settle
+other rows. A record at the default three-attempt ceiling remains queued; fix its cause and raise
+the ceiling or name it explicitly with `settle(memory_ids=[...])`.
+Neither startup nor shutdown drains captures automatically.
 
 ### Stopped-owner copy
 
-Use a stopped-owner snapshot:
+1. Close the owner and verify no process holds its directory lock.
+2. Copy the complete directory, including any SQLite side files.
+3. Record the SenseMem version and model/index configuration.
+4. Restore the copy to a temporary path and verify known text/media records.
+5. Restart the original owner.
 
-1. Stop the owner gracefully and verify that no process still holds the directory lock.
-2. Copy the complete directory, including SQLite side files if any remain.
-3. Store the snapshot with the SenseMem version and model/index configuration that created it.
-4. Restore the snapshot to a new temporary path.
-5. Open that copy with the recorded configuration and verify known text and media records.
-6. Restart the original owner.
-
-`state.sqlite3` and `assets/` are required. A smaller backup may omit `zvec/`, but restoring it then
-requires index rebuild time and enough free space. Never omit media: SQLite stores descriptors and
-transcripts, not the original bytes.
-
-Do not treat a copied `.sensemem.lock` file as evidence that a snapshot is busy. Do not copy only
-`state.sqlite3` from a running owner; use a proper SQLite-aware snapshot mechanism if downtime is
-not acceptable.
-
-Do not delete files inside `zvec/` by a filename glob: RocksDB `.log` files are database journals,
-not disposable application logs. Use the index rebuild procedure to replace derived index state.
+`state.sqlite3` and `assets/` are required. Zvec can be omitted if restore capacity/time permits
+rebuilding it. Media is not recoverable from descriptors or transcripts. A copied lock file does
+not make a snapshot busy. For online backups, use a SQLite-aware snapshot mechanism rather than
+copying a running main database file alone.
 
 ## Restore
 
-Restore into a new, empty path while the target service is stopped:
+Restore into a new empty path while the target service is stopped:
 
-1. Restore the complete snapshot, or restore `state.sqlite3` plus `assets/` and leave `zvec/`
-   absent.
+1. Restore the complete snapshot, or SQLite plus assets with Zvec absent.
 2. Apply the service account's ownership and restrictive permissions.
-3. Start exactly one `Memory` with the recorded embedding, transcription, face, and index settings.
-4. Verify known records with `get()` or `list()`, then verify representative text and media
-   searches.
-5. Route traffic to the restored owner only after those checks pass.
+3. Open one owner with the recorded runtime and embedding/transcription/face/index configuration.
+4. Verify get/list results and representative text/media searches.
+5. Route traffic only after verification.
 
-When `zvec/` is absent, startup durably queues all stored embeddings, creates the collection, and
-replays the queue without embedding historical content again. An unsupported schema or
-unrecognized model, vector-space, dimension, analysis-space, or index-recipe mismatch fails at
-open instead of mixing state.
-
-Restore with the SenseMem version and configuration that wrote the backup. The current runtime
-accepts only its own schema and model spaces. To use another schema or embedding recipe, read the
-source data with its original runtime and re-ingest it into a fresh directory.
+Missing Zvec rebuilds from SQLite embeddings without re-embedding historical content.
+Unsupported schema or space/dimension/recipe mismatches fail on open. Use the original runtime to
+read source data when moving to an incompatible representation, then replay into a fresh directory.
 
 ## Index maintenance and repair
 
-Normal startup, add, delete, and search operations drain the SQLite outbox. Drained rows are
-searchable at once; the Zvec flush that acknowledges them runs once 256 applied rows accumulate,
-when a drain applied a deletion, inside `optimize()` and `reindex()`, and at `close()`. Zvec also
-performs bounded automatic optimization after enough pending vectors or durable segments
-accumulate. A session that flushed also merges persisted segments at `close()` when at least
-two remain. Read-only sessions do not trigger that close-time merge. Allow shutdown time for
-flush and compaction, and measure it on the deployment's actual store.
-
-From the live owner, rebuild or optimize explicitly when measurement or diagnosis justifies it:
+Use the live owner for normal maintenance:
 
 ```python
 count = memory.reindex()
@@ -215,66 +110,37 @@ memory.optimize()
 print(f"reindexed {count} memories")
 ```
 
-`reindex()` replaces the derived collection from SQLite FP32 embeddings, replays writes committed
-during its scan, and merges the segments that replay leaves behind, so it ends no more segmented
-than `optimize()` does. `optimize()` drains and acknowledges pending work, merges staged vectors,
-and flushes the collection. Neither operation repairs missing media or converts an
-incompatible embedding space.
+Reindex replaces derived state from SQLite FP32 vectors, replays concurrent writes, and merges
+remaining segments. Optimize drains/acknowledges pending index work, merges staged vectors, and
+flushes. Neither repairs media or converts embedding spaces.
 
-Once a collection holds enough vectors for Zvec to build a graph, dense search is approximate and
-nothing in the index reports the neighbours it missed. SenseMem therefore searches at the
-largest candidate list Zvec accepts. That is chosen per query rather than stored, so it is not
-part of the index recipe and changing it neither rebuilds nor invalidates a store. Candidate
-depth trades native index work against recall; measure the full query path rather than assuming
-one latency figure applies across corpus sizes.
+Startup/add/delete/search drain the index outbox. Applied rows are searchable immediately;
+acknowledgement follows flush at 256 applied rows, on deletion, during optimize/reindex, and at
+close. Automatic optimization is bounded. A flushed session can merge multiple segments at close;
+read-only sessions do not. Allow shutdown time for flush/compaction.
 
-If Zvec cannot open or appears corrupt:
+If Zvec cannot open or is corrupt:
 
 1. Stop the owner and retain a tested backup.
-2. Move only `zvec/` aside; do not touch `state.sqlite3` or `assets/`.
-3. Start one owner with the original configuration and allow startup to rebuild the index.
-4. Verify representative searches.
-5. Remove the moved index only after the verification succeeds.
+2. Move only `zvec/` aside; retain SQLite and assets.
+3. Start one owner with its original configuration and wait for rebuilding.
+4. Verify searches before removing the old index.
 
-Never edit `search_index_queue`, replace `zvec/`, or move authoritative files while a `Memory` is
-live.
+Never edit the outbox, replace the index, or move authoritative files while an owner is live.
+RocksDB log files are journals; do not remove them with a filename glob.
 
-`optimize()` merges in place, including after reopening a collection. Changing quantization
-within the current index recipe rebuilds the projection from SQLite's stored FP32 embeddings
-without calling the embedding model. Allow time and space for the rebuild before accepting
-traffic. Older and unknown index recipes are rejected without rewriting SQLite or the index;
-read their source data with the original runtime and re-ingest it into a fresh directory.
+### Space and quantization
 
-Compaction remains necessary when accumulated idmap files or process file-descriptor pressure
-cannot be reclaimed by an in-place merge. It copies live documents into a replacement collection,
-so it needs room for a second copy of `zvec/` beside the original. A session killed during this
-operation leaves `.zvec.compact-*` debris, which the next open removes, and can leave `zvec/`
-absent between renames, which the next open rebuilds from SQLite. Do not remove file-descriptor
-headroom or compaction capacity just because ordinary optimize no longer copies the collection.
+In-place optimization normally merges without replacing the collection. Descriptor pressure or
+accumulated idmaps can still require compaction and room for a second index. Interrupted compaction
+may leave `.zvec.compact-*` debris or a missing index; the next open cleans/rebuilds derived state.
 
-`capture_queue` is deferred enrichment rather than index work, and no operation drains it
-implicitly. A host that uses `capture()` owns the loop that calls `settle()`, and
-`pending_captures()` is what to alarm on: it returns up to `limit` queued records oldest first,
-each with its `enqueued_at`, `attempts`, `last_error`, and `awaiting`, so a result at
-the limit may indicate more pending work than the page shows. Track enqueue ages, attempts,
-and stages over time to distinguish an active backlog from a stalled settlement loop. `awaiting`
-separates a row with no vectors (`"enrichment"`) from one that is already searchable and owes only
-formation (`"formation"`), so a backlog of the second kind is not a recall outage. Drain the queue
-before a planned shutdown, because a queued row survives restart.
+Supported quantization is none/fp16/int8/rabitq. Changing it within the current recipe rebuilds from
+stored vectors without model calls. INT8 is unrotated; RABITQ needs dimensions 64–4095 and native
+support. FP32 vectors remain authoritative, so smaller total disk use is not guaranteed.
+Quantized candidates get exact local rescoring, which cannot recover undiscovered ANN neighbors.
 
-A record whose `attempts` reached the `settle(max_attempts=...)` ceiling — three by default — is
-skipped rather than retried, so it stops holding up the records behind it while staying queued and
-visible with the reason it failed. Fix the cause, then either raise the ceiling for one call or
-name the record with `settle(memory_ids=...)`, which ignores the ceiling for the records it names.
-With a formation backend configured, `add()` also holds a queue row for the moment between its
-commit and its formation, so a short-lived entry under a live writer is expected rather than a
-stalled loop.
-
-`memory_operations` is an append-only audit log of every applied control-plane operation.
-`operations()` reads it newest first and `rollback(operation_id)` reverses one; neither is
-scheduled maintenance, and neither is reachable over REST or MCP.
-
-Applications may set Zvec process-wide resources once, before constructing any `Memory`:
+Applications can set Zvec process resources once, before constructing memory:
 
 ```python
 import zvec
@@ -282,335 +148,49 @@ import zvec
 zvec.init(query_threads=4, optimize_threads=2, memory_limit_mb=2048)
 ```
 
-SenseMem does not call `zvec.init()`. Account for several focused dense routes plus one lexical
-route, with at most four shared outer search workers per `Memory`. Keep `IndexQuantization.NONE` unless
-measured capacity and retrieval results justify a lossy mode. Changing only quantization rebuilds
-Zvec from stored vectors; `RABITQ` requires dimensions from 64 through 4095 and native support.
-Quantized structures coexist with authoritative FP32 vectors, so quantization does not guarantee
-smaller total disk use. Measure resident memory, latency, recall, and disk bytes separately.
-
-Quantized retrieval keeps a wider parent candidate pool and recalculates final cosine scores from
-SQLite's FP32 embeddings before ranking or applying `minimum_relevance`. This improves score
-calibration and near-tie ordering without another model call, at the cost of reading and scoring
-the surviving candidate vectors. It does not repair ANN candidates that were never discovered.
-
-Zvec 0.8 INT8 uses `enable_rotate=False`. The supported quantization modes are only `none`,
-`fp16`, `int8`, and `rabitq`; other upstream modes are not part of SenseMem's configuration
-contract. Lexical retrieval uses stemmed/bigram fields for multilingual and mixed-script recall.
+SenseMem does not call this initializer. Keep unquantized vectors unless measured capacity,
+latency, and recall justify a lossy mode.
 
 ## Capacity
 
-Growth and deletion are separate policies. `memory_budget_records` creates a control-plane
-pressure signal; it does not itself delete records. A configured retention age is also inert until
-the host calls `apply_retention()`. Start with a dry run and review the direct and cascading IDs:
+Record pressure and physical retention are separate: `memory_budget_records` creates a
+deliberation signal, while declared retention acts only when the host calls it:
 
 ```python
 report = memory.apply_retention(dry_run=True)
 print(report.deleted, report.asset_ids, report.capture_memory_ids)
 ```
 
-Physical retention and `delete()` cannot be reversed by `rollback()`. Cognitive `forget()` can.
-See [retention configuration](configuration.md#retention-policy) and
-[data-subject rights](api/python-sdk.md#data-subject-rights) before scheduling deletion.
+Review direct/cascading IDs before applying. Physical deletion is irreversible; cognitive
+forgetting is reversible. See [retention configuration](configuration/lifecycle.md#retention-policy)
+and [data-subject operations](api/python-identity.md#data-subject-rights).
 
-Monitor:
-
-- Bytes and free inodes for the whole directory, `state.sqlite3`, `assets/`, and `zvec/`.
-- Free space for a second index during rebuild or compaction.
-- Process file descriptors; Zvec checks headroom before durable work.
-- Startup, add, search, ask, reindex, optimize, and model latency.
-- Stable error codes and retryable reasons by operation.
-- Backup age, restore-test result, and observed recovery duration.
-
-Original media and FP32 embeddings remain authoritative storage costs even when Zvec uses
-quantization, which adds its structure beside them. Composite and long-text records create bounded
-additional embedding documents.
-
-## Telemetry
-
-SenseMem depends on `opentelemetry-api`; without an SDK, spans are no-ops. Install the existing
-observability extra and configure a provider before constructing `Memory`, or inject a tracer:
-
-```bash
-uv add "sensemem[local,observability]"
-```
-
-```python
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-
-from sensemem import SentenceTransformersEmbedder, Memory
-
-provider = TracerProvider()
-provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-trace.set_tracer_provider(provider)
-
-with Memory(
-    "./data",
-    embedder=SentenceTransformersEmbedder(
-        model_id="google/embeddinggemma-2",
-    ),
-) as memory:
-    memory.add("Remember this")
-    memory.search("Remember")
-
-provider.shutdown()
-```
-
-Every span sets `sensemem.span.kind` to `operation`, `stage`, `model`, or `transport`.
-
-| Level | Useful span names |
-| --- | --- |
-| Operation | `sensemem.add`, `.add_many`, `.search`, `.ask`, `.delete`, `.reindex`, `.optimize` |
-| Stage | `sensemem.content.prepare`, `.retrieve`, `.storage.*`, `.index.*`, `.retrieval.score_completion`, `.retrieval.rank`, `.identity.*` |
-| Model | `sensemem.model.embedding`, `.transcription`, `.face`, `.generation`, `.formation`, `.vision` |
-| Transport | `sensemem.http.request`, `sensemem.mcp.request` |
-
-Each `add_stream()` item creates an ordinary `sensemem.add` span. `search(..., explain=True)` and
-speculative prefetch use `sensemem.search`. `AsyncMemory` preserves tracing context across its
-worker thread. Both buffered `AsyncMemory.ask()` and `AsyncMemory.ask_stream()` record their
-initial executor queue delay.
-
-Inside `sensemem.ask`, `sensemem.retrieve` measures the complete prerequisite-to-ranked-hits
-leg: question content preparation, reference-time and temporal parsing, scope normalization,
-required query speech work, query embedding, index lookup, and ranking. Its existing
-`sensemem.content.prepare`, model, `sensemem.index.search`, and `sensemem.retrieval.rank`
-children remain available for attribution.
-
-Hybrid searches emit `sensemem.retrieval.score_completion` only when a parent admitted by the
-lexical route was absent from the bounded ANN result. The stage covers reading that parent's
-persisted document vectors from SQLite and exact local cosine scoring; it makes no model request.
-
-`sensemem.index.sync` retains one parent span and separates its durable stages without changing
-the SQLite-before-Zvec-before-ack order:
-
-| Child stage | Work measured |
-| --- | --- |
-| `sensemem.index.sync.sqlite.read` | Read and hydrate the durable SQLite outbox batch. |
-| `sensemem.index.sync.zvec.apply` | Delete or upsert the derived Zvec documents. |
-| `sensemem.index.sync.zvec.flush` | Flush the applied Zvec changes; present only in the drain that reaches the flush bound, in `optimize()` and `reindex()`, and at `close()`. |
-| `sensemem.index.sync.zvec.optimize` | Run the conditional Zvec optimization check after a flush. |
-| `sensemem.index.sync.sqlite.ack` | Acknowledge the flushed outbox rows in SQLite. |
-
-Capture acknowledgement, settle duration, and time to settled are three different numbers and
-are measured separately. `sensemem.capture` and `sensemem.settle` are distinct operation
-spans, and the settle span carries the capture-to-settled interval its batch closed:
-
-| Attribute | Meaning |
-| --- | --- |
-| `sensemem.capture.records_settled` | Records this call made searchable. |
-| `sensemem.capture.records_failed` | Records that failed and kept their queue row. |
-| `sensemem.capture.max_time_to_searchable_ms` | Longest capture-to-settled interval this call closed, over every row settled including `add()` recoveries. Absent when nothing settled. |
-
-Model spans include request model, module, batch size, modalities, and
-`sensemem.model.request_count`. Provider-reported usage is recorded without estimation:
-
-`sensemem.model.request_count` counts logical adapter calls issued by SenseMem. Retries hidden
-inside a third-party SDK transport remain included in latency, but cannot be counted separately;
-token totals and completeness cover observable logical responses, not an earlier hidden attempt for
-which the provider returned no usage.
-
-| Attribute | Meaning |
-| --- | --- |
-| `sensemem.token_usage.expected_request_count` | Requests expected to report token usage. |
-| `sensemem.token_usage.reported_request_count` | Requests that supplied usage. |
-| `sensemem.token_usage.complete` | Every expected request supplied a usable total. |
-| `sensemem.token_usage.total_tokens` | Exact total when complete; otherwise only an exact reported lower bound. |
-| `sensemem.token_usage.input_tokens.complete` | Every expected request supplied an input-token component. |
-| `sensemem.token_usage.output_tokens.complete` | Every expected request supplied an output-token component. |
-| `sensemem.token_usage.cached_input_tokens.complete` | Every expected request supplied a cached-input component. |
-| `sensemem.token_usage.reasoning_output_tokens.complete` | Every expected request supplied a reasoning-output component. |
-| `sensemem.token_usage.input_tokens.<modality>` | Exact input tokens for text, image, video, audio, or unattributed input. |
-| `sensemem.token_usage.output_tokens.<modality>` | Exact output tokens for the same modality set. |
-| `gen_ai.usage.cache_read.input_tokens` | Provider-reported cached input tokens. |
-| `gen_ai.usage.reasoning.output_tokens` | Provider-reported reasoning output tokens. |
-| `sensemem.token_usage.audio_seconds` | Provider- or runtime-reported processed audio duration. |
-
-Operation spans roll up descendant model usage. Local backends report request counts and available
-audio duration but do not invent token counts. Cached-input and reasoning-output tokens participate
-in the same model-to-operation rollup. Embedding model spans set `sensemem.embedding.task` to
-`retrieval.document` or `retrieval.query`, so ingest and retrieval inference can be separated.
-
-OpenAI-compatible model spans record `gen_ai.response.model` and
-`gen_ai.openai.response.system_fingerprint` only when the response supplies a non-empty value.
-Streaming inspects the final usage chunk too. `sensemem.model.response_models` and
-`sensemem.model.response_system_fingerprints` retain all distinct values when one span covers
-several responses; the scalar field is `mixed` instead of silently assigning the whole span to the
-last response. These are response provenance, not a copy of the request or response body.
-
-Provider request IDs are recorded as `gen_ai.request.id` for a single request and collected in
-`sensemem.model.request_ids` when one model span covers multiple requests. They are taken from
-the SDK response or provider error, including failure paths; an absent ID is left absent rather
-than invented. A local trace ID identifies the SenseMem operation, while the provider request
-ID identifies the upstream call for support. Keep both in protected operator telemetry.
-
-The first-output clocks deliberately use different scopes and units:
-
-| Attribute | Unit | Boundary |
-| --- | --- | --- |
-| `sensemem.operation.time_to_first_token_ms` | Milliseconds | Start of the complete `sensemem.ask` operation through its first non-empty visible text yield, including retrieval and generation setup. Absent if no visible text is yielded. |
-| `sensemem.model.time_to_first_token` | Seconds | Generation-model request through its first non-empty text delta. This preserves the generation-only model baseline and is absent when no model token is produced. |
-| `gen_ai.response.time_to_first_chunk` | Seconds | OpenAI-compatible streaming request through the first provider chunk, even when that chunk carries no visible text. |
-| `sensemem.async.queue_time_ms` | Milliseconds | Initial buffered or streaming `AsyncMemory.ask*` executor queue delay. It is also included in the operation TTFT, while remaining available for decomposition. |
-
-Transport spans measure server-side delivery separately from model and operation timing:
-
-| Transport | Attributes and boundary |
-| --- | --- |
-| REST | `sensemem.http.request` records the low-cardinality `http.route` template, `sensemem.transport.response_mode`, `sensemem.transport.server_time_to_headers_ms`, `sensemem.transport.server_time_to_first_body_byte_ms` when a non-empty body is sent, and `sensemem.transport.server_total_ms`. All three times are milliseconds from server request handling; they are not client-observed network latency. |
-| MCP | `sensemem.mcp.request` records buffered `sensemem.transport.server_total_ms` in milliseconds. MCP does not stream tool results, so it does not claim TTFT, first-chunk, or first-body timing. |
-
-Providers may also record `gen_ai.response.finish_reasons` on generation model spans.
-
-Watch these degradation and recognition attributes:
-
-- `sensemem.embedding.elided_parts` counts retrieval keys rejected because media exceeded the
-  embedding model's inline limit.
-- `sensemem.embedding.video_sampled_inputs` counts video inputs embedded as four ordered stills
-  because the model's prompt exceeded its context.
-- `sensemem.grounding.media_elided_hits` and `sensemem.grounding.dropped_hits` count evidence
-  removed from OpenAI grounding requests.
-- `sensemem.recall.shape`, `sensemem.recall.ops`, `sensemem.recall.exhaustive_rows`,
-  `sensemem.recall.complete`, `sensemem.recall.replan`, and `sensemem.recall.fallback`
-  describe one `sensemem.recall` stage, present only when `recall_planning` is on. Every
-  planning failure resolves to the same fallback plan, so `fallback` is the only signal that the
-  planner did not decide that question, and `complete` is what licenses a count over the set.
-- Experimental `recall_query_expansion` adds a `sensemem.recall.ground` stage.
-  `sensemem.recall.query_count`, `query_failures`, and `query_limited` are cumulative per ask;
-  use the final round rather than summing them. Other `sensemem.recall.query_*` counts describe
-  that round: `candidates` is the distinct returned query hits, `new_candidates` excludes the
-  original ranked pool, `selected` counts novel hits offered after per-query row caps,
-  `grounded` counts actual additions, `budget_dropped` counts selected hits rejected by character
-  or media caps, and `omitted` counts all novel query hits left out. A zero `new_candidates`
-  means no expansion beyond the original pool, not proof of corpus completeness. These counts
-  precede provider-side media packing and cannot establish correct reader use.
-- `sensemem.formation.refused_proposals` counts the proposals the kernel refused to ground,
-  totalled over the whole operation span and present only when formation ran; the model adapter's
-  `sensemem.formation.dropped_proposals` counts the ones it could not read at all.
-- `sensemem.identity.faces` and `sensemem.identity.speakers` report observations, distinct
-  identities, existing matches, creations, and cache status for each analyzed asset.
-
-Ordinary spans omit memory text, media bytes, paths, metadata, request and response bodies, and
-provider exception details. Grounding diagnostics can record memory and asset IDs; treat exported
-traces as private operational data. Apart from the non-content response model, fingerprint, and provider request IDs
-above, a failed span
-receives only generic error status. Use `search(..., explain=True)` for one retrieval investigation and
-the structured error envelope for failures.
-
-## Model quality gate
-
-Transport tests run without credentials and verify requests, validation, refusals, and error
-mapping. A separate small real-model gate exercises the public SDK with synthetic memories in a
-fresh directory for every case. It checks a grounded fact, insufficient evidence despite an
-unrelated retrieved memory, and instructions embedded in stored content. Every case must pass
-every repeat; an upstream error fails the gate rather than disappearing from its denominator.
-
-Grounded fixtures require a single answer word, allowing case, punctuation, and Markdown
-decoration. Negated, conflicting, or additional injected text fails. The report identifies this
-as an answering-only gate: the output-protocol option configures structural calls, but these
-answering fixtures do not establish that an endpoint accepts strict schemas. The companion
-`sensemem-workflow-quality-v1` gate exercises those stages through the public SDK: relative-date
-formation with and without a timestamp injection, exact collection counting with a non-fallback
-recall plan, a red-rectangle image carrying an injected instruction, preservation of a
-host-authorized policy during adversarial consolidation, and a Chinese grounded answer. A case
-passes only when its behavioral criterion and expected model stage both hold. Workflow requests
-use an 8192-token output ceiling, a 120-second timeout, and no SDK retries. Each case/repeat
-allocates a fresh physical directory; every repeat must pass.
-
-Set `OPENAI_API_KEY` through a secret manager or the process environment. For a compatible server,
-set `OPENAI_BASE_URL` to the SDK base URL ending in `/v1`, without `/chat/completions`. Select an
-explicit model snapshot and the output protocol the endpoint supports:
-
-```bash
-uv run --frozen python -m sensemem.benchmarks.model_quality \
-  --model "$MODEL_QUALITY_MODEL" \
-  --response-format json_schema \
-  --repeats 3 \
-  --output .benchmarks/model-quality/report.json
-
-uv run --frozen python -m sensemem.benchmarks.workflow_quality \
-  --model "$MODEL_QUALITY_MODEL" \
-  --response-format json_schema \
-  --repeats 3 \
-  --output .benchmarks/model-quality/workflow.json
-```
-
-`MODEL_QUALITY_MODEL` names the model snapshot to evaluate. Use `--response-format json_object`
-only for a server that lacks strict schema support. The report retains the fixture version,
-configured and returned model identifiers, case pass/fail results, timing, and stable error codes;
-it does not retain prompts, answers, credentials, or raw provider exceptions. These synthetic
-fixtures do not authorize testing with private production content or establish full application
-quality. Use the [dataset harness](benchmarking.md) for broader comparisons, and calibrate quality
-criteria against reviewed failures before expanding this suite.
-
-The [model-quality workflow](../.github/workflows/model-quality.yml) runs both gates for pull
-requests changing product code, dependencies, integration fixtures or the gates themselves.
-Configure the repository secret `MODEL_QUALITY_API_KEY` and the
-`MODEL_QUALITY_MODEL` snapshot variable before requiring this check in branch protection.
-`MODEL_QUALITY_BASE_URL` and `MODEL_QUALITY_RESPONSE_FORMAT` optionally select a compatible
-endpoint and protocol. Missing credentials or a model pin fail the check rather than marking
-untested quality as passing. Fork pull requests do not receive repository secrets; a maintainer
-must run the trusted evaluation path before approval. The workflow uses `pull_request`, never
-`pull_request_target`, and never exposes secrets to a fork checkout.
-
-Manual runs accept explicit model, response-format and repeat inputs. Weekly scheduled runs
-remain opt-in through `MODEL_QUALITY_ENABLED=true`. Both aggregate reports are retained in the
-artifact even when answering fails. Review those reports and keep ordinary credential-free CI
-enabled; provider/protocol changes also require comparison with an equivalent baseline.
-
-The formation-time fixture `sensemem-formation-time-v1` independently tests the snapshot
-`gpt-5-mini-2025-08-07` with strict JSON Schema and a 4096-token output budget. Its synthetic
-source says “I moved to Paris yesterday” with observation time `2026-03-02T12:00:00Z`, no typed
-validity, and no history. The four cases cover observation time despite later creation, creation
-time as the fallback, no reference time, and an embedded instruction to use a fabricated date.
-Each runs three times. Dated cases must produce an event whose `valid_from` is March 1; the case
-without a reference must omit temporal bounds. Every repeat must pass. Run it explicitly with:
-
-```bash
-SENSEMEM_FORMATION_TIME_EVAL=1 uv run --frozen pytest -W error -rP \
-  tests/integration/test_formation_time_quality.py
-```
-
-Only fixture IDs, case IDs, repeat numbers, and configured/returned model identifiers are printed.
-Run credentialed checks against equivalent fixtures, model snapshots, prompts and budgets before
-claiming a quality improvement. Keep dated measurements and their limitations in local research
-records; transport fixtures alone do not establish model quality.
+Monitor total SQLite/media/index bytes and free inodes; space for a second index; file descriptors;
+operation/model latency; stable errors; capture backlog; backup age and tested recovery time.
+Original media, canonical FP32 vectors, and composite/text embedding keys remain storage costs.
 
 ## Changing the runtime or stored representations
 
-Before changing SenseMem, model revisions, vector dimensions, transcription or face recipes, or
-index settings:
-
 1. Create and restore-test a backup.
 2. Stop the owner.
-3. Upgrade code and configuration together.
-4. Start one owner with matching schema and model identities, or re-ingest into a fresh directory.
-5. Verify records, media, retrieval, and telemetry before restoring traffic.
+3. Change code/configuration together.
+4. Reopen with compatible identities or replay sources into a new directory.
+5. Verify records, media, retrieval, and telemetry before traffic.
 
-Never bypass identity and schema checks by editing `PRAGMA user_version`, `store_metadata`, or the
-outbox.
-
-**Only SQLite schema 21 is accepted.** Startup validates required tables, constraints, and
-predicate provenance before admitting the store. It never upgrades an older schema or re-embeds
-stored content. A nonempty store must contain all required identity and evidence-policy markers.
-The optional face backend can be enabled for the first time when no face analysis or face-space
-markers exist; startup records its two space identities together.
-
-Operation logs require the complete current payload, including explicit nulls and empty arrays.
-Incomplete or incompatible payloads raise `StorageError`; there is no legacy decoder. Replay
-original sources into a fresh directory when adopting a different format.
+Only SQLite schema 21 is accepted. Startup validates tables, constraints, provenance, and policy
+markers; it performs no migration or automatic re-embedding. Initial face setup is allowed only
+without existing face-analysis/space markers and pins both face identities together.
+Operation logs require current complete payloads; incompatible logs raise StorageError.
 
 | Change | Required action |
 | --- | --- |
-| Embedding space or dimension | Re-ingest original inputs into a fresh directory. |
-| Persisted transcription or face space | Use a compatible backend or replay into a fresh directory. |
-| Index quantization within the current recipe | Rebuild from stored FP32 vectors; allow time and disk space. |
-| Missing Zvec index | Reopen to rebuild from SQLite without model inference. |
-| Evidence projection policy | Use a fresh directory when changing the store-pinned policy. |
-| SQLite schema | Use its original runtime to read sources; the current runtime performs no migration. |
+| Embedding space/dimension | Replay into a fresh directory |
+| Persisted transcription/face space | Keep a compatible backend or replay |
+| Current-recipe quantization | Rebuild from stored FP32 vectors |
+| Missing Zvec | Reopen and rebuild from SQLite |
+| Evidence projection policy | Fresh directory with the intended policy |
+| SQLite schema | Read sources with the original runtime, then replay |
 
-Index rebuilds do not change semantic keys, evidence clauses, historical versions, or text-span
-selectors. Physical deletion cannot be reversed by clause history or operation rollback.
-[Architecture](architecture.md#durable-state) describes these stored representations, and the
-[SDK reference](api/python-sdk.md) defines their public values.
+Do not bypass checks by editing schema metadata or the outbox. Rebuilds preserve semantic/evidence
+history and selectors; they do not recover physical deletion. Run the [model quality gate](model-quality.md)
+for model/prompt changes and use [observability](observability.md) to verify the deployed path.

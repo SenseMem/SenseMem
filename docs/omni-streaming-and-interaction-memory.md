@@ -37,7 +37,7 @@ Completed durable writes still accept ordinary local `Path` content through the 
 Everything on this page except `ask_stream()` streams input into memory; `ask_stream()` is the one
 that streams an answer out, and it is a delivery choice rather than a capture lifecycle. Its
 contract lives with the other recall operations in the
-[Python SDK reference](api/python-sdk.md#memory-operations).
+[Python SDK reference](api/python-memory.md).
 
 ## Add completed observations
 
@@ -102,7 +102,7 @@ queue entry, while disjoint records can settle concurrently.
 **Contract:** keep `add()` where a caller needs the record searchable on return, and keep the
 enrichment loop explicit. Nothing else settles for you, so an application that never calls
 `settle()` accumulates durable memories that `search()`, `ask()`, and `compile()` cannot see. See
-the [Python SDK reference](api/python-sdk.md#memory-operations) for the exact failure semantics.
+the [Python SDK reference](api/python-memory.md) for the exact failure semantics.
 
 ## Prefetch a changing query
 
@@ -355,8 +355,8 @@ binding, and evidence, then commits accepted derivations with embeddings and for
 A failed formation leaves the source durable and pending for retry through `settle()`.
 
 Formation refines the existing semantic, episodic, and procedural roles; it creates no separate
-store. Use [formation configuration](configuration.md#automatic-memory-formation) to select a
-backend and [typed context](memory-types-time-and-decay.md#typed-context-and-formation) for the
+store. Use [formation configuration](configuration/lifecycle.md#automatic-memory-formation) to select a
+backend and [typed context](typed-memory.md) for the
 resulting record and support rules.
 
 ## Affect and personality evidence
@@ -394,7 +394,7 @@ Every completed stream item emits a `sensemem.add` operation span, or `sensemem.
 `capture=True`. Every speculative
 search that starts emits an ordinary `sensemem.search` span. This keeps model request, token,
 latency, and failure accounting comparable with non-streaming calls. See
-[operations](operations.md#telemetry) for the attribute contract.
+[operations](observability.md) for the attribute contract.
 
 Useful end-to-end measurements for a capture reducer are:
 

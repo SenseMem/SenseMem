@@ -208,49 +208,54 @@ def run_benchmark(
         # one query's retrieval depend on which earlier one ran. Both are measurement policy.
         config=MemoryConfig(minimum_relevance=0, reinforce_on_answer=False),
     ) as memory:
-        scenario = build_scenario(memory, persons=persons, seed=seed)
-        before = {record.operation_id for record in memory.operations(limit=limit)}
-        report = memory.consolidate_pending(limit=limit, max_rounds=max_rounds)
-        applied = tuple(
-            record for record in memory.operations(limit=limit) if record.operation_id not in before
+        return evaluate_scenario(
+            memory, persons=persons, seed=seed, limit=limit, max_rounds=max_rounds
         )
-        metrics = _metrics(memory, scenario, applied)
-        # P5's only consumer: the log now carries what later evidence -- here, the ground truth --
-        # said about each operation, which is what makes precision derivable from the log alone.
-        for record in applied:
-            memory.record_outcome(record.operation_id, _verdict(scenario, record))
-        judged = tuple(
-            record.outcome
-            for record in memory.operations(limit=limit)
-            if record.operation_id not in before
-        )
-        metrics.update(_rollback(memory, scenario, applied))
-        return {
-            "scenario": {
-                "seed": seed,
-                "persons": persons,
-                "records": len(scenario.ingested),
-                "duplicate_groups": len(scenario.duplicates),
-                "contradictions": len(scenario.contradictions),
-                "gold_records": len(scenario.gold),
-                "failing_queries": len(scenario.failing_queries),
-            },
-            "deliberation": {
-                "rounds": report.rounds,
-                "weighed": report.weighed,
-                "skipped": report.skipped,
-                "applied": report.applied,
-                "rejected": len(report.rejected),
-                # The loop's whole cost proxy: `ConsolidationBackend` reports no token or currency
-                # cost, so counting round trips is the honest measure rather than an invented one.
-                "model_calls": report.model_calls,
-            },
-            "outcomes": {
-                "confirmed": sum(1 for value in judged if value is MemoryOutcome.CONFIRMED),
-                "refuted": sum(1 for value in judged if value is MemoryOutcome.REFUTED),
-            },
-            "metrics": metrics,
-        }
+
+
+def evaluate_scenario(
+    memory: Memory, *, persons: int = 4, seed: int = 42, limit: int = 100, max_rounds: int = 4
+) -> dict[str, object]:
+    """Evaluate a fresh SDK instance, reusing the same scenario and metrics in the live gate."""
+    scenario = build_scenario(memory, persons=persons, seed=seed)
+    before = {record.operation_id for record in memory.operations(limit=limit)}
+    report = memory.consolidate_pending(limit=limit, max_rounds=max_rounds)
+    applied = tuple(
+        record for record in memory.operations(limit=limit) if record.operation_id not in before
+    )
+    metrics = _metrics(memory, scenario, applied)
+    for record in applied:
+        memory.record_outcome(record.operation_id, _verdict(scenario, record))
+    judged = tuple(
+        record.outcome
+        for record in memory.operations(limit=limit)
+        if record.operation_id not in before
+    )
+    metrics.update(_rollback(memory, scenario, applied))
+    return {
+        "scenario": {
+            "seed": seed,
+            "persons": persons,
+            "records": len(scenario.ingested),
+            "duplicate_groups": len(scenario.duplicates),
+            "contradictions": len(scenario.contradictions),
+            "gold_records": len(scenario.gold),
+            "failing_queries": len(scenario.failing_queries),
+        },
+        "deliberation": {
+            "rounds": report.rounds,
+            "weighed": report.weighed,
+            "skipped": report.skipped,
+            "applied": report.applied,
+            "rejected": len(report.rejected),
+            "model_calls": report.model_calls,
+        },
+        "outcomes": {
+            "confirmed": sum(1 for value in judged if value is MemoryOutcome.CONFIRMED),
+            "refuted": sum(1 for value in judged if value is MemoryOutcome.REFUTED),
+        },
+        "metrics": metrics,
+    }
 
 
 def _metrics(

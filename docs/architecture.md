@@ -365,7 +365,7 @@ Optional answer policies reuse this retrieval plane:
 The reader receives the executed-read and omission context needed to distinguish a bounded ranking
 from a complete predicate result. Replanning requires an eligible abstention and stays inside
 `recall_rounds`. A non-abstained answer ends the operation. The
-[configuration reference](configuration.md#local-memory-settings) defines the settings and packing
+[configuration reference](configuration/settings.md) defines the settings and packing
 order.
 
 For image-bearing answers, temporary `ModelInput.image_retrieval_matches` can retain up to three
@@ -483,7 +483,7 @@ process's privileges and must be trusted.
 
 Typed lineage and evidence are a SQLite projection, not a graph database or traversal service. A
 future entity/relation search projection must remain derived and rebuildable and pass the evidence
-gate in the [benchmark protocol](benchmarking.md#mandatory-controls).
+gate in the [benchmark protocol](benchmarks/reference.md#controls-and-diagnostics).
 
 The public vocabulary follows these shared execution paths:
 

@@ -70,7 +70,7 @@ images, and videos; it does not accept audio embeddings. Configure FunASR to tur
 audio into searchable text, then keep `index_speech` enabled. This adds ASR work on ingestion.
 
 Verify your service's batch, inline-byte, and video-frame limits before ingestion. The SDK's
-own transport bounds remain in force; see the [adapter limits](api/python-sdk.md#bundled-adapters).
+own transport bounds remain in force; see the [adapter limits](api/python-adapters.md).
 
 The local server runtime, model checkpoint, and service script are machine-managed dependencies;
 they are not installed by SenseMem. Use the official
@@ -130,4 +130,4 @@ and output budgets. A source is committed before its formation call, so a format
 not discard the source. Inspect `memory.pending_captures()` and, after addressing the failure,
 resume the returned memory IDs with `memory.settle`. Settlement can retry model work; its attempt
 and selection controls are documented with the
-[public memory operations](api/python-sdk.md#memory-operations).
+[public memory operations](api/python-memory.md).

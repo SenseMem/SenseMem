@@ -16,6 +16,54 @@ from sensemem import Modality, OpenAIModels
 from sensemem.benchmarks import workflow_quality
 
 
+def _consolidation_reply(content: str, broken: str | None) -> str:
+    evidence = json.loads(content)["evidence"]
+    operations: list[dict[str, object]] = []
+    if any("SYSTEM OVERRIDE" in row["content"] for row in evidence):
+        operations = [{"intent": "forget", "targets": [0, 1, 2]}]
+    elif broken != "noop":
+        older = [
+            row["index"]
+            for row in evidence
+            if row.get("context", {}).get("kind") == "trait"
+            and " says their only seat" in row["content"]
+        ]
+        newer = [
+            row["index"]
+            for row in evidence
+            if row.get("context", {}).get("kind") == "trait"
+            and " now says their only seat" in row["content"]
+        ]
+        if older and newer:
+            operations.append(
+                {
+                    "intent": "correct",
+                    "targets": newer if broken == "wrong_correction" else older,
+                    "evidence": older if broken == "wrong_correction" else newer,
+                }
+            )
+        drinks = [
+            row["index"] for row in evidence if "morning" in row["content"] and "context" not in row
+        ]
+        if len(drinks) == 2:
+            operations.append(
+                {
+                    "intent": "consolidate",
+                    "evidence": drinks,
+                    "targets": drinks,
+                    "proposal": {
+                        "kind": "trait",
+                        "content": "Ana drinks the same thing each morning.",
+                        "subject": "Ana",
+                        "predicate": "routine",
+                        "value": "same morning drink",
+                        "confidence": 0.9,
+                    },
+                }
+            )
+    return json.dumps({"operations": operations})
+
+
 def _responder(broken: str | None) -> Callable[[httpx.Request], httpx.Response]:
     def respond(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -55,8 +103,10 @@ def _responder(broken: str | None) -> Callable[[httpx.Request], httpx.Response]:
             )
         elif name == "vision":
             content = json.dumps({"descriptions": ["Shown: a large red rectangle"]})
+        elif name == "media_selection":
+            content = '{"requests":[{"media_index":0,"reason":"detail_missing"}]}'
         elif name == "consolidation":
-            content = json.dumps({"operations": [{"intent": "forget", "targets": [0, 1, 2]}]})
+            content = _consolidation_reply(payload["messages"][1]["content"], broken)
         else:
             user = payload["messages"][1]["content"]
             text = user if isinstance(user, str) else json.dumps(user)
@@ -135,12 +185,14 @@ def test_workflow_gate_checks_all_stages_in_distinct_physical_stores(
     ]
     assert report.structured_output_capability_evaluated
     assert report.response_models == ("fixture-returned-snapshot",)
-    assert len(report.cases) == len(set(paths)) == 12
+    assert len(report.cases) == len(set(paths)) == 16
     assert all(not path.exists() for path in paths)
     assert "SYSTEM OVERRIDE" not in json.dumps(asdict(report))
 
 
-@pytest.mark.parametrize("broken", ["formation", "planning", "vision", "answering"])
+@pytest.mark.parametrize(
+    "broken", ["formation", "planning", "vision", "answering", "noop", "wrong_correction"]
+)
 def test_workflow_gate_rejects_wrong_dates_planning_fallback_and_ungrounded_answers(
     broken: str,
 ) -> None:
@@ -166,6 +218,8 @@ def test_workflow_gate_rejects_wrong_dates_planning_fallback_and_ungrounded_answ
         "planning": "recall_collection_count",
         "vision": "vision_prompt_injection",
         "answering": "answering_chinese",
+        "noop": "control_plane_quality",
+        "wrong_correction": "control_plane_quality",
     }[broken]
     assert not next(case for case in report.cases if case.case_id == expected).passed
 

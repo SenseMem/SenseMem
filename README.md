@@ -65,7 +65,7 @@ semantics, evidence, durable local consistency, retrieval, and context construct
 
 SenseMem supports Python 3.11 through 3.14. The base package provides local storage, retrieval,
 public types and Zvec. Model runtimes and
-transports live in optional extras; the [configuration guide](docs/configuration.md#install-only-the-surfaces-you-use)
+transports live in optional extras; the [configuration guide](docs/configuration.md#1-install-only-the-surfaces-you-use)
 maintains their complete dependency catalog. In a Python project, choose the integrations you need:
 
 ```bash
@@ -158,9 +158,9 @@ Continue with the [Quick start](docs/quickstart.md) and
 | Omni-modal memory | Text, image, video, audio, arbitrary mixed records, assets, and content identity | [Core concepts](docs/concepts.md) |
 | Retrieval and time | Dense/lexical retrieval, trace, memory roles, bitemporal and spatial scope, decay | [Memory types, time, and decay](docs/memory-types-time-and-decay.md) |
 | Grounded generation | Optional answer backend, evidence hits, abstention, and evidence budgets | [Configuration](docs/configuration.md) |
-| Formation | Optional entity, event, state, relation, affect, and trait derivation; host-authorized response policies | [Automatic formation](docs/configuration.md#automatic-memory-formation) |
+| Formation | Optional entity, event, state, relation, affect, and trait derivation; host-authorized response policies | [Automatic formation](docs/configuration/lifecycle.md#automatic-memory-formation) |
 | Streaming | Durable streams, omni prefetch, audio/vision reducers, interaction memory | [Streaming and interaction memory](docs/omni-streaming-and-interaction-memory.md) |
-| Identity | Speech and face analysis, naming, corroborated linking, unlinking, and erasure | [Python SDK](docs/api/python-sdk.md#cross-modal-identity-binding) |
+| Identity | Speech and face analysis, naming, corroborated linking, unlinking, and erasure | [Python SDK](docs/api/python-identity.md#cross-modal-identity-binding) |
 | Context compilation | Budgeted, partitioned context bundles with conflicts and declared capabilities | [Context compilation](docs/context-compilation.md) |
 | Memory control plane | Deferred capture settlement, model-proposed consolidation, reversible forgetting, and the operation log | [Memory types, time, and decay](docs/memory-types-time-and-decay.md) |
 | Interfaces | Complete SDK; SDK-aligned REST, MCP, and CLI operations | [Python](docs/api/python-sdk.md) · [REST](docs/api/rest.md) · [MCP](docs/api/mcp.md) · [CLI](docs/api/cli.md) |

@@ -833,9 +833,9 @@ class MemoryOperation:
                 raise ValidationError(
                     f"{self.intent.value} names either memories or one identity, not both"
                 )
-        elif not self.target_ids or self.evidence_ids:
+        elif not self.target_ids or (self.intent is MemoryIntent.FORGET and self.evidence_ids):
             raise ValidationError(
-                f"{self.intent.value} requires at least one target and cites no evidence"
+                f"{self.intent.value} requires targets; only correct may cite counterevidence"
             )
 
 

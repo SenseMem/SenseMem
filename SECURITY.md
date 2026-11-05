@@ -106,7 +106,7 @@ outcomes instead of response bodies.
 Periodic deliberation never logs exception chains, including at DEBUG: a sanitized outer error
 can retain a provider response body as its cause. Chat-completion requests explicitly default to
 `store=false`; this controls provider application-state storage, separately from abuse-monitoring
-retention and account-level Zero Data Retention. See [configuration](docs/configuration.md#provider-fields).
+retention and account-level Zero Data Retention. See [configuration](docs/configuration/providers.md).
 
 Host-authorized response policies and their active support graph are protected from model
 formation and consolidation mutations inside SQLite's write transaction. Models cannot weaken

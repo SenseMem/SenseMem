@@ -823,12 +823,17 @@ class ControlPlane(Traced):
         if operation.intent is MemoryIntent.REINFORCE:
             reinforce = self._reinforcement_pairs(operation, targets, shown=shown)
         elif operation.intent is MemoryIntent.CORRECT:
-            if not all(is_derived(targets, memory_id) for memory_id in operation.target_ids):
-                raise RejectedOperation("not_derived")
-            correct_ids = operation.target_ids
+            correct_ids = self._correction_targets(
+                operation, targets, shown, host_authored=host_authored
+            )
         else:
             if any(targets[memory_id].forgotten_at is not None for memory_id in targets):
                 raise RejectedOperation("already_forgotten")
+            if not host_authored and (
+                pending.trigger != MemoryTrigger.PRESSURE.value
+                or self._settings.memory_budget_records is None
+            ):
+                raise RejectedOperation("unauthorized")
             forget_ids = operation.target_ids
         with self._write_lock:
             with translate_storage_errors("apply a memory operation"):
@@ -845,16 +850,38 @@ class ControlPlane(Traced):
                     require_unretired=(
                         operation.target_ids if operation.intent is MemoryIntent.REINFORCE else ()
                     ),
-                    require_visible=(
-                        operation.evidence_ids if operation.intent is MemoryIntent.REINFORCE else ()
-                    ),
+                    require_visible=operation.evidence_ids,
                     preserve_response_policies=not host_authored,
+                    record_budget=(
+                        self._settings.memory_budget_records
+                        if forget_ids and not host_authored
+                        else None
+                    ),
                     naming_projection_factory=self._formation.naming_projection_factory(assets),
                 )
             if logged is None:
                 raise RejectedOperation("duplicate")
             self._projection.drain()
         return logged
+
+    def _correction_targets(
+        self,
+        operation: MemoryOperation,
+        targets: Mapping[str, StoredMemory],
+        shown: Mapping[str, MemoryRecord] | None,
+        *,
+        host_authored: bool,
+    ) -> tuple[str, ...]:
+        """Keep a model's correction auditable through standing, disjoint counterevidence."""
+        if not all(is_derived(targets, memory_id) for memory_id in operation.target_ids):
+            raise RejectedOperation("not_derived")
+        if not host_authored and not operation.evidence_ids:
+            raise RejectedOperation("counterevidence_required")
+        if set(operation.target_ids) & set(operation.evidence_ids):
+            raise RejectedOperation("target_is_evidence")
+        if shown is None or not set(operation.evidence_ids) <= set(shown):
+            raise RejectedOperation("evidence_not_shown")
+        return operation.target_ids
 
     def _reinforcement_pairs(
         self,

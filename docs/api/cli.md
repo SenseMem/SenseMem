@@ -207,7 +207,7 @@ decoding before the kernel applies it.
 `record-consent` takes `granted`, `withheld`, or `withdrawn`, and prints the logged operation, or
 `null` when that statement already stands. `consent` reads back the standing state, where `null`
 means nobody has recorded one. What the two restrained states change is listed under
-[consent](python-sdk.md#consent).
+[consent](python-identity.md#consent).
 
 `export` prints `exported_at`, `identity_id`, `identities`, `records`, and `operations` -- every
 version of every record the subject appears in or is named by, and every log row that moved any of
@@ -220,12 +220,12 @@ come from the [REST operation object](rest.md#response-objects), which carries t
 `cascade_memory_ids`, `asset_ids`, `capture_memory_ids`, and `deleted`;
 `cascade_memory_ids` names additional derived records whose support the direct selections remove.
 It deletes through the same path as `delete`, so
-[what `delete` removes](python-sdk.md#what-delete-removes) applies unchanged. Start with
+[what `delete` removes](python-memory.md#delete) applies unchanged. Start with
 `--dry-run`.
 
 `apply-retention` acts on the policy the composition declares. An `--embedder` composition
 declares none, so it deletes nothing and reports empty lists; use `--app` with a memory built from
-a configuration that has a [`retention` section](../configuration.md#retention-policy). The CLI
+a configuration that has a [`retention` section](../configuration/lifecycle.md#retention-policy). The CLI
 deliberately has no flag for the ages: a policy that deletes should be reviewable in a file, not
 retyped on each invocation.
 
@@ -276,7 +276,7 @@ optional `occurred_at`, `occurred_end`, `metadata`, and `context`; unknown field
 
 The CLI context decoder accepts `basis`, `source_id`, `confidence`, `valid_from`, `valid_until`,
 and `spatial`; its scope decoder accepts `valid_at`, `known_at`, `near`, `radius_m`, `place_id`,
-and `identity_id`, which is the whole of [`RetrievalScope`](python-sdk.md#public-values).
+and `identity_id`, which is the whole of [`RetrievalScope`](python-values.md).
 
 ```bash
 sensemem --app my_application:build_memory add "The mug is on the table" \
@@ -289,7 +289,7 @@ sensemem --app my_application:build_memory search "Where is the mug?" \
 `add-many` collects all lines for one model batch and one SQLite transaction. `add-stream` commits
 and makes each line searchable before reading the next, but collects returned records for the
 CLI's single-document stdout result. It is therefore for finite JSONL; use
-[`Memory.add_stream`](python-sdk.md#memory-operations) for an unbounded source.
+[`Memory.add_stream`](python-memory.md) for an unbounded source.
 
 ### Operations without a command
 
@@ -300,7 +300,7 @@ for a completed answer, or SDK `ask_stream()` and the REST SSE endpoint for incr
 
 On success, stdout contains one JSON document and a trailing newline. Local results use the same
 memory, hit, answer, page, and deletion field vocabulary as [REST response objects](rest.md#response-objects).
-`search --explain` serializes the [Python retrieval trace](python-sdk.md#public-values).
+`search --explain` serializes the [Python retrieval trace](python-values.md).
 `SpeakerSegment` and `FaceObservation` use their public Python fields. Memory and hit documents
 carry `context` when typed semantics exist, identically in local and `--url` mode, with enum
 values as JSON strings and datetimes as ISO 8601. Every timestamp the CLI prints -- including

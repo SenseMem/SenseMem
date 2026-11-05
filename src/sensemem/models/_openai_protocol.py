@@ -59,6 +59,11 @@ def validate_sampling(
         "stream",
         "stream_options",
         "store",
+        "max_tokens",
+        "max_completion_tokens",
+        "max_output_tokens",
+        "temperature",
+        "seed",
     } & body.keys()
     if reserved:
         raise ValidationError("generation_extra_body must not override the model request contract")

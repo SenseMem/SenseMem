@@ -226,6 +226,9 @@ def test_operation_shape_follows_its_intent() -> None:
     assert MemoryOperation(
         intent=MemoryIntent.REINFORCE, target_ids=("t",), evidence_ids=("a", "a")
     ).evidence_ids == ("a",)
+    assert MemoryOperation(
+        intent=MemoryIntent.CORRECT, target_ids=("t",), evidence_ids=("a",)
+    ).evidence_ids == ("a",)
     # Consolidation forgetting: a consolidation may name sources of its own to retire.
     assert MemoryOperation(
         intent=MemoryIntent.CONSOLIDATE,
@@ -243,7 +246,6 @@ def test_operation_shape_follows_its_intent() -> None:
         {"intent": MemoryIntent.REINFORCE, "target_ids": ("t",)},
         {"intent": MemoryIntent.REINFORCE, "target_ids": ("t",), "proposal": proposal},
         {"intent": MemoryIntent.CORRECT},
-        {"intent": MemoryIntent.CORRECT, "target_ids": ("t",), "evidence_ids": ("a",)},
         {"intent": MemoryIntent.FORGET},
         {"intent": MemoryIntent.FORGET, "target_ids": (" ",)},
         {"intent": "shred", "target_ids": ("t",)},
@@ -923,10 +925,17 @@ def test_correction_retires_a_derived_inference_and_rollback_restores_it(tmp_pat
         before = memory.get(derived_id)
         assert before.context is not None
 
+        contrary = memory.add("Ana says the patient description was wrong; she was impatient.")
         consolidator._scripts.append(
-            (MemoryOperation(intent=MemoryIntent.CORRECT, target_ids=(derived_id,)),)
+            (
+                MemoryOperation(
+                    intent=MemoryIntent.CORRECT,
+                    target_ids=(derived_id,),
+                    evidence_ids=(contrary.id,),
+                ),
+            )
         )
-        record = memory.consolidate(evidence_ids=(derived_id,)).operations[0]
+        record = memory.consolidate(evidence_ids=(derived_id, contrary.id)).operations[0]
 
         assert record.changed_ids == (derived_id,)
         assert not [hit for hit in memory.search("patient", limit=10).hits if hit.id == derived_id]
@@ -1770,7 +1779,11 @@ def test_one_pass_may_not_contradict_itself(tmp_path: Path) -> None:
 
 def test_one_pass_may_not_build_on_evidence_it_just_retired(tmp_path: Path) -> None:
     consolidator = ScriptedConsolidator()
-    with _memory(tmp_path / "inconsistent-reverse", consolidator) as memory:
+    with _memory(
+        tmp_path / "inconsistent-reverse",
+        consolidator,
+        config=MemoryConfig(memory_budget_records=1),
+    ) as memory:
         first, second = _observations(memory, "Ana waited calmly", "Ana waited again")
         consolidator._scripts.append(
             (
@@ -1782,7 +1795,9 @@ def test_one_pass_may_not_build_on_evidence_it_just_retired(tmp_path: Path) -> N
                 ),
             )
         )
-        report = memory.consolidate(evidence_ids=(first.id, second.id))
+        report = memory.consolidate(
+            evidence_ids=(first.id, second.id), trigger=MemoryTrigger.PRESSURE
+        )
 
         assert [record.operation.intent for record in report.operations] == [MemoryIntent.FORGET]
         assert [reason for _operation, reason in report.rejected] == ["inconsistent_batch"]
@@ -1805,17 +1820,22 @@ def test_a_correction_and_its_replacement_fit_in_one_pass(tmp_path: Path) -> Non
         report = memory.consolidate(evidence_ids=(first.id, second.id))
         wrong_id = report.operations[0].created_ids[0]
 
+        contrary = memory.add(
+            "Ana says the earlier patience inference was wrong; she was impatient."
+        )
         consolidator._scripts.append(
             (
-                MemoryOperation(intent=MemoryIntent.CORRECT, target_ids=(wrong_id,)),
+                MemoryOperation(
+                    intent=MemoryIntent.CORRECT, target_ids=(wrong_id,), evidence_ids=(contrary.id,)
+                ),
                 MemoryOperation(
                     intent=MemoryIntent.CONSOLIDATE,
-                    evidence_ids=(first.id, second.id),
+                    evidence_ids=(contrary.id,),
                     proposal=_trait("Ana", "impatient"),
                 ),
             )
         )
-        report = memory.consolidate(evidence_ids=(first.id, second.id, wrong_id))
+        report = memory.consolidate(evidence_ids=(first.id, second.id, wrong_id, contrary.id))
 
         assert report.rejected == ()
         assert [record.operation.intent for record in report.operations] == [
@@ -1924,8 +1944,12 @@ def test_a_target_forgotten_between_validation_and_apply_is_stale(
 ) -> None:
     """The apply transaction re-checks what validation read; a target that moved is refused."""
     consolidator = ScriptedConsolidator()
-    with _memory(tmp_path / "stale-target", consolidator) as memory:
-        first, second = _observations(memory, "Ana waited calmly", "Ana waited again")
+    with _memory(
+        tmp_path / "stale-target", consolidator, config=MemoryConfig(memory_budget_records=1)
+    ) as memory:
+        first, second, _third = _observations(
+            memory, "Ana waited calmly", "Ana waited again", "Unrelated note"
+        )
         original = OperationLog.apply_control_operation
         interleaved: list[str] = []
 
@@ -1947,7 +1971,9 @@ def test_a_target_forgotten_between_validation_and_apply_is_stale(
         consolidator._scripts.append(
             (MemoryOperation(intent=MemoryIntent.FORGET, target_ids=(first.id, second.id)),)
         )
-        report = memory.consolidate(evidence_ids=(first.id, second.id))
+        report = memory.consolidate(
+            evidence_ids=(first.id, second.id), trigger=MemoryTrigger.PRESSURE
+        )
 
         assert report.operations == ()
         assert [reason for _operation, reason in report.rejected] == ["stale"]
@@ -2176,7 +2202,11 @@ def test_a_deliberated_candidate_leaves_the_queue_until_new_evidence_arrives(
         assert first.id in candidate.memory_ids
 
         consolidator._scripts.append(
-            (MemoryOperation(intent=MemoryIntent.CORRECT, target_ids=(derived_id,)),)
+            (
+                MemoryOperation(
+                    intent=MemoryIntent.CORRECT, target_ids=(derived_id,), evidence_ids=(first.id,)
+                ),
+            )
         )
         applied = memory.consolidate(
             evidence_ids=candidate.memory_ids,
@@ -2906,7 +2936,9 @@ def test_reinforcement_refuses_a_target_a_correction_already_retired(tmp_path: P
         # very pass withdrew; the batch guard used to compare only evidence against retirals.
         consolidator._scripts.append(
             (
-                MemoryOperation(intent=MemoryIntent.CORRECT, target_ids=(derived_id,)),
+                MemoryOperation(
+                    intent=MemoryIntent.CORRECT, target_ids=(derived_id,), evidence_ids=(second.id,)
+                ),
                 MemoryOperation(
                     intent=MemoryIntent.REINFORCE,
                     target_ids=(derived_id,),
@@ -3321,6 +3353,7 @@ class ResolvingConsolidator:
             MemoryOperation(
                 intent=MemoryIntent.CORRECT,
                 target_ids=(derived[0].id,),
+                evidence_ids=(derived[1].id,),
                 rationale="the later reading stands",
             ),
         )

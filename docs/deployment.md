@@ -92,14 +92,14 @@ Keep one `Memory` open for a long-running process. `Memory.close()` closes suppl
 after any process fork, never before it.
 
 Review the selected model's license and retain its resolved identity when deploying; see
-[embedding choices](configuration.md#embedding-choices).
+[embedding choices](configuration/models.md#embedding-choices).
 
 For OpenAI generation slots, configure only parameters supported by the selected model and choose
 `response_format="json_schema"` when the endpoint supports strict structured output. A compatible
 server may instead require explicit `response_format="json_object"`. Configure the SDK base URL, without appending
 `/chat/completions`, and keep credentials in environment lookup or a secret manager. Pin model
 snapshots for reproducible rollout comparisons, run the
-[model quality gate](operations.md#model-quality-gate), and retain provider request IDs with local
+[model quality gate](model-quality.md), and retain provider request IDs with local
 trace IDs for production diagnosis. Local storage does not imply that inference remains local.
 
 ## EmbeddingGemma 2 model server
@@ -124,7 +124,7 @@ recipe using the exact model name. Record the server's resolved model identity a
 application configuration for rollout comparisons.
 
 Install `sensemem[openai]` in the application environment and use the
-[EmbeddingGemma 2 vLLM configuration](configuration.md#embeddinggemma-2-through-vllm), which sends
+[EmbeddingGemma 2 vLLM configuration](configuration/models.md#embeddinggemma-2-through-vllm), which sends
 requests to `http://127.0.0.1:8000/v1/embeddings`. The `EMPTY` key is a placeholder for this local
 server; configure the actual key when server authentication is enabled. Keep one SenseMem
 owner per physical data directory even when several owners share the model server.

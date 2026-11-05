@@ -131,7 +131,7 @@ Then:
    [index repair procedure](operations.md#index-maintenance-and-repair).
 
 SQLite hydration deliberately drops stale Zvec IDs. The defaults and valid ranges are in
-[local memory settings](configuration.md#local-memory-settings).
+[local memory settings](configuration/settings.md).
 
 Check `retrieval_mode` before diagnosing an embedding outage. `lexical` skips query embedding
 and dense candidates, but writes still need embeddings. An image with no text or configured
@@ -153,13 +153,13 @@ Every `Memory` needs an embedder. `ask()` also needs an answerer. With `kinds=No
 configured speech and face backends; inspect its `coverage` to distinguish skipped assets from
 completed analysis with no detections. Explicit `kinds` require the matching capability. Add the
 missing declarative slot, inject the backend, or use a configured operation. See
-[configuration](configuration.md) and [memory operations](api/python-sdk.md#memory-operations).
+[configuration](configuration.md) and [memory operations](api/python-memory.md).
 
 ### Optional dependency is missing
 
 Install the extra for the selected adapter: `local`, `openai`, `face`, `reranking`, or `gazetteer`. REST and MCP use
 the `server` and `mcp` extras. See the
-[extras table](configuration.md#install-only-the-surfaces-you-use).
+[extras table](configuration.md#1-install-only-the-surfaces-you-use).
 
 ### Modality is unsupported
 
@@ -192,7 +192,7 @@ upload limit. An upstream HTTP 413 has this reason even when the proxy returns H
 request or choose sufficient serving capacity; the adapter does not silently remove evidence
 and retry. This classification does not increase the provider's upload limit.
 Provider-specific controls and media limits are in the
-[Python adapter reference](api/python-sdk.md#bundled-adapters) and
+[Python adapter reference](api/python-adapters.md) and
 [REST input limits](api/rest.md#input-limits).
 
 ## Content is rejected or not fetched
@@ -228,8 +228,8 @@ For face or speaker recognition, read the `sensemem.identity.faces` and
 `.matched_existing`, and `.created`. Zero observations means the analyzer ran and detected none.
 Many creations with few existing matches indicate identity fragmentation; changing a similarity
 threshold cannot fix an embedding model that does not separate the deployed material. See
-[the identity thresholds](configuration.md#the-identity-thresholds-are-not-calibrated).
+[the identity thresholds](configuration/settings.md#identity-thresholds).
 
 `AsyncMemory` runs the synchronous embedded core in worker threads. Backends must be thread-safe
 and own their network concurrency and timeouts. Tune or replace the backend; do not open a second
-owner on the same directory. See [telemetry](operations.md#telemetry) for the attribute contract.
+owner on the same directory. See [telemetry](observability.md) for the attribute contract.

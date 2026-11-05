@@ -141,7 +141,7 @@ changing them. A current model alias alone is not a reproducibility guarantee.
 Keep real-service evaluation separate from the credential-free test suite. Use protected CI
 secrets or caller-owned clients, bound requests and output tokens, and report unavailable service
 checks explicitly. Retain aggregate case outcomes and safe model/request identifiers rather than
-private prompts or response bodies. See the [model quality gate](docs/operations.md#model-quality-gate)
+private prompts or response bodies. See the [model quality gate](docs/model-quality.md)
 for the small recurring regression suite and [benchmarking](docs/benchmarking.md) for dataset
 evaluation.
 

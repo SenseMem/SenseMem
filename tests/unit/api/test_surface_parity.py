@@ -691,7 +691,7 @@ def test_the_mcp_instructions_publish_the_declared_capability_view() -> None:
 
 def test_the_documented_root_import_inventory_contains_every_supported_name() -> None:
     """The reference must document every name added to the public root exports."""
-    page = (Path(sensemem.__file__).parents[2] / "docs" / "api" / "python-sdk.md").read_text(
+    page = (Path(sensemem.__file__).parents[2] / "docs" / "api" / "python-values.md").read_text(
         encoding="utf-8"
     )
     backticked = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", page))

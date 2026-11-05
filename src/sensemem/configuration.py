@@ -220,6 +220,7 @@ class OpenAIGenerationConfig(_OpenAICompletionConfig):
     min_video_seconds: _PositiveFloat | None = None
     media_policy: Literal["all", "on_demand"] = "all"
     media_max_items: Annotated[int, Field(strict=True, ge=1, le=8)] = 2
+    media_max_tokens: _PositiveInt = 8192
     offline_gazetteer: OfflineGazetteerConfig | None = None
 
 
@@ -572,6 +573,7 @@ def _build_native_generation(config: OpenAIGenerationConfig) -> GenerationBacken
         ("generation_answer_format", config.answer_format, "text"),
         ("generation_source_metadata_key", config.source_metadata_key, "source_id"),
         ("generation_answer_style", config.answer_style, "default"),
+        ("generation_media_max_tokens", config.media_max_tokens, 8192),
     ):
         if value != default:
             values[name] = value

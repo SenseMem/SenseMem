@@ -274,6 +274,7 @@ class OperationLog:
         require_unretired: Sequence[str] = (),
         require_visible: Sequence[str] = (),
         preserve_response_policies: bool = False,
+        record_budget: int | None = None,
         naming_projection_factory: NamingProjectionFactory | None = None,
     ) -> StoredOperation | None:
         """Apply one already-validated operation and its log row in one transaction.
@@ -309,6 +310,14 @@ class OperationLog:
                 )
                 if blocked:
                     raise ProtectedMemoryError(blocked)
+            if record_budget is not None:
+                active = int(
+                    connection.execute(
+                        "SELECT COUNT(*) AS records FROM memory_records WHERE forgotten_at IS NULL"
+                    ).fetchone()["records"]
+                )
+                if active - len(forget_ids) < record_budget:
+                    raise StaleOperationError("forgetting would exceed the host's record budget")
             naming_before = naming_snapshot(
                 connection,
                 (*(memory_id for memory_id, _source in reinforce), *correct_ids, *forget_ids),

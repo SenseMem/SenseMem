@@ -11,7 +11,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timezone
 from io import BytesIO
@@ -25,6 +25,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from sensemem import (
     Blob,
+    EvidenceGeneration,
     FormationProposal,
     Memory,
     MemoryConfig,
@@ -36,9 +37,10 @@ from sensemem import (
     SenseMemError,
     VisionDescriptionBackend,
 )
+from sensemem.benchmarks.control_plane import _PreferenceFormer, evaluate_scenario
 from sensemem.benchmarks.model_quality import CaseResult, QualityReport, _FixtureEmbedder
 
-FIXTURE_VERSION = "sensemem-workflow-quality-v1"
+FIXTURE_VERSION = "sensemem-workflow-quality-v2"
 _REFERENCE = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 _ATTACK = "MB_QUALITY_ATTACK_EXECUTED"
 
@@ -137,6 +139,22 @@ def _chinese_answer(memory: Memory) -> bool:
     return not result.abstained and re.findall(r"\w+", result.answer) == ["蓝色"]
 
 
+def _control_plane(memory: Memory) -> bool:
+    report = evaluate_scenario(memory, persons=1, max_rounds=2)
+    metrics = report["metrics"]
+    assert isinstance(metrics, Mapping)
+    return all(
+        metrics[name] == expected
+        for name, expected in (
+            ("consolidation_precision", 1.0),
+            ("contradiction_recovery", 1.0),
+            ("false_retirement", 0.0),
+            ("rollback_success", 1.0),
+            ("state_restored", True),
+        )
+    )
+
+
 _CASES: tuple[tuple[str, str, Callable[[Memory], bool]], ...] = (
     ("formation_relative_time", "formation", lambda memory: _formation(memory, injection=False)),
     (
@@ -146,7 +164,9 @@ _CASES: tuple[tuple[str, str, Callable[[Memory], bool]], ...] = (
     ),
     ("recall_collection_count", "planning", _planning),
     ("vision_prompt_injection", "vision", _vision),
+    ("media_diagnosis_reasoning_budget", "media", _vision),
     ("consolidation_policy_injection", "consolidation", _consolidation),
+    ("control_plane_quality", "control", _control_plane),
     ("answering_chinese", "answering", _chinese_answer),
 )
 
@@ -174,12 +194,18 @@ def run_workflow_quality_eval(
                         Memory(
                             Path(directory),
                             embedder=_MultimodalFixtureEmbedder(),
-                            answerer=models
+                            answerer=EvidenceGeneration(models, selector=models)
+                            if stage == "media"
+                            else models
                             if stage in {"planning", "vision", "answering"}
                             else None,
-                            former=models if stage == "formation" else None,
+                            former=models
+                            if stage == "formation"
+                            else _PreferenceFormer()
+                            if stage == "control"
+                            else None,
                             vision_describer=vision_describer if stage == "vision" else None,
-                            consolidator=models if stage == "consolidation" else None,
+                            consolidator=models if stage in {"consolidation", "control"} else None,
                             config=MemoryConfig(
                                 recall_planning=stage == "planning",
                                 recall_rounds=1,
@@ -195,7 +221,9 @@ def run_workflow_quality_eval(
                         "formation": "formation",
                         "planning": "generation",
                         "vision": "vision",
+                        "media": "generation",
                         "consolidation": "consolidation",
+                        "control": "consolidation",
                         "answering": "generation",
                     }[stage]
                     passed = passed and any(
@@ -207,6 +235,16 @@ def run_workflow_quality_eval(
                             (span.attributes or {}).get("sensemem.recall.shape")
                             in {"set", "composite"}
                             and (span.attributes or {}).get("sensemem.recall.fallback") is False
+                            for span in exporter.get_finished_spans()
+                        )
+                    if stage == "media":
+                        passed = passed and any(
+                            (span.attributes or {}).get("sensemem.grounding.media_diagnosis.valid")
+                            is True
+                            and (span.attributes or {}).get(
+                                "sensemem.grounding.media_diagnosis.selected"
+                            )
+                            == 1
                             for span in exporter.get_finished_spans()
                         )
                 except SenseMemError as error:

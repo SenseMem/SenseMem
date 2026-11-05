@@ -28,7 +28,7 @@ Changes for version `0.3.0`.
   `consolidate_pending` return `ConsolidationReport`. See the [SDK reference](docs/api/python-sdk.md).
 - Default OpenAI completion slots to strict JSON Schema and `store=False`. JSON-only servers
   must explicitly select `json_object`. Changed model/recipe identities can require source replay;
-  see [provider configuration](docs/configuration.md#provider-fields).
+  see [provider configuration](docs/configuration/providers.md).
 
 ### Added
 

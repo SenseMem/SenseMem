@@ -7,6 +7,7 @@ on:
       - '!src/sensemem/benchmarks/**'
       - 'src/sensemem/benchmarks/model_quality.py'
       - 'src/sensemem/benchmarks/workflow_quality.py'
+      - 'src/sensemem/benchmarks/control_plane.py'
       - 'tests/integration/**'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -84,7 +85,7 @@ jobs:
           --repeats "$QUALITY_REPEATS"
           --output model-quality.json
 
-      - name: Evaluate formation, planning, vision, and policy boundaries
+      - name: Evaluate formation, planning, vision, and control-plane quality
         if: success() || steps.reader.outcome == 'failure'
         run: >-
           uv run --no-sync --frozen python -m sensemem.benchmarks.workflow_quality

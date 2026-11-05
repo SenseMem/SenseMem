@@ -58,7 +58,7 @@ retrieval remain available; consent is not an access-control filter.
 
 Exports can include recordings shared by several people. The host must review what it discloses;
 the SDK does not redact other people from original evidence or implement a complete consent or
-legal-rights workflow. See [data-subject operations](api/python-sdk.md#data-subject-rights).
+legal-rights workflow. See [data-subject operations](api/python-identity.md#data-subject-rights).
 
 ## Time scale is not memory type
 
@@ -103,7 +103,7 @@ starts no timer.
 Model proposals can reinforce evidence, consolidate, correct, cognitively forget, or propose an
 evidence-backed name. Targets and sources must remain eligible at commit. The kernel refuses
 unauthorized, stale, or inconsistent proposals. Physical deletion and consent remain host
-operations. See the [memory management contract](api/python-sdk.md#memory-management-operations).
+operations. See the [memory management contract](api/python-control.md).
 
 ## Forgetting is three operations
 
@@ -155,7 +155,7 @@ run `consolidate_pending()` in its lifespan. That timer does not settle captured
 High-rate sensor input stays on the embedded SDK boundary.
 
 All interfaces share one owner per physical directory. [Product capabilities](product-capabilities.md#python-rest-mcp-and-cli-surfaces)
-maps the operations, and [configuration](configuration.md#running-the-loop-inside-a-server-process)
+maps the operations, and [configuration](configuration/lifecycle.md#running-the-loop-inside-a-server-process)
 describes server scheduling.
 
 ## Product measurements

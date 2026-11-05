@@ -91,6 +91,13 @@ class _ScriptedConsolidator:
                 MemoryOperation(
                     intent=MemoryIntent.CORRECT,
                     target_ids=(stale,),
+                    evidence_ids=tuple(
+                        record.id
+                        for record in evidence
+                        if record.id != stale
+                        and record.context is not None
+                        and record.context.kind is MemoryKind.TRAIT
+                    ),
                     rationale="the newer claim is the one in force",
                 )
                 for stale in _disagreeing_claims(evidence, newest=self.wrong_side)
@@ -216,8 +223,9 @@ def test_a_loop_that_merges_exactly_the_injected_duplicates_scores_one(tmp_path:
     assert result["outcomes"] == {"confirmed": 6, "refuted": 0}
 
 
-def test_forgetting_a_gold_record_is_scored_as_a_false_retirement(tmp_path: Path) -> None:
-    """Nine retired records, three of them gold: the arithmetic that must not be rounded away."""
+def test_unbudgeted_gold_forgetting_is_rejected_before_it_can_change_quality(
+    tmp_path: Path,
+) -> None:
     consolidator = _ScriptedConsolidator(forget_gold=True)
 
     result = control_plane.run_benchmark(
@@ -231,9 +239,9 @@ def test_forgetting_a_gold_record_is_scored_as_a_false_retirement(tmp_path: Path
     metrics = result["metrics"]
     assert isinstance(metrics, dict)
     assert metrics["consolidation_precision"] == pytest.approx(1.0)
-    assert metrics["retired_records"] == 9
-    assert metrics["false_retirement"] == pytest.approx(1 / 3)
-    assert result["outcomes"] == {"confirmed": 6, "refuted": 3}
+    assert metrics["retired_records"] == 6
+    assert metrics["false_retirement"] == pytest.approx(0)
+    assert result["outcomes"] == {"confirmed": 6, "refuted": 0}
 
 
 def test_correcting_the_claim_in_force_is_refuted_and_recovers_nothing(tmp_path: Path) -> None:

@@ -36,7 +36,7 @@ to text; source-labelled captions and transcripts can also provide a text route.
 There is no bundled prosody, facial-expression, or acoustic-affect recognizer. Declaring audio or
 visual support on the formation slot only controls which inputs reach the model; it does not
 establish affect-recognition quality. A custom adapter can use the existing formation contract.
-See [formation configuration](configuration.md#automatic-memory-formation).
+See [formation configuration](configuration/lifecycle.md#automatic-memory-formation).
 
 Keep one estimate per cue channel when the channels disagree. The kernel excludes `AFFECT` from
 functional conflict reconciliation, so two simultaneous cues remain separate records. Use an
@@ -59,7 +59,7 @@ assessment; listing more source IDs does not create independent corroboration.
 
 Evidence changes recompute confidence and visibility. `get()` and `list()` can still expose a
 hidden trait with `context.visible=False`; ordinary retrieval excludes it. The
-[support rules](memory-types-time-and-decay.md#typed-context-and-formation) define clause withdrawal
+[support rules](typed-memory.md) define clause withdrawal
 and the optional independent-evidence projection.
 
 ## Compiled context

@@ -2,9 +2,11 @@
 
 import json
 import re
+from collections.abc import Mapping
 
 from sensemem.models._answer_output import parse_answer_draft
-from sensemem.models.openai_sdk import _STRUCTURED_ANSWER_PROMPT
+from sensemem.models._openai_schemas import response_schema
+from sensemem.models.openai_sdk import _CONSOLIDATION_SYSTEM_PROMPT, _STRUCTURED_ANSWER_PROMPT
 
 
 def test_all_structured_answer_examples_are_complete_valid_envelopes() -> None:
@@ -24,3 +26,17 @@ def test_all_structured_answer_examples_are_complete_valid_envelopes() -> None:
         "calculation",
         "calculation",
     ]
+
+
+def test_consolidation_example_obeys_the_required_schema_and_cites_counterevidence() -> None:
+    start = _CONSOLIDATION_SYSTEM_PROMPT.index('{"operations":[{"intent":"correct"')
+    example, _length = json.JSONDecoder().raw_decode(_CONSOLIDATION_SYSTEM_PROMPT[start:])
+    operation = example["operations"][0]
+    properties = response_schema("consolidation")["properties"]
+    assert isinstance(properties, Mapping)
+    schema = properties["operations"]["items"]
+    assert set(operation) == set(schema["required"])
+    assert operation["evidence"] == [2]
+    assert operation["targets"] == [0]
+    assert operation["proposal"] is None and operation["claim"] is None
+    assert "Omit a key rather than sending it empty" not in _CONSOLIDATION_SYSTEM_PROMPT

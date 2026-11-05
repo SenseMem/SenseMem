@@ -1,40 +1,22 @@
 # Memory types, time, and decay
 
-Jump to [memory types](#memory-types), [event time](#event-time-and-strict-filters),
-[typed context](#typed-context-and-formation), [historical reads](#valid-time-and-transaction-time),
-[spatial scope](#spatial-scope), [memory management](#memory-management-loop),
-or [decay and reinforcement](#decay-and-reinforcement).
+Choose a memory role, attach time when it is known, and use explicit filters when records must
+be excluded. Decay and reinforcement adjust ranking. [Typed memory](typed-memory.md) explains
+derived assertions and evidence; [memory management](memory-management.md) covers deliberate changes.
 
-This page owns memory-role, event-time, typed-assertion, retrieval-scope, and ranking semantics.
-SenseMem stores semantic, episodic, and procedural roles on the same durable record, and an
-optional typed context refines that record into observations, entities, events, state, relations,
-affect, traits, and response policies carrying source evidence, confidence, and their own validity
-and transaction time. Every control below uses the ordinary SQLite record and Zvec projection path;
-none creates another store or isolation scope.
+## Choose a memory type
 
-| Control | Behavior |
+| Type | Use for |
 | --- | --- |
-| `memory_type` | Hard exact-role filter when supplied |
-| `occurred_from` / `occurred_until` | Hard event-overlap filter |
-| `RetrievalScope` | Hard valid-time, known-time, identity, symbolic-place, and same-frame metric filters |
-| Temporal phrases in query text | Soft event-time ranking signal relative to `reference_at` |
-| Reinforcement and decay | Soft ranking signals; content is never rewritten or deleted |
+| `MemoryType.SEMANTIC` | Facts and stable knowledge; the default |
+| `MemoryType.EPISODIC` | Events and observations, usually with event time |
+| `MemoryType.PROCEDURAL` | Instructions and routines, returned as evidence and never executed |
 
-## Memory types
+The caller chooses the role. Optional formation adds separate typed records rather than rewriting
+the source role. Memory type participates in stable identity, so identical content with different
+types has different IDs.
 
-| Type | Intended content | Kernel behavior |
-| --- | --- | --- |
-| `MemoryType.SEMANTIC` | Facts and stable application knowledge | Default type |
-| `MemoryType.EPISODIC` | Events and observations | Usually paired with event time |
-| `MemoryType.PROCEDURAL` | Instructions and reusable routines | Returned as evidence, never executed |
-
-The caller classifies ordinary content. SenseMem does not extract facts, segment episodes, or
-promote one type into another unless an explicit `FormationBackend` is configured, and even then
-formation proposes a separate typed record rather than rewriting the caller's role. Memory type is
-part of stable identity, so otherwise identical semantic, episodic, and procedural records have
-different IDs. `search()` and `ask()` accept an optional exact type filter.
-
-Every snippet on this page assumes an open `memory`:
+The snippets below assume an open `memory`:
 
 ```python
 from datetime import datetime, timezone
@@ -50,7 +32,6 @@ memory.add(
     "Refresh the token, retry once, then escalate.",
     memory_type=MemoryType.PROCEDURAL,
 )
-
 episodes = memory.search(
     "What failed last week?",
     memory_type=MemoryType.EPISODIC,
@@ -58,371 +39,78 @@ episodes = memory.search(
 ).hits
 ```
 
-Use types to keep cognitive roles distinct, not to enforce access control. Metadata and types are
-application data; separate security domains require separate data directories.
+Types and metadata provide no access control. Independent security domains need separate directories.
 
-## Event time and strict filters
+## Choose a time control
 
-`occurred_at` is an event start. `occurred_end` is an optional exclusive end; it requires a start
-and must be later. Both values must be timezone-aware. `created_at` is storage time and is not used
-as a substitute when event time is absent.
+| Control | Meaning |
+| --- | --- |
+| `occurred_at` / `occurred_end` | When a captured event happened |
+| `occurred_from` / `occurred_until` | Strict search overlap with event time |
+| Temporal words in the query | Soft ranking preference relative to `reference_at` |
+| `valid_at` | When a typed assertion was true in the represented world |
+| `known_at` | Which assertion and evidence versions SenseMem knew then |
+| Decay and reinforcement | Soft ranking signals; no content deletion |
 
-`search(..., occurred_from=..., occurred_until=...)` applies a hard half-open overlap filter. Either
-bound may be omitted. Supplying any bound excludes records without event time. An interval ending
-at `occurred_from`, or starting at `occurred_until`, does not match; an instant matches when its
-timestamp falls inside the requested range, and is treated internally as a one-microsecond
-interval.
+### Event time and strict filters
 
-**Contract:** SenseMem pushes the filter into Zvec for candidate selection and rechecks it after
-SQLite hydration, because SQLite is authoritative. Use these explicit bounds whenever records
-outside the interval must be excluded.
+Event times must be timezone-aware. `occurred_end` requires a start and is exclusive and later.
+`created_at` is storage time and does not substitute for missing event time.
 
-## Temporal phrases
+`search(occurred_from=..., occurred_until=...)` applies half-open event-overlap filters. Either
+bound may be omitted; two bounds require an increasing interval. Any bound excludes records without
+event time. An event ending at the lower bound or starting at the upper bound does not match.
+Instants are treated as one-microsecond intervals. Zvec filters candidates and SQLite rechecks them.
 
-Temporal phrases in query text influence ranking; they do not replace explicit event filters. The
-bounded parser recognizes:
+### Temporal phrases
 
-- ISO dates and date ranges;
-- English month-years, Chinese year-months, and calendar years from 1900 through 2199;
-- today, yesterday, tomorrow, and the adjacent two-day phrases in English and Chinese;
-- last, this, next, and rolling weeks; last, this, and next months or years;
-- `N days ago`, and rolling spans ending at the clock -- past, recent, previous, or last `N`
-  days, weeks, months, or years, with `N` as a digit or a number word (one through twelve), in
-  English and Chinese, plus the bare `past week`, `past month`, and `past year`. The count is
-  otherwise required, so `recent years` and `my recent day trips` carry no window. A rolling
-  month or year is a calendar shift with the day clamped, not a day count.
+Natural-language dates boost in-range records while retaining relevant global candidates,
+including those with missing event times. Use explicit bounds for strict exclusion.
 
-`reference_at` supplies the timezone-aware clock for relative phrases. Without it, the current UTC
-time is used. When no explicit reference is passed, `Today is <date>` may anchor the query, with
-the date written as ISO, `Month D, YYYY`, `Month, D YYYY`, `D Month YYYY`, or `the Dth of Month
-YYYY`. `ask()`
-appends the resolved reference to the generation input of every question the answerer reads as
-text, whether or not the parser recognized a phrase in it: "how long ago did grandpa visit" narrows
-no retrieval window yet still needs the answering clock. It is appended after routing, so a spoken
-question carries it once transcription has given it text; a question routed with no text at all is
-handed over unchanged.
+The parser recognizes ISO dates/ranges; English month-years, Chinese year-months, years 1900–2199;
+today/yesterday/tomorrow and adjacent two-day phrases; last/this/next weeks, months, and years;
+and rolling `N`-day/week/month/year spans in English and Chinese. `N` can be a digit or English
+one–twelve. Bare past week/month/year works; vague phrases such as recent years do not.
+Rolling months/years use calendar shifts with the day clamped.
 
-For a detected range, retrieval considers both in-range and global candidates. In-range events are
-boosted; events outside the range and records without event time keep the score their relevance
-earned and are neither downranked nor gated out. The signal is deliberately additive, because event
-boundaries may be noisy and a relevant memory that happened at the wrong time is still the answer
-more often than a well-timed irrelevant one.
+Pass a timezone-aware `reference_at` for reproducibility. Without it, an explicit `Today is <date>`
+can anchor the query; supported forms are ISO, Month D YYYY, Month, D YYYY, D Month YYYY, and
+the Dth of Month YYYY. Otherwise the current UTC time is used.
 
-**Guidance:** Use temporal language for natural recall where event boundaries may be noisy. Use
-`occurred_from` and `occurred_until` for strict exclusion.
-
-## Typed context and formation
-
-`ObservationContext` is caller input. It attaches provenance, confidence, optional world validity,
-and optional metric pose or symbolic `place_id` to a source observation:
-
-```python
-from sensemem import EvidenceBasis, ObservationContext
-
-source = memory.add(
-    "The mug is on the kitchen table.",
-    context=ObservationContext(
-        basis=EvidenceBasis.OBSERVATION,
-        source_id="camera-1:frame-42",
-        confidence=0.94,
-    ),
-)
-```
-
-The returned record exposes the persisted `MemoryContext` and keeps a symbolic place separately as
-`MemoryRecord.place_id`. A source context has `MemoryKind.OBSERVATION`. An optional former may
-propose the first six derived kinds below. `RESPONSE_POLICY` is host-authorized through `apply()`:
-
-| Derived kind | Memory type | Meaning |
-| --- | --- | --- |
-| `ENTITY` | Semantic | A referenced person, object, or concept |
-| `EVENT` | Episodic | A formed event assertion |
-| `STATE` | Semantic | A value that can change over valid time |
-| `RELATION` | Semantic | A typed relation between subjects |
-| `AFFECT` | Episodic | A situated affect cue |
-| `TRAIT` | Semantic | A longer-horizon characteristic |
-| `RESPONSE_POLICY` | Procedural | Feedback-grounded response guidance |
-
-The source commits before any typed proposal is formed, so a formation model error leaves the
-observation durable and the formation retryable. The former only proposes; the kernel validates
-source modality and spatial binding, assigns IDs, links evidence, versions conflicting state, and
-commits derived records. Affect and trait proposals have additional rules, alongside the general
-support-clause requirement:
-
-- `MemoryKind.AFFECT` records a situated cue together with the source modality it came from, so a
-  model cannot claim an audio cue for a source that has no audio.
-- `MemoryKind.TRAIT` stays hidden from active retrieval until two independent sources support the
-  same typed claim, combining their independent confidence with a noisy-OR projection. A trusted
-  `EvidenceBasis.USER_STATEMENT` trait is visible immediately. Independence is counted per capture:
-  a raw observation resolves to the `source_id` its `ObservationContext` carried, falling back to
-  the observation record itself when the caller supplied none, and a derived record inherits the
-  groups of its own sources. So two observations of one capture — a text and an audio one, say —
-  and every cue formed from them count as one source and can never corroborate each other into a
-  visible trait. Changing a record's own evidence re-resolves the group on everything that cites
-  it, so reinforcing a source, rolling that back, or deleting one recomputes the whole citation
-  chain in the same transaction.
-- Support is counted in assessments, not in cited observations. A formation proposal or a
-  `CONSOLIDATE` that cites several observations stores them as one conjunction: one model call
-  read them together and inferred the claim once, so it cannot corroborate itself, and withdrawing
-  any one cited observation withdraws that whole assessment. Independent support is a separate
-  operation — another formation, a `REINFORCE`, or a `CONSOLIDATE` citing different evidence —
-  and those alternatives survive one another's withdrawal. A derived record of any kind other
-  than `OBSERVATION` whose basis is not a host assertion (`USER_STATEMENT`, `RESPONSE_FEEDBACK`)
-  is visible only while it has at least one active evidence clause. `add()` accepts only an
-  `ObservationContext`, so no public surface can write a derived record without evidence.
-
-A custom `FormationBackend` may set `FormationProposal.evidence_ids` to the ordered IDs of every
-observation in the current `FormationInput` batch that the proposal jointly depends on. The
-primary input's ID must be present; empty, duplicate, foreign, and out-of-batch IDs reject the
-formation response before any derived record commits. `None` uses the primary input as the sole
-evidence member. These IDs declare dependencies, not independent corroboration or a semantic proof that the
-model cited every fact it used.
-
-One explicit tuple is one conjunctive support clause: `{A, B}` means the derived record depends on
-both observations. Several separately emitted clauses are alternatives, so `{A, B}` and `{C}` mean
-`support(claim) = (A AND B) OR C`. Deleting either member retires the whole first clause; it never
-turns into the unsupported singleton `{B}` or `{A}`. `MemoryContext.evidence_ids` is the ordered union of
-members from complete active clauses. An explicit automatic
-`FormationProposal.evidence_ids` tuple creates a conjunction. Each new `CONSOLIDATE` operation also
-treats its complete cited `evidence_ids` set as one conjunction; separate operations can add
-alternative clauses for the same stable derived record. A former that leaves its field as `None`
-creates a singleton clause over its primary input. General `MemoryContext.evidence_ids` and
-`REINFORCE` declare independent singleton alternatives. A joint proposal contributes one confidence assessment, while singleton alternatives
-retain capture-group maximum and noisy-OR combination; current confidence is the greater of those
-projections. These declarations are dependencies, not proof that model prose cited every fact it
-used.
-
-The context compiler conservatively includes the union of the surviving complete clauses; it does
-not solve for a smallest witness set. Clauses record logical dependency, not calibrated truth
-probabilities. The compiler's cycle guard remains conservative:
-it may refuse a cyclic evidence union even when another clause grounds the record independently.
-
-SQLite stores current clauses, their ordered members, and append-only clause versions.
-Retirement, reactivation, confidence changes, and operation rollback each close or append an
-interval at their actual transaction time. Historical `known_at` reads therefore retain periods
-when a clause was active or inactive. An inverse version points to the exact predecessor it
-restored, so newest-first rollback can continue without treating an unrelated equal-valued update
-as ownership. Rollback preserves unrelated alternatives and never shrinks a joint clause. These
-dependency records preserve the existing delete and retirement behavior; they add no new
-physical-erasure guarantee and cannot recover records removed by `delete`.
-
-Deleting evidence traverses only that source's reverse-dependency region and evaluates the region
-to a grounded fixed point; it does not scan or reinterpret unrelated records. Observations and host
-assertions are roots in the clause graph. A
-derived record remains only when at least one complete clause is grounded. Unsupported mutual
-cycles cannot keep each other alive, while a cycle reached from an independent observation can
-survive.
-
-The kernel drops individually ungrounded proposals, such as an absent cue modality or an
-incompatible spatial frame, and reports `sensemem.formation.refused_proposals`. Other valid
-proposals and the committed observation remain. Conflicting proposals within one source are
-refused individually; the first accepted proposal stands. Refusals complete that source's
-formation recipe and are not automatically retried.
-
-Invalid batch structure or evidence declarations can fail the call. Model, embedding, and
-commit failures also retain their documented errors; a committed source can remain pending for
-settlement. [Formation configuration](configuration.md#automatic-memory-formation) describes
-validation and retry behavior.
-
-Formation never rewrites the caller's source record. A derived record inherits its primary source's
-event time, valid interval, metric pose, symbolic `place_id`, and `metadata`, so place-scoped recall
-reaches formed knowledge as well as its raw source. Extra declared witnesses do not merge
-identity, time, pose, place, or metadata. An
-`ENTITY`, `RELATION`, inferred `TRAIT`, or `RESPONSE_POLICY` written separately from several
-primary sources is one shared record; when those primary sources disagree, the shared record keeps
-neither place nor metadata rather than guessing a hard retrieval filter. Both columns follow the
-live evidence rather than the moment the record was written: deleting a source or rolling an
-operation back recomputes them over the sources that remain, so a record the survivors agree on is
-scoped again. A derived record carries no media assets of its own: it is text, and its evidence link
-points at the observation that holds the media.
-
-### Naming a person is a typed assertion
-
-`register_identity` writes an `ENTITY` assertion whose
-`MemoryContext.identity_id` binds it to the recognized person, whose `subject` is the name, and
-whose `value` is the recorded relationship. Its basis is `USER_STATEMENT`, so it is visible at
-once, and it needs no former: naming rests on the host's authority, not on a model. It inherits
-neither place nor metadata from the evidence an agent cites for it, whoever asserts it: who
-somebody is does not stop being true in another room.
-
-Every naming assertion about one identity shares a lineage keyed on that identity rather than on
-the spelling of the name, so renaming the person supersedes the previous assertion, exactly as a
-new `STATE` supersedes the one it overlaps. The retracted name stops reaching active retrieval;
-the retired version stays in the log.
-
-`identities.name` and `identities.relationship` are a projection of the current visible naming
-assertion, recomputed the way evidence recomputes confidence and visibility. Every recompute
-rewrites the indexed transcript text in the same commit, so what search matches and what
-`identity()` reports are always the same assertion.
-
-Naming is logged like any other control-plane operation with `MemoryTrigger.MANUAL`, so
-`operations()` shows it and `rollback(operation_id)` retracts the assertion, restores the one it
-superseded, and repaints both the projection and the index. Registering a name that already
-stands changes nothing and logs nothing.
-
-The consequence is deliberate and visible: naming a person creates a searchable memory record, and
-it appears in `list()` and `search()` results. That is what makes a name retrievable knowledge
-rather than a label on a registry row.
-
-**Guidance:** Keep raw observations even when an interpretation changes. Correct typed state with
-new evidence or remove the incorrect derived record; do not present a derived rewrite as the
-original observation.
-
-## Experimental independent evidence
-
-`MemoryConfig.independent_evidence=True` selects a different consolidation support algorithm.
-It is off by default and does not change an answer prompt, retrieval budget, model, or source
-observation. Configure it through `Memory(..., config=MemoryConfig(independent_evidence=True))`,
-`AsyncMemory.from_plugins(..., config=MemoryConfig(independent_evidence=True))`, or
-`settings.independent_evidence` in declarative configuration.
-
-The default projection above combines singleton capture groups and takes the maximum joint
-assessment. The experimental projection preserves each clause's AND witnesses and each memory's
-OR alternatives. It traces complete proofs to original capture groups, including intermediate
-derived records in each proof. Two assessments can corroborate only when their proofs share
-neither a capture nor an intermediate summary. Two alternative proofs of the same assessment
-still count once. An explicit `ObservationContext.source_id` names a capture group; omitting it
-uses that observation's record ID. Assigning different IDs to duplicate real events can still
-mislead the policy: capture-disjoint does not establish statistical independence.
-
-Support count saturates at two, the existing inferred-trait and inferred-name visibility
-threshold. A proof's confidence is the minimum along its assessment and observation path. The
-reported confidence is the maximum over one proof or the noisy-OR combination of an eligible
-pair. Count and confidence are separate maxima and may have different witnesses; this is a
-policy score, not a calibrated posterior. Additional independent assessments beyond two do not
-automatically raise the score. A derived record carrying a user-statement basis still retains
-its actual evidence ancestry for this computation and for withdrawal.
-
-Each projection loads at most 256 records including the target and 4,096 accepted clause-member rows
-(a query may read one extra sentinel row to detect truncation). Proof calculation retains up to
-64 proofs per node and spends at most 4,096 clause, join, and pair steps. Partial AND clauses
-and missing/cyclic-only proof paths cannot contribute. Reaching a bound logs a warning and uses
-only complete retained proofs, a conservative lower bound that can miss corroboration. Adding
-evidence can change the retained subset at these bounds; monotonicity is not promised there.
-These are bounds per projected memory, not a constant-time bound on a whole dependent closure.
-
-Changes to evidence reproject the dependent closure in the same SQLite transaction, including
-cases where the scalar capture-group label did not change. Source deletion and operation
-rollback continue to withdraw whole conjunctions and preserve independent alternatives. The
-compiled context consumes the resulting visibility and confidence through its existing evidence
-and budget checks. Proof evaluation makes no model request. Formation, apply, and rollback
-re-embed speech for changed identity names inside their SQLite transaction; embedding failure
-rolls back the change. This holds that transaction open during embedding. Deletion prepares one
-batch from its exact rollback-only preview before committing the deletion and text replacement.
-No new storage service is introduced.
-
-The `evidence.projection_recipe` store metadata pins `complete-v1` or `independent-v1`. Changing the
-setting when reopening raises `StorageError`. A nonempty store without the marker is rejected.
-Enabling the experiment requires a fresh directory and replaying the original observations and
-operations. Opening a store never rewrites historical versions or changes its evidence policy.
-
-Structural SDK tests with fixed proposals do not establish real multimodal perception or
-natural-interaction quality.
+`ask()` appends the resolved clock after routing whenever the reader receives text, including
+transcribed speech. A duration question can therefore use the clock even if the retrieval parser
+found no temporal phrase. Inputs routed without text remain unchanged.
 
 ## Valid time and transaction time
 
-Raw occurrence and typed assertion time answer different questions:
-
-| Field | Question answered |
-| --- | --- |
-| `occurred_at` / `occurred_end` | When the captured episode happened |
-| `MemoryContext.valid_from` / `valid_until` | When the assertion is true in the represented world |
-| `MemoryContext.recorded_at` / `retired_at` | When SenseMem knew that assertion version |
-
-Both validity columns and both transaction columns are stored on every typed version, so this is
-full bitemporal invalidation rather than a single timestamp. A formation backend is not required to
-reach them: `add(..., context=ObservationContext(valid_from=..., valid_until=...))` writes the same
-validity axis directly, and correcting an assertion later sets `retired_at` on the version it
-replaces instead of rewriting it.
-
-`RetrievalScope(valid_at=..., known_at=...)` combines the last two axes. `valid_at` selects an
-assertion whose half-open world interval contains that instant; `known_at` selects the transaction
-version active then. Supplying either excludes records without the corresponding typed semantic
-version, and excludes raw records created after `known_at`. Evidence links carry the same
-recorded/retired bounds, so a historical result never exposes support added later. Each evidence
-change and its semantic projection share one monotonically allocated transaction instant even when
-the device wall clock repeats.
+Typed versions store `valid_from`/`valid_until` for world validity and
+`recorded_at`/`retired_at` for knowledge history. Raw occurrence remains a separate axis.
+A caller can set validity directly with `ObservationContext`; no formation backend is required.
 
 ```python
+from datetime import datetime, timezone
+
 from sensemem import RetrievalScope
 
-what_we_believed_then = memory.search(
+hits = memory.search(
     "What drink did Alex prefer?",
-    scope=RetrievalScope(valid_at=event_time, known_at=audit_time),
+    scope=RetrievalScope(
+        valid_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+        known_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+    ),
 ).hits
 ```
 
-Overlapping state assertions share a deterministic lineage keyed by kind, normalized subject,
-predicate, and spatial frame/anchor. A later `STATE` assertion retires an overlapping standing
-version only when its evidence is at least as strong. Compare the **derived proposal's** basis
-first: `USER_STATEMENT` and `RESPONSE_FEEDBACK` are explicit assertions and take precedence over
-`MODEL_INFERENCE`. Within the same authority tier, the new confidence must be at least the
-standing version's current evidence confidence. Confidence is an operational support score,
-not a calibrated probability; a higher-authority assertion can replace an inference even with a
-lower score. Raw user-statement observations do not promote a model-inferred proposal's basis.
+Both scopes select half-open intervals. Records without the corresponding semantic version are
+excluded; records created after `known_at` are excluded too. Evidence versions use the same
+transaction bounds, preventing later support from appearing in historical answers. Transactions
+remain ordered even when the device clock repeats.
 
-An insufficiently supported alternative is retained with its own evidence and confidence,
-beside the stronger state, as an unresolved conflict. For example, a `0.1` inferred coffee
-preference cannot retire a `0.99` inferred tea preference. `search()` still reaches tea for
-the overlapping interval. `compile()` preserves its existing conservative conflict handling:
-if `ContextBudget.min_confidence` excludes a known competing value, it reports unavailable
-competing evidence instead of asserting the other value alone. Resolve a wrong assertion with
-an explicit `CORRECT` and replacement rather than lowering query thresholds to conceal it.
-
-Accepted supersession splits unaffected before/after validity segments into carry-forward
-versions, supporting bounded backfill and A to B to A evolution. Independent assertions within
-one SQLite write batch remain conflicting, without a winner chosen by insertion order. Equal
-wall-clock timestamps in separate transactions are still ordered; equal-strength later
-assertions retain that ordering. Deleting evidence replays with the same authority comparison
-and the surviving evidence confidence, including transitive evidence changes. Explicitly
-corrected assertions stay withdrawn unless deliberately reasserted or the correction is rolled
-back. With independent evidence enabled, a pending STATE assessment is grounded against its
-source proofs before it can retire another state. Reinforcement updates support, without itself
-asserting a new valid-time interval or revision order.
-
-### Spatial scope
-
-Spatial scope uses the same value:
-
-```python
-from sensemem import RetrievalScope, SpatialAnchor, SpatialContext
-
-scope = RetrievalScope(
-    valid_at=event_time,
-    known_at=audit_time,
-    near=SpatialContext(
-        frame_id="home/map",
-        anchor=SpatialAnchor.SUBJECT,
-        x=2.0,
-        y=1.0,
-    ),
-    radius_m=0.75,
-)
-hits = memory.search("Where was the red toolbox?", scope=scope).hits
-```
-
-`near` and `radius_m` must be supplied together. Spatial search compares only matching coordinate
-frames and anchors; position uncertainty expands the conservative intersection test. SenseMem
-does not infer coordinate transforms.
-
-`ObservationContext(place_id="kitchen")` stores a trimmed symbolic label when metric localization is
-not available. `RetrievalScope(place_id="kitchen")` applies indexed equality in SQLite and excludes
-unlabelled records. Derived records inherit the label their evidence agrees on, so the scope
-reaches formed entities, states, and relations as well as observations. Symbolic and metric scopes
-are independent and both must match when combined.
-
-`get` and `list` expose the latest typed context even when it is retired or hidden, while default
-search uses only active visible versions. Forgetting is evidence-aware: deleting evidence
-recalculates derived confidence and visibility, and removing the last evidence removes the
-unsupported derived record. Removing a superseding source, or deleting a derived assertion, rebuilds
-current validity segments from the remaining supported assertions. Source records are deleted only
-by an explicit caller action.
+Default search returns active visible versions. `get` and `list` retain the latest context,
+including hidden or retired state. See [state replacement](typed-memory.md#state-replacement)
+for conflicting values, authority, and supersession.
 
 ### Expiring a memory without deleting it
-
-Because default retrieval considers only active validity, an explicit `valid_until` is a soft
-forget. Give the observation a validity interval that ends, and after that instant the record stops
-appearing in default `search` and `ask` while `get` and `list` still return it and its context:
 
 ```python
 from datetime import datetime, timedelta, timezone
@@ -430,184 +118,41 @@ from datetime import datetime, timedelta, timezone
 from sensemem import ObservationContext
 
 now = datetime.now(timezone.utc)
-expiring = memory.add(
+memory.add(
     "The guest wifi password is swordfish.",
     context=ObservationContext(valid_from=now, valid_until=now + timedelta(days=1)),
 )
 ```
 
-`valid_until` requires `valid_from`; supplying an end alone raises `ValidationError`, because a
-world interval with no beginning cannot be placed on the validity axis. The end is exclusive and
-must be later than the start.
+`valid_until` requires a beginning and must be later; its end is exclusive. After expiry,
+default search/ask omit the record, while get/list and an in-window `valid_at` still reach it.
+Content, assets, and embeddings remain stored. Use physical deletion for removal.
 
-This is the right tool when a fact was true and stopped being true — a temporary access code, a
-guest who has left, a plan that has been superseded. It is not a privacy control: the content,
-assets, embedding, and typed context all remain on disk and remain readable, and a
-`RetrievalScope(valid_at=...)` inside the expired window still retrieves the record, which is the
-point of keeping it. Use `delete` to remove the live record; storage remnants and backups require separate erasure policy.
+## Spatial scope
 
-## Memory management loop
+`ObservationContext(place_id="kitchen")` records a trimmed symbolic place.
+`RetrievalScope(place_id="kitchen")` requires indexed equality and excludes unlabelled records.
+Derived records follow the place agreed on by their live supporting sources.
 
-Formation reads one committed observation. The memory management loop reads a bounded set of
-records that already exist and proposes what should change about them. A `consolidator` supplies the proposals:
-
-```python
-from sensemem import MemoryTrigger
-
-report = memory.consolidate(query="what do we know about Ana?", trigger=MemoryTrigger.MANUAL)
-for record in report.operations:
-    print(record.operation_id, record.operation.intent, record.changed_ids)
-for operation, reason in report.rejected:
-    print(operation.intent, "refused:", reason)
-```
-
-The evidence set comes from explicit `evidence_ids`, else the active search result for `query`,
-else the newest `limit` active records. Forgotten and hidden records never reach the backend, and
-the backend may cite only IDs it was shown. Its `target_ids` are bounded too: they must fall
-inside the window the kernel gathered, which is the shown set plus whatever the host named in
-`evidence_ids`. That extra allowance is how a hidden derived record — the reason `REINFORCE` and
-`CORRECT` exist — stays reachable, without letting a backend act on records nobody put in front
-of it.
-
-Named targets and cited evidence are what the window bounds. Lineage supersession is not a
-backend choice at all: a new `STATE` retires overlapping versions its evidence is strong enough
-to replace, and a user-stated `TRAIT` retires every overlapping version in its lineage, by the
-kernel's own deterministic rule, including records the backend never saw. Those versions are
-recorded on the log row as
-`MemoryOperationRecord.superseded` and `rollback()` restores exactly them. Because a later
-consolidation can supersede an earlier one's record, operations on one lineage reverse newest
-first: `rollback()` returns `False` for an operation a standing later one has built on.
-
-Model simultaneous facts as `RELATION` entries when they may have several standing values: for
-example, a person can speak Chinese and English or like both cats and dogs. A user-stated `TRAIT`
-has one standing value per subject-and-predicate lineage, so a later value replaces the earlier
-version; use it for a preference or characteristic the application intends to treat as current.
-
-| Intent | Kernel semantics |
-| --- | --- |
-| `REINFORCE` | Link an independent source to an existing derived record. Confidence recombines by noisy-OR over independent sources counted per capture, and a hidden inferred `TRAIT` can become visible — as can a record that cites the one reinforced. |
-| `CONSOLIDATE` | Derive one new record whose cited set is one complete joint support clause. Separate operations are alternative clauses. Sources stay in recall unless the same proposal names them in `target_ids`. |
-| `CORRECT` | Retire the current version of a bad derived inference. History is preserved, not overwritten. |
-| `FORGET` | Set `forgotten_at`. Recall skips the record; audit keeps it. |
-| `IDENTIFY` | Name a recognized person. The kernel turns the `IdentityClaim` into an `ENTITY` assertion bound to that identity, and `identities.name` is a projection of the assertion currently visible. |
-
-`IDENTIFY` is checked hardest, because a name is the one claim that changes what an agent will
-say out loud about somebody: the identity must exist and at least one cited memory must actually
-contain that person through a speech or face observation, so a name cannot be pinned on someone
-from evidence that never contained them. A proposed name also carries basis `MODEL_INFERENCE`,
-so it stays hidden until two independent evidence groups support it, and `identities.name` keeps
-projecting whatever is visible instead. `register_identity` names somebody on the host's
-authority and is visible at once. `REINFORCE`, `CORRECT`, and `FORGET` refuse a naming assertion
-outright; the way to retract a name is `rollback()` of the `IDENTIFY` that asserted it, which
-recomputes both the projected name and the indexed speech text.
-
-The backend proposes and never writes. Each proposal is validated against the shown evidence set
-and its intent's rules, then committed in its own transaction together with an append-only log
-row. A pass is therefore not atomic, by design: a proposal refused after an earlier one committed
-does not undo it, and `ConsolidationReport` names exactly which applied and which were rejected.
-A refused proposal is reported with a reason instead of raising, so one bad proposal does not
-discard the pass. Every operation is identified by `sha256(canonical operation JSON + recipe)`, so
-re-proposing the same operation is rejected as `"duplicate"` rather than applied twice.
-`rollback(operation_id)` reverses one operation and `operations()` lists the log newest first.
-Deletion is not an intent.
-
-A proposal is all or nothing within itself. Every target it names must be eligible or the whole
-proposal is refused, so an applied row's `target_ids` are the IDs it actually acted on. The apply
-transaction re-checks what validation read: a target or cited source that moved in between makes
-the proposal `"stale"` with nothing written.
-
-Two things share the name "reinforce" and are not the same mechanism. `reinforce()` is the
-*ranking-utility* signal: it bumps a bounded confirmation count, changes retrieval order only,
-writes no log row, and cannot be rolled back. `MemoryIntent.REINFORCE` is the *evidence-linkage*
-signal: it attaches an independent source to a derived record, is logged, and is reversible. `forget()` is a convenience for host-authorized `FORGET`. Hosts can submit other supported
-intents explicitly through `apply()`; naming and consent also have dedicated SDK methods.
-
-"Update" is not a separate intent. It is what a `CONSOLIDATE` into an existing lineage does when
-the replacement qualifies: the new version supersedes the prior one at transaction time and
-history is kept. That reconciliation runs for evidence-qualified `STATE` and for
-`USER_STATEMENT` `TRAIT`. Any other kind gains a second record in the
-same lineage rather than superseding. Multi-valued `RELATION` and model-inferred `TRAIT` records
-accumulate and do not create `CONTRADICTION` work merely because their values differ. Proposing a
-replacement value for a wrong inference is a `CORRECT` and a `CONSOLIDATE` in the same batch, which the
-consumed-evidence rule allows: correcting a derived record retires that record, not the sources
-the replacement is built from.
-
-### What needs deliberation
-
-`consolidation_candidates()` derives due work from committed state rather than from a clock, so
-the loop has a durable trigger instead of a timer, and `consolidate_pending()` is that loop:
-
-```python
-report = memory.consolidate_pending(idle=is_charging_and_idle)
-```
-
-One round asks what is due, consolidates each row under the row's own trigger, and repeats
-because applying operations can make further work due. It ends when nothing is due, which the
-report distinguishes from hitting `max_rounds`. The two primitives stay available for a host that
-wants to schedule the halves itself.
-
-`EVIDENCE` rows are derived records that gained independent evidence nothing has weighed — what
-the formation path leaves behind. `CONTRADICTION` rows are functional lineages whose current
-visible `STATE` claims or user-stated `TRAIT` claims have different values over overlapping
-validity intervals. Accumulating `RELATION` and
-model-inferred `TRAIT` lineages are not contradiction work. `FEEDBACK` rows are records confirmed
-through `reinforce()`, or reported in a non-abstained `ask()` result under the default
-`reinforce_on_answer`. `QUERY_FAILURE` rows are near-equal recalls that
-came back empty at least twice inside the configured window, named against the nearest records
-the store does hold. `PRESSURE` rows appear only over a declared `memory_budget_records`, because
-growth alone is not evidence that forgetting is useful. `IDLE` rows appear only when the operator
-passes `idle=True`, because whether the device is idle or charging is the host's knowledge.
-
-A periodic timer alone is not evidence that the work is useful — and neither is a candidate that
-always comes back, so each pass records that it weighed its evidence set whatever it yielded, and
-a candidate is not derived again until its own signal moves. See the
-[Python SDK reference](api/python-sdk.md#memory-management-operations) for signatures, effects,
-outcome recording, and rollback behavior.
+Metric scope uses `near=SpatialContext(...)` with `radius_m`; both must be supplied together.
+It compares only the same coordinate frame and anchor, with uncertainty expanding the conservative
+intersection. No coordinate transform is inferred. Symbolic and metric filters both apply when
+combined. See [the SDK search contract](api/python-memory.md#search).
 
 ## Decay and reinforcement
 
-SenseMem separates five forms of forgetting and never conflates them:
+Decay is off by default. A positive `decay_half_life_days` applies exponential query-time decay
+with a nonzero floor. Its anchor is the latest eligible explicit reinforcement, then event end,
+event start, or last update. Confirmations slow decay and add a small ranking boost even without
+decay. Public scores stay in [0,1]; no record, media, embedding, or outbox row is rewritten.
 
-| Form | Call | Effect |
-| --- | --- | --- |
-| Expiring validity | `valid_until` | Leaves default retrieval when the interval ends; a `valid_at` scope inside the window still retrieves it. |
-| Ranking decay | `decay_half_life_days` | Downranks stale records at query time. Nothing is removed or rewritten. |
-| Cognitive forgetting | `forget()` | Excludes a record from recall while `get()`, `list()`, and `MemoryRecord.forgotten_at` retain it. Reversible through `rollback()`. |
-| Consolidation forgetting | `CONSOLIDATE` naming `target_ids` | Retires the detail a new derived record replaces, in that record's own transaction and under its lineage. Logged on the `CONSOLIDATE` row as `forgotten_ids`, and reversed with it. The lineage versions the same write superseded are logged beside them as `superseded`. |
-| Physical deletion | `delete()` | Removes the record and any media no other record references. Not recoverable, and never something a model proposes. |
+Search never reinforces. By default a non-abstained answer reinforces the canonical records the
+backend lists in `AnswerResult.hits`. This is declared use, not verified support or user feedback.
+Abstention records a query-failure signal without reinforcement. Both buffered and streamed answers
+follow the rule.
 
-`forget()` is cognitive only. It is the host entry point for the `FORGET` intent, so it takes the
-same log row and the same rollback path as a proposed operation — and, like one, applies all of
-its IDs or none. An unknown ID raises `MemoryNotFoundError` as `get()` does; `delete()` returns `False` for a missing ID. An
-empty sequence, or a set containing an already-forgotten record, returns `None` having changed
-nothing. The host names the IDs and is the authority, so no evidence window bounds it. Unlike an
-expiring validity interval, it is a policy state a host sets rather than a property of the world.
-
-Consolidation forgetting sets the same `forgotten_at` column, reached a different way: the memory
-loop proposes it as part of the consolidation that justifies it, so the kernel can keep the
-evidence links and reverse both halves together. Telling the three apart in the log needs no
-convention — `delete()` leaves no row, cognitive forgetting is a `FORGET` row, and consolidation
-forgetting is a `CONSOLIDATE` row with `forgotten_ids`.
-
-Decay is disabled by default. Enable it with a positive `decay_half_life_days` setting. Decay
-changes query-time ranking only; it does not delete or rewrite records, assets, embeddings, or
-outbox rows.
-
-When enabled, retention uses the most recent eligible explicit reinforcement; otherwise it uses
-event end, event start, or last update time. The configured half-life applies exponential decay
-with a nonzero floor, and repeated confirmations slow that decay. Public scores remain bounded to
-`[0, 1]`. Eligible confirmations also provide a small ranking boost when decay is disabled.
-
-Search never reinforces a hit. By default, a non-abstained `ask()` reinforces the canonical
-records its answerer lists in `AnswerResult.hits`. These are backend-declared usage, not verified
-factual support or user feedback: an adapter that returns its entire input reinforces every
-delivered hit. An abstained answer preserves its returned hits for diagnosis and records a query
-failure, without changing access counts, access timestamps, or reinforcement ranking signals.
-This applies to buffered and streamed answers.
-
-Set `reinforce_on_answer=False` when one question must not change later rankings, as in an
-evaluation, or when only confirmed application feedback should count. Record that feedback
-explicitly:
+Set `reinforce_on_answer=False` for independent evaluation questions or explicit-feedback-only
+applications. Then confirm observed positive use:
 
 ```python
 used = memory.search("How should I recover the deployment?", limit=1).hits
@@ -615,10 +160,20 @@ if used and user_confirmed_helpful:
     memory.reinforce((used[0].id,))
 ```
 
-`reinforce()` de-duplicates IDs, skips missing records, and caps each record's confirmation count
-at 20. Confirmations after the query's ranking reference are ignored so evaluation cannot leak
-future feedback into the past.
+`reinforce()` de-duplicates IDs, skips missing records, and caps confirmations at 20 per record.
+Confirmations later than the query's ranking reference are ignored.
 
-Reinforce only observed positive use or feedback. Use `search(..., explain=True)` when one query needs
-its temporal, reinforcement, retention, or rejection factors explained; normal telemetry omits
-per-memory candidate identifiers.
+## Choose a form of forgetting
+
+| Mechanism | Effect | Reversible? |
+| --- | --- | --- |
+| Expiring validity | Omits a record outside its world interval | Historical scope can still read it |
+| Ranking decay | Downranks stale records | Changes no stored content |
+| `forget()` | Sets `forgotten_at`; get/list retain the record | Operation rollback |
+| Consolidation with `target_ids` | Forgets replaced details while preserving source links | Roll back the consolidation |
+| `delete()` | Removes the record and orphaned media | No; remnants/backups need separate erasure policy |
+
+`forget()` is all-or-nothing and host-authorized. An unknown ID raises `MemoryNotFoundError`;
+empty input or an already-forgotten target changes nothing. Re-adding the same content does not
+restore recall: use rollback. See [control operations](api/python-control.md) and
+[physical deletion](api/python-memory.md#delete) for exact results and cascading effects.

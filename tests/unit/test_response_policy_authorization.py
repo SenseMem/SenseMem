@@ -184,7 +184,9 @@ def test_model_cannot_forget_a_policy_ancestor_and_preserves_unrelated_work(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        config=MemoryConfig(
+            minimum_relevance=0, independent_evidence=independent, memory_budget_records=1
+        ),
     ) as memory:
         source, unrelated = _observations(memory, "Ana asked for brief answers", "Unrelated note")
         middle = memory.apply(
@@ -203,7 +205,9 @@ def test_model_cannot_forget_a_policy_ancestor_and_preserves_unrelated_work(
             MemoryOperation(intent=MemoryIntent.FORGET, target_ids=(unrelated.id,)),
         )
 
-        report = memory.consolidate(evidence_ids=(target_id, unrelated.id))
+        report = memory.consolidate(
+            evidence_ids=(target_id, unrelated.id), trigger=MemoryTrigger.PRESSURE
+        )
 
         assert [reason for _operation, reason in report.rejected] == ["unauthorized"]
         assert len(report.operations) == 1
@@ -306,7 +310,7 @@ def test_model_cannot_mutate_policy_support_or_replace_it_during_consolidation(
                 target_ids=(ancestor_id,),
                 evidence_ids=(
                     (other.id,)
-                    if intent is MemoryIntent.REINFORCE
+                    if intent in {MemoryIntent.REINFORCE, MemoryIntent.CORRECT}
                     else (ancestor_id,)
                     if intent is MemoryIntent.CONSOLIDATE
                     else ()

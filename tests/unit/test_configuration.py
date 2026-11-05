@@ -551,13 +551,14 @@ def test_builtin_openai_generation_maps_on_demand_media_controls(
 
     monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
     spec = configuration.OpenAIGenerationConfig(
-        provider="openai", media_policy="on_demand", media_max_items=3
+        provider="openai", media_policy="on_demand", media_max_items=3, media_max_tokens=4096
     )
     built = configuration._build_generation(spec)
     assert isinstance(built, EvidenceGeneration)
     assert built.resources()[0] is marker
     assert "generation_media_policy" not in captured
     assert "generation_media_max_items" not in captured
+    assert captured["generation_media_max_tokens"] == 4096
 
 
 def test_builtin_openai_generation_stream_is_explicitly_opt_in(

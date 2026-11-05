@@ -100,7 +100,7 @@ build_mcp_server(
 ```
 
 `deliberate_every` is the opt-in slow loop described in
-[configuration](../configuration.md#running-the-loop-inside-a-server-process). It runs in the
+[configuration](../configuration/lifecycle.md#running-the-loop-inside-a-server-process). It runs in the
 server lifespan and is disabled by default. No tool exposes consolidation directly.
 
 `build_mcp_server` reads `memory.capabilities` once and publishes it as the server `instructions`,
@@ -403,4 +403,4 @@ work. It has no local-path input, remote fetch, large-file upload tool, capture-
 coordinate-frame transform, logical scope, or separate authentication policy; the MCP host owns
 transport access control. Configured model backends may
 impose a smaller aggregate budget, including the
-[OpenAI inline limits](python-sdk.md#bundled-adapters).
+[OpenAI inline limits](python-adapters.md).
