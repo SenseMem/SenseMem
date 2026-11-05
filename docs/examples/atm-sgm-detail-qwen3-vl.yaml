@@ -30,7 +30,6 @@ vision: null
 reranking:
   provider: qwen3-vl
   model: Qwen/Qwen3-VL-Reranker-8B
-  revision: b212dc8c91a8164aef1ea2de9c1a867611e75c04
   device: cuda
   batch_size: 32
   max_length: 8192

@@ -2,6 +2,10 @@
 
 ## Decision
 
+**Swifter** means users can compose capabilities, choose models, and extend implementations.
+SenseMem applies the "everything is a plugin" principle to replaceable capabilities around one
+memory kernel. See [product principles](design-principles.md#smarter--swifter--stronger).
+
 SenseMem uses a stable memory kernel with explicit, typed computation plugins. It does not use a
 global registry, arbitrary pipeline hooks, automatic package installation, or a second execution
 plane.
@@ -12,7 +16,8 @@ the same memory operations.
 
 The kernel owns memory identity and semantics, capability routing, validation, SQLite and media-CAS
 durability, the index outbox, SQLite hydration, and final context construction. A plugin may perform
-inference, but it cannot own or bypass those rules.
+inference; its protocol grants no storage authority. Custom plugin code still runs with the host
+process's privileges and must be trusted.
 
 ## Implemented composition
 
@@ -30,7 +35,6 @@ with Memory.from_config(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
         },
         "speech": {"provider": "funasr"},
         "settings": {"index_speech": True},
@@ -195,10 +199,10 @@ New entity, relation, or spatial projections must remain additive to authoritati
 their complexity through SenseMem's own measured retrieval results. A paper's architecture or
 benchmark score is not by itself a reason to replace the flat durable representation.
 
-Interaction memory uses the existing semantic, episodic, and procedural roles. Any
-emotion, trait, or response-policy inference stays outside the kernel or behind a future concrete
-typed analysis plugin, on the phased path in [affective memory](affective-memory.md). Derived
-records retain evidence provenance and use ordinary `Memory` writes; plugins may not write around
+Interaction memory uses the existing semantic, episodic, and procedural roles. The current
+`FormationBackend` can propose affect and trait records; richer per-modality analysis follows the
+gates in [affective memory](affective-memory.md). Response policies require host-authorized
+operations. Derived records retain evidence provenance and use the kernel's validated write path; plugins may not write around
 durability or reinterpret metadata as routing, isolation, or trust.
 
 ## Trade-offs and revisit triggers

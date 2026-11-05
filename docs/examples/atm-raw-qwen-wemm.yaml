@@ -1,6 +1,6 @@
 # Replace localhost endpoints and configure credentials outside this committed example.
 # Run: sensemem-bench eval --config docs/examples/atm-raw-qwen-wemm.yaml --gen-kwargs temperature=0.7
-# Historical recipe; see docs/research/2026-10-29-grounded-recall-quality.md for limits.
+# Evaluation starting point; see docs/grounded-multimodal-recall.md for policy and transport limits.
 embedding:
   provider: openai
   base_url: http://127.0.0.1:8000/v1

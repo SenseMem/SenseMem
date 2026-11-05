@@ -35,16 +35,15 @@ for the source's same-time order. Ordering does not add records or establish a c
 
 This configuration enables bounded recall planning and typed answer rendering. It is a
 starting point for task-specific evaluation, not a measured accuracy improvement. It uses a
-text embedder and reader; configure image/video-capable backends separately when native media
-must be inspected. Install the `local` extra for the local model and configure the generation
-provider's credentials through its environment.
+local multimodal embedder and a text-only reader. Declare image/video generation capabilities
+only when the selected reader supports them. Install `sensemem[local,openai]` and configure the
+generation provider's credentials through its environment.
 
 ```yaml
 data_dir: ./data/investigation
 embedding:
   provider: sentence-transformers
   model: google/embeddinggemma-2
-  revision: f9972ac22e696a105c482202646979e33e4b5a1e
 generation:
   provider: openai
   model: gpt-5-mini-2025-08-07
@@ -89,7 +88,8 @@ selects year, month, day, minute or second. `format: iso8601` preserves the sour
 `format: utc_datetime` requires a timestamp with an explicit timezone and renders UTC as
 `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`. It never guesses an absent timezone. Numeric and
 duration drafts choose `format: with_unit` or `format: number`; requesting only a number does
-not remove the requirement to verify its source units. Defaults are ISO dates and units.
+not remove the requirement to verify its source units. The draft must explicitly provide its
+format; missing format fields are rejected.
 
 For source identifiers, the model selects `E` evidence aliases. The runtime resolves the
 application's `metadata.source_id`, or the configured `source_metadata_key`, instead of trusting
@@ -145,8 +145,7 @@ Media evidence retains its original record `source_modality`, attachment modalit
 sampling/omission labels. Sampled stills are views of one video, not independent photos; motion,
 audio and exact timing are not supplied. Image resizing can lose fine detail. Valid source SHA,
 decode bounds, total text bytes and actual inline-media bytes remain enforced. Byte and pixel
-limits do not prove that every mixed request fits a provider's token window. Plain-text records
-keep their existing payload shape without an extra source-modality field.
+limits do not prove that every mixed request fits a provider's token window. Each answer evidence record declares its original source modality, including text-only records.
 
 ## Derived evidence
 

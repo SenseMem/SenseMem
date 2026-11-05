@@ -117,8 +117,7 @@ stored content.
 
 The supported Python imports come from `sensemem`; the supported HTTP surface is under `/v1`,
 and the supported MCP surface is the thirteen tools in `sensemem.api.mcp`. Changing a
-signature,
-response type, exception, endpoint, tool schema, error code, on-disk schema, or console entry point
+signature, response type, exception, endpoint, tool schema, error code, on-disk schema, or console entry point
 is a breaking change and needs tests and documentation in the same patch.
 
 The product API has no implicit scoping identifiers. Metadata is application data, not an access

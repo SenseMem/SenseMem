@@ -1,5 +1,11 @@
 # Python SDK
 
+Jump to [construction](#construction), [content](#content-contract),
+[memory operations](#memory-operations), [memory management](#memory-management-operations),
+[identity](#cross-modal-identity-binding), [async use](#asyncmemory),
+[public values](#public-values), [backend protocols](#backend-protocols),
+[bundled adapters](#bundled-adapters), or [errors and limits](#errors-and-limits).
+
 ## Surface
 
 The supported root-import SDK is re-exported from `sensemem`. `Memory` is the synchronous
@@ -90,10 +96,12 @@ Memory(
 ```
 
 `embedder` is required. With a speech-capable `SpeechBackend`, the default `index_speech=True`
-stores transcripts and resolved speaker names with new memories; setting it to `False` defers that
-analysis until `perceive()` is called. `index_quantization` changes only the rebuildable vector
+stores transcripts and resolved speaker names with new memories. Setting it to `False` disables
+that optional identity-indexing path; required transcript fallback can still run. Use `perceive()`
+for explicit recognition. `index_quantization` changes only the rebuildable vector
 index; supported values are `none`, `fp16`, `int8`, and `rabitq`. Zvec 0.8 INT8 uses unrotated
-cosine quantization; recognized 0.7 projections rebuild from stored embeddings on first open.
+cosine quantization. Older index recipes are rejected; use their original runtime to read source
+data and re-ingest into a fresh directory.
 `retrieval_mode` selects the
 instance candidate route: `hybrid` is the default, `dense` disables full-text candidates, and
 `lexical` disables query embedding and dense candidates and ranks by native normalized full-text
@@ -163,7 +171,8 @@ declarative `consolidation` slot, which stays off unless it is configured, and o
 
 `index_speech` is on by default and is a no-op unless `transcriber` is a `SpeechBackend`, whose
 analysis has already run by the time `add` reaches the index. Set it to `False` to keep transcripts
-and resolved speaker names out of retrieval text and out of `add`-time identity matching.
+and resolved speaker names out of optional speech-identity indexing and `add`-time identity
+matching. Required text fallback can still retain a transcript.
 
 `ask()` grounds on the top of the ranking, except that a modality present in the retrieved hits
 and absent from the first `limit` of them contributes its best hit in the last slot, so one
@@ -637,7 +646,7 @@ list(*, limit: int = 100, cursor: str | None = None) -> Page
 delete(memory_id: str) -> bool
 reindex() -> int
 optimize() -> None
-close() -> None
+close(*, timeout_seconds: float = 30.0) -> None
 ```
 
 `get` raises `MemoryNotFoundError` for an unknown ID. `perceive` returns a `PerceptionResult`
@@ -717,10 +726,10 @@ difference between them is audit history, not policy:
 | The corroborated cross-modal `MERGE` that binds one voice to one face, on either side of the pair | Their memories, media, and transcripts, which record an event rather than a person |
 | `compile()` leaves them out of the bundle's `actors` and reports a `CONSENT_WITHHELD` unknown | Every other bundle section, so evidence they appear in is still selectable |
 
-Recognition is deliberately not restrained. Answering a question from media the host already holds
-is not new processing of a person, and destroying what is held is `forget_identity`, which
-consent is not: a person who wants the template gone asks for erasure, and a person who wants to
-stop being learned records a refusal.
+Recognition against existing exemplars remains enabled. These states constrain template growth,
+linking, and actor delivery; they do not implement an access-control filter or a legal consent
+workflow. Use `forget_identity` to erase the stored template and host access controls to restrict
+retrieval.
 
 #### Data-subject rights
 
@@ -763,7 +772,9 @@ made unsupported.
 
 `delete` is physical forgetting, the third and strongest of
 [the three forms](../context-os.md#forgetting-is-three-operations). It is not a visibility change:
-after it returns, the record's content is not recoverable from SenseMem. Media is
+after it returns successfully, the record is unavailable through `get`, `list`, and retrieval.
+Operation history, other records, or backups can still contain related text; deletion does not
+provide secure erasure. Media is
 content-addressed and shared, so a blob and its descriptor go only once no remaining memory
 references them; deleting one of two memories holding the same file keeps the file.
 
@@ -775,12 +786,13 @@ references them; deleting one of two memories holding the same file keeps the fi
 | Everything keyed on a removed asset: `speech_analyses`, `speech_segments`, `face_analyses`, `face_observations`, and the cached transcript on the descriptor | -- |
 | An `identities` row and its `identity_exemplars` biometric template, once the removed observations were its last and it carries no registered name, relationship, alias, or cross-modal evidence | A *named* or merged person, who is an assertion a caller made rather than a by-product of one recording. `forget_identity` erases a person |
 | Derived memories whose last complete support clause depended on this record | A derived memory with another complete support clause. Every clause containing this record is retired whole, and the flat evidence list is rebuilt from the surviving clauses. Its own text may still paraphrase what the record said; that is consolidation, and `delete` on the derived memory removes it |
-| -- | `memory_operations` rows naming the id. The operation log is append-only audit history: it records that an operation happened, over which ids, with which proposal and rationale. Rewriting it to hide a deleted id would make `rollback` unsound and the log unable to answer what a deletion followed. It holds ids, a proposal, and a rationale -- never the deleted record's content or its media |
+| -- | `memory_operations` rows naming the id. The operation log is append-only audit history: it records that an operation happened, over which ids, with which proposal and rationale. Rewriting it to hide a deleted id would make `rollback` unsound and the log unable to answer what a deletion followed. Its operation payloads, including proposal text, claims, and rationales, can repeat information from the deleted record; media bytes are not retained in the log |
 
 `capabilities` reports what the composition's backends declare rather than what a provider name
 suggests, so an agent surface can advertise the instance instead of discovering a missing backend
 by failing on first use. `consolidation_model` is set only when a `ConsolidationBackend` is
-injected. `GET /healthz` and the MCP server instructions publish the same view.
+injected. REST and MCP publish the same backend declarations, with `operations` narrowed to
+what each surface can serve.
 
 ### Memory management operations
 
@@ -935,7 +947,7 @@ asserted it, which is what recomputes the projection. `IDENTIFY` adds `"unknown_
 `"identity_not_in_evidence"` to the rejection vocabulary. An `IDENTIFY` proposed by a backend
 carries basis `MODEL_INFERENCE`, so it stays hidden, and out of `identities.name`, until two
 independent evidence groups support it, exactly like an inferred `TRAIT`. `register_identity` is the host entry point for the same intent: it asserts the name on the
-host's authority with basis `USER_STATEMENT`, cite no evidence, and are visible immediately.
+host's authority with basis `USER_STATEMENT`, cites no evidence, and is visible immediately.
 
 `CONSENT` is the mirror of `MERGE`: the one intent only a host initiates, refused as
 `"unauthorized"` from a backend for the same reason -- a model that could state consent could
@@ -989,7 +1001,7 @@ naming its target among its evidence is the same malformation. Both are rejected
 IDs and is the authority, so no window bounds it. It is cognitive forgetting only: recall skips
 the record while `get()`, `list()`, and `MemoryRecord.forgotten_at` keep it for audit. Use
 `delete` to remove a record and its media. It is all or nothing like a proposal: an unknown ID
-raises `MemoryNotFoundError` the way `get` and `delete` do. `None` means nothing changed and
+raises `MemoryNotFoundError` as `get` does; `delete` instead returns `False` for a missing ID. `None` means nothing changed and
 nothing was logged -- no IDs were named, a record was already forgotten, the set named a bound
 naming assertion, a target moved under the proposal, or the log already holds an identical
 operation. Only `rollback` restores recall: re-adding the same content returns the record that
@@ -1054,8 +1066,8 @@ Counting assets raises the price of that mistake without preventing it: a wearer
 person across many clips, so the wrong pair accumulates as fast as a genuine speaker's. Binding is
 therefore also contained. Only a voice-only and a face-only identity may fuse, so an identity that
 already holds both modalities absorbs nothing further and one wrong bind cannot cascade into the
-next person. A fragment whose modality the identity already holds stays orphaned; merge it
-deliberately through the store if the claim is established some other way.
+next person. A fragment whose modality the identity already holds remains separate. There is no
+public arbitrary-merge operation; do not edit the store to bypass this rule.
 
 Binding is recorded, not guessed at read time, so it is durable and reversible through
 `unlink_identity`. Recognizer yield per asset is reported under the `sensemem.identity.*` span
@@ -1559,16 +1571,16 @@ matched, in time order, rather
 than as a ranking -- the bundled adapter uses it to describe the evidence order to the reader,
 which is the one thing about the hits a prompt cannot infer from the hits.
 
-For the primary observation, the bundled OpenAI former receives compact aliases, enriched content and assets, plus
-the observation basis, confidence, explicit validity bounds, and spatial frame/anchor. It does not
-receive a separate occurrence timestamp, identity registry, or actor roster. Speaker or face IDs
+For the primary observation, the bundled OpenAI former receives compact aliases, enriched content
+and assets, `occurred_at`, `occurred_end`, `created_at`, the observation basis, confidence,
+explicit validity bounds, and spatial frame/anchor. It receives no identity registry or actor roster. Speaker or face IDs
 and projected names are visible only when prior speech/face enrichment rendered them into the
 observation content. Opt-in read-only history separately carries recorded and occurrence times,
 typed validity and current-version status. After the proposal returns, the kernel mechanically binds its textual subject
 to a current visible name, inherits the primary source's occurrence as a missing validity start,
-and propagates source ID, place, metadata, and spatial context. Relative-time or unnamed-actor
-resolution that needs fields absent from the model payload therefore remains a formation limit;
-the runtime propagation does not mean the former reasoned over those fields.
+and propagates source ID, place, metadata, and spatial context. Relative dates use occurrence
+time, falling back to creation time when absent; the former must not substitute its own clock.
+Unnamed-actor resolution remains limited to the evidence in the payload.
 
 `ModelInput` contains normalized `text`, resolved `assets`, and optional
 `image_retrieval_matches`. For image-bearing `ask` calls, these temporary associations retain
@@ -1729,7 +1741,7 @@ runtime require a fresh directory and replay. See [local speech configuration](.
 
 For `google/embeddinggemma-2`, the generic loader uses FP32 and supports `128`, `256`, `512`, or
 `768` dimensions without requiring optional Matryoshka metadata. Query and document prompts come
-from the pinned checkpoint. See the [EmbeddingGemma 2 configuration](../configuration.md#embeddinggemma-2)
+from the loaded checkpoint. See the [EmbeddingGemma 2 configuration](../configuration.md#embeddinggemma-2)
 for a complete example and input limits.
 
 `Qwen3VLReranker` uses the optional `reranking` extra's vLLM pooling runner to rank each
@@ -1757,7 +1769,7 @@ The owning `Memory` closes
 the adapter and shuts down its vLLM engine. It pins both model and tokenizer to an immutable
 checkpoint revision, disables remote code, and uses the checkpoint's sigmoid of the
 yes/no logit difference as a request-local relevance value, not answer confidence.
-See [reranking configuration](../configuration.md#semantic-reranking) for a pinned
+See [reranking configuration](../configuration.md#semantic-reranking) for a
 Qwen3-VL-Reranker-8B example. Checkpoint selection and integration tests do not establish a
 benchmark score or SOTA result.
 

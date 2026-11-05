@@ -10,7 +10,7 @@ from pathlib import Path
 from sensemem.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
 from sensemem.benchmarks.es_memeval import ES_MEMEVAL_ADAPTER_VERSION
 from sensemem.benchmarks.icm_bench import ICM_ADAPTER_VERSION, ICM_DATA_REVISION
-from sensemem.benchmarks.longmemeval import LONGMEMEVAL_ADAPTER_VERSION
+from sensemem.benchmarks.longmemeval_v2 import LONGMEMEVAL_V2_ADAPTER_VERSION
 from sensemem.benchmarks.openeqa import OPENEQA_ADAPTER_VERSION, OPENEQA_SPLITS
 from sensemem.benchmarks.videozerobench import VIDEOZERO_ADAPTER_VERSION
 from sensemem.benchmarks.worldmemarena import WORLDMEMARENA_ADAPTER_VERSION
@@ -81,7 +81,7 @@ _SUPERMEMORY = (
 _ATM = ("Jingbiao/ATM-Bench", "78e826dc07e97466b2f54443831ef9a83ab8b27c")
 _GALLERY = ("Ethan-Bei/Mem-Gallery", "af912daba984e896e253016b7c7e334ef92c2a6f")
 _ICM = ("ryanren0330/ICM-Bench", ICM_DATA_REVISION)
-_LONGMEMEVAL = ("xiaowu0162/longmemeval", "2ec2a557f339b6c0369619b1ed5793734cc87533")
+_LONGMEMEVAL_V2 = ("xiaowu0162/longmemeval-v2", "f152293e235517d504809563c833d7190b8c713b")
 _ES_MEMEVAL = ("slptongji/ES-MemEval", "692624208acc077b8867698c1d6fcd998dee641a")
 _CLBENCH = ("tencent/CL-bench", "b28a5832a09b0d96c0cf4c22e90d7c60ede25b80")
 _BEAM = ("mohammadtavakoli78/BEAM", "3e12035532eb85768f1a7cd779832b650c4b2ef9")
@@ -352,14 +352,31 @@ TASKS: dict[str, TaskSpec] = {
             )
             for split in ("main", "hard")
         ),
-        _task(
-            "longmemeval-s",
-            "LongMemEval",
-            "longmemeval/longmemeval_s",
-            LONGMEMEVAL_ADAPTER_VERSION,
-            _LONGMEMEVAL,
-            digest="08d8dad4be43ee2049a22ff5674eb86725d0ce5ff434cde2627e5e8e7e117894",
-            variant="s",
+        *(
+            _task(
+                f"longmemeval-v2-{tier}",
+                "LongMemEval-V2",
+                "longmemeval-v2/questions.jsonl",
+                LONGMEMEVAL_V2_ADAPTER_VERSION,
+                _LONGMEMEVAL_V2,
+                digest="0a3ae5ebea938c24d7800e1e0b0828e08ae1646f939a53853b2b8cdc08e292b7",
+                variant=tier,
+                auxiliary=(
+                    "longmemeval-v2/trajectories.jsonl",
+                    f"longmemeval-v2/haystacks/lme_v2_{tier}.json",
+                ),
+                media="longmemeval-v2",
+                media_source=MediaSource(
+                    "longmemeval-v2",
+                    *_LONGMEMEVAL_V2,
+                    (
+                        "question_screenshots/*.png",
+                        "trajectory_screenshots/web_screenshots.tar.gz",
+                        "trajectory_screenshots/enterprise_screenshots_base.tar.gz",
+                    ),
+                ),
+            )
+            for tier in ("small", "medium")
         ),
         _task(
             "es-memeval-qa",
@@ -455,6 +472,7 @@ TASKS: dict[str, TaskSpec] = {
 }
 
 GROUPS: dict[str, tuple[str, ...]] = {
+    "longmemeval-v2": ("longmemeval-v2-small", "longmemeval-v2-medium"),
     "m3-bench": ("m3-bench-robot", "m3-bench-web"),
     "memlens": tuple(name for name in TASKS if name.startswith("memlens-")),
     # The evaluation splits. `month_train` is the released training split and it is cut from the

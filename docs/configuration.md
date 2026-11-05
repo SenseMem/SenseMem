@@ -1,5 +1,11 @@
 # Configuration
 
+Jump to [installation](#install-only-the-surfaces-you-use), [provider fields](#provider-fields),
+[embedding](#embedding-choices), [reranking](#semantic-reranking), [speech](#local-speech-with-funasr),
+[formation](#automatic-memory-formation), [vision](#visual-descriptions),
+[memory management](#agentic-memory-management), [settings](#local-memory-settings),
+[retention](#retention-policy), or [direct injection](#direct-adapter-injection).
+
 Configuration composes model capabilities and local policy around one `Memory`. Storage and
 retrieval semantics stay the same whichever path you choose.
 
@@ -72,8 +78,8 @@ with Memory.from_config(config) as memory:
 `AsyncMemory.from_config()` accepts the same shape. Use `SenseMemConfig.model_validate()` when a
 host needs validation before opening storage.
 
-**Contract:** Unknown fields and providers are rejected. Numeric and Boolean values are strict;
-invalid values are not silently coerced. Declarative composition owns and closes every adapter it
+**Contract:** Unknown fields, providers, and values outside the declared constraints are rejected.
+Counts, thresholds, and policy flags use the strict constraints declared by their field schemas. Declarative composition owns and closes every adapter it
 creates.
 
 ### Loading a configuration file
@@ -373,7 +379,6 @@ uv sync --locked --default-index https://pypi.org/simple --all-groups --extra lo
 reranking:
   provider: qwen3-vl
   model: Qwen/Qwen3-VL-Reranker-8B
-  revision: "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
   device: cuda
   batch_size: 32
   max_length: 8192
@@ -384,7 +389,7 @@ reranking:
   video_frames: 8
 ```
 
-This example selects a pinned checkpoint; task accuracy and SOTA performance require actual
+SenseMem resolves the model's current Hub commit when it loads. Task accuracy requires
 evaluation. SenseMem automatically combines each query and candidate's available text, original
 images and original videos into `ModelInput` values. No modality switch is needed. A caption
 accompanies its media rather than replacing it; image-only and video-only queries and candidates
@@ -510,8 +515,10 @@ transcription recipe must still match when a producer is configured. Omitting th
 preserves cached transcripts, speech identities and the recorded recipe; it does not prevent
 opening the directory for other capabilities.
 
-**Contract:** Changing a model, revision, dimension, or input recipe changes the vector space.
-SenseMem refuses store metadata mismatches instead of mixing spaces.
+**Contract:** Compatibility is determined by embedding space and dimension. Bundled adapters
+include the resolved model/revision and input recipe in that space identity. A different
+diagnostic model name alone does not make an explicitly shared space incompatible. SenseMem
+refuses representation mismatches instead of mixing spaces.
 
 **Guidance:** Start a new data directory when intentionally changing embedding space; see
 [store metadata mismatch](troubleshooting.md#store-metadata-mismatch).
@@ -528,7 +535,6 @@ Sentence Transformers provider:
   "embedding": {
     "provider": "sentence-transformers",
     "model": "google/embeddinggemma-2",
-    "revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
     "dimension": 768,
     "device": "cpu",
     "batch_size": 8
@@ -583,8 +589,7 @@ Matryoshka truncation. Keep the checkpoint's own chat template on the server. Th
 own vector-space identity, separate from generic messages requests and the local Sentence
 Transformers recipe. Use a fresh data directory when switching; existing unprompted EmbeddingGemma
 2 messages stores fail the metadata check. A custom `space` overrides that identity and must
-describe the actual server checkpoint and input recipe. Pin the server's model revision for
-reproducible deployment. HTTP fixture tests verify request construction and SDK wiring; live vLLM
+describe the actual server checkpoint and input recipe. Record the server's resolved model identity for deployment comparisons. HTTP fixture tests verify request construction and SDK wiring; live vLLM
 numerical parity has not been tested in this checkout.
 
 ## Local speech with FunASR
@@ -627,9 +632,10 @@ original inputs; old speaker assignments are not reused or migrated.
 ## Automatic memory formation
 
 The optional `formation` slot builds the bundled OpenAI-compatible `FormationBackend`. It proposes
-entity, event, state, relation, affect, trait, and response-policy records after the source
-observation commits. Derived records are additive: the raw source stays durable and independently
-retrievable.
+entity, event, state, relation, affect, and trait records after the source observation commits.
+Response policies require an explicit host operation with `basis="response_feedback"`; model
+formation cannot grant them. Derived records are additive: the raw source stays durable and
+independently retrievable.
 
 ```python
 from sensemem import Memory
@@ -640,7 +646,6 @@ with Memory.from_config(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
         },
         "formation": {
             "provider": "openai",
@@ -650,6 +655,7 @@ with Memory.from_config(
             "modalities": ["text"],
             "temperature": 0.0,
             "max_tokens": 2048,
+            "response_format": "json_object",
         },
     }
 ) as memory:
@@ -743,7 +749,6 @@ config = {
     "embedding": {
         "provider": "sentence-transformers",
         "model": "google/embeddinggemma-2",
-        "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
     },
     "vision": {
         "provider": "openai",
@@ -787,12 +792,8 @@ These controls bound what it costs and what it can do:
   Sampling covers the clip in order, including its last frame. A non-default count participates
   in the visual-description recipe and cache identity; the default retains the four-frame recipe.
   A clip with no readable video stream is left without a caption rather than falling back to
-  sending it. The
-  request marks such a visual with its still count (`Visual 2, as 4 ordered stills:`) and asks for
-  one caption per visual, never one per still: asked over an unmarked clip, a measured endpoint
-  returned four separate descriptions on every attempt, the one-caption-per-input contract below
-  rejected the reply whole, and `modalities: [image, video]` therefore stored no caption at all
-  while still paying for the request.
+  sending it. The request labels each video's still count and asks for one caption per source
+  visual, rather than one per decoded frame.
 - The caption is derived text, so the request carries pixels and an ordinal only -- no memory ID,
   file name, or store path -- and a reply that does not return exactly one non-empty caption per
   visual is rejected whole rather than mislabelling a memory with another's contents. The 20 MiB
@@ -816,12 +817,11 @@ These controls bound what it costs and what it can do:
   counted as `sensemem.vision.failed_batches`.
   Write-path failures are not cached, but re-adding an already-embedded record remains idempotent
   and does not backfill its caption.
-- Captions are not reproducible. Models supporting sampling controls receive `temperature` 0 and
+- Provider sampling controls do not guarantee identical captions. Models supporting sampling controls receive `temperature` 0 and
   a fixed `seed` unless the slot sets its own; known reasoning models receive neither automatic
-  control. A measured compatible endpoint returned four different completions for four identical
-  requests at those values. A caption becomes indexed text, so anything that needs two
-  ingests of one corpus to build the same documents has to cache descriptions by asset digest;
-  the benchmark harness does exactly that.
+  control. Captions become indexed text, so preserve description-cache identity and returned
+  model identity when comparing ingests. The benchmark harness caches by asset digest and recipe
+  within its declared run lifecycle.
 
 Description tokens are reported under their own model module, so a deployment that meters usage
 can separate what captioning costs from what answering costs.
@@ -849,7 +849,6 @@ with Memory.from_config(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
         },
         "consolidation": {
             "provider": "openai",
@@ -1003,31 +1002,29 @@ the default when comparing modes, or calibrate a changed threshold separately fo
 A memory declares its composition through `Memory.capabilities`, which reports the modalities,
 model identities, and configured backends the routing layer reads, including
 `consolidation_model` when a consolidator is injected. `GET /healthz` and the MCP server
-instructions publish that same view.
+instructions publish those declarations with `operations` filtered to what each transport serves.
 
 Thresholds and margins accept values from `0` through `1`. Relevance is floored at `0`, so
-`minimum_relevance=0` admits every candidate and disables the weak-evidence floor; a zero ambiguity margin disables the corresponding tie rejection. A zero
+`minimum_relevance=0` disables the weak-evidence floor; eligibility and scope filters still
+apply. A zero ambiguity margin disables the corresponding tie rejection. A zero
 speaker or face similarity is merely the most permissive threshold.
 
-`minimum_relevance` gates the signals the query asked about, and only those. Retrieval relevance
-and temporal proximity are inside the gate: a caller who asks "in 2024" made the year part of the
-question, so overlapping it counts as evidence and missing it does not. Reinforcement and
-`decay_half_life_days` retention are outside it, because the query never mentioned them. They
-still shape `SearchHit.score` and the result order, so **an admitted hit can report a `score`
-below the floor you set**.
+`minimum_relevance` compares query relevance after observation confidence and any temporal
+boost. An event overlapping a detected time range receives a boost; events outside it and
+records without event time keep their original relevance. Use explicit occurrence bounds for
+hard exclusion.
 
-That asymmetry is deliberate. Both factors are bounded below by `0.3`, so with retention inside
-the gate a perfectly relevant memory would decay to `0.30`, and to `0.09` once a dated question's
-window also missed it — under the `0.10` default. A floor that included retention would turn
-"prefer recent" into "hide old" for precisely the deployment that enabled decay and then asked
-about last year. Ranking an old event last is fine; ceasing to return it is not.
+Reinforcement and `decay_half_life_days` affect final ranking, but stay outside the relevance
+gate. This lets a relevant old memory remain eligible while decay lowers its rank. Consequently,
+**an admitted hit can report a `SearchHit.score` below the configured relevance floor**.
 
 Use `search(..., explain=True)` to read the gated quantity as `gate_relevance`, beside the
 `retention_factor` and `temporal_factor` that moved `score` away from it. `decay_half_life_days` must be
-positive when set. `evidence_budget_chars` keeps the `limit` hits unconditionally and then admits
+positive when set. `evidence_budget_chars` starts with the ranked `limit` window and then admits
 further ranked memories while the evidence fits, charging each media asset its modality's text
-equivalent because a media part costs a model far more than its record's text. Because the `limit`
-hits are never dropped, this setting can only enlarge the grounding set. Lowering `limit` and
+equivalent to account for its additional model-input cost. Mandatory raw observations are retained
+even over this soft allowance. Derived assertions require their complete eligible source closure
+to fit and may be withheld. Lowering `limit` and
 setting the budget to `None` reduces the basic ranked window; recall planning and linked expansion
 can still add records when enabled. These controls do not bound the serialized provider input.
 With a budget, lowering `limit` may leave the evidence window unchanged because packing
@@ -1044,8 +1041,9 @@ request against the provider's context window. Exact input preflight needs that 
 counting protocol for the actual request; SenseMem does not provide a universal token preflight.
 Provider-declared context overflow raises permanent `ModelError(reason="context_length_exceeded")`
 (HTTP 413), without retrying an answer after dropping evidence. The independent
-[`compile_context` budget](context-compilation.md#budget) remains a hard character ceiling on
-the bundle it renders; it also does not promise provider tokens.
+[`compile()` budget](context-compilation.md#budget) imposes a hard ceiling on priced grounding.
+Conflict/unknown diagnostics and the omission trailer render outside that ceiling; it does not
+promise provider tokens.
 
 A set, sequence or entity recall plan grounds on its own matched set *in addition to* the ranked
 window -- the same `limit` hits and modality floor the unplanned path grounds -- and
@@ -1128,11 +1126,9 @@ expansion actually admitted rather than the number of window rows that happen to
 A read is only allowed to be complete while its predicate is selective. A step whose predicate
 selected more than a fifth of the active corpus, or more than four times `limit` rows on a corpus
 too small for that fifth to mean anything, contributes no rows at all: the reader is told what the
-predicate matched and that what it holds is the question's top-ranked records instead. Measured on
-LoCoMo, where every record reads "[date] Caroline said: ...", an entity step that degraded to
-matching the name as text selected about half the corpus and cost 19 points of accuracy on exactly
-the questions it ran on. A plan whose every step is non-selective grounds precisely what no plan
-would have grounded.
+predicate matched and that it retained the question's ranked evidence instead. A plan whose
+steps are all non-selective adds no matched-set evidence. This avoids treating a broad person-name
+match as a selective answer set.
 
 Pass an OpenTelemetry tracer through the separate `tracer=` argument of `Memory.from_config()` or
 `Memory(...)`; it is not a setting. See [operations](operations.md#telemetry) for exporter setup
@@ -1143,50 +1139,36 @@ ranking semantics.
 (`speech: funasr`), which has already run its analysis by the time `add` reaches the index, so
 reusing that text costs no additional model call and no additional token; with no speech backend, or
 with a plain transcription backend such as `speech: openai`, the setting does nothing. Set it to
-`False` to keep speaker identities out of the index and out of `add`-time identity matching.
+`False` to disable optional speech-identity indexing and `add`-time identity matching.
+Required transcript fallback can still run when the selected embedder needs text.
 
 ### The identity thresholds are not calibrated
 
-`face_similarity` has provenance: `0.363` is upstream SFace's own `_threshold_cosine`, adopted
-verbatim. **`speaker_similarity` does not.** `0.78` has no upstream source, and it is knowingly
-wrong in the safe direction — it sits above CAM++'s same-speaker cosine, so voice identities
-fragment: one run turned 1667 voice segments into 1743 separate identities. Expect voice identity to
-be unreliable at the default until it is calibrated.
+`speaker_similarity=0.78` and `face_similarity=0.363` are starting settings, not calibrated
+probabilities or biometric-authentication guarantees. A high threshold can fragment one person
+across several identities; a low threshold can falsely match different people.
 
-It is left high on purpose. The failure modes are not symmetric: too high fragments one person into
-many, which costs recall, while too low merges two people into one identity, which hands one
-person's memories to another. Fragmentation is recoverable; a false merge is a correctness and
-privacy failure.
+The matcher compares a query with the best score in an identity's bank of up to 20 exemplars.
+A threshold calibrated for one embedding pair need not have the same false-match rate for that
+maximum. `speaker_margin` and `face_margin` reject ambiguous competing identities, but cannot
+replace threshold calibration, especially when only one identity is enrolled.
 
-The obvious fix does not work. The pinned CAM++ recipe publishes its own threshold — `yesOrno_thr`
-is `0.31` in the model's `configuration.json`, and ModelScope's speaker-verification pipeline uses
-exactly that value on a raw cosine, the same quantity SenseMem compares. But `0.31` is calibrated
-for **one pair** of embeddings, and SenseMem accepts on the **maximum over up to 20 stored
-exemplars**. A maximum over more samples can only rise, so a pair threshold is a lower bound on the
-correct max-over-many threshold, never the value itself: measured against this matcher, mutually
-orthogonal random impostor vectors already reach `0.28` at 20 exemplars. `speaker_margin` does not
-compensate, because it only breaks ties between two candidate identities — with a single enrolled
-identity it never applies, and with several the maximum inflates only the winner.
-
-To calibrate it for a deployment, embed a labelled set of that deployment's own audio with the
-configured recipe, then plot two distributions of the score SenseMem actually decides on — the
-maximum over an identity's exemplar bank — one for same-speaker pairs and one for
-different-speaker pairs. Set the threshold between them, and keep `speaker_margin` non-zero. Around
-30 utterances each from 4-8 speakers in the real acoustic environment is enough to see whether a gap
-exists. The same procedure applies to `face_similarity` if SFace's published value proves wrong on a
-deployment's cameras.
+Before relying on identity matching, use representative, labelled audio or images from the
+intended environment. Keep enrollment and evaluation samples separate, measure same-person and
+different-person score distributions with the deployed exemplar-bank size, and select thresholds
+against explicit false-match and false-rejection criteria. Recheck under changed microphones,
+cameras, noise, lighting, model recipes, and population. Identity matching and
+`RetrievalScope.identity_id` do not provide access control.
 
 ## Retention policy
 
-`retention` is its own top-level section rather than a `settings` field, because every other
-setting shapes what recall returns and can be changed back, and this one deletes.
+`retention` is its own top-level section rather than a `settings` field, to make destructive policy visible separately from retrieval settings.
 
 ```python
 config = {
     "embedding": {
         "provider": "sentence-transformers",
         "model": "google/embeddinggemma-2",
-        "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
     },
     "retention": {
         "media_days": 30,
@@ -1213,9 +1195,9 @@ apply-retention`, which is what keeps physical deletion an explicit act with an 
 Start with `apply_retention(dry_run=True)`, which names exactly what a real pass would remove and
 removes nothing.
 
-`MemoryConfig` carries the same value under the name `retention`, which is what
-`Memory.from_plugins()` and the `Memory(retention=...)` constructor argument read. Declaring it in
-both places is refused rather than silently resolved.
+For direct injection and `Memory.from_plugins()`, pass the policy as
+`config=MemoryConfig(retention=RetentionPolicy(...))`. In declarative configuration, prefer the
+top-level `retention` section; supplying it there and inside `settings` is rejected.
 
 ## Direct adapter injection
 
@@ -1236,7 +1218,6 @@ with OpenAI(timeout=30.0, max_retries=3) as client:
         "./data/assistant",
         embedder=SentenceTransformersEmbedder(
             model_id="google/embeddinggemma-2",
-            revision="f9972ac22e696a105c482202646979e33e4b5a1e",
         ),
         answerer=models,
     ) as memory:
@@ -1259,7 +1240,7 @@ supplied a description, so speculative retrieval has a query before finality.
 point. Declarative `reranking: qwen3-vl` constructs `Qwen3VLReranker`;
 `reranking: sentence-transformers` constructs `SentenceTransformersReranker`.
 The kernel keeps source identity and filtering authoritative; the plugin supplies one score per
-text document in input order.
+`ModelInput` candidate in input order, using its declared modalities.
 
 `OpenAIModels` implements both reasoning protocols on its generation client, so one adapter can
 fill `answerer=`, `former=`, and `consolidator=`:
@@ -1270,7 +1251,6 @@ memory = Memory(
     "./data/assistant",
     embedder=SentenceTransformersEmbedder(
         model_id="google/embeddinggemma-2",
-        revision="f9972ac22e696a105c482202646979e33e4b5a1e",
     ),
     answerer=models,
     former=models,

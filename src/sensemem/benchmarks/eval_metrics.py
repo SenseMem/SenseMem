@@ -83,7 +83,7 @@ _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
     "supermemory-vqa": ("skill",),
     "atm-bench": ("qtype",),
     "mem-gallery": ("point",),
-    "longmemeval": ("question_type",),
+    "longmemeval-v2": ("domain", "environment", "question_type"),
     "es-memeval": ("capability",),
     "clbench": ("context_category", "sub_category"),
     "beam": ("category", "difficulty"),

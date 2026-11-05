@@ -90,7 +90,6 @@ try:
         "/var/lib/sensemem/assistant",
         embedder=SentenceTransformersEmbedder(
             model_id="google/embeddinggemma-2",
-            revision="f9972ac22e696a105c482202646979e33e4b5a1e",
         ),
         answerer=OpenAIModels(generation_client=client),
     ) as memory:
@@ -103,12 +102,12 @@ Keep one `Memory` open for a long-running process. `Memory.close()` closes suppl
 `OpenAIModels.close()` deliberately leaves caller-owned OpenAI clients open. Construct `Memory`
 after any process fork, never before it.
 
-Pin the selected model revision and review its license before deployment; see
+Review the selected model's license and retain its resolved identity when deploying; see
 [embedding choices](configuration.md#embedding-choices).
 
 For OpenAI generation slots, configure only parameters supported by the selected model and choose
 `response_format="json_schema"` when the endpoint supports strict structured output. A compatible
-server may instead require the default JSON mode. Configure the SDK base URL, without appending
+server may instead require explicit `response_format="json_object"`. Configure the SDK base URL, without appending
 `/chat/completions`, and keep credentials in environment lookup or a secret manager. Pin model
 snapshots for reproducible rollout comparisons, run the
 [model quality gate](operations.md#model-quality-gate), and retain provider request IDs with local
@@ -132,8 +131,8 @@ vllm serve google/embeddinggemma-2 \
 Keep text, image, audio, and video enabled for full multimodal support. The 8,192-token limit is
 shared by text and media in each input; split larger inputs before ingestion. Do not substitute
 a generative Gemma chat template or rename the served model: SenseMem selects its retrieval
-recipe using the exact model name. Use vLLM's `--revision` option to pin an immutable checkpoint
-commit in deployments that need reproducibility.
+recipe using the exact model name. Record the server's resolved model identity alongside the
+application configuration for rollout comparisons.
 
 Install `sensemem[openai]` in the application environment and use the
 [EmbeddingGemma 2 vLLM configuration](configuration.md#embeddinggemma-2-through-vllm), which sends
@@ -146,7 +145,7 @@ owner per physical data directory even when several owners share the model serve
 Install the server surface with the selected model extras:
 
 ```bash
-uv add "sensemem[local,openai,server]" uvicorn
+uv add "sensemem[local,openai,server]"
 ```
 
 Keep the owner and caller-owned client open around the ASGI server in `my_application.py`:
@@ -165,7 +164,6 @@ def main() -> None:
             "/var/lib/sensemem/assistant",
             embedder=SentenceTransformersEmbedder(
                 model_id="google/embeddinggemma-2",
-                revision="f9972ac22e696a105c482202646979e33e4b5a1e",
             ),
             answerer=OpenAIModels(generation_client=client),
         ) as memory:
@@ -184,8 +182,8 @@ uv run python my_application.py
 ```
 
 `create_app()` does not own or close either resource. For an importable ASGI app, arrange the same
-cleanup in the host's lifespan and run one worker. SenseMem does not depend on Uvicorn; it is the
-host-selected server in this example. The adapter adds no authentication,
+cleanup in the host's lifespan and run one worker. The `server` extra includes Uvicorn; the
+ASGI app can also run on another host-selected server. The adapter adds no authentication,
 authorization, TLS, rate limiting, quota, or access audit log. Bind to a trusted interface or put the app
 behind the deployment's existing gateway or middleware. Keep `/healthz` protected consistently; it
 reports liveness and the live composition's capability declaration, not model or retrieval
@@ -213,7 +211,6 @@ with Memory.from_config(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
         },
     }
 ) as memory:

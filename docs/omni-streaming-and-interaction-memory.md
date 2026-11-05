@@ -96,8 +96,8 @@ retry ceiling stays queued on purpose, so a loop that waits for the queue to emp
 `pending_captures()` is how you then see which record it is and why, and `awaiting` says whether
 a queued record has no vectors yet or is already searchable and owes only formation.
 `settle(memory_ids=...)` runs named records alone and ignores the ceiling for them, so a parked
-capture is retried by hand rather than by raising the ceiling for everything. One settlement runs
-at a time per `Memory`: a concurrent call waits instead of running the same models twice.
+capture is retried by hand rather than by raising the ceiling for everything. Settlement claims are per record: concurrent calls for the same record wait and recheck its
+queue entry, while disjoint records can settle concurrently.
 
 **Contract:** keep `add()` where a caller needs the record searchable on return, and keep the
 enrichment loop explicit. Nothing else settles for you, so an application that never calls
@@ -327,8 +327,9 @@ guidance = memory.add(
 
 On this manual path SenseMem stores that metadata but does not interpret its provenance,
 confidence, or evidence IDs; emotion, trait, and policy inference remain application work.
-Configuring a `FormationBackend` instead moves the same information into typed, kernel-validated
-records, as described next.
+Configuring a `FormationBackend` enables typed, kernel-validated affect and trait proposals.
+A typed response policy still requires an explicit host `apply()` operation with
+`basis="response_feedback"`; formation cannot authorize it.
 
 Keep the source observation when a derived interpretation changes. Add corrected evidence or delete
 the incorrect derived record instead of presenting a rewrite as the original observation.
@@ -347,8 +348,8 @@ Metadata and evidence IDs do not create an authorization or isolation boundary.
 ## Automatic memory formation
 
 Configure an optional `FormationBackend` to turn a committed observation into typed semantic
-proposals. The former cannot write storage and is not trusted to choose IDs, evidence, or conflict
-semantics:
+proposals. The former cannot write storage. The kernel assigns IDs, validates the proposed evidence, and
+owns conflict semantics:
 
 ```python
 from sensemem import Memory, OpenAIModels
@@ -393,8 +394,8 @@ A trait is a long-horizon claim and has a stricter visibility rule:
 ordinary search and answer exclude it. Developers can inspect why a profile did not activate without
 letting one uncertain emotional episode personalize future behavior.
 
-Response policies are typed procedural evidence, never executable code. They require explicit
-feedback provenance before an application should use them to adapt companion behavior.
+Response policies are typed procedural evidence, never executable code. The kernel accepts them
+only from host-authorized operations with response-feedback provenance.
 
 A spatial pose recorded on a stream observation is retrieved with `RetrievalScope`; see
 [spatial scope](memory-types-time-and-decay.md#spatial-scope) for the same-frame rule and
@@ -404,7 +405,8 @@ would have to pass is in the [benchmark protocol](benchmarking.md#mandatory-cont
 
 ## Observability
 
-Every completed stream item emits an ordinary `sensemem.add` operation span. Every speculative
+Every completed stream item emits a `sensemem.add` operation span, or `sensemem.capture` when
+`capture=True`. Every speculative
 search that starts emits an ordinary `sensemem.search` span. This keeps model request, token,
 latency, and failure accounting comparable with non-streaming calls. See
 [operations](operations.md#telemetry) for the attribute contract.

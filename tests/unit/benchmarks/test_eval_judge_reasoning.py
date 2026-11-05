@@ -104,6 +104,47 @@ async def test_known_reasoning_judge_omits_sampling_and_uses_completion_limit(mo
     assert requests[0]["max_completion_tokens"] == 512
 
 
+@pytest.mark.parametrize("model", ["gpt-5.2", "other-judge"])
+async def test_longmemeval_v2_uses_official_medium_reasoning(model: str) -> None:
+    requests: list[dict[str, object]] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        payload = json.loads(_reply().content)
+        payload["choices"][0]["message"]["content"] = '{"label": 1, "reason": "ok"}'
+        return httpx.Response(200, json=payload)
+
+    plan = judge_plan(
+        "longmemeval-v2-small",
+        question="Why?",
+        references=("The premise is wrong",),
+        prediction="The premise is wrong",
+        metadata={"eval_function": "llm_abstention_checker|require_non_empty=true"},
+    )
+    assert plan is not None
+    async with AsyncOpenAI(
+        api_key="test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(reply))
+    ) as client:
+        result = await eval_judge._judge_sample(
+            replace(_sample(), task="longmemeval-v2-small"),
+            plan,
+            client=client,
+            cache=None,
+            semaphore=asyncio.Semaphore(1),
+            config=_JudgeConfig(model, "http://judge.invalid/v1"),
+            log_samples=False,
+            tracer=trace.get_tracer(__name__),
+        )
+    assert result.error_code is None
+    assert result.metrics["accuracy"] == 1.0
+    if model == "gpt-5.2":
+        assert requests[0]["reasoning_effort"] == "medium"
+        assert requests[0]["max_completion_tokens"] == 4096
+        assert "temperature" not in requests[0]
+    else:
+        assert "reasoning_effort" not in requests[0]
+
+
 async def test_unknown_alias_retries_only_explicit_unsupported_temperature_once() -> None:
     requests: list[dict[str, object]] = []
 

@@ -146,9 +146,9 @@ async def _retry_transient(operation: Callable[[], Awaitable[_Retried]]) -> _Ret
     """Wait out a provider outage with exponential backoff instead of recording an error.
 
     A connection reset is a fact about the network at that second, not about the answer, the
-    memory write, or the judge verdict it interrupted; one fourteen-hour run lost its longmemeval
-    score to eight of them. An outage longer than the budget still surfaces as the structured
-    error the caller already records, so nothing here hides a dead endpoint.
+    memory write, or the judge verdict it interrupted. An outage longer than the budget still
+    surfaces as the structured error the caller already records, so nothing here hides a dead
+    endpoint.
     """
     deadline = time.monotonic() + _TRANSIENT_RETRY_SECONDS
     attempt = 0

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sensemem"
 version = "0.3.0"
-description = "Agentic native embodied omni-modal memory system"
+description = "Unified context and memory layer for agents across devices, modalities, and models"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = "Apache-2.0"
@@ -18,7 +18,7 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/SenseMem/SenseMem"
-Documentation = "https://github.com/SenseMem/SenseMem/tree/mindbridge-v03/docs"
+Documentation = "https://github.com/SenseMem/SenseMem/tree/master/docs"
 Issues = "https://github.com/SenseMem/SenseMem/issues"
 
 [project.scripts]

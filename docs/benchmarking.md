@@ -1,5 +1,11 @@
 # Benchmarking
 
+Jump to [setup and tasks](#install-and-inspect-tasks), [a bounded run](#run-a-bounded-evaluation),
+[configuration](#configure-the-evaluation), [baseline arms](#baseline-arms),
+[data preparation](#acquire-and-prepare-data), [performance metrics](#reported-performance-and-resource-metrics),
+[quality controls](#mandatory-controls), [artifacts](#results-and-reproducibility),
+[resume](#resume-an-interrupted-run), or [local measurements](#measure-the-local-index).
+
 SenseMem provides one evaluation runner and focused utilities. Use the evaluation runner for
 quality claims; use the utilities only for their narrower artifact or storage purpose.
 
@@ -37,7 +43,7 @@ sensemem-bench eval --list-tasks
 ```
 
 The catalog currently covers LoCoMo-Refined, ES-MemEval, M3-Bench, Video-MME-v2, WorldMemArena,
-VideoZeroBench, EgoTempo, MemLens, MM-Lifelong, SuperMemory-VQA, ATM-Bench, Mem-Gallery, LongMemEval, CL-Bench,
+VideoZeroBench, EgoTempo, MemLens, MM-Lifelong, SuperMemory-VQA, ATM-Bench, Mem-Gallery, LongMemEval-V2, CL-Bench,
 BEAM, PersonaMem-v3, OpenEQA, and ICM-Bench. Use the listing command
 instead of copying task names from this page; it is generated from the catalog used by the
 runner.
@@ -170,34 +176,6 @@ No real model revision was evaluated for this integration; full video download a
 quality checks were not run. Dataset terms are CC BY-NC-ND 4.0; do not redistribute modified data.
 See the [scorer notices](../src/sensemem/benchmarks/_official/NOTICE.md#videozerobench).
 
-### Committed research recipes
-
-Select the paired complementary trial or four-benchmark suite explicitly:
-
-```bash
-uv run --frozen python benchmarks/support_coverage.py --suite complementary
-uv run --frozen python benchmarks/support_coverage.py --suite four-benchmark
-```
-
-The launcher defaults to `complementary`. Use `--suite support-coverage` to reach the original
-support-coverage runner and pass its usual arguments. These research scripts require the local
-model environment file and dataset caches; the complementary trial also requires the ingested
-baseline snapshot. They do not reproduce the experiment on a fresh machine.
-
-The four-benchmark suite reuses final reports with their recorded success or failure status and
-resumes interrupted output or store directories, including ingestion before any samples exist.
-The complementary trial rejects nonempty output directories and verifies the pinned question
-digest and complete baseline tree, including assets and the derived index, before using the copy.
-The corrected trial uses suite ID `complementary-evidence-20261008-v2` to preserve historical runs.
-Its per-arm `seconds` excludes shared selector work; `shared_selector_seconds` charges that work
-to each reranking arm and is zero for the original ranking arm, regardless of execution order.
-Historical scores still require rejudging under the corrected ICM protocol.
-
-The support-coverage runner records provider-reported `prompt_tokens` for each outcome. Missing,
-malformed, or unobserved usage makes that outcome's count `null`; a measured zero remains `0`.
-Its `mean_prompt_tokens` is `null` whenever any outcome's usage is unknown, so a partial
-measurement cannot appear to be a complete cost average. Token counts are never estimated.
-
 ## Run an evaluation
 
 Set credentials for the OpenAI-compatible generation endpoint, then select a task or group:
@@ -299,6 +277,54 @@ raw-only evaluation and the text-only SGM task, so its score cannot establish a 
 Use the [model quality gate](operations.md#model-quality-gate) for credentialed reader checks
 through the public SDK. ATM adapter contract tests pin the shared official query instruction,
 including numeric and temporal questions; they do not establish real-model answer quality.
+
+### LongMemEval-V2
+
+[LongMemEval-V2](https://huggingface.co/datasets/xiaowu0162/longmemeval-v2) evaluates memory over
+web and enterprise agent trajectories. Select `longmemeval-v2-small` (100 trajectories per
+haystack) or `longmemeval-v2-medium` (up to 500); `longmemeval-v2` selects both tiers.
+
+```bash
+uv run --frozen sensemem-bench eval \
+  --config eval.yaml \
+  --tasks longmemeval-v2-small \
+  --limit 1 \
+  --judge-model-args model=gpt-5.2 \
+  --output-path .benchmarks/results/longmemeval-v2-small-smoke
+```
+
+Use an `eval.yaml` that supports image embedding and generation. `--limit` and `--offset` select
+questions in release order before grouping: questions with the same domain and identical ordered
+haystack share one isolated memory store. Every selected trajectory retains its goal, outcome,
+ordered actions, thoughts, accessibility trees and available state screenshots. No wall-clock
+timestamps are invented. Gold answers, question categories and evaluator specifications stay
+outside the product's memory and query. The query receives only the domain instruction, question
+text and optional question screenshot. The release supplies no gold retrieval labels.
+
+The catalog pins dataset revision `f152293e235517d504809563c833d7190b8c713b`. The runner downloads
+`questions.jsonl`, `trajectories.jsonl`, the selected `haystacks/lme_v2_<tier>.json`, selected
+question images and the trajectory screenshot archives for the selected domains. The trajectory
+JSONL is about 1.2 GB; archives total about 5.9 GB for both domains and are extracted automatically
+to `<benchmarks-root>/longmemeval-v2/screenshots/<trajectory_id>/<step>.png`. Even a one-question
+run needs its domain's archive and its complete haystack. The JSONL reader streams the release
+and retains only selected trajectories. Missing referenced screenshots fail the run.
+
+For offline data, preserve the same release layout and pass `--no-download`. Extracted screenshots
+can replace the archives. `--media-root longmemeval-v2-small=/path/to/release` accepts a prepared
+release root containing both `screenshots/` and `question_screenshots/`; the core JSONL and
+haystack files remain under the configured benchmarks root.
+
+Scoring follows the six released evaluator functions: normalized phrase matching, ordered phrase
+matching, single and multiple choice matching, and the flaw-awareness and gotcha judges. The last
+`\boxed{...}` is extracted before deterministic scoring; exact `UNKNOWN` receives zero. The two
+LLM judges receive both the full response and extracted answer, use `gpt-5.2` with medium reasoning
+and a 4,096-token completion limit, and parse the official binary label. Other configured judge
+models are recorded as non-official. `accuracy` is the mean binary correctness, corresponding to
+the upstream `overall_full_set`; results also break down by domain, environment and question type.
+Scorer logic is pinned to upstream commit `2cc8c540bdb87fe6761629b585e727e1c4704520`.
+
+This SDK evaluation uses the configured SenseMem reader and retrieval settings. It does not
+reproduce the upstream fixed-reader latency frontier or calculate leaderboard LAFS gains.
 
 ES-MemEval's QA task is selected through its family name; `--limit 1` means one seeker and all of
 that seeker's questions:
@@ -458,7 +484,7 @@ Evaluation always uses SenseMem and the tasks' zero-shot protocols. CLI long opt
 hyphens and require their complete spelling. Generation overrides accept `generation_model`;
 judge overrides accept `model`. The `--model` selector, `--num-fewshot`/`num_fewshot`,
 `--memory-config`, underscore option aliases, and `pretrained` model aliases are not accepted.
-Results and samples use schema 22; the results document has no `num_fewshot` field.
+Results and samples use schema 23; the results document has no `num_fewshot` field.
 
 `--deliberate` and `--fallback-reference-at` also remain command-line-only;
 they are not accepted keys in `benchmark.run`. The product CLI `sensemem ask` has no
@@ -511,10 +537,10 @@ endpoint. The runner always replaces `data_dir` with isolated per-unit directori
 
 ```bash
 uv run --frozen sensemem-bench eval \
-  --tasks longmemeval-s \
+  --tasks memlens-32k \
   --config eval.yaml \
   --limit 10 \
-  --output-path .benchmarks/results/longmemeval-configured
+  --output-path .benchmarks/results/memlens-configured
 ```
 
 Settings resolve in this order: command-line flag, configuration file, environment, built-in
@@ -698,10 +724,9 @@ the `full-context` arm uses (`compile()` never generates text itself, so a compi
 leave the product path the same way the two text baselines do). Reading it beside `blind`,
 `full-context`, and `sensemem` is exactly the no-memory/full-context/retrieval-only comparison
 [Context OS gate 4](context-os.md#evolution-gates) asks for. Its per-sample `compile_bundle_chars`
-and `compile_bundle_items` (in `metrics`) are the bundle's own size, the numerator half of "useful
-evidence per token" -- pair them with the question's answer-quality metric to compute it; a run
-does not compute the ratio itself, since only the caller knows which quality metric is the
-numerator.
+and `compile_bundle_items` (in `metrics`) are the bundle's own size, evidence-size denominators for a downstream-utility comparison. Pair them with the question's
+answer-quality metric; characters and items are not provider tokens. The runner does not compute
+a universal utility-per-token ratio.
 
 ## Ingest mode
 
@@ -733,7 +758,7 @@ still be described concurrently.
 
 ## Supported benchmark categories and primary metrics
 
-The executable catalog currently contains 16 benchmark families expanded to 30 concrete tasks.
+The executable catalog currently contains 18 benchmark families expanded to 33 concrete tasks.
 They fall into three dataset categories and one local systems microbenchmark. Classification follows
 the primary workload; several suites deliberately overlap categories.
 
@@ -762,16 +787,11 @@ from `sensemem.benchmarks.task_catalog`; `--list-tasks` remains authoritative.
 | --- | --- | --- | --- |
 | LoCoMo-Refined (`locomo-refined`) | Multi-session dialogue QA, temporal questions, captioned-image turns, and exact source-ID retrieval; use for conversational long-term memory | `llm_judge`; judge `qwen3-14b` | Pinned GitHub JSON; automatic |
 | MemLens (`memlens`: 32K/64K/128K/256K) | Information extraction, multi-session and temporal reasoning, knowledge updates, and refusal over dated conversations; use for scaling context length | `accuracy`; judge `qwen3-235b-judge` | Pinned Hugging Face JSON, 195-question subset, and the release's 229 MB `release_images/` tree; automatic. A turn's image is ingested as media when its file is present, so a run needs a model that declares the image capability; without the images the published captions are ingested alone |
-| LongMemEval (`longmemeval-s`) | User, assistant, and preference recall plus multi-session reasoning, updates, abstention, and exact turn-level retrieval; use for established long-term dialogue behaviors | `accuracy`; judge `gpt-4o-2024-08-06` | Pinned Hugging Face JSON; automatic |
+| LongMemEval-V2 (`longmemeval-v2`: small/medium) | Web and enterprise trajectory memory: static recall, dynamic state, procedures, gotchas and flawed-premise awareness | `accuracy`; phrase/choice rules and `gpt-5.2` judges with medium reasoning | Pinned Hugging Face JSONL, ordered haystacks and screenshots; automatic; image-capable models required |
 | ES-MemEval (`es-memeval`, task `es-memeval-qa`) | Personalized long-term emotional-support dialogue QA across information extraction, temporal reasoning, conflict detection, abstention, and user modeling | `llm_judge` (the 0--2 rubric normalized to 0--1); judge `gpt-4o`; published `f1` is also reported; the semantically transcribed judge is marked non-official | Pinned GitHub EvoEmo JSON; automatic; upstream declares no license at the pinned revision |
 | BEAM (`beam`: 100K/500K/1M/10M) | Very-long dialogue with contradiction resolution, ordering, extraction, updates, summarization, and temporal reasoning; use for length scaling | `llm_judge_score`; judge `gpt-4.1-mini` | Pinned GitHub tier directories; automatic |
 | PersonaMem-v3 (`personamem-v3`) | Causally masked cross-app personalization, preference shifts, sycophancy, privacy, hallucination, and candidate ranking; use for personal-agent behavior | `personamem_score`; judged families use `gpt-5.5`, ranking rows use the deterministic `ndcg_at_5` formula frozen at upstream commit `ad80a3b1b322` | Pinned Hugging Face backend JSON; automatic; scorer-only `profile.json` is excluded |
 | CL-Bench (`clbench`) | Learning a long reference document and following open-ended instructions; use for task-local context learning, not gold-source retrieval | `solving_rate`; judge `gpt-5.1` | Pinned Hugging Face JSONL; automatic |
-
-LongMemEval assigns every stored turn or split block an opaque, per-question source-order ID such
-as `M000000`. Release session labels, including answer and abstention markers, remain evaluator-only;
-`has_answer` is mapped onto the same opaque IDs for retrieval scoring. This mapping is part of the
-adapter version, so response caches from the earlier source-ID scheme are not reused.
 
 ### Multimodal personal memory
 
@@ -793,6 +813,8 @@ not add a type-specific format hint. Report the adapter and query versions when 
 | MM-Lifelong (`mm-lifelong`: day/week/month-val; `mm-lifelong-month-train` by name) | Day-to-month video memory, multi-interval clues, temporal localization, and open-ended answers; use for duration scaling | `answer_accuracy`; judge `gpt-5` | Pinned Hugging Face annotations and split media; automatic |
 | SuperMemory-VQA (`supermemory-vqa`) | Causal multi-video memory, skill breakdowns, answerability, and unanswerable cases; use for lifelong video QA | `qa_accuracy`; deterministic choice scorer | Pinned Hugging Face annotations, transcripts, and video; automatic |
 | M3-Bench (`m3-bench`: robot/web) | Causal long-video memory and open-ended QA; use for robot and web-video histories | `accuracy`; judge `gpt-4o-2024-11-20` | Pinned GitHub annotations; robot media from Hugging Face, web media through `yt-dlp` |
+| ICM-Bench (`icm-bench`) | Incremental video memory with recall, retrieval, and profile questions | `accuracy`; semantic-equivalence judge, official model `gemini-3-flash-preview` | Pinned videos and speakerless ASR; see [ICM-Bench](#icm-bench) |
+| VideoZeroBench (`videozerobench`) | Video QA and temporal/spatial localization across five diagnostic levels | Level-3 `accuracy`; deterministic QA and IoU scorers | Pinned annotations and video archive; see [VideoZeroBench](#videozerobench) |
 | Video-MME-v2 (`video-mme-v2`) | Four-question relevance/logic groups with level and reasoning-head breakdowns; use when grouped consistency matters | `rating` and auxiliary `accuracy` (both 0--100); deterministic grouped scorer | Pinned Hugging Face Parquet and media volumes; automatic |
 | OpenEQA (`openeqa`: HM3D/ScanNet) | Open-ended EM-EQA over fixed scene histories: spatial, recognition, localization, and world knowledge; use for spatial episodic memory | `llm_match` (0--100); judge `gpt-4-1106-preview` | Pinned GitHub questions; operator supplies extracted HM3D or licensed ScanNet frames |
 
@@ -805,52 +827,32 @@ its result supports local-index claims only, not end-to-end memory, embedding, o
 
 ### Control-plane behaviour benchmark
 
-`uv run --frozen sensemem-bench control-plane --config CONFIG --data-dir DIR` measures the slow
-loop rather than recall. It ingests a seeded synthetic long run through `Memory.add_many` --
-persons with a standing gold fact, one fact observed twice, and a preference stated then flipped
-with a later `occurred_at` -- and then asserts each side of every flip as a host-authored
-`RELATION` claim over its own observation, through `Memory.apply` with a `CONSOLIDATE` operation.
-That step is what makes the flip resolvable at all: `CORRECT` and consolidation forgetting only
-reach a *derived* record, so a correction of the raw observation is refused `not_derived` however
-right it is, and a scenario without a former has no other way to hold a claim. `RELATION` is the
-kind whose two sides both stand until the loop retires one -- a `STATE` is superseded by lineage
-reconciliation as soon as the second claim lands, and a model-inferred `TRAIT` stays invisible
-until a second evidence group supports it -- so the pair is what the `CONTRADICTION` trigger of
-`consolidation_candidates()` reports: two disagreeing visible claims in one lineage.
+`sensemem-bench control-plane --config CONFIG --data-dir DIR` measures the slow loop over a
+seeded synthetic scenario. It uses the public SDK and a fresh directory. The supplied
+configuration must declare embedding and consolidation; a `benchmark` section is ignored.
 
-Before that step existed the metric was structurally unreachable: every flip was two raw
-observations, so `CORRECT` was refused `not_derived` on all of them and `contradiction_recovery`
-could only ever read `0.0`. The benchmark configures no former, so any `CONTRADICTION` candidate an
-earlier run reported came from claims the loop's own accepted `CONSOLIDATE` operations minted
-mid-run, never from the injected observation pairs.
+For each person, the scenario writes a standing fact, two paraphrases of another fact, and a
+preference followed by a changed preference. A deterministic scenario former creates both
+preference claims as user-stated `TRAIT` records in the same `add_many` transaction, so they
+remain conflicting for the consolidator to weigh. This is fixture construction, not measured
+model formation quality. Two deliberately empty, time-bounded recalls create query-failure
+signals after ingestion.
 
-Two failing recalls per person follow, asking about a window after everything the scenario
-recorded. Those are the whole of the `QUERY_FAILURE` signal, and they come last on purpose: a
-candidate is dropped while nothing about it has changed since an operation last weighed it, and
-the claims above are applied operations over the very records that query is nearest to.
-
-It then runs `consolidate_pending()` with the configured consolidator and scores the operation log against
-the ground truth it injected:
+The runner calls `consolidate_pending()`, evaluates newly applied operations against the fixed
+ground truth, records their outcomes, and attempts rollback newest first. The window is sized
+to cover the scenario; this benchmark does not establish retrieval quality.
 
 | Metric | Definition | Undefined when |
 | --- | --- | --- |
-| `consolidation_precision` | Applied `CONSOLIDATE` operations whose cited evidence is exactly one injected duplicate group, over every applied `CONSOLIDATE` | The loop applied no consolidation |
-| `contradiction_recovery` | Injected preference flips where the newer claim is in force and the older is out of recall -- forgotten, or its version retired by the `CORRECT` that resolves it -- over every injected flip | Never; the denominator is the scenario |
-| `false_retirement` | Retired records that were gold-standing, over every record the run retired | The run retired nothing |
-| `rollback_success` | Applied operations `rollback()` reversed, newest first; `state_restored` separately reports whether every ingested record came back into recall | The loop applied nothing |
-| `deliberation.model_calls` | Backend round trips. `ConsolidationBackend` reports no token or currency cost, so this is the loop's whole cost proxy | Never |
+| `consolidation_precision` | Consolidations citing exactly one injected duplicate group / all applied consolidations | No consolidation applied |
+| `contradiction_recovery` | Preference flips with the newer claim active and the older claim retired or forgotten / all injected flips | Never; the scenario supplies the denominator |
+| `false_retirement` | Retired gold-standing records / all retired records | No record retired |
+| `rollback_success` | Operations reversed newest first / applied operations; `state_restored` separately checks the final recalled records | No operation applied |
+| `deliberation.model_calls` | Consolidation backend round trips | Never; this is a request-count proxy, not token or currency cost |
 
-Each applied operation is judged with `record_outcome()` before anything is rolled back, so the
-operation log itself carries the verdict and `outcomes.confirmed` / `outcomes.refuted` are
-derivable from the log alone. A `CORRECT` that retires the claim actually in force is judged
-`REFUTED`, so the log does not call the wrong half of a flip a success. The scenario's own
-`apply()` rows are not judged: they are the ground truth, not something the loop proposed. An
-undefined rate is reported as `null`, never as `1.0`.
-
-`--config` is a SenseMem configuration file declaring `embedding` and `consolidation`; a
-`benchmark:` section, so an `eval` config can be reused verbatim, is ignored. The benchmark pins
-`minimum_relevance=0` and `reinforce_on_answer=False` itself, for the same reproducibility reason
-`eval` does.
+Undefined rates are `null`. The runner sets `minimum_relevance=0` and disables automatic answer
+reinforcement for this fixture. Report the consolidator identity and scenario seed with results;
+fixed fixture success does not establish real-world consolidation quality.
 
 ### Running the slow loop during an evaluation
 
@@ -878,16 +880,17 @@ memory quality.
 
 Coverage is deliberately asymmetric:
 
-- **Single-hop and multi-hop:** LongMemEval declares single-session and multi-session types;
-  MemLens and BEAM declare multi-session reasoning. Other datasets may need several memories, but
+- **Single-hop and multi-hop:** MemLens and BEAM declare multi-session reasoning.
+  Other datasets may need several memories, but
   the catalog does not relabel them as multi-hop without an upstream type.
-- **Time, updates, and conflicts:** LongMemEval, MemLens, and BEAM expose temporal or knowledge
-  update types; BEAM also exposes contradiction resolution. PersonaMem-v3 adds causal preference
+- **Time, updates, and conflicts:** MemLens and BEAM expose temporal or knowledge
+  update types; BEAM also exposes contradiction resolution. LongMemEval-V2 covers dynamic
+  environment state. PersonaMem-v3 adds causal preference
   shifts and sycophancy behavior. LoCoMo-Refined explicitly removed LoCoMo's adversarial category
   5, so it must not be cited as adversarial coverage.
 - **Retrieval versus generation:** every dataset row measures generated answers. Exact
-  SenseMem source-ID recall is available for LoCoMo-Refined, LongMemEval, ATM-Bench, and
-  Mem-Gallery. WorldMemArena image evidence can be joined exactly, but its `mp_*`
+  SenseMem source-ID recall is available for LoCoMo-Refined, ES-MemEval, ATM-Bench,
+  Mem-Gallery, and MemLens. WorldMemArena image evidence can be joined exactly, but its `mp_*`
   labels name scorer-authored memory points rather than raw turns and remain unresolved.
   PersonaMem-v3's official candidate-ranking metrics rank answer slates and are not
   source-ID recall for the SenseMem retriever.
@@ -900,7 +903,7 @@ Video-MME-v2's grouped `rating` and question-level `accuracy` are both on a 0--1
 
 Protocol boundaries that affect interpretation are explicit rather than approximated:
 
-- `locomo-refined`, `memlens`, `longmemeval-s`, `es-memeval-qa`, `clbench`, `beam`, and
+- `locomo-refined`, `memlens`, `es-memeval-qa`, `clbench`, `beam`, and
   `personamem-v3` need no
   runtime media preparation; LoCoMo-Refined ingests the release's published captions, and
   MemLens ingests its captions plus the release's own image files where they are present.
@@ -1033,14 +1036,14 @@ Four choices decide whether a number here is comparable with the leaderboard:
 
 ## Benchmarks without runtime media preparation
 
-Seven benchmark families read text, structured annotations, published captions, or single
+These benchmark families read text, structured annotations, published captions, or single
 images without opening timed media, so they need neither `ffmpeg` nor a preparation pass:
 
 | Task | Unit | Corpus | Official headline |
 | --- | --- | --- | --- |
 | `locomo-refined` | one conversation | multi-session dialogue plus published image captions | `llm_judge`, the official correctness judge |
 | `memlens-32k` … `memlens-256k` | one question | dated conversation sessions, published image captions, and the release's image files | `accuracy`, the official question-type judge |
-| `longmemeval-s` | one question | its own 50-session haystack | `accuracy`, the yes/no answer-check judge |
+| `longmemeval-v2-small`, `longmemeval-v2-medium` | one distinct ordered haystack and its selected questions | web or enterprise trajectories with accessibility trees and state screenshots | `accuracy`, binary official phrase/choice rules and flaw-awareness/gotcha judges |
 | `es-memeval-qa` | one seeker | every dated seeker/supporter session and all of that seeker's QA items | non-official adapted `llm_judge`, the GPT-4o 0--2 rubric normalized to 0--1 |
 | `clbench` | one task | the reference document behind its question | `solving_rate`, the binary rubric judge |
 | `beam-100k` … `beam-10m` | one conversation | the whole transcript | Category metrics: `tau_norm` for event ordering, `llm_judge_score` otherwise |
@@ -1205,9 +1208,9 @@ other counter. Each sample additionally carries
 `recall_shape`, the shape of the plan its own answer was grounded on.
 
 `compile`'s bundle-size attributes are harness-owned (`compile()` itself carries no such attribute)
-so that adding this measurement never touched product code. Pair `compile_bundle_chars` and
-`compile_bundle_items` (in a sample's `metrics`) with that sample's answer-quality metric to compute
-"useful evidence per token" for one question; the run does not compute the ratio itself.
+and separate from provider usage. Pair `compile_bundle_chars` and `compile_bundle_items` (in a
+sample's `metrics`) with answer quality to compare utility at a given bundle size. Use measured
+provider tokens for a utility-per-token calculation.
 
 `search_e2e` and `ask_retrieval_core` must not be conflated. The former is a standalone,
 post-answer warm-store replay of each fresh product question through public `Memory.search`; all
@@ -1268,7 +1271,7 @@ independently invalidated a conclusion on this project.
 | --- | --- |
 | `random_ranker` | Retrieval recall can be high by chance. A uniformly random ranker over a small candidate pool already reaches R@10 near 1.0. |
 | `blind` | A no-memory arm can already score well, so a headline number can look strong while measuring nothing about memory. |
-| `recall_at_20` next to `recall_at_1` | R@20 is the measured retrieval ceiling on this harness, so a change in R@1 with no change in R@20 is noise. |
+| `recall_at_20` next to `recall_at_1` | Separate candidate coverage from early-rank quality. R@1 can improve with unchanged R@20; assess that gain with paired uncertainty and downstream utility. |
 
 `controls.missing` lists the absent controls, `controls.interpretable` is false whenever any is
 absent, and the run-level `controls_complete` is false if any task is uninterpretable. The console
@@ -1304,7 +1307,7 @@ which is the honest state and not a defect to paper over.
 | Family | What the release publishes | Verdict |
 | --- | --- | --- |
 | `locomo-refined` | `qa[].evidence`, a list of `dia_id` values | Exact: `dia_id` is the stored source ID |
-| `longmemeval` | `has_answer` on the answering turn, and the coarser `answer_session_ids` | Exact at turn level |
+| `longmemeval-v2` | Question-level answers and evaluation functions; ordered trajectory IDs identify the haystack | Not derivable: haystack membership is not gold evidence |
 | `es-memeval` | QA `evidence` turn IDs; event IDs are scorer-only annotations | Exact at the published session retrieval granularity: a session is gold when it contains at least one labelled visible turn |
 | `atm-bench` | `evidence_ids` naming emails and media records | Exact |
 | `mem-gallery` | `clue_ids`, the clue round IDs | Exact |
@@ -1320,22 +1323,18 @@ which is the honest state and not a defect to paper over.
 | `openeqa` | `episode_history`, which is the unit | Not derivable |
 | `video-mme-v2` | Nothing beyond the answer | Not derivable |
 
-So exact retrieval quality is measurable on six families in the catalog, plus the image-labelled
+So exact retrieval quality is measurable on five families in the catalog, plus the image-labelled
 subset of WorldMemArena. Its `recall_at_20` remains a diagnostic for those compatible source-ID
 labels, not a universal benchmark metric.
 
-The two exact labels wired here are joined differently, because the risk differs. LongMemEval marks
-the answering turn as the memories are built, so its label is exact by construction; a turn over
-the part limit becomes several opaque, source-ordered blocks and every block of a marked turn is
-gold.
-LoCoMo-Refined publishes a separate list that has to be matched onto the stored turns, so an
+LoCoMo-Refined publishes a separate evidence list that has to be matched onto the stored turns, so an
 evidence ID naming no stored turn is counted in `retrieval.unresolved_gold_evidence_ids` instead of
 being dropped. That count is the join's health: were a release's label vocabulary not the source-ID
 vocabulary after all, recall would otherwise read as a plausible number over whichever IDs happened
 to match.
 
-Produce the blind control with a second run that ingests nothing and answers every question
-through the same public path, then pass it back in:
+Produce the blind control with a second run that ingests nothing and calls the configured
+generator directly under the harness's blind prompt, then pass it back in:
 
 ```bash
 sensemem-bench eval --tasks locomo-refined --blind \
@@ -1353,9 +1352,9 @@ sensemem-bench eval --tasks locomo-refined \
 ## Noise floor
 
 Each task row carries a `noise_floor` block with the per-question standard deviation, the
-cluster-robust standard error, and `minimum_meaningful_difference`: the larger of the measured
-three-point floor and the two-run interval implied by that standard error. A difference smaller
-than that is inside the run-to-run noise band and is not a result. `--compare` rows repeat
+cluster-robust standard error, and `minimum_meaningful_difference`: the larger of the harness's configured
+three-point floor and the two-run interval implied by that standard error. This is a conservative reporting guard, not proof that a smaller effect is absent or that a
+larger effect is reproducible. Report paired intervals and independent repeats. `--compare` rows repeat
 `noise_floor` and add `below_noise_floor` for the observed delta.
 
 ## Five-layer quality diagnosis
@@ -1452,8 +1451,7 @@ error.
 Before any of that classification, a connection, timeout, rate-limit, or HTTP 5xx failure from the
 embedding, generation, or judge endpoint is retried with exponential backoff (capped at 30 seconds
 between attempts) for up to ten minutes. Such a failure describes the network at that second, not
-the answer, write, or verdict it interrupted, and one fourteen-hour run lost its `longmemeval-s`
-score to eight connection resets during judging. Only the attempt that succeeded is timed. An
+the answer, write, or verdict it interrupted. Only the attempt that succeeded is timed. An
 outage longer than the budget follows the failure policy for that stage. Generation and judge
 request failures remain per-question errors, stay in the mean, and increment `error_count`.
 Generation failures score zero. A `JudgeError` zeros only metrics requiring that judge and keeps
@@ -1467,22 +1465,9 @@ Local response parsing, score combination, cache access, and usage accounting er
 evaluation instead of being reported as wrong model answers. Such an error means the evaluator
 could not establish a score; rerun after correcting the evaluator or its inputs.
 
-The standard CLI does not persist each question inside one unfinished task. The frozen long-run
-EgoLife protocol adds that narrower behavior with an attempt-owned benchmark source overlay; it
-does not change `sensemem-bench eval`. Its private `samples.generation.journal.jsonl` writes and
-fsyncs one checksum-protected record after each completed question. A record contains the composite
-attempt, run, task, unit, question, and arm identity; raw prediction or structured error; the
-canonical expected choice; released day, question type, and audio-needed strata; and cumulative
-usage through that row. Missing questions have no journal row. The journal is never read by the
-runner and never serves as an answer or judge cache.
-
-Offline recovery accepts complete, checksum-valid records and may ignore one unterminated final
-line. It rejects earlier corruption and every duplicate composite identity, including identical
-duplicates. A finalized sample supersedes its matching journal row only when the raw prediction and
-structured error fields agree; a conflict invalidates recovery. Scoring retains the frozen roster's
-full denominator, assigning zero to missing and error outcomes. The journal can recover completed
-quality rows and cumulative usage, while provider work still in flight at process termination is
-outside the last durable usage snapshot.
+The standard CLI persists completed tasks in `samples.partial.jsonl`; it does not checkpoint each
+question inside an unfinished task. Use [response caching and resume](#resume-an-interrupted-run)
+for supported recovery, and retain incomplete artifacts as development evidence.
 
 ### Reporting cadence
 
@@ -1514,21 +1499,21 @@ Several result fields carry a caveat that decides whether they can be quoted:
   none, is still not counted. Measured under the older exact-sentence detector, an EgoLifeQA slice
   reported 2 of 51 while 14 of 51 answers read as refusals; treat the field as a lower bound and
   read the predictions before drawing a conclusion about refusal rates.
-- **Two benchmarks ask the product for a committed answer rather than a refusal.**
+- **Some tasks request a best-effort answer rather than a refusal.**
   `sensemem.benchmarks.prompts.task_answer_policy` maps each task to the `answer_policy` the
-  runner passes into `Memory.ask`, and `m3-bench-robot` and the four `mm-lifelong-*` splits are
-  `best_effort`. This is protocol alignment on the request side, not a scorer change -- their
+  runner passes into `Memory.ask`. `m3-bench-robot`, `icm-bench`, and the four `mm-lifelong-*`
+  splits use `best_effort`. This is protocol alignment on the request side, not a scorer change -- their
   official evaluations give no credit for "unknown" (both are judged against a reference answer
   with no abstention class; MM-Lifelong's judge grades semantic similarity on 0--5) and they ship
   no genuinely unanswerable item, so an abstention there is a lost point rather than a correct
   report. Every other task keeps the product default `strict`,
-  because abstaining is part of what they measure: LongMemEval and MEMLENS carry abstention
-  abilities, ATM-Bench scores abstention as a class, LoCoMo's category 5 is adversarial, and
-  Mem-Gallery's `AR` mandates its own refusal wording. Under `best_effort` the answer is still
+  with task-specific refusal instructions where supplied. MemLens and ATM-Bench test insufficient
+  evidence, and Mem-Gallery's `AR` mandates its own refusal wording. LoCoMo-Refined excludes the
+  original LoCoMo adversarial category 5. Under `best_effort` the answer is still
   reported with `abstained` set when the evidence was thin, so `abstentions` still counts it; only
   the prediction changes from a refusal to the answerer's best guess. Each `results.jsonl` task
   row and each `samples.jsonl` sample row records the `answer_policy` its product arm requested
-  (`null` for the baseline arms, which do not call `ask`), so a `best_effort` run is not
+  (or `null` when no ask policy applies, such as the PersonaMem-v3 compile surface), so a `best_effort` run is not
   silently comparable with an earlier `strict` run of the same task. `--answer-policy`, or
   `benchmark.run.answer_policy`, overrides the whole table for one run when the policy itself is
   what is being measured; the resolved `config.yaml` records it as `answer_policy_override`.
@@ -1553,7 +1538,7 @@ Several result fields carry a caveat that decides whether they can be quoted:
   `ask` exposes and `Memory.compile` exposes none, so on a `compile` task the product rows carry
   no ranked list and are neither flagged nor scored for retrieval (PersonaMem-v3 carries no gold
   source IDs in any case). The surface table is part of the response-cache namespace, so
-  widening it cannot replay a task's older `ask` answers.
+  changing it cannot replay a task's older `ask` answers.
 - **A task whose query prompt mandates a format or a refusal wording puts that wording into
   retrieval, not only into generation.** `EvalQuestion.content` is what the runner passes to
   `Memory.ask`, and `ask` takes one content input for both legs, so the instruction is matched

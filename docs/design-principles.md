@@ -1,44 +1,66 @@
 # Product goals and design principles
 
-SenseMem's product direction is an **Agentic Native Embodied Omni-Modal Memory System**: a memory
-layer designed as a native part of intelligent systems that perceive, reason, and act. Its
-reference product is an emotional companion robot. The same memory contract should also serve
-desktop robots, personal work assistants, chatbots, and voice agents without requiring a separate
-architecture.
+SenseMem's product direction is a **unified Context & Memory layer for agents, across devices,
+modalities, and models**. Context can come from chatbots, coding agents, smart glasses, phones,
+robots, or other intelligent products. These are applications of one architecture rather than
+separate product definitions.
 
-SenseMem is the memory system, not the robot, agent framework, sensor stack, or foundation model.
-It turns ordered text, image, video, and audio observations into durable memory that an agent can
-search, question, and trace back to evidence.
+SenseMem organizes information from digital interactions and the physical world into evolving
+memory, then provides useful context for the current task. The host owns goals, actions, and device
+integration; SenseMem owns memory semantics, evidence, retrieval, and context construction.
 
 > This page defines product direction and the criteria for future design decisions. It is not a
 > claim that every target is implemented in the current release. See
 > [product capabilities](product-capabilities.md) for what ships today,
 > [architecture](architecture.md) for its invariants, and
-> [plugin architecture](plugin-architecture.md) for today's extension boundary. Where this page and
-> an owning reference disagree, the reference wins and this page is the page to fix.
+> [plugin architecture](plugin-architecture.md) for today's extension boundary. The API and configuration references define the supported release contract.
 
 ## What the direction means
 
-| Term | Commitment |
+**Context** is information an agent needs for its current task. **Memory** is information retained
+and organized across time. The lifecycle connects them:
+
+**Receive context → form and maintain memory → recall for a task → build useful context.**
+
+Current interactions and temporary observations belong in this picture even when they should not
+become durable memory. The application decides what to submit for persistence; SenseMem also
+accepts transient queries and speculative recall snapshots. Broader working-context scheduling is
+part of the [Context OS direction](context-os.md), not an implicit background service today.
+
+| Dimension | Commitment |
 | --- | --- |
-| Agentic Native | Memory semantics are a first-class agent capability, not a thin wrapper over a vector database. |
-| Embodied | Time, source media, identity signals, and other evidence from the physical world remain meaningful throughout storage and retrieval. |
-| Omni-Modal | Every supported modality works independently or in an arbitrary ordered combination under one memory contract. |
-| Memory System | SenseMem owns memory semantics, retrieval orchestration, and durable local consistency while models and transports remain replaceable. |
+| Across devices and applications | Normalize different sources at application-owned boundaries and preserve the same memory semantics across supported deployments. |
+| Across modalities | Preserve original evidence and meaningful time, identity, and spatial relationships; every supported modality works alone or in a supported ordered combination. |
+| Across models | Compose replaceable inference capabilities through explicit contracts while the kernel preserves memory identity, provenance, and durable consistency. |
 
-The household companion is the reference product because it exercises the hardest requirements:
-long-lived personal context, mixed sensory input, low perceived latency, intermittent connectivity,
-sensitive data, and heterogeneous hardware. Other product forms are supported by generalizing this
-same path, not by adding product-specific forks.
+Native 3D scenes and other future modalities are extension goals. Today's text, image, video, and
+audio content contract and spatial metadata do not establish support for every future input.
 
-SenseMem pursues four product outcomes:
+## Smarter / Swifter / Stronger
 
-| Outcome | Commitment |
-| --- | --- |
-| Stronger | Target state-of-the-art memory quality independently across text-only, image-text, video, audio, and omni routes. |
-| Faster | Measure and reduce the complete ingestion, retrieval, and answer path experienced by the agent. |
-| Leaner | Reduce model, compute, memory, storage, energy, and operational cost without trading away quality or durability. |
-| Developer- and agent-friendly | Keep the API concise, typed, discoverable, structured, and consistent across every public surface. |
+These three principles are the top-level product decision criteria:
+
+| Principle | Commitment | Evidence |
+| --- | --- | --- |
+| **Smarter** | Improve memory formation, enrichment, revision, organization, and recall to give agents useful context. | Compare downstream task success, evidence accuracy, contradiction handling, and context efficiency with the same models, inputs, and budgets. |
+| **Swifter** | Let users freely combine capabilities, choose models, and extend implementations through plugins. | Measure integration effort and kernel changes needed for a new source, model, or capability; verify optional components can be enabled independently. |
+| **Stronger** | Deploy across hardware classes and pursue state-of-the-art results across a broad range of benchmarks. | Publish tested deployment configurations and reproducible quality, latency, and resource results per task and modality. |
+
+Swifter emphasizes ease of composition and adaptation. End-to-end speed and resource efficiency
+remain engineering requirements, measured alongside quality on each deployment. Concise APIs,
+structured agent interfaces, and explicit configuration support all three principles.
+
+"Everything is a plugin" means replaceable capabilities around a consistent kernel. Models,
+perception, and proposal generation can vary; evidence authority, memory identity, validation, and
+durable writes stay with the kernel. Today plugins are explicit typed objects, and memory policies
+remain kernel-owned; arbitrary policy replacement is not a shipped hook.
+
+Smarter uses formation and consolidation to propose evidence-linked changes. The kernel validates
+them and records the accepted operations; the host decides when maintenance runs.
+
+Stronger sets an ambition for broad hardware coverage and benchmark quality. Each supported
+configuration still needs verification, and each SOTA claim needs a named task and reproducible
+comparison. Fixed-model comparisons should distinguish SenseMem's contribution from the model's.
 
 ## Design goals
 
@@ -202,7 +224,7 @@ For agents:
   exit codes are stable, and stdin can carry generated input without shell quoting tricks.
 - MCP and the product CLI derive their operations from the SDK. Transport-specific encoding may
   differ, but capability, side effects, defaults, and results remain aligned. Today the CLI reaches
-  every SDK operation and MCP reaches a documented subset; see
+  every SDK operation except `ask_stream`, and MCP reaches a documented subset; see
   [current release and direction](#current-release-and-direction).
 - The CLI surface is two console scripts, not one command tree: `sensemem` for product
   operations and `sensemem-bench` for benchmarks. Product commands dispatch to `Memory`;
@@ -306,8 +328,7 @@ analysis must likewise declare accepted modalities, typed output, provenance, co
 resource lifecycle, concurrency behavior, privacy boundary, and failure mapping; the phased plan
 for that one, and the reason it starts inside the existing formation contract, is in
 [affective memory](affective-memory.md). It must not create provider branches inside `Memory` or
-treat metadata as an execution or isolation mechanism. The rule, and the one protocol currently in
-breach of it, are stated in
+treat metadata as an execution or isolation mechanism. The rule and current examples are described in
 [plugin architecture](plugin-architecture.md#admission-rule).
 
 ### Preserve evidence, privacy, and durability
@@ -344,7 +365,7 @@ an owning reference for detail. A cell that stops being true is a defect in this
 | Embedding | Caller explicitly selects a backend and model; Sentence Transformers uses standard inputs | Omni-capable recommended composition with route-specific execution |
 | Generation | Optional caller-supplied backend with explicit capabilities | Omni-capable recommended composition where the deployment supports it |
 | Speech runtime | Built-in FunASR adapter uses `AutoModel` | Additional measured runtime adapters, selected explicitly or by observable policy |
-| Extensions | The explicit model protocols in [architecture](architecture.md#model-boundary), including `ConsolidationBackend` for the memory control plane, one of them optional; no registry. Declarative configuration builds a subset of the slots; the rest are object injection only | Optional domain capabilities after a real implementation establishes the contract |
+| Extensions | The explicit model protocols in [architecture](architecture.md#model-boundary), including optional `ConsolidationBackend` for the memory control plane; no registry. Declarative configuration builds a subset of the slots; the rest are object injection only | Optional domain capabilities after a real implementation establishes the contract |
 | Hardware | Runs where Python, dependencies, and the selected models are supported | Verified device-class matrix with published quality, latency, and resource evidence |
 | Developer interfaces | Typed Python API, OpenAPI-documented REST adapter, and a JSON-only product CLI over the same composition | Same small vocabulary and time-to-first-success across supported transports |
 | Execution plane | Python SDK, REST, MCP, and the `sensemem` CLI all dispatch to one `Memory`; none of them implements its own routing, persistence, or defaults | Every surface reaches the operations the SDK publishes, with no transport gap left undocumented |
@@ -357,6 +378,7 @@ documentation remain the source of truth for what users can run now.
 
 Before adding or changing a model, runtime, plugin, or performance path, answer:
 
+- Which Smarter, Swifter, or Stronger commitment does the change advance, and how will it be verified?
 - Which real agent scenario and modality route improves?
 - What is the fallback when a requested modality is unsupported?
 - Which end-to-end quality, latency, throughput, and resource measurements justify the change?

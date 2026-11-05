@@ -1,34 +1,35 @@
 # Product capabilities
 
-SenseMem 0.2 is an embedded, local-first implementation of an **Agentic Native Embodied
-Omni-Modal Memory System**. Its reference product is an emotional companion robot; the same memory
-contract extends to desktop robots, personal work assistants, chatbots, voice agents, and other
-long-lived intelligent products.
+SenseMem is a **unified Context & Memory layer for agents, across devices, modalities, and models**.
+It organizes information from digital interactions and the physical world into evolving memory,
+then supplies evidence-backed context for the agent's current task.
 
-Omni-modal means that text, image, video, and audio can be remembered independently or in arbitrary
-ordered combinations. SenseMem turns those observations into durable records that an agent can
-retrieve, inspect as evidence, and optionally use for grounded answers. Persistent state stays in
-one local memory domain; inference may stay local or use explicitly configured remote model
-backends.
+Context is information needed now; memory is information retained and organized across time.
+The product loop is **receive context → form and maintain memory → recall for a task → build
+useful context**. Applications decide which observations to retain and when to run maintenance.
 
-Memory semantics are native to the agent runtime; physical-world evidence keeps its time, place,
-modality, and identity context; model providers and integration surfaces remain replaceable. This
-page describes what the current release implements.
+SenseMem 0.3 implements this direction as an embedded, local-first runtime. Text, image, video, and
+audio can stand alone or combine in an ordered input when the configured backends support the
+route. Original media and its time, place, and identity context remain available as evidence.
+Persistent state stays in one local memory domain; inference uses explicitly configured local or
+remote model backends. This page describes what the current release implements.
 For future direction and decision criteria, see [product goals and design
 principles](design-principles.md). To run the shortest working path, start with the
 [quick start](quickstart.md).
 
 ## Positioning and suitable use cases
 
-SenseMem fits applications that need memory to survive beyond one prompt or process session and
-need more structure than an unqualified nearest-neighbour lookup. The emotional companion robot is
-the reference case because it combines long-lived personal context, continuous multimodal
-perception, identity, low latency, privacy, and constrained hardware. Representative uses include:
+SenseMem fits applications that need to connect current interactions with durable, inspectable
+memory. Its intended sources include software agents, smart glasses, phones, robots, and other
+intelligent hardware. Each source enters through application-owned adapters; no device-specific
+SDK or cross-device synchronization service is bundled. Representative uses include:
 
-- Emotional companion and desktop robots that remember events, places, people, preferences, and
-  response guidance from mixed sensor observations.
-- Personal work assistants, chatbots, and voice agents that need durable recall, explicit deletion,
-  and evidence-backed answers across sessions.
+- Chatbots, coding agents, personal assistants, and voice agents that need recall, explicit
+  deletion, and evidence-backed context across sessions.
+- Smart-glasses and phone applications that normalize selected text, images, audio, or video into
+  observations with time and place context.
+- Companion and desktop robots that remember events, places, people, preferences, and response
+  guidance from mixed sensor observations.
 - Multimodal agents that must retain original media while using native embeddings, transcripts, or
   visual descriptions for retrieval.
 - Agent hosts that need the same memory semantics through Python, REST, MCP, or a machine-readable
@@ -36,11 +37,19 @@ perception, identity, low latency, privacy, and constrained hardware. Representa
 - Edge or private deployments that want local authoritative state while choosing local and remote
   inference capabilities independently.
 
-SenseMem pursues **stronger**, **faster**, and **leaner** memory than competing stacks: SOTA-level
-quality for every supported modality route, lower end-to-end latency, and lower model, memory,
-storage, and operational cost. These are measured product targets. A release may claim an advantage
-only with a reproducible benchmark that reports quality, latency, resources, model, runtime,
-hardware, and dataset identity together.
+The product principles connect that vision to current mechanisms and future evidence:
+
+| Principle | Current mechanisms | Validation target |
+| --- | --- | --- |
+| **Smarter** | Optional typed formation, consolidation and correction, shared retrieval, and budgeted context compilation | Better downstream task success, evidence accuracy, and context efficiency under the same model, inputs, and budget |
+| **Swifter** | Explicit backend protocols, model routers, optional extras, and application-owned source adapters | New models and capabilities compose with little or no kernel change; unused optional capabilities add no model work |
+| **Stronger** | Local authoritative state, selectable local or remote inference, and a public-SDK benchmark harness | Verified deployment across hardware classes and reproducible state-of-the-art results on a broad range of tasks |
+
+Hardware coverage and SOTA are targets, established per tested configuration. Current deployment
+requires compatible Python, dependencies, and model runtimes. The content contract supports four
+media families plus spatial metadata; arbitrary future modalities, such as native 3D scene content,
+require a new tested contract. Quality claims must report the task, model, input route, budget,
+runtime, hardware, and dataset identity together. See [design principles](design-principles.md).
 
 SenseMem adds the following product properties beyond a raw vector-search component:
 
@@ -50,6 +59,7 @@ SenseMem adds the following product properties beyond a raw vector-search compon
 | Native omni-modality | One ordered content contract for text, image, video, audio, and arbitrary mixed `omni` input | Every modality works alone or in combination, and source media is retained instead of becoming one text surrogate. |
 | User-owned input forms | Applications normalize custom capture objects, sensor events, and interaction formats at the boundary | Product-specific input can evolve without widening the memory kernel to unvalidated objects. |
 | Evidence before generation | Retrieval returns canonical records; answers return only the retrieved hits the answer backend actually used | The caller can inspect what supported an answer and handle abstention explicitly. |
+| Task-ready context | `compile()` selects evidence into typed sections within explicit item, character, and media budgets | An agent can build its own prompt from a structured bundle without requiring SenseMem to generate the answer. |
 | Embodied context | Event intervals, valid time, knowledge time, metric pose, symbolic place, speech, faces, and local identities | Recall can be constrained by when and where something was true or observed, and by who appeared. |
 | Durable local authority | SQLite and immutable media are authoritative; Zvec is a rebuildable search projection | Index loss or stale index IDs do not redefine the stored truth. |
 | One execution plane | SDK, REST, MCP, and CLI adapters dispatch to the same `Memory` kernel | Shared operations keep the same IDs, defaults, result meanings, and failure semantics. |
@@ -91,7 +101,11 @@ flowchart LR
     projection --> retrieval
     retrieval --> hydrate["SQLite hydrate, filter, and rank"]
     hydrate --> evidence["Bounded canonical evidence"]
+    evidence --> compile["Budgeted context compilation"]
+    compile --> task["Agent task"]
     evidence --> answer["Optional grounded answer"]
+    answer --> task
+    task -. "host-submitted observations" .-> capture
     answer -- "non-abstained result" --> reinforce["Reinforce declared hits"]
     reinforce --> retrieval
     interaction -. "speculative snapshots" .-> retrieval
@@ -157,7 +171,7 @@ One `data_dir` contains:
 state.sqlite3       authoritative records, FP32 embeddings, identities, evidence, and outbox
 assets/             authoritative immutable media, addressed by SHA-256
 zvec/               disposable dense and lexical search projection
-.sensemem.lock    operating-system ownership lock target
+.sensemem.lock      operating-system ownership lock target
 ```
 
 A durable write commits SQLite before applying Zvec changes. Zvec work is acknowledged only after
@@ -240,8 +254,9 @@ it as `confirmed=False` with the naming evidence in `evidence_ids`, and a compil
 lists them in `actors` as a labelled `ProvisionalActor`, so an agent can say that somebody it does
 not recognize is present rather than omitting them. Naming stays host authority: the MCP adapter
 says so in the tool descriptions and can withhold the identity tools entirely with
-`build_mcp_server(memory, identity_operations=False)`, the two analysis tools with
-`embodied_operations=False`, and every mutating tool with `write_operations=False`.
+`build_mcp_server(memory, identity_operations=False)`, the perception tool with
+`embodied_operations=False`, and explicit add/delete/reinforce tools with `write_operations=False`. Recall can still persist
+caches, reinforcement, and query-failure signals as described in the MCP reference.
 
 `forget_identity` removes the person's biometric exemplars, aliases, naming assertions, and
 indexed name while retaining the surrounding memories, media, and transcript words. It is intentionally different from
@@ -286,12 +301,13 @@ arguments, schemas, limits, and errors.
 | Reinforce | `reinforce` | `POST /v1/memories/reinforce` | `reinforce_memories` | `reinforce` |
 | List due deliberation | `consolidation_candidates` | — | — | `consolidation-candidates` |
 | Deliberate over evidence | `consolidate` | — | — | `consolidate` |
+| Process due candidates | `consolidate_pending` | — | — | `consolidate-pending` |
 | Apply one operation | `apply` | — | — | `apply` |
 | Judge one operation | `record_outcome` | — | — | `record-outcome` |
 | Cognitively forget | `forget` | — | — | `forget` |
 | Undo one operation | `rollback` | — | — | `rollback` |
 | Read the operation log | `operations` | — | — | `operations` |
-| Perception | `perceive` | `POST /v1/perception` | `perceive_memory` | `perceive` |
+| Perception | `perceive` | `POST /v1/perception`* | `perceive_memory` | `perceive` |
 | Name identity | `register_identity` | `POST /v1/identities`† | `register_identity` | `register-identity` |
 | Read identity | `identity` | `GET /v1/identities/{id}`† | `get_identity` | `identity` |
 | Reverse merge | `unlink_identity` | `POST /v1/identities/{id}/unlink`† | `unlink_identity` | `unlink-identity` |
@@ -305,12 +321,12 @@ arguments, schemas, limits, and errors.
 | Declare capabilities | `capabilities` property | `GET /healthz` | — | `--explain` resolves composition |
 | Validate loaders | — | — | — | `doctor` |
 
-The synchronous SDK therefore exposes 33 product operations, plus construction, capability
-inspection, and lifecycle. REST exposes thirteen `/v1` product routes plus `/healthz`, or twenty-two
-when the host also enables `create_app`'s `embodied_operations` (\* above) and `identity_operations`
-(† above) switches; MCP exposes thirteen tools; the product CLI exposes the SDK operations plus `doctor`,
-every operation except `ask_stream`, which needs a streaming wire format the CLI does not have. `AsyncMemory` mirrors the finite SDK operations except `forget_identity`, which currently
-requires synchronous `Memory`, and adds async stream consumption.
+REST exposes thirteen `/v1` product routes plus `/healthz`, or twenty-two when the host also
+enables `create_app`'s `embodied_operations` (* above) and `identity_operations` († above)
+switches. MCP exposes thirteen tools by default; its host can withhold tool groups. The product
+CLI exposes the SDK operations except `ask_stream`, plus `doctor`. `AsyncMemory` mirrors the
+SDK operations and adds async stream consumption. See each reference for transport-specific
+defaults and authority switches.
 
 ## Deployment and isolation model
 

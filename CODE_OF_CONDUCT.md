@@ -49,9 +49,11 @@ officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the
-community leaders responsible for enforcement through GitHub private vulnerability reporting
-(**Security → Advisories → Report a vulnerability**) or by contacting the maintainers
-directly. All complaints will be reviewed and investigated promptly and fairly.
+maintainers through a private contact method they publish on their GitHub profiles. If no private
+contact method is available, open an issue asking for a private reporting channel without naming
+the people involved or describing the incident. Security vulnerabilities use the separate
+[security reporting process](SECURITY.md). All complaints will be reviewed and investigated
+promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any
 incident.

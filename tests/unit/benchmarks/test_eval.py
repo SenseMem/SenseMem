@@ -262,7 +262,7 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         "ES-MemEval",
         "ICM-Bench",
         "LoCoMo-Refined",
-        "LongMemEval",
+        "LongMemEval-V2",
         "M3-Bench",
         "MM-Lifelong",
         "Mem-Gallery",
@@ -4217,7 +4217,7 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
 
     `_metric_breakdowns` used to resolve families from a list local to
     `eval.py`, which had drifted from the scorer registry: it raised
-    `unknown benchmark task` for `longmemeval-s`, `clbench`, `beam-*` and
+    `unknown benchmark task` for `clbench`, `beam-*` and
     `personamem-v3`, so summarising a finished run of any of them crashed.
     """
     for name, spec in TASKS.items():
@@ -4268,7 +4268,7 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
 # from the adapters in `eval_adapters.py` -- which is what a real run puts in
 # `SampleResult.metadata` -- rather than read back off `_BREAKDOWN_FIELDS`, so
 # that a family losing its breakdown turns these tests red instead of silently
-# agreeing with the regression. That is how `longmemeval`, `clbench`, `beam`
+# agreeing with the regression. That is how `clbench`, `beam`
 # and `personamem-v3` went a release reporting no breakdown at all. An empty
 # tuple means the family is expected to have no entry in the product table.
 _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
@@ -4284,7 +4284,7 @@ _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
     "supermemory-vqa": ("skill",),
     "atm-bench": ("qtype",),
     "mem-gallery": ("point",),
-    "longmemeval": ("question_type",),
+    "longmemeval-v2": ("domain", "environment", "question_type"),
     "es-memeval": ("capability",),
     "clbench": ("context_category", "sub_category"),
     "beam": ("category", "difficulty"),
@@ -6096,7 +6096,7 @@ def test_only_the_tasks_whose_protocol_credits_no_abstention_ask_for_a_guess() -
 
     M3-Bench-Robot, ICM-Bench and MM-Lifelong are judged against a reference answer on a scale with no
     abstention class, so a refusal there is a zero. Every other task measures abstention in some
-    form -- LongMemEval and MEMLENS carry abstention abilities, ATM-Bench scores it as a class,
+    form -- LongMemEval-V2 and MEMLENS carry abstention abilities, ATM-Bench scores it as a class,
     LoCoMo's category 5 is adversarial -- so asking those for a guess would be a scoring change,
     not a protocol alignment.
 

@@ -83,7 +83,7 @@ Run it:
 uv run python quickstart.py
 ```
 
-The first run may pause while the pinned local model downloads. Success ends with:
+The first run may pause while the local model downloads. Success ends with:
 
 ```text
 found: The spare key is in the blue toolbox.
@@ -152,17 +152,16 @@ from datetime import datetime, timezone
 
 from sensemem import MemoryType
 
-# Run inside an open `with Memory.from_config(...) as memory:` block.
-memory.add(
-    "Maya placed the spare key in the toolbox during the workshop.",
-    memory_type=MemoryType.EPISODIC,
-    occurred_at=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
-)
-
-hits = memory.search(
-    "What happened during the workshop?",
-    memory_type=MemoryType.EPISODIC,
-).hits
+with Memory.from_config(config) as memory:
+    memory.add(
+        "Maya placed the spare key in the toolbox during the workshop.",
+        memory_type=MemoryType.EPISODIC,
+        occurred_at=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
+    )
+    hits = memory.search(
+        "What happened during the workshop?",
+        memory_type=MemoryType.EPISODIC,
+    ).hits
 ```
 
 SenseMem also supports semantic memories for facts and procedural memories for instructions.
@@ -171,16 +170,18 @@ Event intervals, bitemporal validity, spatial scope, decay, and reinforcement ar
 
 ### Omni-modal observations
 
-With a local multimodal embedder, one record can preserve ordered text and media:
+With a local multimodal embedder, one record can preserve ordered text and media. Supply an
+existing image at `./workshop.jpg`, then reuse `config` from step 2:
 
 ```python
 from pathlib import Path
 
 # Text and image remain one observation with one stable memory ID.
-record = memory.add(
-    ("Maya is showing the blue toolbox.", Path("./workshop.jpg")),
-)
-print(record.modality, record.assets)
+with Memory.from_config(config) as memory:
+    record = memory.add(
+        ("Maya is showing the blue toolbox.", Path("./workshop.jpg")),
+    )
+    print(record.modality, record.assets)
 ```
 
 `ContentInput` accepts text, local `Path`, inline `Blob`, existing `AssetRef`, or an ordered
@@ -196,7 +197,8 @@ fails explicitly instead of silently discarding evidence.
 - An embedding model, revision, dimension, and request recipe define a durable vector space. Start a
   new directory when intentionally changing that space.
 - Local Sentence Transformers models load with `trust_remote_code=False`. Review the selected
-  model's license and use an immutable revision for reproducible deployments.
+  model's license. The loader resolves its current Hub commit and records that identity in the
+  embedding space; a later incompatible commit requires a fresh store.
 - Remote URLs are not fetched. Download and validate remote media in the host application before
   passing a `Blob` to SenseMem.
 

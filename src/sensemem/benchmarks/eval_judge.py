@@ -12,7 +12,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import replace
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
@@ -108,6 +108,7 @@ class _JudgeRequest(_JudgeRequestRequired, total=False):
     max_tokens: int
     max_completion_tokens: int
     extra_body: dict[str, object]
+    reasoning_effort: Literal["medium"]
 
 
 class _JudgeRequestError(Exception):
@@ -376,6 +377,9 @@ async def _judge_call(  # noqa: C901 - retry and provider fallback belong in one
         request["extra_body"] = extra_body
     if sampling_supported(config.model, extra_body):
         request["temperature"] = 0.0
+    if plan.parser == "longmemeval_v2" and judge_model_is_official(sample.task, config.model):
+        request["reasoning_effort"] = "medium"
+        request.pop("temperature", None)
     use_responses_api = plan.parser == "atm" and judge_model_is_official(sample.task, config.model)
     usages = []
     attempted = 0

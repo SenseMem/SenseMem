@@ -33,7 +33,8 @@ assignees: ''
 - Filesystem type:
 - Another process or instance using the same `data_dir` (yes or no):
 - Zvec version:
-- Model base URL, embedding model, and dimension (never include credentials):
+- Configured model names, embedding dimension, and provider request ID if available (omit credentials and private endpoint addresses):
+- Minimal redacted configuration:
 
 ## Logs
 

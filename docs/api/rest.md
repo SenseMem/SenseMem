@@ -1,5 +1,8 @@
 # REST API
 
+Jump to [startup](#start-the-adapter), [content](#content-input), [endpoints](#endpoints),
+[response objects](#response-objects), [errors](#error-envelope), or [input limits](#input-limits).
+
 REST and MCP share a directory's 32 request slots before body parsing or framework worker
 dispatch. Request bodies have a 30-second total read deadline; each response send has a 30-second
 deadline. Body timeout returns the retryable 503 envelope with `reason="timeout"` and
@@ -18,7 +21,7 @@ The fast-capture plane -- `capture`, `settle`, and `pending_captures` -- is alwa
 ordinary application operation on the caller's own records, not administrative authority over a
 person, so it needs no opt-in switch. Naming, reading, splitting, or erasing an identity, and
 running face or speech analysis, are different: both switches default to off, mirroring
-`build_mcp_server`'s own `identity_operations`, because REST is a network surface and the
+`build_mcp_server`'s tool groups, because REST is a network surface and the
 [interfaces model](../context-os.md#interfaces) keeps that authority host-side unless the host
 opts in. A switched-off route is never registered, so a caller gets 404 rather than 403 and cannot
 discover through the error what an enabled deployment would offer:
@@ -42,7 +45,7 @@ Install the server extra together with the extras required by the chosen backend
 server of the deployment's choosing, construct one `Memory`, and inject it:
 
 ```bash
-uv add "sensemem[local,server]" uvicorn
+uv add "sensemem[local,server]"
 ```
 
 ```python
@@ -55,7 +58,6 @@ memory = Memory.from_config(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
         },
     }
 )
@@ -96,8 +98,9 @@ shutdown and recovery.
 
 The [single-process deployment example](../deployment.md#rest-owner) keeps memory and its
 caller-owned model client in context managers around the server. Use that lifecycle when turning
-the adapter snippet above into a runnable service. Installing `server` alone does not install an
-ASGI server.
+the adapter snippet above into a runnable service. The `server` extra includes Uvicorn; another
+ASGI server can also host the adapter. MCP enables its tool groups by default, whereas both REST
+authority switches default to `False`.
 
 ## Contract
 
@@ -111,6 +114,9 @@ ordered array of 1 through 16 strict content parts. Unknown fields are rejected.
 | `input_text` | `type`, `text` | `text` is trimmed and non-blank | none |
 | `input_image` | `type` | exactly one of `image_url`, `file_id` | none |
 | `input_file` | `type` | exactly one of `file_url`, `file_data`, `file_id` | `media_type`, `filename` |
+
+The following illustrates the part shapes; replace the abbreviated media strings with complete
+base64-encoded files before sending it:
 
 ```json
 [
@@ -154,7 +160,7 @@ SDK validator and error contract.
 | `POST /v1/settle` | `settleCaptures` | `SettleRequest` | `200 {"settled":int}` |
 | `GET /v1/pending_captures` | `pendingCaptures` | `limit`, `memory_ids` query parameters | `200 {"items":[PendingCaptureResponse,...]}` |
 
-The next ten exist only when the host enables the matching switch:
+The next nine exist only when the host enables the matching switch:
 
 | Method and path | Operation ID | Input | Success | Switch |
 | --- | --- | --- | --- | --- |
@@ -197,8 +203,9 @@ Time and role behavior is defined in
 
 `POST /v1/answers/stream` sends Server-Sent Events. Each incremental model delta is one
 `event: delta` carrying `{"text":"..."}`. The final `event: result` carries the complete
-`AnswerResponse`, including the grounded hits and abstention state. Concatenating delta text gives
-the final answer. The server waits for the first SDK chunk before committing the HTTP 200 response,
+`AnswerResponse`, including the grounded hits and abstention state. Deltas may contain the
+insufficient-evidence marker; use the terminal result's cleaned `answer` as the canonical text.
+The server waits for the first SDK chunk before committing the HTTP 200 response,
 so failures before generation still use the ordinary JSON error envelope and status code. After a
 delta has committed the response, a failure ends the stream with one `event: error` carrying that
 same envelope; a stream therefore always ends with either `result` or `error` unless its client
@@ -287,7 +294,7 @@ same as `perceiveMemory`, and that recognition can corroborate and commit a cros
 merge. `POST /v1/answers` passes `Memory.ask(..., link_identities=embodied_operations)`, so a
 caller with recall access alone cannot acquire that merge authority through an answer unless the
 host has also opted `create_app` into `embodied_operations`: with the switch off, an answer may
-still identify who appears in the evidence, but the bind is never committed.
+still identify who appears in the evidence, but the cross-modal bind is never committed.
 
 `compileContext` selects and structures existing evidence, reports conflicts without resolving
 them, calls no generation model, and stores no memory. It is not a pure read: it runs the same
@@ -340,7 +347,7 @@ gone.
 `trace` object beside the unchanged `hits`. `trace.candidates` lists every candidate considered with
 its effective score components (`dense_relevance`, `dense_confidence`, `lexical_relevance`,
 `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
-`reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `rank`) and, when it
+`reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score`, `rank`) and, when it
 did not become a hit, a `rejected_by` value of `stale_index`, `occurrence_range`, `missing_memory`,
 `memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is how many
 candidates were fetched, `trace.exhaustive` says whether that bound was reached, and
@@ -548,11 +555,11 @@ REST HTTP 413 with `retryable=false`; it previously surfaced as an unclassified 
 limits. `provider_unavailable` covers temporary upstream server failures after the SDK's own retry
 budget; callers still need a bounded retry policy.
 
-The status is a function of `reason` alone, read from one table in `sensemem.api.errors`. Which
-exception class carried the failure, and which raise site produced it, do not change the answer:
-one condition has one status everywhere, and a reason with no row falls back to a coarse status
-for its `code`. Every 503 is a reason in `RETRYABLE_REASONS` and every retryable reason is a 503,
-in both directions, so a client can act on the status without also reading the reason.
+Known reasons select the status through one table in `sensemem.api.errors`, independently of
+the exception class. An absent or unmapped reason falls back to the coarse status for `code`.
+Every classified retryable reason maps to 503, but an unclassified storage failure can also use
+503 with `retryable=false`. Use the envelope's `retryable` field to decide whether to retry;
+`Retry-After: 1` accompanies retryable 503 responses.
 
 | Status | `reason` |
 | --- | --- |
@@ -579,7 +586,7 @@ REST has no route for these Python operations:
 | --- | --- |
 | `add_stream` | Send each completed observation to `POST /v1/memories` |
 | `reindex`, `optimize` | Index maintenance an operator schedules |
-| `consolidation_candidates`, `consolidate`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | No route and no MCP tool; the memory control plane stays under host authority |
+| `consolidation_candidates`, `consolidate`, `consolidate_pending`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | No route and no MCP tool; the memory control plane stays under host authority |
 
 `exportSubject` is the one place a control-plane value reaches a transport: an export carries the
 operation-log rows that moved the subject's records, because the right of access covers how the

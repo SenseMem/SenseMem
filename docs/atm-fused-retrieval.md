@@ -7,8 +7,8 @@ It does not enable offline maps or
 structured answer execution. The example is a portable configuration, not a quality guarantee or
 a completed benchmark result.
 
-Use the [YAML example](examples/atm-sgm-detail-qwen3-vl.yaml) with the
-[benchmark recipe](../benchmarks/atm_ablation_recipe.json). Run commands from the repository root:
+Use the [YAML example](examples/atm-sgm-detail-qwen3-vl.yaml) and create a local recipe below.
+Run commands from the repository root:
 relative recipe paths and YAML data paths resolve against the working directory, not the recipe
 file's directory. Install the `benchmarks`, `openai` and `reranking` extras as described in
 [Contributing](../CONTRIBUTING.md#setup); this guide does not install or launch model services.
@@ -44,12 +44,11 @@ no offline gazetteer is configured. `query_vision: true` does not create a visio
 
 ## Configure services and credentials locally
 
-Copy the example and recipe into an ignored directory:
+Copy the YAML example into an ignored directory:
 
 ```bash
 mkdir -p .benchmarks/atm-config
 cp docs/examples/atm-sgm-detail-qwen3-vl.yaml .benchmarks/atm-config/retrieval.yaml
-cp benchmarks/atm_ablation_recipe.json .benchmarks/atm-config/retrieval.json
 ```
 
 Edit the local YAML's three `base_url` values to reach your embedding, generation and judge
@@ -57,9 +56,9 @@ services. The localhost URLs are placeholders. Keep the configured model names a
 only when the services actually provide them. If input files live elsewhere, change
 `benchmark.download.benchmarks_root` and the recipe's `raw_media_root` accordingly. Set the
 recipe's `artifact_root` and `variant` to a new unused output location for each independent run.
-Set `source_store` to the physical data directory of an existing closed, compatible corpus store;
-the shipped path `.benchmarks/atm-source-store` is a caller-supplied local input, not a store
-created or downloaded by this recipe.
+Set `source_store` to the physical data directory of an existing closed, compatible corpus store,
+or use `null` for a new corpus. The path is a caller-supplied local input, not a store created or
+downloaded by this recipe.
 
 Do not put credentials in either file. The embedding client uses the SDK's `OPENAI_API_KEY` when
 its `api_key` is omitted. The benchmark generation client uses
@@ -69,7 +68,8 @@ private shell environment. A service that ignores credentials can receive its re
 value through the same environment. Explicit YAML URLs take precedence over URL environment
 defaults. The configuration does not interpolate `${ENV}` or support an `api_key_env` field.
 
-After all YAML edits, bind the local recipe to those exact bytes:
+After all YAML edits, create a local recipe bound to those exact bytes. Adjust the paths and
+variant for your run before executing this snippet:
 
 ```python
 import hashlib
@@ -78,10 +78,19 @@ from pathlib import Path
 
 config = Path(".benchmarks/atm-config/retrieval.yaml")
 path = Path(".benchmarks/atm-config/retrieval.json")
-recipe = json.loads(path.read_text())
-recipe["base_config_path"] = str(config)
-recipe["base_config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
-path.write_text(json.dumps(recipe, indent=2) + "\n")
+recipe = {
+    "base_config_path": str(config),
+    "base_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+    "artifact_root": ".benchmarks/atm-runs",
+    "variant": "native-image-video-pooled",
+    "raw_media": True,
+    "raw_media_root": ".benchmarks/atm-inputs/atm-bench/data/raw_memory",
+    "source_store": None,
+    "stage": "full",
+    "preflight": False,
+    "measure_search_replay": False,
+}
+path.write_text(json.dumps(recipe, indent=2) + "\n", encoding="utf-8")
 ```
 
 This creates a new configuration hash. It does not retain the identity of any earlier private
@@ -97,8 +106,8 @@ checks assembly and input identities; it is not a model quality test.
 For the full local recipe, keep `preflight: false` and `stage: full`:
 
 ```bash
-PYTHONPATH=src PYTHONHASHSEED=6 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-  python benchmarks/atm_structural_ablation.py --recipe .benchmarks/atm-config/retrieval.json
+PYTHONHASHSEED=6 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  uv run --frozen python benchmarks/atm_structural_ablation.py --recipe .benchmarks/atm-config/retrieval.json
 ```
 
 The runner uses all 1,013 questions, fresh predictions and judgments, and request/unit/ingest/judge
@@ -107,7 +116,7 @@ concurrency 16. Each variant has its own physical `stores/` and `results/` direc
 which is not an independent fresh run. Keep private inputs, artifacts and credentials outside
 versioned files. Results include private questions and answers; the example does not publish them.
 
-The shipped recipe reuses authoritative vectors from `source_store`. The runner verifies source
+When `source_store` is set, the runner reuses its authoritative vectors. It verifies source
 text, timestamps and asset bytes through the public SDK, copies to a distinct directory, checks
 authoritative embedding fingerprints, and reindexes the copy. Never point this check at a running
 store. Copying vectors does not reuse answer or judge caches. The source store must match the
@@ -120,8 +129,8 @@ bytes, so that is a different input state for evaluation.
 
 ## Interpret the policy and outputs
 
-Qwen is pinned to `Qwen/Qwen3-VL-Reranker-8B` revision
-`b212dc8c91a8164aef1ea2de9c1a867611e75c04`. Every eligible pair's text and original visual media
+The example loads `Qwen/Qwen3-VL-Reranker-8B` without an explicit revision; the adapter resolves
+its Hub commit before loading. Every eligible pair's text and original visual media
 are assembled automatically and submitted together to vLLM's yes/no classifier. Each document
 contains at most three query-related original-text windows, totaling at most 1,200 codepoints,
 with its original images and videos. Captions do not replace visual evidence.

@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from functools import cache
 from pathlib import Path
 from typing import Literal, TypeAlias, TypeVar, cast
 
@@ -275,7 +276,15 @@ class MediaResolver:
             raise FileNotFoundError(f"{self.task_name} has no media for unit {unit_id}")
         return tuple(MemoryItem(Path(path).stem, (path,)) for path in paths)
 
-    def path(self, value: str) -> Path:
+    def path(self, value: str, *, exact: bool = False) -> Path:
+        if exact:
+            if self.root is None:
+                raise FileNotFoundError(f"{self.task_name} needs a media root for {value}")
+            root = self.root.resolve()
+            candidate = (root / value).resolve()
+            if candidate.is_relative_to(root) and candidate.is_file():
+                return candidate
+            raise FileNotFoundError(f"media not found under {self.root}: {value}")
         return self._resolve(value)
 
     def _memory_part(self, part: MediaPart) -> MemoryItem:
@@ -449,6 +458,7 @@ def load_task(
     if task_manifest is not None and task_manifest.units:
         inputs["media_manifest"] = task_manifest.input_sha256
     inputs["memory"] = _memory_digest(units)
+    inputs.update(_question_media_digests(units))
     unavailable_units = _selected_unavailable_units(
         spec,
         dataset,
@@ -497,10 +507,30 @@ def _directory_input_digests(path: Path) -> tuple[str, str]:
     return digest, hashlib.sha256(layout.encode()).hexdigest()
 
 
+def _question_media_digests(units: Sequence[EvalUnit]) -> dict[str, str]:
+    media = tuple(
+        (question.question_id, part.resolve())
+        for unit in units
+        for question in unit.questions
+        for part in question.content
+        if isinstance(part, Path)
+    )
+    if not media:
+        return {}
+    digests = _file_digests(tuple(dict.fromkeys(path for _, path in media)))
+    payload = tuple((question_id, digests[path]) for question_id, path in media)
+    return {
+        "question_media": hashlib.sha256(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).hexdigest()
+    }
+
+
 def _memory_digest(units: Sequence[EvalUnit]) -> str:
     paths = tuple(
-        dict.fromkeys(
-            content.resolve()
+        path.resolve()
+        for path in dict.fromkeys(
+            content
             for unit in units
             for memory in unit.memories
             for content in memory.content
@@ -509,14 +539,18 @@ def _memory_digest(units: Sequence[EvalUnit]) -> str:
     )
     file_digests = _file_digests(paths)
 
+    @cache
     def identity(value: str | Path) -> tuple[str, ...]:
         if isinstance(value, str):
             return ("text", hashlib.sha256(value.encode("utf-8")).hexdigest())
         path = value.resolve()
         return ("file", path.name, file_digests[path])
 
-    payload = tuple(
-        (
+    digest = hashlib.sha256(b"[")
+    for index, unit in enumerate(units):
+        if index:
+            digest.update(b",")
+        payload = (
             unit.unit_id,
             tuple(
                 (
@@ -530,10 +564,9 @@ def _memory_digest(units: Sequence[EvalUnit]) -> str:
                 for memory in unit.memories
             ),
         )
-        for unit in units
-    )
-    encoded = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+        digest.update(json.dumps(payload, allow_nan=False, separators=(",", ":")).encode())
+    digest.update(b"]")
+    return digest.hexdigest()
 
 
 def _locomo(
@@ -1366,9 +1399,8 @@ def _text_memories(
     skips **every** question in that unit -- so one long turn silently voids a
     whole conversation. Measured on the pinned releases: BEAM turns reach
     348,864 characters and 7 of the 10 conversations in its 10M tier hold one,
-    which would have left 70% of that tier unjudged; LongMemEval has one turn
-    of 76,594. Text under the block size is stored unchanged, so only the long
-    passages are split.
+    which would have left 70% of that tier unjudged. Text under the block size stays unchanged;
+    only longer passages are split.
     """
     blocks = _text_blocks(text, _TEXT_BLOCK_CHARACTERS)
     if len(blocks) == 1:
@@ -1384,68 +1416,95 @@ def _text_memories(
     )
 
 
-def _longmemeval(
-    _spec: TaskSpec,
+def _longmemeval_v2(
+    spec: TaskSpec,
     dataset: Path,
-    _media: MediaResolver,
-    _root: Path,
+    media: MediaResolver,
+    root: Path,
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.longmemeval import load_longmemeval
+    from sensemem.benchmarks.longmemeval_v2 import (
+        LongMemEvalV2Question,
+        load_longmemeval_v2_haystacks,
+        load_longmemeval_v2_questions,
+        load_longmemeval_v2_trajectories,
+        question_prompt,
+    )
 
-    units = []
-    for question in _selected(load_longmemeval(dataset), limit, offset):
-        # The release marks the answer-bearing turn itself (`has_answer`), which is
-        # finer than the `answer_session_ids` it also publishes, so gold evidence is
-        # exact here. It is collected while the memories are built because one turn
-        # over the part limit is stored as several `_B####` blocks and every block of
-        # a marked turn is gold; reconstructing that split afterwards would guess at
-        # a convention this loop already knows.
+    questions = load_longmemeval_v2_questions(dataset)
+    haystacks = load_longmemeval_v2_haystacks(
+        root / f"longmemeval-v2/haystacks/lme_v2_{spec.variant}.json"
+    )
+    if set(haystacks) != {question.id for question in questions}:
+        raise ValueError("LongMemEval-V2 questions and haystack IDs must agree")
+    selected = _selected(questions, limit, offset)
+    if not selected:
+        return ()
+    trajectories = load_longmemeval_v2_trajectories(
+        root / "longmemeval-v2/trajectories.jsonl",
+        {trajectory_id for question in selected for trajectory_id in haystacks[question.id]},
+    )
+    # Shared ordered haystacks own one store, just as in the upstream harness.
+    # Different domains or orders never share a physical memory directory.
+    groups: dict[tuple[str, tuple[str, ...]], list[LongMemEvalV2Question]] = {}
+    for question in selected:
+        ids = haystacks[question.id]
+        if any(trajectories[trajectory_id].domain != question.domain for trajectory_id in ids):
+            raise ValueError("LongMemEval-V2 haystack contains a cross-domain trajectory")
+        groups.setdefault((question.domain, ids), []).append(question)
+
+    # Medium has 447 ordered haystacks over 1,473 distinct trajectories. Reuse
+    # immutable state items instead of copying their observations into every unit.
+    trajectory_memories: dict[str, tuple[MemoryItem, ...]] = {}
+    for trajectory_id, trajectory in trajectories.items():
         memories: list[MemoryItem] = []
-        answer_ids: list[str] = []
-        for session in question.sessions:
-            for turn in session.turns:
-                if not turn.content.strip():
-                    continue
-                items = _text_memories(
-                    turn.turn_id,
-                    f"[{session.occurred_at.isoformat()}] {turn.role}: {turn.content}",
-                    occurred_at=session.occurred_at,
+        for state in trajectory.states:
+            text = (
+                f"Trajectory: {trajectory_id}\nGoal: {trajectory.goal}\n"
+                f"Outcome: {trajectory.outcome}\nStart URL: {trajectory.start_url}\n"
+                f"State: {state.state_index}\nStep: {state.step}\nURL: {state.url}\n"
+                f"Action: {state.action or ''}\nThought: {state.thought or ''}\n"
+                f"Observation:\n{state.accessibility_tree}"
+            )
+            items = _text_memories(f"T{trajectory_id}_S{state.state_index:04d}", text)
+            if state.screenshot is not None:
+                items = (
+                    replace(
+                        items[0],
+                        content=(*items[0].content, media.path(state.screenshot, exact=True)),
+                    ),
+                    *items[1:],
                 )
-                # Release source labels encode answer and abstention annotations. Assign
-                # opaque IDs after filtering and splitting so those labels stay evaluator-only
-                # while the stored content, event time, and block boundaries remain unchanged.
-                items = tuple(
-                    replace(item, source_id=f"M{len(memories) + index:06d}")
-                    for index, item in enumerate(items)
-                )
-                memories.extend(items)
-                if turn.has_answer:
-                    answer_ids.extend(item.source_id for item in items)
+            memories.extend(items)
+        trajectory_memories[trajectory_id] = tuple(memories)
+    units = []
+    for (domain, ids), grouped_questions in groups.items():
+        eval_questions = tuple(
+            EvalQuestion(
+                question.id,
+                (question_prompt(question),)
+                + (() if question.image is None else (media.path(question.image, exact=True),)),
+                (question.answer,),
+                metadata={
+                    "domain": question.domain,
+                    "environment": question.environment,
+                    "question_type": question.question_type,
+                    "eval_function": question.eval_function,
+                    "abstention": question.question_type.endswith("-abs"),
+                    "haystack_size": len(ids),
+                },
+                source_question=question.question,
+                refusal=r"\boxed{UNKNOWN}",
+            )
+            for question in grouped_questions
+        )
+        haystack_id = hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
         units.append(
             EvalUnit(
-                question.question_id,
-                tuple(memories),
-                (
-                    EvalQuestion(
-                        question.question_id,
-                        (_free_text_prompt(question.question),),
-                        (question.reference_answer,),
-                        metadata={
-                            "question_type": question.question_type,
-                            "abstention": question.abstention,
-                            "evidence_ids": tuple(answer_ids),
-                            "answer_session_ids": tuple(
-                                session.session_id
-                                for session in question.sessions
-                                if session.is_answer_session
-                            ),
-                        },
-                        reference_at=question.question_date,
-                        source_question=question.question,
-                    ),
-                ),
+                f"{domain}-{haystack_id[:16]}",
+                tuple(item for trajectory_id in ids for item in trajectory_memories[trajectory_id]),
+                eval_questions,
             )
         )
     return tuple(units)
@@ -1758,7 +1817,8 @@ _LOADERS = {
     "atm-bench-main-sgm": _atm,
     "atm-bench-hard-sgm": _atm,
     "mem-gallery": _mem_gallery,
-    "longmemeval-s": _longmemeval,
+    "longmemeval-v2-small": _longmemeval_v2,
+    "longmemeval-v2-medium": _longmemeval_v2,
     "es-memeval-qa": _es_memeval,
     "clbench": _clbench,
     "beam-100k": _beam,

@@ -36,11 +36,20 @@ from sensemem.benchmarks._official.clbench_judge import (
     parse_grading_response as parse_clbench,
 )
 from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
-from sensemem.benchmarks._official.longmemeval_prompts import (
-    build_answer_check_prompt as build_longmemeval_prompt,
+from sensemem.benchmarks._official.longmemeval_v2_scoring import (
+    SCORER_VERSION as LONGMEMEVAL_V2_SCORER_VERSION,
 )
-from sensemem.benchmarks._official.longmemeval_prompts import (
-    parse_answer_check as parse_longmemeval,
+from sensemem.benchmarks._official.longmemeval_v2_scoring import (
+    deterministic_score as longmemeval_v2_score,
+)
+from sensemem.benchmarks._official.longmemeval_v2_scoring import (
+    judge_messages as longmemeval_v2_messages,
+)
+from sensemem.benchmarks._official.longmemeval_v2_scoring import (
+    parse_eval_spec as longmemeval_v2_rule,
+)
+from sensemem.benchmarks._official.longmemeval_v2_scoring import (
+    parse_judgement as parse_longmemeval_v2,
 )
 from sensemem.benchmarks._official.memlens_prompts import (
     build_judge_prompt as build_memlens_prompt,
@@ -103,7 +112,7 @@ class JudgePlan:
         "mm_lifelong",
         "atm",
         "gallery",
-        "longmemeval",
+        "longmemeval_v2",
         "clbench",
         "beam",
         "beam_event",
@@ -132,7 +141,7 @@ _PROTOCOLS = {
     "supermemory-vqa": "supermemory_vqa_metrics_1d228e0f1004",
     "atm-bench": "atm_bench_scorer_ef4e5dff1a47_minimal_v3",
     "mem-gallery": "mem_gallery_scorer_a93959e1e978_v2",
-    "longmemeval": "longmemeval_anscheck_2ec2a557f339",
+    "longmemeval-v2": LONGMEMEVAL_V2_SCORER_VERSION,
     "clbench": "clbench_binary_rubric_b28a5832a09b",
     "beam": "beam_unified_rubric_3e12035532eb",
     "personamem-v3": "personamem_v3_rubric_7b00a090b35b_ranking_ad80a3b1b322",
@@ -149,9 +158,7 @@ _OFFICIAL_JUDGE_MODELS = {
     "mm-lifelong": "gpt-5",
     "atm-bench": "gpt-5-mini",
     "mem-gallery": "qwen2.5-72b-instruct",
-    # `evaluate_qa.py`'s `model_zoo` offers three metric models; the released
-    # results are the GPT-4o ones.
-    "longmemeval": "gpt-4o-2024-08-06",
+    "longmemeval-v2": "gpt-5.2",
     # `eval.py --judge-model` default.
     "clbench": "gpt-5.1",
     # `src/llm.py: gpt_llm_obj`, the client every `evaluate_*` is handed.
@@ -203,7 +210,7 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
             "retrieval_hit@10",
         }
     ),
-    "longmemeval": frozenset({"accuracy"}),
+    "longmemeval-v2": frozenset({"accuracy"}),
     "clbench": frozenset({"solving_rate", "requirement_ratio"}),
     "beam": frozenset({"llm_judge_score", "precision", "recall", "f1", "tau_norm", "final_score"}),
     # Everything `_official/personamem_v3_scoring.py` emits: the unified rubric's `pr_` dims
@@ -254,7 +261,7 @@ _JUDGE_METRICS = {
     "mm-lifelong": frozenset({"answer_accuracy", "judge_score_0_5"}),
     "atm-bench": frozenset({"accuracy"}),
     "mem-gallery": frozenset({"llm_judge"}),
-    "longmemeval": frozenset({"accuracy"}),
+    "longmemeval-v2": frozenset({"accuracy"}),
     "clbench": frozenset({"solving_rate", "requirement_ratio"}),
     "beam": frozenset({"llm_judge_score", "precision", "recall", "f1", "tau_norm", "final_score"}),
     "personamem-v3": frozenset(
@@ -343,7 +350,7 @@ def task_primary_metric(task: str) -> str:
         "supermemory-vqa": "qa_accuracy",
         "atm-bench": "accuracy",
         "mem-gallery": "f1",
-        "longmemeval": "accuracy",
+        "longmemeval-v2": "accuracy",
         "clbench": "solving_rate",
         # Upstream publishes one column per category and uses `tau_norm` for event ordering.
         # This mixed per-row selector is useful as a runner headline but is not itself upstream.
@@ -444,8 +451,7 @@ def retrieval_gold_ids(task: str, metadata: Mapping[str, object]) -> tuple[str, 
     """Return the gold source IDs one question's retrieval diagnostics score against.
 
     Any adapter that labels a question with stored source IDs gets the ranked retrieval query and
-    a measured recall; keying this on two families left LoCoMo and LongMemEval, which carry exact
-    turn-level labels, with a recall number computed from the generator's citations instead.
+    a measured recall, rather than a recall number computed from the generator's citations.
     Groups are flattened: every member is a source the ranked query has to be able to reach.
     """
     del task
@@ -488,6 +494,11 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
         return {metric: score}
     if family == "videozerobench":
         return local_metrics(cast(int, metadata["level"]), references[0], prediction, metadata)
+    if family == "longmemeval-v2":
+        v2_score = longmemeval_v2_score(
+            longmemeval_v2_rule(str(metadata["eval_function"])), prediction, references[0]
+        )
+        return {} if v2_score is None else {"accuracy": v2_score}
     if family == "locomo-refined":
         normalized = _locomo_prediction(prediction)
         if any(normalized == reference for reference in references):
@@ -713,15 +724,17 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             .replace("{{prediction}}", prediction)
         )
         return JudgePlan(protocol, "atm", ((JudgeMessage("user", prompt),),), 600)
-    if family == "longmemeval":
-        prompt = build_longmemeval_prompt(
-            str(metadata.get("question_type", "")),
-            question,
-            references[0],
-            prediction,
-            abstention=bool(metadata.get("abstention")),
+    if family == "longmemeval-v2":
+        rule = longmemeval_v2_rule(str(metadata["eval_function"]))
+        if longmemeval_v2_score(rule, prediction, reference) is not None:
+            return None
+        judge_system, judge_user = longmemeval_v2_messages(rule, question, reference, prediction)
+        return JudgePlan(
+            protocol,
+            "longmemeval_v2",
+            ((JudgeMessage("system", judge_system), JudgeMessage("user", judge_user)),),
+            4096,
         )
-        return JudgePlan(protocol, "longmemeval", ((JudgeMessage("user", prompt),),), 10)
     if family == "clbench":
         prompt = build_clbench_prompt(build_clbench_rubrics(references), prediction)
         return JudgePlan(protocol, "clbench", ((JudgeMessage("user", prompt),),))
@@ -882,8 +895,8 @@ def parse_judge_response(  # noqa: C901 - mirrors seven incompatible upstream pa
         return {"answer_accuracy": mapped, "judge_score_0_5": float(raw)}
     if plan.parser == "atm":
         return {"accuracy": float(_atm_judge_accuracy(response))}
-    if plan.parser == "longmemeval":
-        return {"accuracy": float(parse_longmemeval(response))}
+    if plan.parser == "longmemeval_v2":
+        return {"accuracy": parse_longmemeval_v2(response)}
     if plan.parser == "clbench":
         score, ratio = parse_clbench(response)
         return {"solving_rate": score, "requirement_ratio": ratio}

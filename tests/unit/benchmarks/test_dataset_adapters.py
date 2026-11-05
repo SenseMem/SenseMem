@@ -7,6 +7,7 @@ version of these loaders rejected or mishandled.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,8 +21,7 @@ from sensemem.benchmarks.clbench import (
     split_question,
 )
 from sensemem.benchmarks.download import _patterns
-from sensemem.benchmarks.eval_adapters import LoadedTask, load_task
-from sensemem.benchmarks.longmemeval import load_longmemeval
+from sensemem.benchmarks.eval_adapters import load_task
 from sensemem.benchmarks.memlens import load_memlens
 from sensemem.benchmarks.openeqa import OPENEQA_SPLITS, episode_frames, load_openeqa
 from sensemem.benchmarks.personamem_v3 import (
@@ -29,7 +29,7 @@ from sensemem.benchmarks.personamem_v3 import (
     render_candidates,
     render_event,
 )
-from sensemem.benchmarks.task_catalog import TASKS
+from sensemem.benchmarks.task_catalog import TASKS, expand
 
 
 def _write(path: Path, payload: object) -> Path:
@@ -38,85 +38,14 @@ def _write(path: Path, payload: object) -> Path:
     return path
 
 
-def _longmemeval_question(**overrides: object) -> dict[str, object]:
-    question: dict[str, object] = {
-        "question_id": "q1",
-        "question_type": "single-session-user",
-        "question": "What degree did I graduate with?",
-        "answer": "Business Administration",
-        "question_date": "2023/05/30 (Tue) 23:40",
-        "haystack_dates": ["2023/05/20 (Sat) 02:21"],
-        "haystack_session_ids": ["s1"],
-        "haystack_sessions": [[{"role": "user", "content": "I studied business."}]],
-        "answer_session_ids": ["s1"],
-    }
-    question.update(overrides)
-    return question
-
-
-def test_longmemeval_keeps_numeric_answers_and_repeated_sessions(tmp_path: Path) -> None:
-    dataset = _write(
-        tmp_path / "longmemeval_s",
-        [
-            _longmemeval_question(question_id="numeric", answer=1300),
-            _longmemeval_question(
-                question_id="repeat",
-                haystack_dates=["2023/05/20 (Sat) 02:21", "2023/05/24 (Wed) 06:24"],
-                haystack_session_ids=["shared", "shared"],
-                haystack_sessions=[
-                    [{"role": "user", "content": "same turns"}],
-                    [{"role": "user", "content": "same turns"}],
-                ],
-                answer_session_ids=["shared"],
-            ),
-            _longmemeval_question(
-                question_id="empty",
-                haystack_sessions=[[]],
-                answer_session_ids=[],
-            ),
-        ],
+def test_longmemeval_catalog_only_accepts_the_current_release() -> None:
+    assert expand(("longmemeval-v2",)) == (
+        "longmemeval-v2-small",
+        "longmemeval-v2-medium",
     )
-
-    questions = {question.question_id: question for question in load_longmemeval(dataset)}
-
-    # 32 of the 500 released answers are JSON numbers rather than strings.
-    assert questions["numeric"].reference_answer == "1300"
-    # 15 questions plant one session ID twice at different dates; both copies
-    # are kept and their turns stay individually addressable.
-    repeated = questions["repeat"]
-    assert [session.session_id for session in repeated.sessions] == ["shared", "shared"]
-    assert [session.position for session in repeated.sessions] == [0, 1]
-    turn_ids = [turn.turn_id for session in repeated.sessions for turn in session.turns]
-    assert len(set(turn_ids)) == len(turn_ids)
-    # 1,230 released sessions carry no turns at all.
-    assert questions["empty"].sessions[0].turns == ()
-
-
-def test_longmemeval_reads_dates_without_a_locale_and_flags_abstention(tmp_path: Path) -> None:
-    dataset = _write(
-        tmp_path / "longmemeval_s",
-        [
-            _longmemeval_question(question_id="plain"),
-            _longmemeval_question(question_id="q2_abs"),
-        ],
-    )
-
-    questions = {question.question_id: question for question in load_longmemeval(dataset)}
-
-    # The weekday is matched by pattern; `strptime("%a")` would read the
-    # process locale and reject every date under a non-English one.
-    assert questions["plain"].question_date.isoformat() == "2023-05-30T23:40:00+00:00"
-    assert questions["plain"].sessions[0].occurred_at.isoformat() == "2023-05-20T02:21:00+00:00"
-    # Upstream derives the abstention judge from the ID, not from a field.
-    assert questions["plain"].abstention is False
-    assert questions["q2_abs"].abstention is True
-
-    bad = _write(
-        tmp_path / "bad",
-        [_longmemeval_question(question_date="2023-05-30 23:40")],
-    )
-    with pytest.raises(ValueError, match="invalid LongMemEval date"):
-        load_longmemeval(bad)
+    for legacy in ("longmemeval", "longmemeval-s", "longmemeval-m", "longmemeval-oracle"):
+        with pytest.raises(ValueError, match="unknown task:"):
+            expand((legacy,))
 
 
 def test_memlens_reads_direct_and_data_wrapped_releases_without_changing_root_errors(
@@ -578,9 +507,10 @@ def test_download_patterns_cover_extensionless_files_and_pinned_directories() ->
         release = root / Path(spec.dataset).parts[0]
         return _patterns(spec, dataset, dataset, dataset.relative_to(release).as_posix())
 
-    # `longmemeval_s` is a 278 MB JSON file with no extension. Asking only for
-    # `longmemeval_s/*` matched nothing while the download reported success.
-    assert patterns_for("longmemeval-s") == ("longmemeval_s", "longmemeval_s/*")
+    # A suffix-less file must be offered as a file and as a directory glob.
+    spec = replace(TASKS["clbench"], dataset="fixture/annotations")
+    dataset = spec.dataset_path(root)
+    assert _patterns(spec, dataset, dataset, "annotations") == ("annotations", "annotations/*")
     assert patterns_for("clbench") == ("CL-bench.jsonl",)
     # A directory input may pin exactly the files its loader opens.
     assert patterns_for("beam-100k") == (
@@ -1051,66 +981,6 @@ def test_question_clock_uses_original_text_and_preserves_explicit_dates() -> Non
     assert anchored.questions[1].reference_at == datetime(2024, 5, 2, tzinfo=timezone.utc)
 
 
-def test_longmemeval_labels_the_answer_turn_and_every_block_it_was_split_into(
-    tmp_path: Path,
-) -> None:
-    """`has_answer` marks the turn, which is finer than `answer_session_ids`.
-
-    A turn over the part limit is stored as several blocks, and every block of a
-    marked turn is gold: labelling only one block would score a correct retrieval
-    as a miss on exactly the long turns that motivated the split.
-    """
-    from sensemem.benchmarks.eval_adapters import _TEXT_BLOCK_CHARACTERS, load_task
-
-    long_answer = "\n\n".join(["Juno is a beagle." * 40] * 15)
-    assert len(long_answer) > _TEXT_BLOCK_CHARACTERS
-    _write(
-        tmp_path / "longmemeval" / "longmemeval_s",
-        [
-            _longmemeval_question(
-                question_id="turn-level",
-                haystack_dates=["2023/05/20 (Sat) 02:21", "2023/05/21 (Sun) 02:21"],
-                haystack_session_ids=["s1", "s2"],
-                haystack_sessions=[
-                    [
-                        {"role": "user", "content": "Anything new?"},
-                        {"role": "assistant", "content": "Not really."},
-                    ],
-                    [
-                        {"role": "user", "content": "Tell me about the dog."},
-                        {
-                            "role": "assistant",
-                            "content": long_answer,
-                            "has_answer": True,
-                        },
-                        # Skipped at ingest, so it can never be gold.
-                        {"role": "user", "content": "   ", "has_answer": True},
-                    ],
-                ],
-                answer_session_ids=["s2"],
-            )
-        ],
-    )
-
-    unit = load_task(TASKS["longmemeval-s"], root=tmp_path, verify_digest=False).units[0]
-    (question,) = unit.questions
-    stored = tuple(item.source_id for item in unit.memories)
-    gold = question.metadata["evidence_ids"]
-
-    assert stored == (
-        "M000000",
-        "M000001",
-        "M000002",
-        "M000003",
-        "M000004",
-    )
-    assert gold == ("M000003", "M000004")
-    assert set(gold) <= set(stored)
-    # The coarser session label the release also publishes stays available and stays
-    # separate: it is not a source-level ID and must not be read as one.
-    assert question.metadata["answer_session_ids"] == ("s2",)
-
-
 def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     tmp_path: Path,
 ) -> None:
@@ -1132,103 +1002,6 @@ def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     )
     assert _memory_content(MemoryItem("t", ("hello",))) == "[source_id: t]\nhello"
     assert _memory_content(MemoryItem("t", ("hello", clip))) == ("[source_id: t]\nhello", clip)
-
-
-def test_longmemeval_source_labels_are_evaluator_only(tmp_path: Path) -> None:
-    """Changing release labels cannot change stored memories or their gold join."""
-    from sensemem.benchmarks.eval import (
-        _cache_task,
-        _memory_content,
-        _memory_metadata,
-    )
-    from sensemem.benchmarks.longmemeval import LONGMEMEVAL_ADAPTER_VERSION
-
-    def load_with_labels(first: str, second: str) -> LoadedTask:
-        _write(
-            tmp_path / "longmemeval" / "longmemeval_s",
-            [
-                _longmemeval_question(
-                    question_id="opaque-labels",
-                    haystack_dates=[
-                        "2023/05/20 (Sat) 02:21",
-                        "2023/05/21 (Sun) 03:22",
-                    ],
-                    haystack_session_ids=[first, second],
-                    haystack_sessions=[
-                        [
-                            {
-                                "role": "user",
-                                "content": "The literal _answer_ token belongs in my note.",
-                            }
-                        ],
-                        [
-                            {
-                                "role": "assistant",
-                                "content": "The appointment is Tuesday.",
-                                "has_answer": True,
-                            }
-                        ],
-                    ],
-                    answer_session_ids=[second],
-                )
-            ],
-        )
-        return load_task(TASKS["longmemeval-s"], root=tmp_path, verify_digest=False)
-
-    plain = load_with_labels("plain-first", "plain-second")
-    labelled = load_with_labels("release_answer_7_abs", "answer_session_answer_9")
-    plain_unit = plain.units[0]
-    labelled_unit = labelled.units[0]
-
-    assert plain_unit.memories == labelled_unit.memories
-    assert tuple(item.source_id for item in labelled_unit.memories) == (
-        "M000000",
-        "M000001",
-    )
-    assert len({item.source_id for item in labelled_unit.memories}) == len(labelled_unit.memories)
-    assert tuple(_memory_content(item) for item in plain_unit.memories) == tuple(
-        _memory_content(item) for item in labelled_unit.memories
-    )
-    assert tuple(_memory_metadata(item) for item in plain_unit.memories) == tuple(
-        _memory_metadata(item) for item in labelled_unit.memories
-    )
-    assert "_answer_" in str(_memory_content(labelled_unit.memories[0]))
-    assert all(
-        metadata["source_id"] == item.source_id
-        for item, metadata in ((item, _memory_metadata(item)) for item in labelled_unit.memories)
-    )
-    assert plain_unit.questions[0].metadata["evidence_ids"] == ("M000001",)
-    assert labelled_unit.questions[0].metadata["evidence_ids"] == ("M000001",)
-    assert (
-        plain_unit.questions[0].metadata["answer_session_ids"]
-        != labelled_unit.questions[0].metadata["answer_session_ids"]
-    )
-    assert LONGMEMEVAL_ADAPTER_VERSION == "longmemeval_official_v2"
-    assert TASKS["longmemeval-s"].adapter_version == LONGMEMEVAL_ADAPTER_VERSION
-    assert f":{LONGMEMEVAL_ADAPTER_VERSION}:" in _cache_task(labelled)
-
-
-def test_longmemeval_reports_no_gold_evidence_when_the_release_marks_no_turn(
-    tmp_path: Path,
-) -> None:
-    """`has_answer` is absent from a release file, not merely false.
-
-    The loader defaults it to false, so an unmarked release yields an empty label and
-    `MISSING recall_at_20` -- the honest state -- rather than a gold set of every turn
-    in the answer session.
-    """
-    from sensemem.benchmarks.eval_adapters import load_task
-
-    _write(
-        tmp_path / "longmemeval" / "longmemeval_s",
-        [_longmemeval_question(question_id="unmarked")],
-    )
-
-    unit = load_task(TASKS["longmemeval-s"], root=tmp_path, verify_digest=False).units[0]
-    (question,) = unit.questions
-
-    assert question.metadata["evidence_ids"] == ()
-    assert question.metadata["answer_session_ids"] == ("s1",)
 
 
 def test_es_memeval_qa_keeps_session_memory_and_visible_evidence_only(tmp_path: Path) -> None:

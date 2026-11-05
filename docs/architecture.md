@@ -1,8 +1,13 @@
 # Architecture
 
-SenseMem is an embedded Python runtime. The host application constructs one `Memory`, supplies
-model backends, and owns process and transport policy. `Memory` owns validation, durable state,
-retrieval, and resource lifecycle.
+Jump to [code layout](#code-layout), [durable state](#durable-state),
+[write consistency](#write-consistency), [retrieval](#retrieval-consistency),
+[concurrency](#ownership-and-concurrency), or [trust boundaries](#public-and-trust-boundaries).
+
+SenseMem implements the unified Context & Memory layer as an embedded Python runtime. The host
+application constructs one `Memory`, supplies model backends, and owns process and transport
+policy. The kernel owns validation, durable state, retrieval, context compilation, and resource
+lifecycle; the `Memory` facade validates, wires, and forwards to its owning planes.
 
 This page defines implementation invariants. See [core concepts](concepts.md) for the user model,
 [deployment](deployment.md) for topology choices, and [operations](operations.md) for procedures.
@@ -385,7 +390,7 @@ requests perform this additional document-vector read.
 
 By default, `similar(query, k)` reuses the original ranking and ignores a rewritten query.
 `recall_query_expansion` is a separate, disabled experiment: a per-ask reader caches query
-rankings across replans and permits at most two additional searches, including a deeper read
+rankings across replans and permits at most `recall_max_queries` additional searches (default 6), including a deeper read
 of the original question when `k` exceeds its initial ranked depth. Each search uses the shared
 retrieval plane with the original scope, memory type, reference clock and temporal intent.
 Alternate queries are text only. After normal grounding, each executed query may add at most
@@ -512,7 +517,8 @@ validation, stable identity, durability, or final SQLite hydration.
 
 Model code is part of the application's trust boundary. Sentence Transformers loads with remote
 code disabled; [configuration](configuration.md) owns the model selection and revision rules.
-No backend can bypass validation, stable identity, durability, or final SQLite hydration.
+The plugin contract grants inference only; custom Python backend code still runs with the host
+process's privileges and must be trusted.
 
 Typed lineage and evidence are a SQLite projection, not a graph database or traversal service. A
 future entity/relation search projection must remain derived and rebuildable and pass the evidence
@@ -556,15 +562,17 @@ enables the matching `identity_operations` or `embodied_operations` switch on `c
 mirroring the same-named MCP switch. MCP exposes thirteen tools: the eight corresponding non-batch
 operations plus perception and identity operations, or fewer when the host withholds a group
 with `identity_operations=False`, `embodied_operations=False`, or `write_operations=False`,
-because naming a person, binding a face to a voice, and changing durable state are host
-authority and the host decides whether each is on the wire at all. All three withheld leaves the
-five read tools. The local CLI exposes 31 product operation commands
-plus `doctor`; streamed answers retain their SDK and REST entry points. `--url` is limited to a fixed subset of operations regardless of what REST exposes,
-listed in [the CLI reference](api/cli.md#operations-without-a-remote-route).
+because the host decides which administrative operations an agent can call. Recall tools can
+still write caches and query-failure signals. With all three groups withheld, five recall and
+record-reading tools remain. The local CLI exposes 32 product operation commands
+plus `doctor`; streamed answers retain their SDK and REST entry points. `--url` reaches the SDK
+operations exposed by REST; host switches still gate sensitive routes.
+The mapping is listed in [the CLI reference](api/cli.md#operations-without-a-remote-route).
 
-Compiling context is a read-only view. The memory control plane — `consolidation_candidates()`,
+Compiling context creates no memory records, but can persist query caches and failure signals.
+The memory control plane — `consolidation_candidates()`,
 `consolidate()`, `consolidate_pending()`, `apply()`, `record_outcome()`, `forget()`, `rollback()`, and
-`operations()` — and physical deletion stay in the owner process, which is also the process that
+`operations()` — stays in the owner process, which is also the process that
 can audit and reverse an operation through its log. `export()` is the one read that crosses that
 line, because a data subject's right of access covers the log rows that moved their records; it
 proposes and reverses nothing, and rides the `identity_operations` switch.

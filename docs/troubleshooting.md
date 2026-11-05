@@ -33,7 +33,8 @@ store, and `--url` checks `/healthz`.
 | `memory_not_found`, REST 404 | The ID and authoritative SQLite record | A stale Zvec candidate is a record. |
 
 Retry only when `retryable` is true. The closed retryable reasons are `connection_failed`,
-`data_dir_in_use`, `flush_failed`, `index_missing`, `rate_limited`, and `timeout`. REST returns
+`capacity_exceeded`, `data_dir_in_use`, `flush_failed`, `index_missing`, `provider_unavailable`,
+`rate_limited`, and `timeout`. REST returns
 `Retry-After: 1` only for retryable 503 responses.
 
 ## Memory does not open
@@ -100,7 +101,7 @@ Do not delete SQLite rows or clear `search_index_queue` to make the error disapp
 
 ## Search returns no hits
 
-An empty tuple is a valid result. Candidates below `minimum_relevance` are rejected, and an
+A `SearchResult` with `hits=()` is a valid result. Candidates below `minimum_relevance` are rejected, and an
 unresolved top-two tie may be withheld when `limit=1`.
 
 `minimum_relevance` is not compared against the `score` on a returned `SearchHit`. That score is
@@ -155,15 +156,16 @@ missing declarative slot, inject the backend, or use a configured operation. See
 
 ### Optional dependency is missing
 
-Install the narrow extra for the selected adapter: `local`, `openai`, or `face`. REST and MCP use
+Install the extra for the selected adapter: `local`, `openai`, `face`, `reranking`, or `gazetteer`. REST and MCP use
 the `server` and `mcp` extras. See the
 [extras table](configuration.md#install-only-the-surfaces-you-use).
 
 ### Modality is unsupported
 
 Select a backend that declares the required modality. Audio may use transcript fallback only when
-a configured transcription backend supports it. SenseMem does not silently discard unsupported
-image or video evidence.
+a configured transcription backend supports it. Images and video can use a source-backed caption
+when the configured vision backend supports them. If neither native input nor a usable derivation
+is available, the operation fails explicitly.
 
 ### Provider request or output fails
 

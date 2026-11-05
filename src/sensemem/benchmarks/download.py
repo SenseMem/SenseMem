@@ -63,10 +63,8 @@ def _patterns(spec: TaskSpec, path: Path, dataset: Path, name: str) -> tuple[str
     """Return the release-relative globs that fetch one catalog input.
 
     A task may pin exactly which files under a directory input it reads. A
-    suffix-less input is offered under both spellings because a suffix is not
-    evidence of anything: `longmemeval_s` is a 278 MB JSON file with no
-    extension, and asking only for `longmemeval_s/*` matched nothing while the
-    download still reported success.
+    suffix-less input is offered under both spellings because it can be a file or a directory;
+    a directory glob alone would not download a suffix-less file.
     """
     if spec.dataset_patterns and path == dataset:
         return spec.dataset_patterns
@@ -115,7 +113,7 @@ def acquire_media(
         pattern
         for pattern in selected
         if not tuple(destination.glob(pattern))
-        and (download or not pattern.endswith((".zip", ".tar")))
+        and (download or not pattern.endswith((".zip", ".tar", ".tar.gz")))
     )
     if missing and not allow_missing:
         action = "download did not produce" if download else "offline media is missing"
@@ -132,9 +130,14 @@ def _extract_selected_tars(
                 _extract_tar(archive, announce=announce)
 
 
-def _extract_tar(archive: Path, *, announce: Callable[[str], None] | None) -> None:
+def _extract_tar(
+    archive: Path,
+    *,
+    announce: Callable[[str], None] | None,
+    destination: Path | None = None,
+) -> None:
     """Extract regular files atomically; reject links, duplicates and escaping paths."""
-    root = archive.parent.resolve()
+    root = (destination or archive.parent).resolve()
     with tarfile.open(archive) as volume:
         entries = [entry for entry in volume.getmembers() if not entry.isdir()]
         seen: set[Path] = set()

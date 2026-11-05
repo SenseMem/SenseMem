@@ -1,5 +1,9 @@
 # Command-line API
 
+Jump to [invocation](#invoke-the-cli), [recipes](#bundled-recipes), [commands](#commands),
+[content and JSONL](#content-and-jsonl-input), [output](#output), [diagnostics](#doctor-and-explain),
+or [exit codes](#exit-codes).
+
 ## Surface
 
 `sensemem` provides 32 SDK operation commands plus `doctor`; each invocation runs one command in
@@ -80,7 +84,7 @@ server's owner.
 | Recipe | Allowed slot | Default identity |
 | --- | --- | --- |
 | `funasr` | `--transcriber` | pinned FunASR model and component revisions |
-| `openai` | `--embedder`, `--answerer`, `--former`, `--consolidator`, `--transcriber`, `--vision` | `text-embedding-3-small`, `gpt-5-mini`, `gpt-5-mini`, `gpt-5-mini`, `whisper-1`, `gpt-5-mini` |
+| `openai` | `--embedder`, `--answerer`, `--former`, `--consolidator`, `--transcriber`, `--vision` | `text-embedding-3-small`, `gpt-5-mini-2025-08-07`, `gpt-5-mini-2025-08-07`, `gpt-5-mini-2025-08-07`, `whisper-1`, `gpt-5-mini-2025-08-07` |
 
 Only `openai` accepts a model suffix, for example `--former openai:gpt-5-mini`. Selecting a former
 opts into one formation model call after each source observation commits; omitting `--former`
@@ -108,7 +112,7 @@ sensemem --embedder openai --former openai --vision openai add @panel.png
 | `pending-captures` | optional `MEMORY_ID...`; `--limit` | `{"pending":[...]}` | yes |
 | `search` | content; `--explain`; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--occurred-from`; `--occurred-until` | `{"hits":[...],"trace":null}` (or the requested trace) | yes |
 | `ask` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--link-identities`/`--no-link-identities` | answer object | yes (`--link-identities` is local-only) |
-| `compile` | content; `--max-chars`; `--max-items`; `--max-media-items`; repeatable `--memory-type`; `--min-confidence`; `--freshness-seconds`; `--max-latency-ms`; `--reference-at`; `--scope`; `--allow-partial-sources` | context bundle plus `rendered` | yes |
+| `compile` | content; `--max-chars`; `--max-items`; `--max-media-items`; repeatable `--memory-type`; `--min-confidence`; `--freshness-seconds`; `--max-latency-ms`; `--reference-at`; `--scope`; `--allow-partial-sources`; `--selected-proofs` | context bundle plus `rendered` | yes |
 | `get` | `MEMORY_ID` | memory object | yes |
 | `perceive` | `MEMORY_ID`; optional repeatable `--kind speech` / `--kind faces` | `{"speech":[...],"faces":[...],"coverage":[...]}` | yes when the owner enables `embodied_operations` |
 | `register-identity` | `IDENTITY_ID NAME`; `--relationship` | `{}` | yes when the owner enables `identity_operations` |
@@ -207,8 +211,9 @@ means nobody has recorded one. What the two restrained states change is listed u
 
 `export` prints `exported_at`, `identity_id`, `identities`, `records`, and `operations` -- every
 version of every record the subject appears in or is named by, and every log row that moved any of
-it. Media is named by asset identity and digest; no bytes are printed, so a document stays safe to
-pipe. Under `--url` the operation rows in an `export` bundle, and the row `record-consent` prints,
+it. Media is named by asset identity and digest; no media bytes are printed. The export still
+contains memory content and identity information; send it only to authorized destinations.
+Under `--url` the operation rows in an `export` bundle, and the row `record-consent` prints,
 come from the [REST operation object](rest.md#response-objects), which carries the same fields --
 `proposal` included -- so a row is the same document on either transport.
 `apply-retention` prints `dry_run`, `media_memory_ids`, `forgotten_memory_ids`,
@@ -381,13 +386,13 @@ exit 130 use their conventional plain stderr diagnostics.
 ### Operations without a remote route
 
 Every command whose operation has a `/v1` route runs under `--url`; the `--url` column above is
-the complete list. Twelve commands exit 10 with `unsupported_in_remote_mode` because the
+the complete list. Eleven commands exit 10 with `unsupported_in_remote_mode` because the
 operation has no route at all, not because the CLI declines to send one:
 
 - The control plane is SDK-only by [documented design](../context-os.md): `consolidation-candidates`,
-  `consolidate`, `apply`, `record-outcome`, `forget`, `rollback`, and `operations`.
+  `consolidate`, `consolidate-pending`, `apply`, `record-outcome`, `forget`, `rollback`, and `operations`.
 - `add-stream`, `reindex`, and `optimize` are local ingestion and index maintenance on the owner's
-  own directory, and identity naming shares one face/voice route.
+  own directory.
 
 A gated command sent to an owner that did not enable the matching switch also exits 10, naming
 that switch: `create_app` never registers those routes, so the owner answers that the route does

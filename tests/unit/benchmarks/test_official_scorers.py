@@ -631,44 +631,6 @@ def _judged(
     return plan, combine_judge_scores(plan, outcomes)
 
 
-def test_longmemeval_judge_picks_the_template_its_question_type_names() -> None:
-    plan, scores = _judged(
-        "longmemeval-s",
-        question="What degree did I graduate with?",
-        references=("Business Administration",),
-        prediction="Business Administration.",
-        metadata={"question_type": "temporal-reasoning", "abstention": False},
-        replies=("Yes.",),
-    )
-    # Only the temporal template forgives off-by-one day counts.
-    assert "do not penalize off-by-one errors" in plan.calls[0][0].content
-    assert scores == {"accuracy": 1.0}
-
-    plan, scores = _judged(
-        "longmemeval-s",
-        question="Which gate?",
-        references=("The itinerary never states it.",),
-        prediction="I cannot tell from our conversations.",
-        metadata={"question_type": "multi-session", "abstention": True},
-        replies=("no",),
-    )
-    # Abstention swaps in a different template keyed off the `_abs` question ID.
-    assert "unanswerable" in plan.calls[0][0].content
-    assert scores == {"accuracy": 0.0}
-
-    # The verdict is read as upstream reads it -- `"yes" in lowered` -- which a
-    # reply mentioning both words resolves differently from any "no" test.
-    _, mixed = _judged(
-        "longmemeval-s",
-        question="What degree did I graduate with?",
-        references=("Business Administration",),
-        prediction="Business Administration.",
-        metadata={"question_type": "multi-session", "abstention": False},
-        replies=("Yes, no doubt about it.",),
-    )
-    assert mixed == {"accuracy": 1.0}
-
-
 def test_clbench_judge_is_binary_and_skips_an_empty_answer() -> None:
     _, scores = _judged(
         "clbench",
@@ -1144,9 +1106,8 @@ def test_a_faithful_judge_cannot_bless_an_invented_metric() -> None:
 def test_retrieval_gold_ids_come_from_any_labelled_question() -> None:
     assert retrieval_gold_ids("atm-bench", {"evidence_ids": ["a", "b", "a"]}) == ("a", "b")
     assert retrieval_gold_ids("mem-gallery", {"clue_ids": ["c"]}) == ("c",)
-    # LoCoMo and LongMemEval carry exact turn-level labels; they get the ranked query too.
+    # LoCoMo carries exact turn-level labels and gets the ranked query too.
     assert retrieval_gold_ids("locomo-refined", {"evidence_ids": ["D1:3"]}) == ("D1:3",)
-    assert retrieval_gold_ids("longmemeval-s", {"evidence_ids": ["s1_T0002"]}) == ("s1_T0002",)
     assert retrieval_gold_ids("memlens-32k", {"question_type": "temporal"}) == ()
     # A session-level label is one group of turn IDs per answer session; the ranked retrieval
     # query has to be able to reach every member, so the groups are flattened here.

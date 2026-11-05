@@ -12,25 +12,24 @@ research citations support the design discussion, not a benchmark claim for Sens
 
 ## Positioning
 
-The product goal is not to recognize a person's true emotion. Emotion is not a measurable field
-that a better model eventually reads correctly. The goal is narrower and achievable: preserve
+The product goal is not to recognize a person's true emotion. A model's estimate is not a direct measurement of a person's internal state. The goal is narrower and achievable: preserve
 affective evidence from text, speech, vision, and the person's own statements; track it over time;
 and keep it traceably associated with people, events, objects, and later feedback.
 
 An affect record is therefore a sourced, timed, confidence-bearing hypothesis with a perspective.
 It is never an unconditional fact about how somebody felt.
 
-Four results set that boundary:
+The design draws on four research results:
 
-- Core affect is dimensional and continuous, so valence and arousal carry change and comparison
-  better than a discrete label
+- Russell describes core affect through pleasantness and activation. SenseMem uses valence and
+  arousal to retain comparable dimensions alongside descriptive labels
   ([Russell 2003](https://pubmed.ncbi.nlm.nih.gov/12529060/)).
-- Facial and vocal expressions are not diagnostic of emotional state; the same configuration
+- Facial movements are not reliable diagnostic indicators of emotional state; the same configuration
   occurs across states and cultures
   ([Barrett et al. 2019](https://pubmed.ncbi.nlm.nih.gov/31313636/)).
-- Self-report, partner report, and external annotation disagree systematically on the same
-  interaction, so there is no single ground truth to store
-  ([K-EmoCon](https://pmc.ncbi.nlm.nih.gov/articles/PMC7479607/)).
+- K-EmoCon supplies separate self, partner, and external-observer annotations. SenseMem's design
+  treats perspective as information to preserve, rather than assuming the labels are interchangeable
+  ([K-EmoCon](https://www.nature.com/articles/s41597-020-00630-y)).
 - Text and speech agree mainly on valence, and the agreement varies by content genre, so fusing
   modalities into one label discards the disagreement that carries information
   ([Lindevelt, Verberne, and Broekens, EACL 2026 Findings](https://aclanthology.org/2026.findings-eacl.136/)).
@@ -48,7 +47,7 @@ does not overwrite another.
 | Affective cue | A raw observation containing affective information: the words used, the audio, the frames | An ordinary `OBSERVATION` record; the media stays authoritative |
 | Affective state | A situated estimate of how somebody was at one time | `AFFECT`, with valence, arousal, cue modality, confidence, and basis |
 | Emotional event | What the affect was about, in the same capture | An `EVENT` record plus the evidence association |
-| Long-horizon disposition | A pattern that holds across sessions and contexts | `TRAIT`, produced by the consolidation loop, not by one observation |
+| Long-horizon disposition | A pattern supported across independent captures | `TRAIT`; formation or consolidation can propose it, with additional visibility rules for model inferences |
 
 Three statements about the same moment are three different things:
 
@@ -57,8 +56,8 @@ Three statements about the same moment are three different things:
 - "the user says they were nervous, not angry" is a user statement.
 
 None of the three overwrites the other two. The observation stays as evidence, the inference stays
-as a version with its own basis and confidence, and the user statement becomes a new, higher-
-authority version in the same lineage. This is the general lifecycle rule in
+as a separate record with its own basis and confidence, and the user statement adds explicit
+first-person evidence. `AFFECT` records do not automatically supersede one another. This is the general lifecycle rule in
 [Context OS direction](context-os.md), applied to affect.
 
 ## What exists today
@@ -75,7 +74,7 @@ owns it.
 | SQLite stores affect fields authoritatively; Zvec stays a rebuildable projection | Implemented | [Architecture](architecture.md) |
 | `compile()` gives affect its own bundle section, separate from `traits` | Implemented | [Context compilation](context-compilation.md) |
 
-Four properties of the current implementation matter more than the field list.
+Five properties of the current implementation matter more than the field list.
 
 **One atomic cue modality, and it must be real.** A proposal's `cue_modality` is a single atomic
 modality; `omni` is rejected. The kernel additionally refuses an `AFFECT` proposal whose cue
@@ -84,12 +83,13 @@ yield a claim about tone of voice.
 
 **The only affect producer is a prompt.** The bundled OpenAI-compatible `FormationBackend` asks a
 model for typed proposals, and affect is one of the kinds it may propose. There is no prosody
-analysis, no facial-expression analysis, and no acoustic affect model anywhere in `src/`. Today's
-affect quality is the quality of one text-shaped inference, which is exactly why the roadmap below
-starts with per-modality estimates rather than with fusion.
+analysis, no facial-expression analysis, and no acoustic affect model anywhere in `src/`.
+The default formation route sees text. Explicitly declared media support can carry native
+signals, but does not establish calibrated affect quality. The roadmap therefore starts with
+per-modality estimates and evaluation.
 
-**Cues do not reconcile against each other.** Conflict detection and lineage supersession cover
-`state`, `relation`, and `trait`. `AFFECT` is deliberately excluded. Two cues from different
+**Cues do not reconcile against each other.** Functional conflict detection covers `STATE` and
+user-stated `TRAIT`; `RELATION` values can accumulate. `AFFECT` is deliberately excluded. Two cues from different
 modalities at the same moment are two separate records, not a contradiction to resolve: a situated
 cue is a report about one channel at one time, not a standing assertion about the world. Keeping
 them apart is what preserves the disagreement the EACL result says is informative.
@@ -104,7 +104,7 @@ rule.
 
 **Affect is associated with events through existing evidence links.** There is no affect-specific
 edge. An `EVENT` and an `AFFECT` formed from the same committed observation share that source, and
-the `memory_evidence` rows record it. This round exposes that association in the compiled bundle:
+the `memory_evidence` rows record it. The compiler exposes that association in the compiled bundle:
 an affect entry reports `event_ids` beside its own `context.evidence_ids`, and renders its basis,
 confidence, cue modality, valence, and arousal so a reader can judge the estimate instead of
 reading a bare label.
@@ -137,9 +137,9 @@ These are the affect-specific readings of rules the rest of the documentation al
 **Per-modality estimates stay separate.** Store one record per cue channel. Late fusion is a
 compilation-time reading over those records; it is never stored as a truth.
 
-**A user statement does not delete an inference.** It forms a new, higher-authority version. The
-inference stays visible in history, because a system that erases its own wrong guesses cannot be
-evaluated or corrected.
+**A user statement does not delete an affect inference.** It adds a separate sourced record.
+Automatic affect supersession is not implemented. Use host correction or deletion when an
+incorrect inference must leave recall, and retain the source evidence for review.
 
 **Abstention is a valid output.** A backend that cannot distinguish states on the evidence it was
 given proposes nothing. An emitted label with no discriminating power is worse than silence: it
@@ -155,8 +155,8 @@ its own basis.
 **Mood is a long-interval `AFFECT`, not a new kind.** The validity interval already expresses the
 difference between a momentary cue and a day-long mood.
 
-**Rate, duration, and change points are derived.** They are computed from the affect time series on
-read. They are not new kinds and not new stored fields.
+**Rate, duration, and change points are proposed derived analyses.** There is no built-in
+trajectory or change-point API today; a future implementation must retain its source series.
 
 **Affect is never a primary retrieval key.** Ranking is driven by relevance, person, time, and
 task. Affect may inform a bounded rerank at most, and retrieval must preserve emotional diversity
@@ -268,7 +268,8 @@ guide hypotheses; only reproducible SenseMem runs select defaults, as
 [benchmarking](benchmarking.md) requires.
 
 Speech emotion confidence needs explicit calibration before it can gate anything: reported
-confidences from SER models are poorly calibrated (Chou et al., Interspeech 2023). A confidence
+SER confidence must be evaluated rather than assumed calibrated
+([Chou et al., Interspeech 2023](https://www.isca-archive.org/interspeech_2023/chou23_interspeech.html)). A confidence
 field that is not calibrated is a number, not a probability, and must not drive visibility.
 
 ## Safety boundary
@@ -287,12 +288,10 @@ precondition for the roadmap, not a later compliance pass.
 - Prohibited uses: clinical or psychiatric diagnosis, workplace or education evaluation, individual
   risk scoring, and engagement manipulation.
 
-The regulatory floor is explicit.
-[EU AI Act Article 5(1)(f)](https://artificialintelligenceact.eu/article/5/) prohibits inferring
-emotions of natural persons in the workplace and in education institutions, except for medical or
-safety purposes. Annex III classifies other emotion-recognition uses as high-risk, and Article 50
-imposes transparency obligations on systems that perform emotion recognition. A deployment that
-cannot say which of these it is in should not enable affect formation.
+The host must assess applicable restrictions and transparency requirements before enabling
+affect processing. The [EU AI Act's official text](https://eur-lex.europa.eu/eli/reg/2024/1689/oj/eng)
+is one relevant source; this SDK does not determine a deployment's legal classification or
+provide compliance certification.
 
 ## Known hazards for implementers
 
@@ -304,16 +303,14 @@ those tags removed with no error and no warning. An acoustic-affect adapter must
 output through that filter; it needs its own typed return path.
 
 **Formation sees text only by default.** The `formation` slot's `modalities` defaults to text, and
-observations outside the declared set are skipped by design. Acoustic affect therefore requires
+source-backed captions or transcripts may still make an observation usable by that text route. Acoustic affect therefore requires
 declaring the audio modality in configuration; otherwise the audio never reaches the former and the
 absence looks like a model that found nothing.
 
-**A badly grounded affect proposal is expensive.** The kernel refuses an `AFFECT` proposal whose
-cue modality is not present in its source, and that refusal currently fails the whole formation
-pass rather than dropping the one proposal. A model that occasionally claims a vocal cue on a
-text-only observation therefore costs the other proposals in that batch too. Dropping the one
-proposal and counting the drop is the intended behaviour; until it lands, keep formation prompts
-conservative about cue modality.
+**A badly grounded affect proposal is refused individually.** If its cue modality is absent
+from the source, the kernel drops that proposal and increments
+`sensemem.formation.refused_proposals`. Other valid proposals can still commit. A malformed
+batch envelope remains a call failure.
 
 **Affect never becomes a standing assertion by accident.** Because `AFFECT` is outside the conflict
 kinds, an adapter cannot rely on supersession to clean up its own history. Two disagreeing cues stay

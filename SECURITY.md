@@ -3,7 +3,8 @@
 ## Reporting a vulnerability
 
 Do not open a public issue for a security vulnerability. Use GitHub private vulnerability
-reporting: **Security → Advisories → Report a vulnerability**.
+reporting: [Report a vulnerability](https://github.com/SenseMem/SenseMem/security/advisories/new)
+(**Security → Advisories → Report a vulnerability**).
 
 Include the affected version or commit, component, reproduction, and impact when possible. Expect
 an acknowledgement within a few days and allow a reasonable remediation window before public
@@ -98,8 +99,8 @@ not log request bodies, authorization headers, memory content, metadata, or unre
 error envelopes in surrounding application code.
 
 Provider request IDs and returned model identity may be recorded on model traces for diagnosis.
-They do not contain the memory payload, but still belong in operator-controlled telemetry rather
-than public error reports. Real-service quality evaluations should use synthetic fixtures and
+Grounding spans can also contain memory and asset identifiers. These fields do not contain the
+memory payload, but still belong in operator-controlled telemetry rather than public error reports. Real-service quality evaluations should use synthetic fixtures and
 store aggregate outcomes instead of response bodies.
 
 Periodic deliberation never logs exception chains, including at DEBUG: a sanitized outer error

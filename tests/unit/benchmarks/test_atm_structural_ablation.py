@@ -40,18 +40,23 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repository = Path(__file__).parents[3]
-    recipe_path = Path("benchmarks/atm_ablation_recipe.json")
-    recipe = json.loads((repository / recipe_path).read_text())
-    config_path = Path(recipe["base_config_path"])
-    for relative in (recipe_path, config_path):
-        destination = tmp_path / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes((repository / relative).read_bytes())
-    assert (
-        hashlib.sha256((tmp_path / config_path).read_bytes()).hexdigest()
-        == recipe["base_config_sha256"]
-    )
-    recipe["preflight"] = True
+    recipe_path = Path("recipe.json")
+    config_path = Path("docs/examples/atm-sgm-detail-qwen3-vl.yaml")
+    destination = tmp_path / config_path
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes((repository / config_path).read_bytes())
+    recipe = {
+        "base_config_path": str(config_path),
+        "base_config_sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+        "artifact_root": ".benchmarks/atm-runs",
+        "variant": "native-image-video-pooled",
+        "raw_media": True,
+        "raw_media_root": ".benchmarks/atm-inputs/atm-bench/data/raw_memory",
+        "source_store": ".benchmarks/atm-source-store",
+        "stage": "full",
+        "preflight": True,
+        "measure_search_replay": False,
+    }
     (tmp_path / recipe_path).write_text(json.dumps(recipe))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-embedding-key")
@@ -103,7 +108,10 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
         assert root.resolve() == tmp_path / ".benchmarks/atm-inputs"
         loads.append(spec.name)
         if spec.name == "atm-bench-main":
-            assert kwargs["media_root"] == tmp_path / recipe["raw_media_root"]
+            assert (
+                kwargs["media_root"]
+                == tmp_path / ".benchmarks/atm-inputs/atm-bench/data/raw_memory"
+            )
             return raw
         return task
 
@@ -144,9 +152,9 @@ def test_portable_retrieval_recipe_preflights_without_models_or_storage(
         arguments.ingest_concurrency,
         arguments.judge_concurrency,
     ) == (16, 16, 16, 16)
-    directory = tmp_path / recipe["artifact_root"] / recipe["variant"]
+    directory = tmp_path / ".benchmarks/atm-runs/native-image-video-pooled"
     manifest = json.loads((directory / "preflight.json").read_text())
-    assert manifest["source_store"] == str(tmp_path / recipe["source_store"])
+    assert manifest["source_store"] == str(tmp_path / ".benchmarks/atm-source-store")
     assert manifest["raw_media"] is True
     assert manifest["measure_search_replay"] is False
     assert not (directory / "stores").exists()
@@ -160,12 +168,15 @@ def test_portable_recipe_rejects_yaml_drift_before_loading_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repository = Path(__file__).parents[3]
-    recipe = json.loads((repository / "benchmarks/atm_ablation_recipe.json").read_text())
-    source = repository / recipe["base_config_path"]
+    config_bytes = b"settings: {}\n"
     changed = tmp_path / "changed.yaml"
-    changed.write_bytes(source.read_bytes() + b"\n# changed after pinning\n")
-    recipe["base_config_path"] = str(changed)
-    recipe["artifact_root"] = str(tmp_path / "outputs")
+    changed.write_bytes(config_bytes + b"\n# changed after pinning\n")
+    recipe = {
+        "base_config_path": str(changed),
+        "base_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        "artifact_root": str(tmp_path / "outputs"),
+        "variant": "changed-config",
+    }
     path = tmp_path / "recipe.json"
     path.write_text(json.dumps(recipe))
     functions = runpy.run_path(str(repository / "benchmarks/atm_structural_ablation.py"))

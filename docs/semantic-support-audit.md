@@ -6,6 +6,9 @@ this boundary before introducing a semantic verifier into high-risk formation or
 
 ## Run the scorer
 
+Run from a repository checkout using the environment in
+[Contributing](../CONTRIBUTING.md#setup). The supplied fixture needs no model credentials:
+
 ```bash
 uv run --frozen python -m sensemem.benchmarks.semantic_support \
   --input benchmarks/semantic_support.example.json \

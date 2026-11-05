@@ -1,4 +1,4 @@
-"""Fast local multimodal memory for Python agents."""
+"""A unified context and memory layer for agents."""
 
 from sensemem.configuration import MemoryComposition, SenseMemConfig, resolve_memory_config
 from sensemem.exceptions import (

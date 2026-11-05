@@ -1,5 +1,10 @@
 # Memory types, time, and decay
 
+Jump to [memory types](#memory-types), [event time](#event-time-and-strict-filters),
+[typed context](#typed-context-and-formation), [historical reads](#valid-time-and-transaction-time),
+[spatial scope](#spatial-scope), [memory management](#memory-management-loop),
+or [decay and reinforcement](#decay-and-reinforcement).
+
 This page owns memory-role, event-time, typed-assertion, retrieval-scope, and ranking semantics.
 SenseMem stores semantic, episodic, and procedural roles on the same durable record, and an
 optional typed context refines that record into observations, entities, events, state, relations,
@@ -126,7 +131,7 @@ source = memory.add(
 
 The returned record exposes the persisted `MemoryContext` and keeps a symbolic place separately as
 `MemoryRecord.place_id`. A source context has `MemoryKind.OBSERVATION`. An optional former may
-propose these derived kinds:
+propose the first six derived kinds below. `RESPONSE_POLICY` is host-authorized through `apply()`:
 
 | Derived kind | Memory type | Meaning |
 | --- | --- | --- |
@@ -141,7 +146,8 @@ propose these derived kinds:
 The source commits before any typed proposal is formed, so a formation model error leaves the
 observation durable and the formation retryable. The former only proposes; the kernel validates
 source modality and spatial binding, assigns IDs, links evidence, versions conflicting state, and
-commits derived records. Two kinds carry extra visibility rules:
+commits derived records. Affect and trait proposals have additional rules, alongside the general
+support-clause requirement:
 
 - `MemoryKind.AFFECT` records a situated cue together with the source modality it came from, so a
   model cannot claim an audio cue for a source that has no audio.
@@ -222,7 +228,7 @@ same content forms nothing new.
 
 Formation never rewrites the caller's source record. A derived record inherits its primary source's
 event time, valid interval, metric pose, symbolic `place_id`, and `metadata`, so a place-scoped or
-metadata-filtered recall reaches the knowledge formed in a room and not only the raw observation it
+place-scoped recall reaches the knowledge formed in a room and not only the raw observation it
 came from. Extra declared witnesses do not merge identity, time, pose, place, or metadata. An
 `ENTITY`, `RELATION`, inferred `TRAIT`, or `RESPONSE_POLICY` written separately from several
 primary sources is one shared record; when those primary sources disagree, the shared record keeps
@@ -234,7 +240,7 @@ points at the observation that holds the media.
 
 ### Naming a person is a typed assertion
 
-`register_identity` write an `ENTITY` assertion whose
+`register_identity` writes an `ENTITY` assertion whose
 `MemoryContext.identity_id` binds it to the recognized person, whose `subject` is the name, and
 whose `value` is the recorded relationship. Its basis is `USER_STATEMENT`, so it is visible at
 once, and it needs no former: naming rests on the host's authority, not on a model. It inherits
@@ -268,8 +274,9 @@ original observation.
 
 `MemoryConfig.independent_evidence=True` selects a different consolidation support algorithm.
 It is off by default and does not change an answer prompt, retrieval budget, model, or source
-observation. Configure it through `Memory(..., independent_evidence=True)`, the corresponding
-`AsyncMemory` constructor, or `settings.independent_evidence` in a configuration file.
+observation. Configure it through `Memory(..., config=MemoryConfig(independent_evidence=True))`,
+`AsyncMemory.from_plugins(..., config=MemoryConfig(independent_evidence=True))`, or
+`settings.independent_evidence` in declarative configuration.
 
 The default projection above combines singleton capture groups and takes the maximum joint
 assessment. The experimental projection preserves each clause's AND witnesses and each memory's
@@ -439,7 +446,7 @@ This is the right tool when a fact was true and stopped being true — a tempora
 guest who has left, a plan that has been superseded. It is not a privacy control: the content,
 assets, embedding, and typed context all remain on disk and remain readable, and a
 `RetrievalScope(valid_at=...)` inside the expired window still retrieves the record, which is the
-point of keeping it. Use `delete` when the bytes must go.
+point of keeping it. Use `delete` to remove the live record; storage remnants and backups require separate erasure policy.
 
 ## Memory management loop
 
@@ -448,7 +455,9 @@ records that already exist and proposes what should change about them. It is one
 stable vocabulary, not a swarm of specialized agents, and it needs a `consolidator`:
 
 ```python
-report = memory.consolidate(query="what do we know about Ana?", trigger=MemoryTrigger.EVIDENCE)
+from sensemem import MemoryTrigger
+
+report = memory.consolidate(query="what do we know about Ana?", trigger=MemoryTrigger.MANUAL)
 for record in report.operations:
     print(record.operation_id, record.operation.intent, record.changed_ids)
 for operation, reason in report.rejected:
@@ -513,9 +522,8 @@ the proposal `"stale"` with nothing written.
 Two things share the name "reinforce" and are not the same mechanism. `reinforce()` is the
 *ranking-utility* signal: it bumps a bounded confirmation count, changes retrieval order only,
 writes no log row, and cannot be rolled back. `MemoryIntent.REINFORCE` is the *evidence-linkage*
-signal: it attaches an independent source to a derived record, is logged, and is reversible. Only
-`FORGET` has a host entry point for its intent, because `forget()` is a policy decision a host
-makes without a model; the other three intents exist only as backend proposals.
+signal: it attaches an independent source to a derived record, is logged, and is reversible. `forget()` is a convenience for host-authorized `FORGET`. Hosts can submit other supported
+intents explicitly through `apply()`; naming and consent also have dedicated SDK methods.
 
 "Update" is not a separate intent. It is what a `CONSOLIDATE` into an existing lineage does when
 the replacement qualifies: the new version supersedes the prior one at transaction time and
@@ -573,7 +581,7 @@ SenseMem separates five forms of forgetting and never conflates them:
 
 `forget()` is cognitive only. It is the host entry point for the `FORGET` intent, so it takes the
 same log row and the same rollback path as a proposed operation — and, like one, applies all of
-its IDs or none. An unknown ID raises `MemoryNotFoundError` the way `get()` and `delete()` do; an
+its IDs or none. An unknown ID raises `MemoryNotFoundError` as `get()` does; `delete()` returns `False` for a missing ID. An
 empty sequence, or a set containing an already-forgotten record, returns `None` having changed
 nothing. The host names the IDs and is the authority, so no evidence window bounds it. Unlike an
 expiring validity interval, it is a policy state a host sets rather than a property of the world.

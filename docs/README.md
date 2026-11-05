@@ -1,10 +1,14 @@
 # SenseMem documentation
 
-Use the shortest path that matches your task. Each page owns one subject so contracts and examples
-have one place to stay current.
+SenseMem is a **unified Context & Memory layer for agents, across devices, modalities, and models**.
+It connects incoming context, evolving memory, task-specific recall, and context construction.
+Smarter / Swifter / Stronger guide its [product goals](design-principles.md#smarter--swifter--stronger).
+
+Use the shortest path that matches your task. Start with tutorials for a working loop, references
+for exact contracts, and operational guides for deployment. Direction pages describe future goals separately from supported behavior.
 
 The guides and API references describe this checkout's `0.3.0` package and Python 3.11–3.14
-contract.
+contract. The release is tracked under [Unreleased](../CHANGELOG.md#unreleased).
 
 ## Choose a path
 
@@ -18,9 +22,10 @@ contract.
 | Use EmbeddingGemma 2 through vLLM | [Model server](deployment.md#embeddinggemma-2-model-server) | [Configuration](configuration.md#embeddinggemma-2-through-vllm) |
 | Give an agent a bounded context view | [Context compilation](context-compilation.md) | [Python SDK](api/python-sdk.md) |
 | Expose memory to another process | [REST](api/rest.md), [MCP](api/mcp.md), or [CLI](api/cli.md) | [Deployment](deployment.md) |
-| Run a durable instance | [Architecture](architecture.md) | [Operations](operations.md) and [troubleshooting](troubleshooting.md) |
+| Run a durable instance | [Deployment](deployment.md) | [Operations](operations.md), [architecture](architecture.md), and [troubleshooting](troubleshooting.md) |
 | Evaluate memory quality | [Benchmarking](benchmarking.md) | [Example evaluation configuration](examples/eval.example.yaml) |
 | Understand or extend the design | [Design principles](design-principles.md) | [Plugin architecture](plugin-architecture.md) |
+| Select a runnable configuration | [Example catalog](examples/README.md) | [Configuration](configuration.md) and [benchmarking](benchmarking.md) |
 | Follow where the product is going | [Context OS direction](context-os.md) | [Design principles](design-principles.md) |
 
 ## Learn
@@ -64,8 +69,8 @@ contract.
 - [Context OS direction](context-os.md) — the long-term product boundary, fast and slow context
   planes, agentic memory management, context compilation, and the evolution gates the current
   release is working through.
-- [Product goals and design principles](design-principles.md) — the product target, the design
-  goals, and the criteria a change must answer. States direction, not implemented status.
+- [Product goals and design principles](design-principles.md) — the unified Context & Memory
+  positioning and Smarter / Swifter / Stronger criteria. States direction, not implemented status.
 - [Plugin architecture](plugin-architecture.md) — the kernel/plugin boundary and the admission rule
   a new public capability must satisfy.
 - [Affective memory direction](affective-memory.md) — how affect is stored as sourced, timed
@@ -75,15 +80,15 @@ contract.
 
 - [Benchmarking](benchmarking.md) — behavior evaluation, local-index measurement, and SDK load tests.
 - [Fused ATM-Bench retrieval](atm-fused-retrieval.md) — caller-supplied descriptions and raw
-  media, pinned text-window reranking, and a portable evaluation recipe.
+  media, native visual reranking, and a portable evaluation recipe.
 - [Grounded multimodal recall](grounded-multimodal-recall.md) — bounded semantic routes,
   transient query vision, optional concise answers, and native-media transport.
 - [Offline semantic support audit](semantic-support-audit.md) — atomic-claim review, evidence
   localization, withdrawal residue and verification costs before changing formation admission.
 - [Model quality gate](operations.md#model-quality-gate) — synthetic real-model regression cases,
   explicit snapshots, safe artifacts, and optional scheduled evaluation.
-- [Annotated example configuration](examples/eval.example.yaml) — every evaluation slot and the
-  order in which a run uses it.
+- [Example catalog](examples/README.md) — prerequisites and intended use for every committed YAML
+  configuration, including the annotated evaluation template.
 
 For repository setup and quality gates, see [CONTRIBUTING.md](../CONTRIBUTING.md). When a fact
 changes, update its owning page and link to it elsewhere instead of copying it.

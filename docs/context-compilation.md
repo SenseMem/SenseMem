@@ -1,13 +1,19 @@
 # Context compilation
 
+Jump to [the call contract](#contract), [evidence closure](#evidence-closed-selection),
+[excerpts](#exact-raw-excerpts), [budgets](#budget), [sections](#sections),
+[unknowns](#unknowns), [conflicts](#conflicts), or [an example](#example).
+
 This page owns `compile()`: what a `ContextBudget` bounds, how hits become sections, how conflicts
 are reported, and what `render()` emits.
 
+Compilation connects durable memory to the agent's current context. The caller supplies a task
+goal; SenseMem returns a bounded evidence bundle for the caller's prompt or workflow.
+
 `compile()` selects and structures evidence. It calls no generation model, stores no memory, and
 never resolves a conflict. It is not a pure read: it runs the same retrieval path `search()` runs
-and makes the same single write that path can make, caching a transcript for spoken query media.
-That cache is a cache of the caller's own input, never a new memory, and repeating the call adds
-nothing to the store. `ask()` remains the grounded-generation surface; see
+and can cache a transcript for spoken query media. An empty compilation also records a bounded
+query-failure signal. Neither creates a memory record. `ask()` remains the grounded-generation surface; see
 [the Python SDK reference](api/python-sdk.md#memory-operations).
 
 ## Contract
@@ -24,6 +30,7 @@ compile(
     budget: ContextBudget | None = None,
     reference_at: datetime | None = None,
     scope: RetrievalScope | None = None,
+    allow_partial_sources: bool = False,
 ) -> ContextBundle
 ```
 
@@ -182,9 +189,8 @@ character ceiling can only approximate them. The prices are fixed:
 | One `video` asset | 12000 |
 | One asset whose modality did not resolve | 4000 |
 
-They are measured, not derived: against this stack an image part came out near five hundred model
-tokens and a ten-second video part near three thousand, at the usual four characters per token.
-They are coarse on purpose -- the budget is the caller's knob, not these constants.
+These are fixed, conservative packing weights, not a tokenizer or a prediction of provider
+charges. Actual media tokens vary by model, resolution, duration, and request encoding.
 
 The default `max_chars` follows from the largest of them. A video memory costs at least 12000, so
 a default below that could never buy one, and every video memory would be reported as omitted no
@@ -235,7 +241,7 @@ section assembly and before the optional enrichment that follows it, and if the 
 already passed it skips that enrichment instead of truncating it halfway. A bundle compiled under
 a deadline is therefore a prefix of the bundle without one, never a different bundle.
 
-Today the one optional stage is conflict reporting. The dependency and candidate-conflict closure
+Optional stages include conflict reporting and affect/event co-occurrence enrichment. The dependency and candidate-conflict closure
 needed for atomic admission is mandatory and still applies before this stage; a deadline never
 admits an incomplete assertion. When reporting is skipped, `conflicts` is empty and `unknowns`
 carries a `stage_skipped` entry naming it, so an empty `conflicts` under a deadline is never
@@ -259,11 +265,13 @@ A typed `MemoryKind` decides the section first; an untyped or generic record fal
 | `traits` | Kind `trait` |
 
 The `affect` section carries `AffectCue`, not a plain hit; [affect cues](#affect-cues) below is
-its contract. Every other section carries `SearchHit`.
+its contract. `actors` can also carry `NamedActor` and `ProvisionalActor`; other entries are
+`SearchHit` values.
 
 `actors`, `relationships`, `scene`, `affect`, and `traits` are keyed on `MemoryKind`. A stored
 record is kind `observation` unless a validated `FormationProposal` typed it, so all five sections
-stay empty in a composition with neither a `FormationBackend` nor a `ConsolidationBackend`.
+require typed records or recognition evidence. Actor entries can also come from speech/face
+recognition and host naming, without formation or consolidation.
 `episodes`, `facts`, and `procedures` are keyed on `MemoryType`, which every record carries, and
 populate without either.
 
@@ -447,7 +455,8 @@ withholds the remaining value without naming the withheld value or identity.
 
 A superseded version bitemporal filtering already excluded is not compared. `conflicts` describes
 eligible functional claims known to this bounded retrieval, not a corpus-wide
-belief-revision history; read `memory_versions` through the control plane for that.
+belief-revision history. Use `search(scope=RetrievalScope(known_at=...))` for a historical view,
+`operations()` for semantic changes, or `export()` for the selected subject's retained versions.
 
 ## Rendered text
 
@@ -458,26 +467,19 @@ bundle reports any, a `## Unknowns` section when it carries any, and an omitted 
 something was omitted. Anything omitted is itself a `budget_excluded` unknown, so the trailer never
 appears without the `## Unknowns` block above it.
 
+The following full-record example uses the current renderer. IDs and counts are shown in full:
+
 ```text
-# Context: what should I bring to the workshop?
+# Context: What should I bring to the workshop?
 Each line is one memory: [id] content (confidence; validity; for affect also basis, cue, valence, arousal, source and co-occurring event ids).
 Reference time: 2026-09-03T12:00:00+00:00
-Budget: 132/16000 chars, 3/24 items
+Budget: 529/2000 chars, 2/8 items
 
 ## Facts
-- [a1b2] the spare key is in the blue toolbox (confidence 1.00)
-- [c3d4] Ana works from Berlin (confidence 0.90; valid from 2026-08-01T00:00:00+00:00)
+- [e6243aeb77b4cd2dd8ebfe5fc5a9fb79ff3fd7b06fec25ed231d9e179cc3ffb6] The spare key is in the blue toolbox. (confidence 1.00)
 
 ## Episodes
-- [e5f6] we walked to the harbour (confidence 1.00)
-
-## Conflicts
-- ana location: "berlin" [c3d4] vs "paris" [g7h8, not included]
-
-## Unknowns
-- budget_excluded: 4 candidates did not fit 24 items and 16000 chars
-
-Omitted: 4 lower-ranked candidates
+- [f63610b434db100f664b4c89125af8a5d558a888922e3b3e405159edf230c847] We walked to the harbour. (confidence 1.00)
 ```
 
 ## Example
@@ -492,7 +494,6 @@ config = {
     "embedding": {
         "provider": "sentence-transformers",
         "model": "google/embeddinggemma-2",
-        "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
     },
     "settings": {"minimum_relevance": 0, "ambiguity_margin": 0},
 }

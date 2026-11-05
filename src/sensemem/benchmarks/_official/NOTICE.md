@@ -43,7 +43,6 @@ rights holders before downloading, using, or redistributing EvoEmo.
 - MEMLENS, copyright 2026 Xiyu Ren, Zhaowei Wang, and the MemLens Authors.
 - ATM-Bench, copyright 2026 Jingbiao Mei.
 - Mem-Gallery, copyright 2026 Yuanchen Bei.
-- LongMemEval, copyright 2024 Di Wu.
 - BEAM, copyright 2025 Mohammad Tavakoli.
 - PersonaMem-v3 evaluation code, copyright 2026 The PersonaMem-v3 Authors.
 - OpenEQA, copyright Meta Platforms, Inc. and affiliates.
@@ -130,6 +129,15 @@ frames require ScanNet's signed terms of use. SenseMem downloads neither. Confir
 authorization for whichever scene source you supply.
 
 ## Apache evaluator material
+
+LongMemEval-V2's deterministic answer matchers and judge rubrics are adapted from
+[`xiaowu0162/LongMemEval-V2@2cc8c540bdb87fe6761629b585e727e1c4704520`](https://github.com/xiaowu0162/LongMemEval-V2/tree/2cc8c540bdb87fe6761629b585e727e1c4704520),
+`evaluation/qa_eval_metrics.py` and `evaluation/harness.py`, under the Apache License, Version 2.0.
+SenseMem changes schema validation, transport, storage isolation and result serialization. It
+restricts evaluation specifications to the six released functions and never executes dataset
+code. The separately downloaded questions, trajectories and screenshots are Apache-2.0 data from
+[`xiaowu0162/longmemeval-v2@f152293e235517d504809563c833d7190b8c713b`](https://huggingface.co/datasets/xiaowu0162/longmemeval-v2/tree/f152293e235517d504809563c833d7190b8c713b).
+No dataset content is redistributed in the package.
 
 The M3-Agent scorer prompt is derived from
 `ByteDance-Seed/m3-agent@0e3e41939bd8a0b66d756e7b7eb8d5fe9992da5c`, licensed under the Apache

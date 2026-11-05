@@ -4,115 +4,66 @@
 [![Python 3.11–3.14](https://img.shields.io/badge/Python-3.11%E2%80%933.14-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-3DA639.svg)](LICENSE)
 
-**Agentic Native Embodied Omni-Modal Memory System.**
+**A unified Context & Memory layer for agents, across devices, modalities, and models.**
 
-SenseMem is an **Agentic Native Embodied Omni-Modal Memory System** built first for emotional
-companion robots. The same memory system extends to desktop robots, personal work assistants,
-chatbots, voice agents, and other long-lived intelligent products.
+SenseMem turns information from digital interactions and the physical world into evolving memory,
+then builds evidence-backed context for the task an agent is working on. Chatbots, coding agents,
+smart glasses, phones, robots, and other intelligent products are all part of that product vision.
+Applications connect their sources through one content contract.
 
-Omni-modal means any supported modality can stand alone or combine with the others: text-only,
-image-text, video, audio, or an arbitrary ordered mixture. Applications own their input and capture
-forms, then normalize them into one content contract. SenseMem preserves that evidence as durable
-memory an agent can search, question, and trace—not merely a nearest-neighbor result.
+Context is the information an agent needs now. Memory is information retained and organized across
+time. SenseMem connects them in a continuous loop:
 
-Authoritative records and source media are stored locally. Inference is explicit: use bundled local
-adapters, an OpenAI-compatible endpoint, or your own typed backend. A remote backend receives the
-inputs required for its configured operation. The same `Memory` kernel powers the Python SDK,
-REST, MCP, and command-line interfaces.
+**Receive context → form and maintain memory → recall for a task → build useful context.**
 
-> SenseMem is a memory system, not an agent framework, robot runtime, sensor stack, or hosted
-> multi-tenant service. The current release is an embedded library with Python, REST, MCP, and CLI
-> interfaces; the product itself is not defined by one integration language.
+The current release is an embedded, local-first runtime for ordered text, images, video, and audio,
+alone or in supported combinations. It preserves original evidence and its time, place, and
+identity context. The same `Memory` kernel powers the Python SDK, REST, MCP, and CLI.
+
+Authoritative records and source media stay local. Inference uses explicitly configured local
+adapters, OpenAI-compatible endpoints, or custom typed backends; a remote backend receives the
+inputs required for its operation. Deployment depends on support for Python, dependencies, and the
+selected models. Device capture and synchronization remain application responsibilities.
 
 This checkout declares package version `0.3.0`. Start with the
 [documentation index](docs/README.md) for current guides and API contracts.
 
 ## Why SenseMem
 
-SenseMem pursues three measurable advantages over alternative memory stacks:
+Three principles guide the product:
 
-| Goal | Product standard |
+| Principle | Commitment |
 | --- | --- |
-| **Stronger** | State-of-the-art memory quality across text-only, image-text, video, audio, and omni routes—measured per route, never inferred from one text score. |
-| **Faster** | Lower end-to-end ingestion, retrieval, and answer latency on the hardware that runs the product. |
-| **Leaner** | Lower model, memory, storage, and operational cost without weakening quality, evidence, or durability. |
+| **Smarter** | Improve memory formation, enrichment, revision, organization, and recall so agents receive more useful context. |
+| **Swifter** | Let users compose capabilities, choose models, and extend implementations through explicit plugin contracts. |
+| **Stronger** | Deploy across hardware classes and pursue state-of-the-art results across a broad range of memory and multimodal tasks. |
 
-These are engineering targets, not unsupported leaderboard claims. Comparative results must name
-the dataset, model, runtime, hardware, quality metric, latency, and resource cost so they can be
-reproduced.
+These principles guide development. Hardware coverage and quality advantages require reproducible
+results for named configurations; they are not universal support or leaderboard claims.
 
-- **One omni-modal memory contract.** Ordered text, image, video, and audio can remain one
-  observation instead of being flattened into an untraceable summary or split across unrelated
-  stores.
-- **User-owned input forms.** Applications define capture objects, sensor events, and interaction
-  formats, then adapt them to `ContentInput`, `StreamInput`, or the async stream packets.
-- **Memory semantics above vector search.** Semantic, episodic, and procedural roles combine with
-  event time, bitemporal validity, spatial scope, optional decay, and explicit reinforcement.
-- **Evidence-grounded answers.** `ask()` returns the exact hits used by the answer backend and can
-  abstain when evidence is absent or insufficient. `search(..., explain=True)` explains ranking and
-  rejection without copying private content into the trace.
-- **Compiled context, not a hit list.** `compile()` returns a budgeted `ContextBundle` — actors,
-  episodes, facts, procedures, affect, and traits, with the lineage conflicts it reports and does
-  not resolve — so an agent building its own prompt does not re-derive structure from unranked
-  hits.
-- **Capture now, enrich later.** `capture()` commits a record and its media in one transaction
-  before any model call, and `settle()` runs the deferred stages when the host has time. `add()`
-  still returns searchable.
-- **An auditable memory control plane.** A `ConsolidationBackend` proposes reinforcement,
-  consolidation, correction, and forgetting over a bounded evidence set; the kernel validates every
-  citation, logs each applied operation, and can reverse it. Forgetting is a reversible policy
-  state, distinct from `delete()`.
-- **Recoverable embedded storage.** SQLite and the content-addressed media store are authoritative.
-  Zvec is a rebuildable dense and lexical projection updated through a durable outbox.
-- **Plugin architecture without a second execution plane.** Typed embedding, generation, speech,
-  vision, face, formation, and consolidation plugins remain replaceable while the kernel owns memory semantics,
-  validation, evidence, and durability.
-- **A lifecycle for continuous perception.** Lazy ingestion, speculative omni-modal prefetch, and
-  audio/vision reducers distinguish partial updates, final observations, and cancellation.
-- **Developer- and agent-friendly APIs.** A concise SDK, REST, self-described MCP tools,
-  and a machine-readable CLI dispatch to the same kernel and preserve the same contracts.
+Today, SenseMem lets you:
 
-### Where it fits
+- **Preserve multimodal evidence.** Store ordered text, images, video, and audio as one
+  observation, with original media retained locally.
+- **Retrieve meaningful memories.** Combine dense and lexical search with semantic, episodic,
+  and procedural roles, event time, validity, identity, and spatial scope.
+- **Build grounded responses.** `ask()` returns evidence and explicit abstention;
+  `compile()` produces structured context within declared item, character, and media budgets.
+- **Control when inference runs.** `add()` returns searchable; `capture()` commits before model
+  work and lets the host schedule enrichment with `settle()`.
+- **Manage memory explicitly.** Optional formation and consolidation propose evidence-linked
+  changes; the kernel validates them and records reversible operations.
+- **Recover local state.** SQLite and original media are authoritative. A durable outbox keeps
+  the rebuildable Zvec search projection recoverable.
 
-| Need | SenseMem's choice | Consequence |
-| --- | --- | --- |
-| Embedded memory | One `Memory` in the host process | No database, cache, queue, or object-store service |
-| Local data control | SQLite and media under `data_dir` | The application owns filesystem, backup, and encryption policy |
-| Omni-modal evidence | Native ordered text, image, video, and audio, alone or combined | Retrieval and grounding retain source modalities |
-| Portable inference | Explicit capabilities and durable model identities | Local and remote backends share memory semantics |
-| Explainable retrieval | Stable evidence IDs, abstention, and traces | Callers can inspect why evidence was used or rejected |
-| Framework neutrality | SDK, REST, MCP, and CLI | SenseMem can sit below different agents and applications |
+Use SenseMem inside a Python application, or expose the same owner through REST, MCP, or the CLI.
+Applications choose local or remote model backends through typed protocols. Model choice controls
+modality support, quality, inference cost, and hardware requirements.
 
-### How it differs from common alternatives
-
-| Alternative | SenseMem adds | Prefer the alternative when |
-| --- | --- | --- |
-| A vector database alone | Canonical multimodal records, cognitive roles, time and space semantics, grounded answers, and a recoverable index projection | Similarity search is the complete requirement |
-| A hosted memory service | In-process execution, local authoritative state, and application-selected model boundaries | You want a vendor to operate storage, tenancy, and access control |
-| An agent framework | A framework-neutral memory kernel exposed through Python, REST, MCP, and CLI | You need planning, tool loops, or application orchestration rather than memory |
-| Custom SQLite plus a vector index | Content identity, media lifecycle, durable index outbox, stale-ID filtering, typed model contracts, and recovery paths | Your schema and retrieval policy are deliberately small and application-specific |
-
-Choose another design if you require a hosted control plane, built-in authentication, autonomous
-planning, or multiple tenants inside one physical store. SenseMem deliberately leaves those
-concerns to the host.
-
-## Design philosophy
-
-1. **Preserve evidence.** Store source observations before deriving summaries, identities, or typed
-   memories; derived state remains linked to evidence.
-2. **Commit truth before projections.** SQLite and original media are authoritative; Zvec is
-   disposable and rebuildable.
-3. **Route by capability, not provider name.** Backends declare supported modalities and fail
-   clearly rather than silently dropping unsupported evidence.
-4. **Keep automation explicit and observable.** Credentials, model calls, formation, fallback, and
-   ranking policy are deployment choices, not hidden global state.
-5. **Keep one execution plane.** Every interface shares IDs, defaults, errors, and `Memory`
-   operations.
-6. **Measure the public path.** Quality and performance claims require reproducible SDK runs with
-   dataset, model, runtime, hardware, and validity fields.
-
-See [Design principles](docs/design-principles.md) and
-[Architecture](docs/architecture.md) for the complete rationale and implemented invariants.
+The host owns agent planning, device integration, and access control. SenseMem owns memory
+semantics, evidence, durable local consistency, retrieval, and context construction. See
+[Product capabilities](docs/product-capabilities.md),
+[Design principles](docs/design-principles.md), and [Architecture](docs/architecture.md).
 
 ## Installation
 
@@ -150,15 +101,15 @@ supplied embedder.
 
 `SentenceTransformersEmbedder` loads the selected model at construction with
 `trust_remote_code=False`. The example below selects EmbeddingGemma 2 with Apache-2.0 weights.
-Review the selected model's license and pin its revision for reproducible deployments.
+Review the selected model's license and record its resolved identity when comparing deployments.
 
 See [Configuration](docs/configuration.md) for provider fields, custom backends, credentials, and
 durable embedding-space rules.
 
 ## Basic usage
 
-This complete example stores a fact, proves idempotent identity, and retrieves it with no database
-service or model API key:
+Save the following as `example.py` after installing `sensemem[local]`. It stores a fact, proves
+idempotent identity, and retrieves it with no database service or model API key:
 
 ```python
 from sensemem import Memory
@@ -168,7 +119,6 @@ config = {
     "embedding": {
         "provider": "sentence-transformers",
         "model": "google/embeddinggemma-2",
-        "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
     },
     "settings": {
         "minimum_relevance": 0.0,
@@ -220,7 +170,7 @@ Continue with the [Quick start](docs/quickstart.md) and
 | Omni-modal memory | Text, image, video, audio, arbitrary mixed records, assets, and content identity | [Core concepts](docs/concepts.md) |
 | Retrieval and time | Dense/lexical retrieval, trace, memory roles, bitemporal and spatial scope, decay | [Memory types, time, and decay](docs/memory-types-time-and-decay.md) |
 | Grounded generation | Optional answer backend, evidence hits, abstention, and evidence budgets | [Configuration](docs/configuration.md) |
-| Formation | Optional entity, event, state, relation, affect, trait, and response-policy derivation | [Automatic formation](docs/configuration.md#automatic-memory-formation) |
+| Formation | Optional entity, event, state, relation, affect, and trait derivation; host-authorized response policies | [Automatic formation](docs/configuration.md#automatic-memory-formation) |
 | Streaming | Durable streams, omni prefetch, audio/vision reducers, interaction memory | [Streaming and interaction memory](docs/omni-streaming-and-interaction-memory.md) |
 | Identity | Speech and face analysis, naming, corroborated linking, unlinking, and erasure | [Python SDK](docs/api/python-sdk.md#cross-modal-identity-binding) |
 | Context compilation | Budgeted, partitioned context bundles with conflicts and declared capabilities | [Context compilation](docs/context-compilation.md) |
@@ -234,7 +184,7 @@ The [documentation index](docs/README.md) is the complete task-oriented map.
 ## Benchmarks
 
 `sensemem-bench eval` evaluates memory quality and end-to-end behavior through the public SDK.
-Its executable catalog covers seventeen benchmark families across long-horizon conversation,
+Its executable catalog covers eighteen benchmark families across long-horizon conversation,
 personalization, multimodal video and lifelog QA, embodied scene memory, and grounded retrieval.
 Separate utilities produce raw LoCoMo-Refined predictions and measure the local SQLite-to-Zvec
 index path. Copy the [evaluation example](docs/examples/eval.example.yaml) to `eval.yaml` and
@@ -278,7 +228,7 @@ If you use SenseMem in academic or technical work, cite the version or commit yo
 ```bibtex
 @software{sensemem_2026,
   author  = {{SenseMem contributors}},
-  title   = {SenseMem: An Agentic Native Embodied Omni-Modal Memory System},
+  title   = {SenseMem: A Unified Context and Memory Layer for Agents},
   year    = {2026},
   version = {0.3.0},
   url     = {https://github.com/SenseMem/SenseMem}

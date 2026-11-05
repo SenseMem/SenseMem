@@ -1,10 +1,23 @@
 # Core concepts
 
-SenseMem is an embedded memory library. The host application supplies content and model
-capabilities; one local `Memory` owns persistence, retrieval, and grounded-answer orchestration.
+SenseMem provides a unified Context & Memory layer through an embedded runtime. The host
+application supplies content and model capabilities; one local `Memory` owns persistence,
+retrieval, context compilation, and grounded-answer orchestration.
 This page gives the mental model. Start with [product capabilities](product-capabilities.md) for the
 implemented use-case map. [Architecture](architecture.md) owns implementation invariants, and the
 [Python SDK](api/python-sdk.md) owns exact signatures.
+
+## Context and memory
+
+Context is information needed for the current task. Memory is information retained and organized
+across time. Applications choose what to retain through `add()` or `capture()`; queries and
+speculative recall snapshots can remain transient. Optional formation and explicit maintenance
+organize stored evidence over time.
+
+To return memory to the current task, `search()` retrieves evidence, `compile()` constructs a
+bounded structured context bundle, and `ask()` generates an evidence-backed answer. The agent
+still owns its prompt, goals, and actions. This is the product loop: receive context, form and
+maintain memory, recall for a task, and build useful context.
 
 ## From input to evidence
 
@@ -112,7 +125,8 @@ the three paths, formation controls, and ownership rules.
 
 ## Retrieval can return no evidence
 
-`search()` returns `tuple[SearchHit, ...]`. An empty tuple is normal when no candidate clears
+`search()` returns a `SearchResult`; its `hits` field is a `tuple[SearchHit, ...]`.
+An empty `hits` tuple is normal when no candidate clears
 `minimum_relevance`. With `limit=1`, SenseMem may also withhold an unresolved top-two tie. A score
 ranks hits against one query and does not move with the `limit` you ask for; it is not a global
 probability.

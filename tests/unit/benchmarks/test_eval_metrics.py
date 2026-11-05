@@ -1339,8 +1339,8 @@ def _retrieval_sample(
 ) -> eval_results_module.SampleResult:
     """One labelled question with a hand-written gold label and ranked list."""
     return eval_results_module.SampleResult(
-        task="longmemeval-s",
-        benchmark="LongMemEval",
+        task="locomo-refined",
+        benchmark="LoCoMo-Refined",
         dataset_sha256="3" * 64,
         evaluation_sha256="4" * 64,
         unit_id=question_id,

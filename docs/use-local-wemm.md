@@ -1,6 +1,7 @@
 # Use a local WeMM embedding service
 
-SenseMem can use an OpenAI-compatible local WeMM embedding service through the same public
+This guide assumes an already-running WeMM service; SenseMem does not install its serving
+runtime. SenseMem can use an OpenAI-compatible local WeMM embedding service through the same public
 configuration used for hosted providers. Keep the embedding service local and configure generation
 separately when a remote Qwen endpoint answers questions.
 
@@ -37,7 +38,10 @@ settings:
   index_speech: true
 ```
 
-Save the YAML as `config.yaml`. Install the SDK surfaces and the host's YAML parser:
+Replace the generation URL, model name, and credential placeholders with your deployment's
+values, then save the YAML as `config.yaml`. Remove a slot's `api_key` to use SDK environment
+lookup instead; an explicit placeholder overrides that lookup. Install the SDK surfaces and the
+host's YAML parser:
 
 ```bash
 uv add "sensemem[openai,local]" pyyaml
@@ -65,12 +69,9 @@ The local WeMM service in this recipe has a 2048-vector `messages` contract. It 
 images, and videos; it does not accept audio embeddings. Configure FunASR to turn audio and video
 audio into searchable text, then keep `index_speech` enabled. This adds ASR work on ingestion.
 
-The research service used with this recipe limits one request to 128 samples and 64 MiB, each
-inline media object to 20 MiB, and native video input to at least two real frames. It internally
-microbatches eight samples. These are deployment-specific service limits, not guarantees of the
-WeMM model or SenseMem. Verify them against your server. Use
-the direct service URL above for normal deployments; an experiment cache proxy is not part of the
-public SDK configuration.
+Verify your service's batch, inline-byte, and video-frame limits before ingestion. The SDK's
+own transport bounds remain in force; see the [adapter limits](api/python-sdk.md#bundled-adapters).
+An experiment cache proxy is not part of the public SDK configuration.
 
 The local server runtime, model checkpoint, and service script are machine-managed dependencies;
 they are not installed by SenseMem. Use the official

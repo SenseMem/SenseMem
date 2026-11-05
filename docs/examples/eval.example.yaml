@@ -55,7 +55,7 @@
 embedding:
   # `openai` reaches any OpenAI-compatible server, including a local vLLM.
   # Alternative: `sentence-transformers` (requires `model`; `revision` is optional).
-  # Select an immutable model revision explicitly for reproducible local evaluation.
+  # With no revision, local loaders resolve the current Hub commit and record its identity.
   provider: openai
   base_url: http://127.0.0.1:8000/v1
   # Local servers usually accept any non-empty string; omit the field to let the SDK read
@@ -116,9 +116,9 @@ generation:
   # reproducible sweep pins temperature to 0 and takes the seed from `benchmark.run.seed`.
 
 # Optional, and off by default: it adds an LLM round-trip to every write. It buys the typed
-# memory plane (entity, event, state, relation, affect, trait, response policy), each linked back
-# to its source as evidence. `modalities` gates which observations reach it -- a text-only
-# declaration means image and video sources never form anything.
+# memory plane (entity, event, state, relation, affect, trait), each linked back
+# to its source as evidence. A text-only former can use source-backed captions/transcripts;
+# native media requires a declared modality. Response policies require host authorization.
 # formation:
 #   provider: openai
 #   base_url: https://your-endpoint.example/v1
@@ -142,7 +142,8 @@ settings:
   # How close the top two hits must be before retrieval is treated as ambiguous. Default 0.01.
   ambiguity_margin: 0.01
   # Character budget for evidence handed to the answerer. SDK default 24000; None grounds on
-  # exactly `limit`. A budget only widens that window and never bounds it.
+  # the ranked `limit` window, with source closure and optional planning/expansion still applied.
+  # Mandatory raw observations can exceed this soft allowance.
   evidence_budget_chars: 12000
   # `reinforce_on_answer` is deliberately absent: the runner forces it off whatever this file
   # says, because reinforcing mid-run makes one question's retrieval depend on which earlier

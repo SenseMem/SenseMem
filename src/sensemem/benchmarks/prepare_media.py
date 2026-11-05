@@ -17,7 +17,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, TypeAlias, TypeVar
 from urllib.parse import urlparse
 
-from sensemem.benchmarks.download import acquire_media
+from sensemem.benchmarks.download import _extract_tar, acquire_media
 from sensemem.benchmarks.eval_adapters import Limit, MediaManifest, _selected
 from sensemem.benchmarks.task_catalog import TaskSpec
 
@@ -248,6 +248,15 @@ def _acquire_selected(
             allow_missing=spec.name == "supermemory-vqa" or spec.name.startswith("memlens-"),
             announce=announce,
         )
+        if spec.name.startswith("longmemeval-v2-"):
+            for pattern in patterns:
+                archive = root / source.release / pattern
+                if pattern.endswith(".tar.gz") and archive.is_file():
+                    _extract_tar(
+                        archive,
+                        announce=announce,
+                        destination=root / source.release / "screenshots",
+                    )
     return {}
 
 
@@ -260,6 +269,22 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
     if source is None:
         return ()
     name = spec.name
+    if name.startswith("longmemeval-v2-"):
+        from sensemem.benchmarks.longmemeval_v2 import load_longmemeval_v2_questions
+
+        v2_questions = _selected(load_longmemeval_v2_questions(dataset), limit, offset)
+        domains = {question.domain for question in v2_questions}
+        return (
+            *(question.image for question in v2_questions if question.image is not None),
+            *(
+                f"trajectory_screenshots/{archive}.tar.gz"
+                for domain, archive in (
+                    ("web", "web_screenshots"),
+                    ("enterprise", "enterprise_screenshots_base"),
+                )
+                if domain in domains
+            ),
+        )
     if name in {"m3-bench-robot", "m3-bench-web"}:
         from sensemem.benchmarks.m3_bench import load_m3_bench
 

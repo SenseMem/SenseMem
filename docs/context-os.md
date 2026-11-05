@@ -1,20 +1,24 @@
 # Context OS direction
 
-This page defines SenseMem's long-term product and architecture direction. It does not claim
-that every behavior below is implemented or public. [Architecture](architecture.md) owns current
-implementation invariants, and the API references own current contracts.
+SenseMem is a unified Context & Memory layer for agents, across devices, modalities, and models.
+This page explores the long-term architecture for that role under the name **Context OS**.
+It does not claim that every behavior below is implemented or public.
+[Design principles](design-principles.md#smarter--swifter--stronger) defines the Smarter / Swifter /
+Stronger product criteria; [architecture](architecture.md) owns current implementation invariants,
+and the API references own current contracts.
 
 Scheduling remains host authority: `capture()` does not schedule `settle()`, and configuring a
 consolidator does not start a loop. A host may call `consolidate()` explicitly or enable the
 [serving-process timer](configuration.md#running-the-loop-inside-a-server-process). That timer
 does not add a network control-plane route or settle captured records.
 
-> SenseMem is an embodied-native, agentic context operating system. It turns continuous
-> multimodal experience into governed, task-ready context for agents.
+> Direction: receive context from digital interactions and the physical world, form and maintain
+> memory across time, and compile evidence-backed context for the agent's current task.
 
-`Embodied-native` describes where context comes from and which semantics survive ingestion.
-`Agentic` describes how slow memory is managed. `Context OS` describes SenseMem's position
-between perception and action.
+Sources include chatbots, coding agents, smart glasses, phones, and robots. Physical-world context
+retains time, place, identity, and original media; digital interactions use the same lifecycle.
+Agentic management proposes how memory should evolve. Context OS names the deeper lifecycle and
+scheduling architecture behind this unified layer.
 
 ## Why an operating system
 
@@ -79,7 +83,7 @@ their behalf rather than a setting a model can reach:
 
 | Authority | Call | Reversible by |
 | --- | --- | --- |
-| Consent | `record_consent(identity_id, state, note=None)`, read back by `consent(identity_id)` | `rollback()` of its `CONSENT` row, or a later statement that supersedes it |
+| Consent | `record_consent(identity_id, state, note=...)`, read back by `consent(identity_id)` | `rollback()` of its `CONSENT` row, or a later statement that supersedes it |
 | Identity naming | `register_identity` | `rollback()` of its `IDENTIFY` row |
 | Correction | `rollback(operation_id)`, and `unlink_identity` for a wrong cross-modal merge | Itself: `rollback()` of the split's `CORRECT` row re-merges |
 | Export | `export(identity_id=...)` or `export(memory_ids=...)` | Nothing to reverse; it reads only |
@@ -95,9 +99,9 @@ through the control plane, so a model's typed proposal carrying it is stored unb
 inference about a subject rather than a statement by a person -- and binds to nobody. Withheld or withdrawn consent restrains the kernel from the next observation on: no new
 face or voice exemplar is enrolled for that person, no cross-modal merge binds their voice to
 their face, and `compile()` leaves them out of the bundle's actors with a `CONSENT_WITHHELD`
-unknown. It does not restrain recognition against exemplars already held, because answering a
-question from media the host already has is not new processing of a person -- destroying what is
-held is `forget_identity`, which is a different request with a different answer.
+unknown. Recognition against existing exemplars and retrieval of the source memories remain
+available. These are runtime policy effects, not a complete consent or access-control workflow;
+`forget_identity` is the separate operation that erases the stored template.
 
 One authority does not compose cleanly with another person's, and the honest place to say so is
 here: a recording two people share is held about both, so it appears in both their exports, each
@@ -183,16 +187,16 @@ forgotten, corrected, or deleted since validation is refused as stale rather tha
 `FormationBackend` is the seed of this plane: it proposes typed state from one committed
 observation while the kernel validates and persists it. `ConsolidationBackend` is the plane itself:
 `consolidate()` gathers a bounded, active evidence set, the backend proposes `MemoryOperation`
-values with the four intents reinforce, consolidate, correct, and forget, and the kernel validates
-each one, commits it with its log row, and can `rollback()` it. Merge is the one intent no backend
-may propose: a cross-modal identity merge is committed by the kernel from co-occurrence evidence it
+values for reinforce, consolidate, correct, forget, and evidence-backed identify, and the kernel validates
+each one, commits it with its log row, and can `rollback()` it. Merge and consent are never
+accepted as model proposals: a cross-modal identity merge is committed by the kernel from co-occurrence evidence it
 counted itself, with its own reversible log row, and a proposed `MERGE` is rejected as
 `unauthorized`. `consolidation_candidates()` is the
 durable trigger in front of that loop: it derives due work -- new independent evidence, a lineage
 that contradicts itself, a record confirmed since it was last weighed, a question recall answered
 with nothing, a store over its declared budget, an operator-approved idle window -- from committed
 state, so deliberation is scheduled on evidence rather than on a clock. `consolidate_pending()` is the loop
-itself, running those two halves to a fixed point and reporting what the run cost and yielded, and
+itself, running those two halves within `max_rounds` and reporting what the run cost and yielded, and
 `apply(operation)` is the same kernel validation for an operation a host supplies, which makes
 replay of a logged sequence a public path. Neither a clock nor a candidate that always comes back
 is evidence that work is useful, so each pass records that it weighed its evidence set even when
@@ -205,7 +209,7 @@ change without changing that vocabulary.
 | --- | --- | --- |
 | Cognitive forgetting | Exclude or downrank context in ordinary recall while retaining auditability and recovery. | Policy may act automatically within configured bounds. |
 | Consolidation forgetting | Prefer a compact derived memory and move detailed evidence out of the normal recall path. | The memory loop may propose it; the kernel preserves lineage. |
-| Physical forgetting | Delete records and media so they cannot be recovered by SenseMem. | Explicit human or deterministic retention policy. |
+| Physical forgetting | Remove live records and unreferenced media; operation history and storage remnants can retain related information. | Explicit human or deterministic retention policy. |
 
 Decay is cognitive ranking only, and `forget()` is cognitive forgetting: a forgotten record leaves
 recall, stays readable through `get()` and `list()` with its `forgotten_at`, and returns through
@@ -250,7 +254,7 @@ The resulting bundle may contain:
 
 The compiler selects and structures context; it does not choose the agent's final answer or action.
 `ask()` may remain a convenient grounded-generation surface, but it is not the operating-system
-boundary. `compile()` is implemented and exposed on all three interfaces; see
+boundary. `compile()` is implemented in Python, REST, MCP, and the CLI; see
 [context compilation](context-compilation.md) for the contract and
 [REST](api/rest.md#endpoints) and [MCP](api/mcp.md#tools) for the transport forms.
 
@@ -283,11 +287,11 @@ every administrative method.
 
 The three surfaces carry different authority, not different capability. The SDK is the full
 surface: every public `Memory` operation, including the control plane, is reachable because the
-SDK runs inside the process that owns the memory. REST is a network-safe subset of that same
+SDK runs inside the process that owns the memory. REST is a network-facing subset of that same
 process: the ordinary application path -- add, search, ask, compile, and the fast-capture plane
 (`capture`, `settle`, `pending_captures`) -- is always on, because it is an operation on the
 caller's own records rather than authority over a person, while identity administration (naming,
-reading, unlinking, and erasing a person) and embodied analysis (`speech`, `faces`) are opt-in
+reading, unlinking, and erasing a person) and embodied analysis (`perceive`) are opt-in
 behind `create_app`'s `identity_operations` and `embodied_operations`, both defaulting to off,
 because a caller reaching REST over a network is not automatically the memory's owner. MCP is the
 agent view of the same process and carries its own `identity_operations` switch with the same
@@ -314,8 +318,8 @@ High-rate sensor streams stay on the embedded SDK boundary. Agents operate on co
 observations or stable asset identifiers. Cognitive forgetting, consolidation, operation rollback,
 and applying a retention policy stay with the process that owns the memory; identity
 naming, merge reversal, and erasure are separate trusted tools that no ordinary recall or compile
-call grants, and a host withholds them, the two analysis tools, or every mutating tool by
-building the server without that group.
+call grants. A host can withhold identity tools, perception, and explicit record-write tools
+through the MCP group switches; recall tools can still persist caches and failure signals.
 
 The three data-subject rights that are not naming -- recording consent, exporting a subject, and
 applying retention -- reach REST behind the same `identity_operations` switch and reach MCP not at
@@ -357,90 +361,24 @@ context utility under the target device's latency, resource, and privacy constra
 | Developer and agent experience | Time to first memory, integration code, tool-call success, context size, and correction effort. |
 
 The existing [benchmark harness](benchmarking.md) measures many retrieval and task-quality axes.
-Context OS claims additionally require end-to-end companion scenarios and measurements on named
+Context OS claims additionally require end-to-end agent scenarios and measurements on named
 deployment hardware. External results guide hypotheses; only reproducible SenseMem runs select
 defaults or justify superiority claims.
 
 ## Evolution gates
 
-1. Measure the current strong `add`, streaming prefetch, search, and formation paths on target
-   hardware before setting latency objectives. Open: no named-hardware measurement exists yet.
-   The [benchmark harness](benchmarking.md#reported-performance-and-resource-metrics) can now
-   produce most of these numbers from a real run: capture acknowledgement, time to searchable,
-   and formation lag from `sensemem-bench eval --ingest capture`, search and answer latency
-   from any run, and CPU, memory, and disk for the whole run. Speculative first-hit latency stays unmeasured:
-   the streaming prefetch path issues an ordinary `Memory.search()`, indistinguishable in
-   telemetry from any other search, and the harness does not exercise streaming ingest. Running
-   this on named hardware and publishing the result is still what closes the gate.
-2. Add an explicit fast-capture path and SQLite-backed durable enrichment work without changing
-   current `add()` semantics. Done: `capture()`, `settle()`, and `pending_captures()`;
-   `settle()` honours a retry ceiling so one poisoned capture cannot block the queue,
-   `pending_captures()` answers per-record readiness with attempts, last error, and the stage the
-   record is stopped at, `settle(memory_ids=...)` runs named records past that ceiling, one
-   settlement runs at a time per `Memory`, and a record whose formation was interrupted after
-   `add()` committed is completed by the next `settle()` through the same queue. `capture=True`
-   on `add_stream()` and the three async reducers routes streaming `FINAL` events through the
-   capture path, so continuous observation reaches durable acknowledgement without waiting for a
-   model.
-3. Generalize formation into one bounded memory-management loop with structured proposals,
-   replay, rollback, and privacy tests. Done: the operation log and authority tests
-   (`consolidate()`, `forget()`, `rollback()`, `operations()`), the `identify` intent that
-   makes naming a person an evidence-bearing, reversible claim, consolidation forgetting as one
-   reversible operation, the declarative `consolidation` slot that makes the loop reachable
-   without a Python app loader, kernel rejection of proposals that name records the backend was
-   not shown, of partial multi-target operations, and of proposals whose targets moved before the
-   commit, and native media in the bundled consolidation backend's input. The loop is now an
-   entity rather than two primitives a host joins: `consolidate_pending()` and `sensemem consolidate-pending`
-   run candidates through consolidation to a fixed point, all six triggers are produced from
-   committed state rather than named in an enum -- `QUERY_FAILURE` from recorded empty recalls,
-   `PRESSURE` from a declared record budget, `IDLE` from an operator-declared window -- and every
-   trigger except `PRESSURE` fires under the default policy: `PRESSURE` derives nothing at all
-   until `memory_budget_records` is set, because without a declared budget no amount of growth is
-   evidence that consolidating or forgetting anything is useful. Every
-   pass records that it weighed its evidence set whatever it yielded, so a candidate the model
-   could not resolve stops coming back until its own signal moves instead of being paid for every
-   round. `consolidate()` holds no lock across the backend round trip, so slow reasoning does not
-   stall a concurrent `add()`; the in-transaction re-check remains the correctness guarantee.
-   Replay is a public, tested path through `apply(operation)`, and `record_outcome()` writes the
-   post-hoc outcome the slow-loop measurements need. The identity lifecycle joined the same log:
-   the corroborated cross-modal `MERGE` the kernel commits and `rollback()` re-splits, the
-   `CORRECT` that `unlink_identity` logs and `rollback()` re-links, and the irreversible `FORGET`
-   row an identity erasure leaves so the request is auditable without being recoverable. Open:
-   companion-scenario privacy tests.
-4. Add a context compiler whose output improves downstream tasks within declared budgets. Done
-   for selection, budgeting, the latency deadline, the explicit unknowns a thin bundle reports,
-   and the person link: `compile()` resolves a memory's identity edge -- its own bound semantic
-   assertion or its media's asset-keyed speech speaker or face observation -- into a `NamedActor`
-   or `ProvisionalActor`, whether or not the naming assertion itself ranked into the bundle. Open:
-   a downstream-task measurement against the no-memory, full-context, and retrieval-only
-   baselines. The [benchmark harness's `compile` arm](benchmarking.md#baseline-arms) can now
-   produce that comparison -- it answers from `compile()`'s rendered bundle beside `blind`,
-   `full-context`, and the product's own `sensemem` (retrieval-only) arm on the same questions,
-   and reports each answered question's bundle chars and item count as the numerator half of
-   useful evidence per token. Running it across the benchmark suite and publishing the result is
-   still what closes the gate.
-5. Extend REST or MCP only after the Python contract and authority model are stable. Done: the
-   compiler; one capability document rendered by `/healthz`, the MCP server instructions, and
-   `sensemem doctor` -- the same document, narrowed on each network surface to the operations
-   it serves; and the three switches
-   `build_mcp_server(identity_operations=, embodied_operations=, write_operations=)`, which
-   withhold naming and erasing a person, the two analysis tools -- and with them the
-   cross-modal identity merge `perceive_memory` commits -- and adding, deleting and reinforcing.
-   Each withholds by never registering the group, so a withheld tool is unknown rather than
-   refused, and the instructions name what is missing. `ask_memory` reaches the same face
-   recognition `perceive_memory` uses to answer a question over a photo or video, so
-   `embodied_operations=False` also passes `Memory.ask(..., link_identities=False)`: recognition
-   may still run, but the corroborated bind never commits. All three False therefore leaves
-   exactly the five read tools with no path to merge authority, which is recall and compile
-   alone. REST reaches the fast-capture plane always, and the same identity and embodied
-   operations behind its own `identity_operations` and `embodied_operations` switches on
-   `create_app`, mirroring the MCP switches of the same name, so a networked application can use
-   `capture`/`settle`/`pending_captures` unconditionally and, where the host opts in, name, read,
-   unlink, or erase a person or run face and speech analysis exactly as an MCP-connected agent
-   can. The control-plane intents stay off REST and MCP.
+These gates separate implemented mechanisms from the evidence still needed to choose defaults.
+They are design criteria, not a release schedule.
 
-Fast capture is now independent of slow reasoning, the control plane governs the lifecycle through
-validated, logged, reversible operations, and the compiler produces budgeted task-ready context.
-Apart from the open items named above, the remaining gates are measurements, not mechanisms:
-named-hardware latency, downstream task utility, and slow-loop quality on companion scenarios
-decide whether the defaults are right.
+| Gate | Implemented mechanism | Evidence still required |
+| --- | --- | --- |
+| Capture latency | Explicit `capture`, `settle`, readiness inspection, and final-boundary reducers | Named-hardware acknowledgement, time-to-searchable, and speculative first-hit measurements |
+| Memory management | Bounded proposals, candidate scheduling, logged operations, replay, outcomes, and rollback | Application-scenario quality, privacy, false-retirement, and cost measurements |
+| Context utility | Evidence closure, budgets, conflicts, unknowns, actors, excerpts, and certificates | Paired downstream-task comparisons with no-memory, full-context, and retrieval baselines |
+| Interfaces | One kernel behind Python, REST, MCP, and CLI, with explicit authority switches | Integration and usability evidence for each intended host |
+| Affective context | Sourced affect cues and corroborated trait visibility | Per-modality calibration and interaction quality under the [affect roadmap](affective-memory.md) |
+
+The [evaluation harness](benchmarking.md) can measure many of these axes, including capture
+latency with `--ingest capture` and downstream utility with the `compile` arm. It does not exercise
+continuous sensor ingestion or establish real-world companion quality. Runtime mechanisms alone
+do not close those measurement gates.

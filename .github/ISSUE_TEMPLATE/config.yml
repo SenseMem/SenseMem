@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/SenseMem/SenseMem/security/advisories/new
     about: Report privately. Do not open a public issue for a security vulnerability.
   - name: Documentation
-    url: https://github.com/SenseMem/SenseMem/tree/mindbridge-v03/docs
+    url: https://github.com/SenseMem/SenseMem/tree/master/docs
     about: Deployment, configuration, API reference, and troubleshooting guides.

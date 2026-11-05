@@ -1,5 +1,9 @@
 # MCP API
 
+Jump to [authority switches](#withholding-a-group-of-tools), [startup](#start-the-adapter),
+[tools](#tools), [results](#result-objects), [errors](#validation-and-errors),
+or [input limits](#input-limits).
+
 Tool calls share the directory's 32 request slots with REST, before framework worker dispatch.
 Overload returns the stable tool error envelope with `reason="capacity_exceeded"`,
 `stage="admission"`, and `retryable=true`. Process-wide budgets apply across independent
@@ -22,11 +26,11 @@ erase a person on request, and record which memories were useful. `build_mcp_ser
 inside the process that holds the `Memory` it is given and every tool is one call on it, so an
 embodied operation is no less reachable here than `add_memory` is.
 
-Naming a person is host authority. `register_identity` assert a name on
+Naming a person is host authority. `register_identity` asserts a name on
 the host's behalf: the assertion is a versioned memory record, it is written to the operation
 log, and it is reversible, and the tool descriptions say so. Splitting a wrong merge is written
 to the log and reversible too, and erasing a person leaves an irreversible row so the request
-stays auditable; `get_identity` reads and writes nothing.
+stays auditable; `get_identity` reads the current profile without changing it.
 
 ### Withholding a group of tools
 
@@ -39,7 +43,7 @@ an agent should not discover a boundary by failing.
 | --- | --- | --- |
 | `identity_operations` | `register_identity`, `get_identity`, `unlink_identity`, `forget_identity` | Naming and erasing a person is host authority |
 | `embodied_operations` | `perceive_memory` | `perceive_memory` also commits the corroborated cross-modal identity merge, so leaving it registered keeps identity *binding* on the wire even with the identity tools withheld. `ask_memory` reaches the same merge through its own face recognition, so this switch also passes `link_identities=embodied_operations` into every `ask_memory` call |
-| `write_operations` | `add_memory`, `delete_memory`, `reinforce_memories` | The agent should consume context and change nothing |
+| `write_operations` | `add_memory`, `delete_memory`, `reinforce_memories` | The host wants to withhold explicit record writes and feedback |
 
 ```python
 build_mcp_server(
@@ -50,16 +54,17 @@ build_mcp_server(
 )
 ```
 
-With all three False the surface is exactly the five read tools -- `search_memories`,
-`ask_memory`, `compile_context`, `get_memory` and `list_memories` -- which is recall and compile
-alone. `ask_memory` stays because it is a recall surface; the reinforcement it records for the
+With all three `False`, five recall and record-reading tools remain: `search_memories`,
+`ask_memory`, `compile_context`, `get_memory` and `list_memories`. `ask_memory` stays because it
+is a recall surface; the reinforcement it records for the
 memories its answer cited is the owner's `reinforce_on_answer` setting rather than a capability
-these switches grant, so a host that wants a strictly read-only memory turns that off on the
-`Memory` it injects. `embodied_operations=False` also withholds the one write `ask_memory` could
+these switches grant. Set `reinforce_on_answer=False` on the injected memory when recall should
+not add ranking feedback. Recall can still persist query-transcript caches, recognition caches, and
+bounded query-failure signals; these switches do not make storage immutable.
+`embodied_operations=False` withholds cross-modal linking that `ask_memory` could
 otherwise still reach: it passes `link_identities=False` into `Memory.ask`, so answering over a
 photo or video may still identify who appears in it, but a corroborated voice-and-face pair is
-never fused into one identity. Without that, "recall and compile alone" would be true of the tool
-list and false of what `ask_memory` could do.
+never fused into one identity through that answer call.
 
 ## Start the adapter
 
@@ -80,7 +85,6 @@ with Memory.from_config(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
         },
     }
 ) as memory:
@@ -186,7 +190,7 @@ and observer/subject anchor must match the stored spatial context. SQLite reappl
 after candidate retrieval.
 
 `add_memory` is content-addressed. `delete_memory` reports whether a record existed. Search,
-answer, compile, and the two analysis tools are not marked read-only because their SDK path
+answer, compile, and perception are not marked read-only because their SDK path
 persists lazy transcript caches, identity evidence, and -- when a recall comes back with nothing,
 an answer abstains, or a bundle carries no evidence -- the bounded recall-failure signal the
 control plane's `QUERY_FAILURE` trigger reads; they are also not advertised as idempotent. Every
@@ -259,7 +263,7 @@ coordinate frames, units, or media sources; they are part of the tool schema, no
 object beside the unchanged `hits`. `trace.candidates` lists every candidate that was considered
 with its effective score components (`dense_relevance`, `dense_confidence`, `lexical_relevance`,
 `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
-`reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `rank`) and, when it
+`reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score`, `rank`) and, when it
 did not become a hit, a `rejected_by` value of `stale_index`, `occurrence_range`, `missing_memory`,
 `memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is how many
 candidates were fetched, `trace.exhaustive` says whether that bound was reached, and
@@ -288,10 +292,11 @@ Successful calls populate MCP `structuredContent`:
 | `ContextBudgetResult` | `max_chars`, `max_items`, `max_media_items` or `null`, `memory_types` or `null`, `min_confidence`, `freshness_seconds`, `max_latency_ms`, `selected_proofs` |
 | `ContextConflictResult` | `lineage_id`, `subject`, `predicate`, `values`, `memory_ids` |
 | `ContextUnknownResult` | `kind`, `detail` |
-| `ContextBundleResult` | `goal`, `reference_at`, `budget`, the `SearchHitResult` arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResult` array `affect`, the mixed `actors` array of `SearchHitResult` and `ProvisionalActorResult`, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `rendered` |
+| `ContextBundleResult` | `goal`, `reference_at`, `budget`, the `SearchHitResult` arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResult` array `affect`, the mixed `actors` array of `SearchHitResult`, `NamedActorResult`, and `ProvisionalActorResult`, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `rendered` |
 | `ContextExcerptResult` | `source_memory_id`, structured `matched_index_id`, partial `content`, digest-bound `selector`, score, source timestamps, `memory_type`, `context`, `place_id`; the rendered line warns that omitted text may qualify it |
 | `TextSpanSelectorResult` | parent and embedding-input digests, recipe version, and ordered exact `TextSpanPieceResult` values with role, half-open code-point offsets, source text, and piece digest |
 | `ProvisionalActorResult` | `identity_id`, `memory_ids` |
+| `NamedActorResult` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id` |
 | `AffectCueResult` | every `SearchHitResult` field plus `event_ids`: the events formed from the same observations the cue cites in its own `context.evidence_ids`, which is co-occurrence inside one capture and not an attributed cause |
 | `SpeakerSegment` | `asset_id`, `start_ms`, `end_ms`, `text`, `speaker_id`, `speaker_name`, `identity_score` |
 | `FaceObservation` | `asset_id`, `bounding_box`, `identity_id`, `identity_name`, `identity_score`, `observed_at_ms` |

@@ -1,6 +1,11 @@
 {
-  // Local model checkouts and private research are not published documentation.
-  "ignores": ["WeMM-Embedding-2B/**", "docs/research/**"],
+  // Local model checkouts, private research, and test environments are not source documentation.
+  "ignores": [
+    "WeMM-Embedding-2B/**",
+    "docs/research/**",
+    ".install-venv/**",
+    ".wheel-venv/**"
+  ],
   "config": {
     "MD013": false,
     // A reference organised one section per dataset repeats the same sub-structure under each

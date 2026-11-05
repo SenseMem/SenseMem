@@ -40,7 +40,7 @@ benchmark:
     benchmarks_root: .benchmarks
     data_root: .benchmarks/data
   run:
-    tasks: personamem-v3,locomo-refined,memlens,longmemeval-s
+    tasks: personamem-v3,locomo-refined,memlens
     arms: sensemem
     limit: all
     batch_size: "1"

@@ -399,10 +399,10 @@ def test_full_context_counts_separators_and_still_considers_later_items() -> Non
 @pytest.mark.parametrize(
     ("task_name", "override", "expected"),
     (
-        ("longmemeval-s", None, "strict"),
+        ("memlens-32k", None, "strict"),
         ("mem-gallery", None, "strict"),
         ("m3-bench-robot", None, "best_effort"),
-        ("longmemeval-s", "best_effort", "best_effort"),
+        ("memlens-32k", "best_effort", "best_effort"),
         ("m3-bench-robot", "strict", "strict"),
     ),
 )
@@ -474,7 +474,7 @@ def test_baseline_refusals_are_decoded_and_counted(
 
 @pytest.mark.parametrize("arm_name", ("blind", "full-context", "compile"))
 def test_baseline_samples_record_the_policy_that_generated_the_answer(arm_name: str) -> None:
-    task, unit, question = _task("longmemeval-s")
+    task, unit, question = _task("memlens-32k")
     sample = _sample(
         task,
         unit,
@@ -1560,7 +1560,7 @@ def test_product_budget_provenance_distinguishes_ask_and_compile_tasks(
         SimpleNamespace(
             recall_limit=20,
             arms=(DEFAULT_ARM,),
-            tasks=("longmemeval-s", "personamem-v3"),
+            tasks=("memlens-32k", "personamem-v3"),
             answer_policy=None,
             full_context_chars=1000,
             compile_max_chars=128,
@@ -1578,7 +1578,7 @@ def test_product_budget_provenance_distinguishes_ask_and_compile_tasks(
     budgets = cast(dict[str, dict[str, object]], definitions[DEFAULT_ARM]["budget_by_task"])
 
     assert budgets["personamem-v3"] == {"surface": "compile", "max_chars": 128, "max_items": 3}
-    assert budgets["longmemeval-s"]["surface"] == "ask"
+    assert budgets["memlens-32k"]["surface"] == "ask"
     assert provenance["answer_delivery"] == ("streamed" if stream_answers else "buffered")
     assert provenance["effective_ask_concurrency"] == expected_concurrency
 

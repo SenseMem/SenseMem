@@ -1,5 +1,10 @@
 # Operations
 
+Jump to [startup and shutdown](#start-and-stop), [concurrency](#concurrency-and-overload),
+[backup](#backup), [restore](#restore), [index repair](#index-maintenance-and-repair),
+[capacity](#capacity), [telemetry](#telemetry), [model quality](#model-quality-gate),
+or [representation changes](#changing-the-runtime-or-stored-representations).
+
 Operate the process that owns `data_dir`, its model backends, and the local filesystem. SenseMem
 has no database service, worker queue, or background owner to manage separately.
 
@@ -125,8 +130,8 @@ curl --fail http://127.0.0.1:8000/healthz
 
 `/healthz` does not call a model, inspect pending outbox rows, or run retrieval. It proves only that
 the current process can serve the request; its response also includes the injected `Memory`'s live
-embedding, generation, transcription, vision, face, formation, speaker-recognition, and streaming
-capabilities. Initial store and index opening happened before the app was constructed. Run any
+embedding, generation, transcription, vision, face, formation, reranking, and speaker-recognition
+capabilities, with optional operations filtered to those REST serves. Initial store and index opening happened before the app was constructed. Run any
 end-to-end canary against a separate directory so production memory is not polluted.
 
 ## Backup
@@ -198,14 +203,9 @@ Normal startup, add, delete, and search operations drain the SQLite outbox. Drai
 searchable at once; the Zvec flush that acknowledges them runs once 256 applied rows accumulate,
 when a drain applied a deletion, inside `optimize()` and `reindex()`, and at `close()`. Zvec also
 performs bounded automatic optimization after enough pending vectors or durable segments
-accumulate. That bound is a write-side one that a session below roughly 65,000 written rows never
-reaches, so a session that flushed at least once merges the durable segments at `close()` as well
-whenever two or more of them are persisted. A session that only read the store never does, so
-opening someone else's store to search it, back it up, or check a result hands the bytes back
-unchanged; its compaction debt is paid by the next session that writes. This is what keeps short
-sessions from growing the index: five one-record sessions over a 481 MB store left it at 511 MB in
-seven segments without the merge, and at 481 MB in one segment with it, for about 1.4 s of close
-each.
+accumulate. A session that flushed also merges persisted segments at `close()` when at least
+two remain. Read-only sessions do not trigger that close-time merge. Allow shutdown time for
+flush and compaction, and measure it on the deployment's actual store.
 
 From the live owner, rebuild or optimize explicitly when measurement or diagnosis justifies it:
 
@@ -224,10 +224,9 @@ incompatible embedding space.
 Once a collection holds enough vectors for Zvec to build a graph, dense search is approximate and
 nothing in the index reports the neighbours it missed. SenseMem therefore searches at the
 largest candidate list Zvec accepts. That is chosen per query rather than stored, so it is not
-part of the index recipe and changing it neither rebuilds nor invalidates a store. It costs
-roughly 6 ms of `search()` p50 on a 24,271-vector 2048-dimension store, and the index-only part
-of that grows with the corpus: about 21 ms more per dense route at 100,000 vectors. It costs
-nothing on a store small enough that every query is already an exhaustive scan.
+part of the index recipe and changing it neither rebuilds nor invalidates a store. Candidate
+depth trades native index work against recall; measure the full query path rather than assuming
+one latency figure applies across corpus sizes.
 
 If Zvec cannot open or appears corrupt:
 
@@ -256,8 +255,9 @@ headroom or compaction capacity just because ordinary optimize no longer copies 
 `capture_queue` is deferred enrichment rather than index work, and no operation drains it
 implicitly. A host that uses `capture()` owns the loop that calls `settle()`, and
 `pending_captures()` is what to alarm on: it returns up to `limit` queued records oldest first,
-each with its `enqueued_at`, `attempts`, `last_error`, and `awaiting`, so a result that stays at
-the limit means the loop stopped and those records are unsearchable until it resumes. `awaiting`
+each with its `enqueued_at`, `attempts`, `last_error`, and `awaiting`, so a result at
+the limit may indicate more pending work than the page shows. Track enqueue ages, attempts,
+and stages over time to distinguish an active backlog from a stalled settlement loop. `awaiting`
 separates a row with no vectors (`"enrichment"`) from one that is already searchable and owes only
 formation (`"formation"`), so a backlog of the second kind is not a recall outage. Drain the queue
 before a planned shutdown, because a queued row survives restart.
@@ -286,22 +286,17 @@ SenseMem does not call `zvec.init()`. Account for several focused dense routes p
 route, with at most four shared outer search workers per `Memory`. Keep `IndexQuantization.NONE` unless
 measured capacity and retrieval results justify a lossy mode. Changing only quantization rebuilds
 Zvec from stored vectors; `RABITQ` requires dimensions from 64 through 4095 and native support.
-Quantized structures coexist with the FP32 vectors. Historical Zvec 0.7 measurements over ten
-stores holding 5,882 records grew `zvec/` by 54 % under `FP16`, 55 % under `INT8`, and 86 % under
-`RABITQ`, with no measurable retrieval gain; those percentages are not measurements of 0.8.
-Measure resident memory, latency, recall, and disk bytes separately before selecting a lossy mode.
+Quantized structures coexist with authoritative FP32 vectors, so quantization does not guarantee
+smaller total disk use. Measure resident memory, latency, recall, and disk bytes separately.
 
 Quantized retrieval keeps a wider parent candidate pool and recalculates final cosine scores from
 SQLite's FP32 embeddings before ranking or applying `minimum_relevance`. This improves score
 calibration and near-tie ordering without another model call, at the cost of reading and scoring
 the surviving candidate vectors. It does not repair ANN candidates that were never discovered.
 
-Zvec 0.8 INT8 uses `enable_rotate=False`: the rotated cosine path returned unrelated neighbors
-in the upgrade evaluation. Grouped retrieval does not support native refinement, so enabling a
-refiner is not a repair for that path. Uniform UINT4/7/8 require L2, and unrotated INT4 reduced
-grouped recall without a demonstrated speed gain. These modes remain outside the public
-configuration. Embedded Jieba is available upstream, but SenseMem retains the stemmed/bigram
-fields for multilingual and mixed-script recall.
+Zvec 0.8 INT8 uses `enable_rotate=False`. The supported quantization modes are only `none`,
+`fp16`, `int8`, and `rabitq`; other upstream modes are not part of SenseMem's configuration
+contract. Lexical retrieval uses stemmed/bigram fields for multilingual and mixed-script recall.
 
 ## Capacity
 
@@ -355,7 +350,6 @@ with Memory(
     "./data",
     embedder=SentenceTransformersEmbedder(
         model_id="google/embeddinggemma-2",
-        revision="f9972ac22e696a105c482202646979e33e4b5a1e",
     ),
 ) as memory:
     memory.add("Remember this")
@@ -497,8 +491,9 @@ Watch these degradation and recognition attributes:
 - `sensemem.identity.faces` and `sensemem.identity.speakers` report observations, distinct
   identities, existing matches, creations, and cache status for each analyzed asset.
 
-Spans never record memory text, media bytes, paths, IDs, metadata, request or response bodies, or
-exception details. Apart from the non-content response model, fingerprint, and provider request IDs
+Ordinary spans omit memory text, media bytes, paths, metadata, request and response bodies, and
+provider exception details. Grounding diagnostics can record memory and asset IDs; treat exported
+traces as private operational data. Apart from the non-content response model, fingerprint, and provider request IDs
 above, a failed span
 receives only generic error status. Use `search(..., explain=True)` for one retrieval investigation and
 the structured error envelope for failures.

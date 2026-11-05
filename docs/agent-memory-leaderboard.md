@@ -17,14 +17,13 @@ uv sync --locked --default-index https://pypi.org/simple \
 Use a dedicated benchmark directory and the existing evaluation configuration format. Only
 configured ingestion and retrieval backends run; the adapter disables `generation` and ignores
 generation environment settings, the `benchmark:` section, and the configuration's `data_dir`.
-An omitted embedding section uses the evaluation runner's pinned default. A minimal configuration
-is:
+An explicit `embedding` section is required. Save this minimal configuration as
+`.benchmarks/configs/aml.yaml` after creating that ignored directory:
 
 ```yaml
 embedding:
   provider: sentence-transformers
   model: google/embeddinggemma-2
-  revision: f9972ac22e696a105c482202646979e33e4b5a1e
   dimension: 768
 ```
 

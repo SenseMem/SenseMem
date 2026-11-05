@@ -84,6 +84,24 @@ docker run --rm -v "$PWD:/input:ro" -w /input lycheeverse/lychee:0.23.0 \
 Do not add a host exclusion for a transient outage. Fix invalid local links and replace links that
 no longer identify a stable source.
 
+Without Docker, use a compatible Node.js/npm installation and the
+[lychee 0.23.0 release](https://github.com/lycheeverse/lychee/releases/tag/lychee-v0.23.0) on
+`PATH`. The same pinned versions and file arguments are:
+
+```bash
+npm exec --yes --package markdownlint-cli2@0.23.0 -- markdownlint-cli2 \
+  "**/*.md" "!.git/**" "!**/.venv/**" "!.pytest_cache/**" "!.benchmarks/**" \
+  "!.superpowers/**" "!docs/superpowers/**" "!.claude/worktrees/**" "!autoresearch/**"
+lychee --no-progress --root-dir "$PWD" \
+  --exclude-path 'docs/research/' \
+  './*.md' './docs/**/*.md' './.github/**/*.md'
+```
+
+The Markdown configuration excludes the ignored installability and wheel-test environments, so
+local checks do not lint third-party packages installed there. It does not exclude source
+documentation. For changed headings, also check local fragments with
+`lychee --offline --include-fragments` using the same paths.
+
 ## Test standards
 
 New behavior needs the smallest test that proves the intended contract can fail:

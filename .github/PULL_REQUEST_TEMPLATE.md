@@ -17,9 +17,12 @@ uv lock --check --default-index https://pypi.org/simple
 uv run --frozen ruff format --check .
 uv run --frozen ruff check .
 uv run --frozen mypy
-uv run --frozen pytest -W error
+uv run --frozen pytest -W error <affected-test-path>
 git diff --check
 ```
+
+<!-- Replace the test placeholder with the smallest affected tests and direct callers. Do not
+     run the full suite unless explicitly requested. Remove commands you did not run. -->
 
 - [ ] Quality gates pass
 - [ ] New behavior has a regression test that was verified to fail without the change
