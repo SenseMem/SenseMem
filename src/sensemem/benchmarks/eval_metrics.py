@@ -72,6 +72,7 @@ _MANDATORY_CONTROLS = ("random_ranker", "blind", "recall_at_20")
 # invisible in a results document, so `tests/unit/benchmarks/test_eval.py`
 # pins this table against the metadata the adapters actually emit.
 _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "mosaic": ("question_type", "answerability"),
     "ama-bench": ("domain", "task_type", "qa_type"),
     "icm-bench": ("category",),
     "locomo-refined": ("category",),
@@ -106,6 +107,12 @@ def _answer_retrieval_candidate_limit(
     )
 
 
+def _primary_sample(task: str, metadata: Mapping[str, object]) -> bool:
+    if task == "mosaic":
+        return metadata["answerability"] == "answerable"
+    return task != "videozerobench" or metadata["level"] == 3
+
+
 def _metrics(
     task: LoadedTask,
     samples: Sequence[SampleResult],
@@ -126,9 +133,7 @@ def _metrics(
 
     primary_name = task_primary_metric(task.spec.name)
     primary_samples = tuple(
-        sample
-        for sample in samples
-        if task.spec.name != "videozerobench" or sample.metadata["level"] == 3
+        sample for sample in samples if _primary_sample(task.spec.name, sample.metadata)
     )
     scored = tuple(
         ScoredValue(sample.sample_id, sample.unit_id, sample.score)
@@ -262,7 +267,9 @@ def _metrics(
             "version, dataset revision, and scorer protocol. LoCoMo has ranged from 28.0 to "
             "92.5 across harnesses on identical data"
         ),
-        "breakdowns": _metric_breakdowns(task, primary_samples, arguments),
+        "breakdowns": _metric_breakdowns(
+            task, samples if task.spec.name == "mosaic" else primary_samples, arguments
+        ),
     }
     if task.spec.name == "video-mme-v2" and scored:
         rating = _video_mme_v2_rating(
@@ -760,7 +767,10 @@ def _in_run_blind_rows(
         scores = [
             sample.score
             for sample in samples
-            if sample.task == task.spec.name and sample.arm == "blind" and sample.score is not None
+            if sample.task == task.spec.name
+            and sample.arm == "blind"
+            and sample.score is not None
+            and _primary_sample(task.spec.name, sample.metadata)
         ]
         if not scores:
             continue
@@ -1009,7 +1019,7 @@ def _answerability(samples: Sequence[SampleResult]) -> dict[str, object]:
     }
 
 
-def _comparisons(
+def _comparisons(  # noqa: C901 - preserve each task's own comparison aggregation
     arguments: _Arguments,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
@@ -1050,6 +1060,15 @@ def _comparisons(
             continue
         current_scored = tuple(sample for sample in task_samples if sample.score is not None)
         previous_scored = tuple(row for row in previous_rows if _has_score(row))
+        if task.spec.name == "mosaic":
+            current_scored = tuple(
+                sample for sample in current_scored if _primary_sample("mosaic", sample.metadata)
+            )
+            previous_scored = tuple(
+                row
+                for row in previous_scored
+                if _primary_sample("mosaic", cast(Mapping[str, object], row["metadata"]))
+            )
         if task.spec.name == "video-mme-v2":
             current_ids = tuple(sample.sample_id for sample in current_scored)
             previous_ids = tuple(

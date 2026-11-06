@@ -12,6 +12,11 @@ from sensemem.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
 from sensemem.benchmarks.es_memeval import ES_MEMEVAL_ADAPTER_VERSION
 from sensemem.benchmarks.icm_bench import ICM_ADAPTER_VERSION, ICM_DATA_REVISION
 from sensemem.benchmarks.longmemeval_v2 import LONGMEMEVAL_V2_ADAPTER_VERSION
+from sensemem.benchmarks.mosaic import (
+    MOSAIC_ADAPTER_VERSION,
+    MOSAIC_DATA_REVISION,
+    MOSAIC_DATA_SHA256,
+)
 from sensemem.benchmarks.openeqa import OPENEQA_ADAPTER_VERSION, OPENEQA_SPLITS
 from sensemem.benchmarks.videozerobench import VIDEOZERO_ADAPTER_VERSION
 from sensemem.benchmarks.worldmemarena import WORLDMEMARENA_ADAPTER_VERSION
@@ -172,6 +177,22 @@ TASKS: dict[str, TaskSpec] = {
             auxiliary=("icm-bench/videos/metadata.jsonl", "icm-bench/resources/asr_transcripts"),
             media="icm-bench/videos",
             media_source=MediaSource("icm-bench", *_ICM, ("videos.tar",)),
+        ),
+        _task(
+            "mosaic",
+            "MOSAIC",
+            "mosaic/dataset/stage2_human_filtered",
+            MOSAIC_ADAPTER_VERSION,
+            ("gzone0111/MOSAIC", MOSAIC_DATA_REVISION),
+            digest=MOSAIC_DATA_SHA256,
+            dataset_patterns=("dataset/stage2_human_filtered/*.json",),
+            media="mosaic/dataset/media",
+            media_source=MediaSource(
+                "mosaic",
+                "gzone0111/MOSAIC",
+                MOSAIC_DATA_REVISION,
+                ("dataset/media/*",),
+            ),
         ),
         _task(
             "locomo-refined",

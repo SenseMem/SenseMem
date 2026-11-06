@@ -265,6 +265,7 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         "LoCoMo-Refined",
         "LongMemEval-V2",
         "M3-Bench",
+        "MOSAIC",
         "MM-Lifelong",
         "Mem-Gallery",
         "MemLens",
@@ -4292,6 +4293,7 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
 # and `personamem-v3` went a release reporting no breakdown at all. An empty
 # tuple means the family is expected to have no entry in the product table.
 _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
+    "mosaic": ("question_type", "answerability"),
     "ama-bench": ("domain", "task_type", "qa_type"),
     "icm-bench": ("category",),
     "locomo-refined": ("category",),

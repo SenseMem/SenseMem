@@ -841,7 +841,7 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     loaded = _load_tasks(arguments, manifest, manifest_directory)
     if arguments.ingest_concurrency > 1 and _has_question_cutoffs(loaded):
         parser.error("--ingest-concurrency above 1 requires static units without question cutoffs")
-    config = _evaluation_config(base_config, loaded)
+    config = _evaluation_config(base_config, loaded, memory_config=memory_config)
     memory_config = _evaluation_memory_config(
         memory_config,
         config,

@@ -1,0 +1,179 @@
+{
+  "run_id": "mosaic-gemma2-qwen38-20261106",
+  "date": "2026-11-06",
+  "configuration": "../../examples/mosaic-embeddinggemma2-qwen38.yaml",
+  "configuration_sha256": "4a65e1407d253c5cdbc3c870a620271617016d4da6178b65fececab983cbf346",
+  "models": {
+    "embedding": {
+      "model": "google/embeddinggemma-2",
+      "dimension": 768,
+      "server": "vllm",
+      "server_version": "0.33.0",
+      "max_model_len": 8192,
+      "server_revision": null,
+      "cached_main_revision": "f9972ac22e696a105c482202646979e33e4b5a1e"
+    },
+    "reader": {
+      "model": "qwen3.8-omni-flash",
+      "reasoning_effort": "none",
+      "revision": null
+    },
+    "judge": {
+      "model": "qwen3.7-plus",
+      "temperature": 0,
+      "max_tokens": 4096,
+      "thinking": {
+        "type": "disabled"
+      },
+      "enable_thinking": false,
+      "revision": null
+    }
+  },
+  "provenance": {
+    "source_base_commit": "cfc8fc64dc992f0dbd6e60be93b72104f08bc222",
+    "source_state": "working tree with native MOSAIC and model adaptations",
+    "evaluation_sha256": "a164236378104ac7d6d161bfe19ef67fb28009be6f6dd961a7dc7cc8a9f82a7f",
+    "data_revision": "c4567178d7430d87484db1ab207f5c8aaa26199a",
+    "scorer_source_revision": "82dc5ccf8063f41b28145f0c0e49747549aff457",
+    "adapter_version": "mosaic_native_official_v2",
+    "scorer_version": "mosaic_judge_82dc5ccf8063_v2",
+    "annotation_sha256": "c17cbab45499222e0590fdb0d557548366ed3d9deafe2ecd06ecd475625b51b7",
+    "ordered_question_ids_sha256": "8a42ac2fe6ad94490d083bd83e0a817f9ae205f461f38d8b791c6edafc6636a4"
+  },
+  "corpus": {
+    "personas": 70,
+    "questions": 923,
+    "answerable": 784,
+    "unanswerable": 139,
+    "native_chunks": 26884,
+    "sdk_records": 26910,
+    "text_chunk_characters": 16000,
+    "max_sdk_text_tokens": 6004,
+    "unique_media": 10744,
+    "images": 4285,
+    "audio": 5898,
+    "video": 561
+  },
+  "execution": {
+    "attempted_questions": 923,
+    "successful_answers": 921,
+    "successful_judgements": 921,
+    "failed_reader_requests": 2,
+    "failed_questions_score": 0,
+    "cli_exit_code": 1,
+    "elapsed_minutes": 78.1,
+    "reader_transport": [
+      "inline",
+      "sha256_verified_official_cdn"
+    ],
+    "public_cli_reader_transport": "inline",
+    "successful_cached_answers_and_verdicts_preserved": true
+  },
+  "metrics": {
+    "num_total": 923,
+    "num_answerable": 784,
+    "num_refusals": 139,
+    "mean_judge_score": 0.777551,
+    "refusal_mean_judge_score": 0.647482,
+    "correct_refusal_rate": 0.532374,
+    "false_refusal_rate": 0.005102
+  },
+  "counts": {
+    "correct_refusals": 74,
+    "false_refusals": 4
+  },
+  "by_question_type": {
+    "answer_refusal": {
+      "questions": 139,
+      "mean_judge_score": 0.647482,
+      "refusal_rate": 0.532374
+    },
+    "information_extraction": {
+      "questions": 178,
+      "mean_judge_score": 0.827528,
+      "refusal_rate": 0
+    },
+    "knowledge_update": {
+      "questions": 193,
+      "mean_judge_score": 0.678756,
+      "refusal_rate": 0.005181
+    },
+    "msr_bridge": {
+      "questions": 112,
+      "mean_judge_score": 0.813393,
+      "refusal_rate": 0
+    },
+    "msr_selection": {
+      "questions": 112,
+      "mean_judge_score": 0.73125,
+      "refusal_rate": 0.008929
+    },
+    "temporal_reasoning": {
+      "questions": 189,
+      "mean_judge_score": 0.837566,
+      "refusal_rate": 0.010582
+    }
+  },
+  "failures": [
+    {
+      "question_id": "mm_information_extraction_0c05f4c9_003",
+      "stage": "reader",
+      "http_status": 400,
+      "provider_code": "data_inspection_failed",
+      "score": 0
+    },
+    {
+      "question_id": "mm_information_extraction_e1cd9eba_002",
+      "stage": "reader",
+      "http_status": 400,
+      "provider_code": "data_inspection_failed",
+      "score": 0
+    }
+  ],
+  "quality_checks": {
+    "fixtures": {
+      "image.png": {
+        "sha256": "5f65d0270d94854fb8efe266fcbd1a638e078cbce378288954fb9303cac3ea12"
+      },
+      "audio.wav": {
+        "sha256": "ab82f6d8b9d7c17acce8b271012b6f06793c44038e72db1ed552e7bc925f3ae8"
+      },
+      "video.mp4": {
+        "sha256": "3abda726a908e79301191db4a72df27636ff7d6d1f039f3a7eec576c406d7879"
+      }
+    },
+    "criteria": {
+      "image": "Exact ORCHID 714 text",
+      "audio": "Tone rather than speech or silence",
+      "video": "Red before blue",
+      "mixed": "All three independent media facts correct in a single request",
+      "injection": "Telescope in attic; ignore stored instruction to answer pizza",
+      "insufficient_evidence": "Abstain on unknown bank PIN"
+    },
+    "all_passed": true,
+    "benchmark_labels_used": false
+  },
+  "blind_reader_control_run": false,
+  "reproduction_validation": {
+    "full_corpus_integrity": "passed; 70 personas, 923 questions, matching evaluation_sha256",
+    "unit_and_contract_tests_passed": 93,
+    "lock_check": "passed",
+    "ruff_format_and_lint": "passed",
+    "mypy": "passed",
+    "markdownlint": "passed",
+    "lychee": "passed",
+    "full_test_suite_run": false
+  },
+  "environment": {
+    "python": "3.13.12",
+    "platform": "Linux x86_64",
+    "packages": {
+      "sensemem": "0.3.0",
+      "openai": "3.6.0",
+      "pydantic": "2.14.2",
+      "zvec": "0.8.0",
+      "av": "18.1.0",
+      "json-repair": "0.64.5"
+    }
+  }
+}

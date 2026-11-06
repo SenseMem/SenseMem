@@ -14,6 +14,7 @@ Baseline arms are always non-official.
 
 | Selector or group | Workload | Primary metric | Judge |
 | --- | --- | --- | --- |
+| `mosaic` | Persona conversations with native image, audio, and video | Answerable-only `judge_score` | `qwen3.7-plus` |
 | `ama-bench` | Agent action/observation histories | `accuracy` | `Qwen/Qwen3-32B` |
 | `locomo-refined` | Multi-session dialogue with published image captions | `llm_judge` | `qwen3-14b` |
 | `memlens` | 32K–256K dialogue, images, temporal reasoning, updates, and refusal | `accuracy` | `qwen3-235b-judge` |
@@ -45,6 +46,9 @@ Baseline arms are always non-official.
 | `openeqa` | Fixed-scene episodic QA over HM3D/ScanNet histories | `llm_match` (0–100) | `gpt-4-1106-preview` |
 
 ## Data requirements
+
+For MOSAIC's pinned inputs, native chunking, scoring, and a complete runnable configuration, see
+the [native multimodal baseline](mosaic-native.md).
 
 Supported annotations and media download automatically, except for operator-supplied OpenEQA
 histories and authorized Ego4D media. Video tasks require `ffmpeg` and `ffprobe`; M3 web also

@@ -32,6 +32,9 @@ Changes for version `0.3.0`.
 
 ### Added
 
+- Native MOSAIC evaluation with pinned data and judge prompts, plus an EmbeddingGemma 2 /
+  Qwen Omni [reproduction recipe and results](docs/benchmarks/mosaic-native.md).
+
 - Bounded concurrent HTTP reranking batches, local video-frame caching and media preparation
   during inference. See [reranker configuration](docs/configuration/models.md#semantic-reranking).
 - Optional `--no-search-replay` / `benchmark.run.search_replay: false` for evaluations that omit

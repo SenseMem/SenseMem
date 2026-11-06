@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Literal, Protocol, cast
 
-from sensemem.benchmarks._official import ama_scoring
+from sensemem.benchmarks._official import ama_scoring, mosaic_scoring
 from sensemem.benchmarks._official import personamem_v3_scoring as pm3
 from sensemem.benchmarks._official.atm_score import (
     deterministic_accuracy as atm_deterministic_accuracy,
@@ -77,6 +77,7 @@ from sensemem.benchmarks._official.worldmemarena_qa import (
 from sensemem.benchmarks._official.worldmemarena_qa import (
     parse_qa_response as parse_worldmemarena_response,
 )
+from sensemem.benchmarks.mosaic import MOSAIC_SCORER_VERSION, mosaic_refusal
 from sensemem.benchmarks.personamem_v3 import RANKING_TASK_TYPES
 from sensemem.benchmarks.videozerobench import (
     VIDEOZERO_METRICS,
@@ -122,6 +123,7 @@ class JudgePlan:
         "es_memeval",
         "worldmemarena",
         "ama_bench",
+        "mosaic",
     ]
     calls: tuple[tuple[JudgeMessage, ...], ...]
     max_tokens: int | None = None
@@ -131,6 +133,7 @@ class JudgePlan:
 
 
 _PROTOCOLS = {
+    "mosaic": MOSAIC_SCORER_VERSION,
     "ama-bench": ama_scoring.SCORER_VERSION,
     "icm-bench": "icm_semantic_equivalence_10f02babe3c7_user_only_v2",
     "locomo-refined": "locomo_refined_judge_887091190789",
@@ -153,6 +156,7 @@ _PROTOCOLS = {
 }
 
 _OFFICIAL_JUDGE_MODELS = {
+    "mosaic": "qwen3.7-plus",
     "ama-bench": "qwen3-32b",
     "icm-bench": "gemini-3-flash-preview",
     "locomo-refined": "qwen3-14b",
@@ -181,6 +185,9 @@ _OFFICIAL_JUDGE_MODELS = {
 # upstream number. The families that publish no deterministic metric beyond their judge output
 # are still listed, so an empty entry means "judge metrics only" rather than "not yet audited".
 _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
+    "mosaic": frozenset(
+        {"judge_score", "correct_refusal_rate", "false_refusal_rate", "em", "f1", "bleu1"}
+    ),
     "ama-bench": frozenset({"accuracy", "llm_judge_score", "exact_match", "token_f1"}),
     "icm-bench": frozenset({"accuracy"}),
     # `evaluate.py` keeps the F1 and BLEU-1 of the accepted reference beside its judge label.
@@ -258,6 +265,7 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
 _OFFICIAL_METRIC_PREFIXES: dict[str, tuple[str, ...]] = {"personamem-v3": ("pr_",)}
 
 _JUDGE_METRICS = {
+    "mosaic": frozenset({"judge_score"}),
     "ama-bench": frozenset({"accuracy", "llm_judge_score"}),
     "icm-bench": frozenset({"accuracy"}),
     "locomo-refined": frozenset({"llm_judge"}),
@@ -344,6 +352,7 @@ def task_primary_metric(task: str) -> str:
     if family is None:
         return "accuracy"
     return {
+        "mosaic": "judge_score",
         "ama-bench": "accuracy",
         "icm-bench": "accuracy",
         "locomo-refined": "llm_judge",
@@ -491,6 +500,16 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
         if score_kind == "choice":
             return {"accuracy": float(parsed_choice == expected_choice)}
         return {"token_f1": _locomo_f1(prediction, references[0])}
+    if family == "mosaic":
+        refusal_metric = (
+            "correct_refusal_rate"
+            if metadata["answerability"] == "unanswerable"
+            else "false_refusal_rate"
+        )
+        return {
+            **mosaic_scoring.text_metrics(prediction, references),
+            refusal_metric: float(mosaic_refusal(prediction)),
+        }
     if score_kind == "choice":
         metric = (
             "question_accuracy"
@@ -640,6 +659,24 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
     if question is None:
         raise ValueError(f"{task} official judge needs the original question")
     protocol = scorer_protocol(task)
+    if family == "mosaic":
+        return JudgePlan(
+            protocol,
+            "mosaic",
+            (
+                (
+                    JudgeMessage("system", mosaic_scoring.JUDGE_SYSTEM_PROMPT),
+                    JudgeMessage(
+                        "user",
+                        mosaic_scoring.judge_user_prompt(
+                            question, references, prediction, str(metadata["answerability"])
+                        ),
+                    ),
+                ),
+            ),
+            4096,
+            {"thinking": {"type": "disabled"}, "enable_thinking": False},
+        )
     if family == "locomo-refined":
         normalized = _locomo_prediction(prediction)
         if not normalized or any(normalized == reference for reference in references):
@@ -975,6 +1012,8 @@ def parse_judge_response(  # noqa: C901 - mirrors seven incompatible upstream pa
             raise ValueError("ES-MemEval judge did not return a 0-2 score")
         es_score = float(match.group())
         return {"llm_judge": es_score / 2.0, "judge_score_0_2": es_score}
+    if plan.parser == "mosaic":
+        return {"judge_score": mosaic_scoring.parse_judge_score(response)[0]}
     raise AssertionError(f"unhandled judge parser: {plan.parser}")
 
 

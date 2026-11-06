@@ -3281,7 +3281,17 @@ def test_answer_text_ceiling_includes_system_prompt_before_reading_media(
     assert failure.value.stage == "generate"
 
 
-def test_answer_uses_standard_inline_audio_part(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("model_name", "audio_data"),
+    [
+        ("answer-model", "c3BlZWNo"),
+        ("qwen3.8-omni-flash", "data:;base64,c3BlZWNo"),
+        ("qwen/qwen3.8-omni-flash", "data:;base64,c3BlZWNo"),
+    ],
+)
+def test_answer_uses_provider_inline_audio_part(
+    tmp_path: Path, model_name: str, audio_data: str
+) -> None:
     audio = _asset(tmp_path, "audio", Modality.AUDIO, "audio/wav", b"speech")
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -3289,7 +3299,7 @@ def test_answer_uses_standard_inline_audio_part(tmp_path: Path) -> None:
         content = payload["messages"][1]["content"]
         assert content[-1] == {
             "type": "input_audio",
-            "input_audio": {"data": "c3BlZWNo", "format": "wav"},
+            "input_audio": {"data": audio_data, "format": "wav"},
         }
         return httpx.Response(
             200,
@@ -3313,7 +3323,12 @@ def test_answer_uses_standard_inline_audio_part(tmp_path: Path) -> None:
         modality=Modality.AUDIO,
     )
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        answer = _model(_sdk_client(client)).answer(ModelInput(text="What?"), (hit,))
+        model = OpenAIModels(
+            _sdk_client(client),
+            generation_model=model_name,
+            generation_capabilities=ALL_MODALITIES,
+        )
+        answer = model.answer(ModelInput(text="What?"), (hit,))
 
     assert answer.answer == "A greeting is audible."
 

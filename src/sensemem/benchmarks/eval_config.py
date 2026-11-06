@@ -846,7 +846,17 @@ def _judge_config(
     return judge
 
 
-def _evaluation_config(config: ModelConfig, tasks: Sequence[LoadedTask]) -> ModelConfig:
+def _evaluation_config(
+    config: ModelConfig,
+    tasks: Sequence[LoadedTask],
+    *,
+    memory_config: SenseMemConfig | None = None,
+) -> ModelConfig:
+    generation = None if memory_config is None else memory_config.generation
+    if generation is not None and (
+        "modalities" in generation.model_fields_set or generation.routes
+    ):
+        return config
     required = {Modality.TEXT}
     required.update(
         modality

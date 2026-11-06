@@ -9,6 +9,7 @@ environment in [Contributing](../../CONTRIBUTING.md#setup).
 | File | Purpose | Prerequisites |
 | --- | --- | --- |
 | [eval.example.yaml](eval.example.yaml) | Annotated evaluation template | Configure an embedding endpoint and reader; optional local speech requires `local` |
+| [mosaic-embeddinggemma2-qwen38.yaml](mosaic-embeddinggemma2-qwen38.yaml) | Native multimodal MOSAIC baseline | Local multimodal EmbeddingGemma 2 endpoint, Qwen reader and judge, and `benchmarks,openai`; see the [run guide](../benchmarks/mosaic-native.md) |
 | [atm-sgm-max-thinking-vllm.yaml](atm-sgm-max-thinking-vllm.yaml) | ATM source descriptions with bounded recall, reader reasoning, and remote reranking | Local ATM SGM corpus and compatible WeMM, DeepSeek, vLLM rerank, and judge endpoints; install `benchmarks,openai` |
 | [mem-gallery-qwen-wemm.yaml](mem-gallery-qwen-wemm.yaml) | Image-dialogue evaluation with query vision | Compatible WeMM and Qwen endpoints, `benchmarks,openai`, and Mem-Gallery inputs |
 

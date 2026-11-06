@@ -237,7 +237,7 @@ def test_lexical_search_preserves_relative_bm25_score_and_all_filters() -> None:
             "occurred_end > 1000000 AND occurred_at < 2000000"
         ),
         "include_vector": False,
-        "output_fields": [],
+        "output_fields": ["occurred_at", "occurred_end"],
     }
 
 
@@ -881,8 +881,17 @@ def test_type_and_event_time_filters_apply_to_every_search_mode(tmp_path: Path) 
             occurred_until=until,
         )
 
+    with ZvecIndex(tmp_path / "index", dimension=2) as reopened:
+        reopened_lexical = reopened.lexical_search(
+            "project review",
+            memory_type="episodic",
+            occurred_from=start,
+            occurred_until=until,
+        )
+
     assert {hit.id for hit in dense} == {"episodic_match", "episodic_overlap"}
     assert {hit.id for hit in lexical} == {"episodic_match", "episodic_overlap"}
+    assert reopened_lexical == lexical
     assert {hit.id for hit in until_only_dense} == {"episodic_match", "episodic_overlap"}
     assert {hit.id for hit in until_only_lexical} == {"episodic_match", "episodic_overlap"}
 

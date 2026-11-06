@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     SecretStr,
     StringConstraints,
+    field_serializer,
     field_validator,
 )
 from pydantic import (
@@ -89,6 +90,11 @@ class _ConfigModel(BaseModel):
         allow_inf_nan=False,
         revalidate_instances="always",
     )
+
+    @field_serializer("modalities", check_fields=False, when_used="json")
+    def _sorted_modalities(self, modalities: frozenset[Modality] | None) -> list[str] | None:
+        # Serialized configurations enter benchmark cache and resume identities.
+        return None if modalities is None else sorted(modality.value for modality in modalities)
 
 
 class _OpenAIConfig(_ConfigModel):

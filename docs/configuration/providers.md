@@ -87,6 +87,10 @@ the public `ask_stream()` surface and benchmark reporting/answer-surface control
 
 ### Answer presentation
 
+For `qwen3.8-omni-flash`, reader audio uses a Data URL in `input_audio.data`.
+Other readers use OpenAI's raw Base64 audio format. Set `extra_body.reasoning_effort: none`
+to disable thinking for this Qwen model.
+
 `answer_style: concise` asks for requested values/entities without explanatory prose or citations,
 while preserving refusal and evidence policy. The model checks roles, dates, units, and list
 conditions, keeps separate event episodes distinct, and includes every supported item matching

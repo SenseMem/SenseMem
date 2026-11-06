@@ -1,0 +1,72 @@
+# Native text/image/audio/video retrieval and reading on MOSAIC.
+# Reader endpoint/key: SENSEMEM_GENERATION_BASE_URL / SENSEMEM_GENERATION_API_KEY.
+# Judge endpoint/key default to the reader; SENSEMEM_JUDGE_* can override them.
+embedding:
+  provider: openai
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  model: google/embeddinggemma-2
+  dimension: 768
+  modalities: [text, image, audio, video]
+  request_format: messages
+  image_max_pixels: 4194304
+  timeout: 240.0
+  max_retries: 2
+generation:
+  provider: openai
+  model: qwen3.8-omni-flash
+  modalities: [text, image, audio, video]
+  answer_style: concise
+  answer_format: text
+  image_max_pixels: 4194304
+  video_limit: 16
+  max_tokens: 16384
+  timeout: 360.0
+  max_retries: 2
+  response_format: json_schema
+  media_policy: all
+  extra_body:
+    reasoning_effort: none
+settings:
+  retrieval_mode: hybrid
+  index_quantization: none
+  minimum_relevance: 0.1
+  evidence_budget_chars: 128000
+  recall_planning: true
+  recall_query_expansion: true
+  recall_max_queries: 8
+  recall_rounds: 3
+  recall_set_budget_chars: 128000
+  recall_set_max_rows: 100
+  reinforce_on_answer: false
+  query_vision: false
+vision: null
+speech: null
+reranking: null
+formation: null
+consolidation: null
+face: null
+retention: null
+benchmark:
+  judge:
+    model: qwen3.7-plus
+    timeout_seconds: 240.0
+  download:
+    benchmarks_root: .benchmarks
+  run:
+    tasks: mosaic
+    arms: sensemem
+    seed: 0
+    recall_limit: 32
+    answer_policy: strict
+    batch_size: '16'
+    max_batch_size: 16
+    unit_concurrency: 8
+    ingest_concurrency: 1
+    request_concurrency: 8
+    judge_concurrency: 16
+    stream_answers: false
+    stream_results: true
+    search_replay: false
+    log_samples: true
+    download: false

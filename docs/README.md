@@ -92,6 +92,8 @@ separately from supported behavior.
 - [Benchmark tasks](benchmarks/tasks.md) — workload selection, required judges, and dataset protocols.
 - [Evaluation reference](benchmarks/reference.md) — run controls, diagnostics, performance, recovery, and exports.
 - [Local measurements](benchmarks/local.md) — storage, SDK concurrency, and consolidation benchmarks.
+- [MOSAIC native baseline](benchmarks/mosaic-native.md) — EmbeddingGemma 2 and Qwen Omni configuration,
+  full-run commands, and recorded results.
 - [Model quality gate](model-quality.md) — synthetic real-model regression cases,
   explicit snapshots, safe artifacts, and optional scheduled evaluation.
 - [Example catalog](examples/README.md) — prerequisites and intended use for every committed YAML

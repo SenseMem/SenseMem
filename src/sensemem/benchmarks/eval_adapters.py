@@ -20,6 +20,7 @@ from sensemem.benchmarks.mem_gallery import (
     MemGalleryRound,
     MemGallerySession,
 )
+from sensemem.benchmarks.mosaic import MosaicSession
 from sensemem.benchmarks.openeqa import OpenEqaQuestion
 from sensemem.benchmarks.personamem_v3 import PersonaMemQuery
 from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion
@@ -1558,6 +1559,116 @@ def _longmemeval_v2(
     return tuple(units)
 
 
+def _mosaic(
+    _spec: TaskSpec,
+    dataset: Path,
+    media: MediaResolver,
+    _root: Path,
+    limit: Limit,
+    offset: int,
+) -> tuple[EvalUnit, ...]:
+    from sensemem.benchmarks._official.mosaic_scoring import answer_system_prompt
+    from sensemem.benchmarks.mosaic import load_mosaic
+
+    units = []
+    for persona in load_mosaic(dataset, limit=limit, offset=offset):
+        persona_id = persona.persona_id
+        memories, facts = _mosaic_memories(persona.sessions, media)
+        questions = []
+        for question in persona.questions:
+            required = tuple(
+                fact.fact_key
+                for fact in question.evidence_plan
+                if fact.required_for_answer and fact.available_at_query
+            )
+            question_sessions = set(question.haystack_session_ids)
+            groups = tuple(
+                tuple(
+                    dict.fromkeys(
+                        source_id
+                        for session_id, source_id in facts.get(key, ())
+                        if session_id in question_sessions
+                    )
+                )
+                for key in required
+            )
+            questions.append(
+                EvalQuestion(
+                    question.question_id,
+                    (
+                        answer_system_prompt(question.question_type)
+                        + f"\nQuestion: {question.question}\nAnswer:",
+                    ),
+                    (question.answer, *question.answer_aliases),
+                    metadata={
+                        "persona_id": persona_id,
+                        "question_type": question.question_type,
+                        "answerability": question.answerability,
+                        "evidence_groups": tuple(group for group in groups if group),
+                        "unresolved_evidence_ids": tuple(
+                            key for key, group in zip(required, groups, strict=True) if not group
+                        ),
+                        "retrieval_granularity": "native_chunk",
+                    },
+                    reference_at=datetime.strptime(question.question_date, "%Y/%m/%d").replace(
+                        tzinfo=timezone.utc
+                    ),
+                    source_question=question.question,
+                    refusal="I don't know.",
+                )
+            )
+        units.append(EvalUnit(persona_id, tuple(memories), tuple(questions)))
+    return tuple(units)
+
+
+def _mosaic_memories(
+    sessions: Sequence[MosaicSession],
+    media: MediaResolver,
+) -> tuple[tuple[MemoryItem, ...], dict[str, list[tuple[str, str]]]]:
+    """Build the official native chunks and their scorer-only fact-to-source map."""
+    from sensemem.benchmarks.mosaic import mosaic_media_path
+
+    memories = []
+    facts: dict[str, list[tuple[str, str]]] = {}
+    for session in sessions:
+        occurred_at = datetime.strptime(session.timestamp, "%Y/%m/%d (%a) %H:%M").replace(
+            tzinfo=timezone.utc
+        )
+        text_parts = []
+        for index, message in enumerate(session.messages):
+            attachment = message.multimodal_content
+            if attachment is not None:
+                source_id = f"{session.session_id}_mm{index}"
+                memories.append(
+                    MemoryItem(
+                        source_id,
+                        (
+                            *_split_parts(message.content, max_characters=16_000),
+                            media.path(mosaic_media_path(attachment.media_path), exact=True),
+                        ),
+                        occurred_at=occurred_at,
+                    )
+                )
+            else:
+                source_id = session.session_id
+                if message.content.strip():
+                    text_parts.append(f"[{message.role}] {message.content}")
+            if message.fact_key:
+                facts.setdefault(message.fact_key, []).append((session.session_id, source_id))
+        if text_parts:
+            # The SDK joins string parts before enforcing its total text bound. Separate
+            # records retain all of an oversized source chunk and its original evidence ID.
+            memories.extend(
+                MemoryItem(
+                    session.session_id,
+                    (part,),
+                    occurred_at=occurred_at,
+                )
+                for part in _split_parts("\n".join(text_parts), max_characters=16_000)
+            )
+    return tuple(memories), facts
+
+
 def _es_memeval(
     _spec: TaskSpec,
     dataset: Path,
@@ -1825,22 +1936,22 @@ def _personamem_question(
     )
 
 
-def _split_parts(text: str) -> tuple[str, ...]:
+def _split_parts(text: str, *, max_characters: int = _MAX_PART_CHARACTERS) -> tuple[str, ...]:
     """Split one prompt into parts SenseMem will accept.
 
     A CL-Bench record whose question could not be sliced off its reference
     document runs past the 65,536-character limit on a single part. Splitting
     keeps the whole question rather than truncating it away.
     """
-    if len(text) <= _MAX_PART_CHARACTERS:
+    if len(text) <= max_characters:
         return (text,)
     return tuple(
-        text[offset : offset + _MAX_PART_CHARACTERS]
-        for offset in range(0, len(text), _MAX_PART_CHARACTERS)
+        text[offset : offset + max_characters] for offset in range(0, len(text), max_characters)
     )
 
 
 _LOADERS = {
+    "mosaic": _mosaic,
     "ama-bench": _ama_bench,
     "icm-bench": _icm_bench,
     "locomo-refined": _locomo,
@@ -1879,6 +1990,8 @@ _LOADERS = {
 
 
 def _parse_media_task(task_name: str, task: object) -> MediaTask:
+    if task_name == "mosaic":
+        raise ValueError("MOSAIC uses original media with --media-root, without --media-manifest")
     if not isinstance(task, dict):
         raise ValueError(f"media manifest task {task_name} must be an object")
     units = task.get("units")

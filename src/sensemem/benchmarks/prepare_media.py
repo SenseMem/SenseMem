@@ -122,6 +122,8 @@ def prepare_task_media(
     effective_root = effective_root.expanduser().resolve()
     managed = media_root is None
     patterns = _selected_patterns(spec, dataset_path, limit, offset)
+    if not patterns and spec.name == "mosaic":
+        return None
     if not patterns:
         raise ValueError(f"{spec.name} produced no selected media")
     unavailable_units: Mapping[str, str] = {}
@@ -265,6 +267,18 @@ def _manifest_has_task(manifest: MediaManifest | None, task_name: str) -> bool:
 
 
 def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int) -> tuple[str, ...]:
+    if spec.name == "mosaic":
+        from sensemem.benchmarks.mosaic import load_mosaic, mosaic_media_path
+
+        return tuple(
+            dict.fromkeys(
+                f"dataset/media/{mosaic_media_path(message.multimodal_content.media_path)}"
+                for persona in load_mosaic(dataset, limit=limit, offset=offset)
+                for session in persona.sessions
+                for message in session.messages
+                if message.multimodal_content is not None
+            )
+        )
     source = spec.media_source
     if source is None:
         return ()

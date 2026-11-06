@@ -876,6 +876,11 @@ class ZvecIndex:
             )
             if match
         ]
+        output_fields: list[str] = []
+        if occurred_from is not None or occurred_until is not None:
+            # Persisted FTS plans in Zvec 0.8 need their time-filter columns in the result
+            # projection to keep Arrow's batch and schema aligned.
+            output_fields.extend((_OCCURRED_AT_FIELD, _OCCURRED_END_FIELD))
         return self._require_collection().query(
             queries=queries,
             topk=limit,
@@ -894,7 +899,7 @@ class ZvecIndex:
                 identity_id=identity_id,
             ),
             include_vector=False,
-            output_fields=[],
+            output_fields=output_fields,
         )
 
     def _build_schema(self) -> object:

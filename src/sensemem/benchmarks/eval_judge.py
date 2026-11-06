@@ -414,6 +414,9 @@ async def _judge_call(  # noqa: C901 - retry and provider fallback belong in one
                 response = await _retry_transient(call)
                 break
             except _JudgeRequestError as failure:
+                # MOSAIC's temperature and no-thinking controls belong to its scorer protocol.
+                if plan.parser == "mosaic":
+                    raise
                 if "temperature" in request and _unsupported_temperature(failure.error):
                     request.pop("temperature")
                     continue

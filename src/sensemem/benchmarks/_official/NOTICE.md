@@ -1,5 +1,12 @@
 # Third-party benchmark notices
 
+MOSAIC reader instructions, judge prompt, JSON repair, and text metrics are adapted from
+`HKUST-KnowComp/MOSAIC@82dc5ccf8063f41b28145f0c0e49747549aff457`,
+`evaluation/rag/eval_rag_mm.py`, `evaluation/_common.py`, and `evaluation/judge/eval_judge.py`.
+Refusal matching and answerable-only aggregation follow `evaluation/experiments/build_paper_results.py`.
+That source and `gzone0111/MOSAIC@c4567178d7430d87484db1ab207f5c8aaa26199a` declare no license
+at these revisions. No annotations or media are redistributed here.
+
 SenseMem's Apache-2.0 license does not replace the terms for the third-party benchmark material
 described below.
 
