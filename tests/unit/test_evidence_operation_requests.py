@@ -359,7 +359,12 @@ def test_rejected_native_proposal_gets_only_one_original_evidence_read(stream: b
     assert adapter._EVIDENCE_OPERATION_RECOVERY in cast(
         str, cast(list[dict[str, object]], sent[1]["messages"])[0]["content"]
     )
-    assert _events(exporter) == {"submitted": 1, "rejected": 1, "recovery": 1}
+    assert _events(exporter) == {
+        "submitted": 1,
+        "rejected": 1,
+        "rejected_schema": 1,
+        "recovery": 1,
+    }
     attributes = next(
         span for span in exporter.get_finished_spans() if span.name == "model"
     ).attributes
@@ -500,7 +505,12 @@ def test_foreign_or_omitted_native_anchor_is_rejected_without_losing_evidence(
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             assert model.answer(ModelInput(QUESTION), hits).answer == "Ordinary answer."
     provider.shutdown()
-    assert len(sent) == 2 and _events(exporter) == {"submitted": 1, "rejected": 1, "recovery": 1}
+    assert len(sent) == 2 and _events(exporter) == {
+        "submitted": 1,
+        "rejected": 1,
+        "rejected_invalid_evidence": 1,
+        "recovery": 1,
+    }
     for payload in sent:
         assert _memories(payload)[1]["media_omitted"] == {"image": 1}
         assert [memory["content"] for memory in _memories(payload)] == [QUOTE, QUOTE]
@@ -745,3 +755,94 @@ def test_provider_request_errors_do_not_enter_protocol_recovery(stream: bool, st
     provider.shutdown()
     assert requests == 1 and _events(exporter) == {}
     assert "private provider failure" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["protocol_finish", "protocol_type", "protocol_count", "protocol_name", "protocol_arguments"],
+)
+def test_native_protocol_rejections_have_only_static_safe_categories(category: str) -> None:
+    requests = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests != 1:
+            return _reply(request, answer="Recovered.")
+        response = _reply(request, arguments=_arguments()).json()
+        choice = response["choices"][0]
+        calls = choice["message"]["tool_calls"]
+        if category == "protocol_finish":
+            choice["finish_reason"] = "stop"
+        elif category == "protocol_type":
+            del calls[0]["type"]
+        elif category == "protocol_count":
+            calls.append(calls[0])
+        elif category == "protocol_name":
+            calls[0]["function"]["name"] = "private function name"
+        else:
+            calls[0]["function"]["arguments"] = {"private": "invalid arguments"}
+        return httpx.Response(200, json=response)
+
+    provider, exporter = _provider()
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        with model_span(provider.get_tracer("test"), "model", attributes={}):
+            assert (
+                model.answer(ModelInput(QUESTION), (replace(_search_hit(), content=QUOTE),)).answer
+                == "Recovered."
+            )
+    provider.shutdown()
+    assert requests == 2
+    assert _events(exporter) == {
+        "submitted": 1,
+        "rejected": 1,
+        f"rejected_{category}": 1,
+        "recovery": 1,
+    }
+    for span in exporter.get_finished_spans():
+        assert span.attributes is not None
+        assert "private" not in span.name + json.dumps(dict(span.attributes))
+        if span.name.startswith("sensemem.evidence_operation."):
+            assert span.attributes.get(MODEL_REQUEST_COUNT, 0) == 0
+    parent = next(span for span in exporter.get_finished_spans() if span.name == "model")
+    assert parent.attributes is not None
+    assert parent.attributes[MODEL_REQUEST_COUNT] == 2 and parent.attributes[TOKEN_TOTAL] == 24
+
+
+@pytest.mark.parametrize("category", ["protocol_finish", "protocol_type", "protocol_name"])
+def test_completed_native_sse_preserves_protocol_rejection_category(category: str) -> None:
+    requests = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests != 1:
+            return _reply(request, answer="Recovered.")
+        response = _reply(
+            request,
+            arguments=_arguments(),
+            finish="stop" if category == "protocol_finish" else None,
+        )
+        body = response.content
+        if category == "protocol_type":
+            body = body.replace(b'"type": "function", ', b"")
+        elif category == "protocol_name":
+            body = body.replace(EVIDENCE_OPERATION_TOOL_NAME.encode(), b"private_function")
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    provider, exporter = _provider()
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        with model_span(provider.get_tracer("test"), "model", attributes={}):
+            assert list(
+                model.stream_answer(ModelInput(QUESTION), (replace(_search_hit(), content=QUOTE),))
+            ) == ["Recovered."]
+    provider.shutdown()
+    assert requests == 2
+    assert _events(exporter) == {
+        "submitted": 1,
+        "rejected": 1,
+        f"rejected_{category}": 1,
+        "recovery": 1,
+    }

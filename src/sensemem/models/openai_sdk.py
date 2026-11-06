@@ -627,6 +627,16 @@ _EVIDENCE_OPERATION_RECOVERY = (
     "was accepted. Answer using only the original supplied evidence and the existing answer "
     "policy; do not assume that any proposed fact was verified."
 )
+_EvidenceOperationRejection = Literal[
+    "protocol_finish",
+    "protocol_type",
+    "protocol_count",
+    "protocol_name",
+    "protocol_arguments",
+    "schema",
+    "invalid_evidence",
+    "response_invalid",
+]
 # The rate every hosted ASR model resamples its input to, so demuxing to it adds no loss.
 _ASR_SAMPLE_RATE = 16_000
 _WAV_TYPE = "audio/wav"
@@ -1922,6 +1932,7 @@ class OpenAIModels:
         recovery_prepared = prepared
         may_recover = False
         submitted = False
+        rejection: _EvidenceOperationRejection | None = None
 
         def attempt() -> None:
             nonlocal attempted
@@ -2023,23 +2034,28 @@ class OpenAIModels:
                     )
                 submitted = True
                 _evidence_operation_event("submitted")
-                if (
-                    "tools" not in request
-                    or reason != "tool_calls"
-                    or not isinstance(calls, list | tuple)
-                    or len(calls) != 1
-                ):
-                    raise InvalidEvidenceOperation("native evidence operation protocol was invalid")
-                function = _member(calls[0], "function")
+                function = (
+                    _member(calls[0], "function")
+                    if isinstance(calls, list | tuple) and len(calls) == 1
+                    else None
+                )
                 arguments = _member(function, "arguments")
-                if (
-                    _member(calls[0], "type") != "function"
-                    or _member(function, "name") != EVIDENCE_OPERATION_TOOL_NAME
-                    or not isinstance(arguments, str)
-                ):
+                if reason != "tool_calls":
+                    rejection = "protocol_finish"
+                elif "tools" not in request or not isinstance(calls, list | tuple):
+                    rejection = "protocol_type"
+                elif len(calls) != 1:
+                    rejection = "protocol_count"
+                elif _member(calls[0], "type") != "function":
+                    rejection = "protocol_type"
+                elif _member(function, "name") != EVIDENCE_OPERATION_TOOL_NAME:
+                    rejection = "protocol_name"
+                elif not isinstance(arguments, str):
+                    rejection = "protocol_arguments"
+                if rejection is not None:
                     raise InvalidEvidenceOperation("native evidence operation protocol was invalid")
                 outcome = execute_evidence_operation(
-                    arguments, operation[1], question=question.text
+                    cast(str, arguments), operation[1], question=question.text
                 )
                 _evidence_operation_event(outcome.status)
                 if outcome.status == "executed":
@@ -2052,12 +2068,15 @@ class OpenAIModels:
                     abstained=True,
                     abstention_reason=outcome.reason or AbstentionReason.INSUFFICIENT_EVIDENCE,
                 )
-            except InvalidEvidenceOperation:
-                _evidence_operation_event("rejected")
+            except InvalidEvidenceOperation as error:
+                _evidence_operation_event("rejected", rejection=rejection or error.category)
             except ModelError as error:
                 if not may_recover or error.reason != "response_invalid":
                     raise
-                _evidence_operation_event("rejected" if submitted else "response_invalid")
+                if submitted:
+                    _evidence_operation_event("rejected", rejection="response_invalid")
+                else:
+                    _evidence_operation_event("response_invalid")
             final = _evidence_operation_recovery(recovery_prepared[0])
             if not self._evidence_operation_fits(final, stream=stream):
                 raise ModelError(
@@ -4463,14 +4482,18 @@ def _evidence_operation_event(
     status: Literal[
         "submitted", "executed", "needs_evidence", "rejected", "response_invalid", "recovery"
     ],
+    *,
+    rejection: _EvidenceOperationRejection | None = None,
 ) -> None:
     # Reuse the caller's tracer provider. These stages make no model request, and carry no
     # proposal, source, answer or provider body; names alone suffice for aggregate counts.
-    with nested_model_span(
-        f"sensemem.evidence_operation.{status}",
-        attributes={"sensemem.span.kind": "stage", "sensemem.stage": "generate"},
-    ):
-        pass
+    names = (status,) if rejection is None else (status, f"rejected_{rejection}")
+    for name in names:
+        with nested_model_span(
+            f"sensemem.evidence_operation.{name}",
+            attributes={"sensemem.span.kind": "stage", "sensemem.stage": "generate"},
+        ):
+            pass
 
 
 def _answer_parts(

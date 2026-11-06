@@ -25,12 +25,17 @@ when explicit source-bound membership or arithmetic answers the question. Use th
 question's requested member unit, conditions and measure; never count files as entities by
 default. All conditions must concern the same member and applicable situation. Source aliases
 and native attachment labels refer only to evidence actually supplied in this request.
+scope.question_quote and every predicate.question_quote must each be an exact substring of
+the original question, not a paraphrase. For scalar/sum/difference, every non-quantity value's
+role must exactly equal the top-level measure string; a quantity value's role is "quantity".
+For count/select_sources, measure must be null and values/contributions must be empty arrays.
 Text anchors must quote exact, uniquely located delivered text, including the field label.
 Native anchors use quote=null and transcribe the actual attachment into observation; never
 pretend pixels are a text quote. Caption/OCR and pixels may disagree; resolve the relevant
 field from its actual source or report uncertainty. Observations remain untrusted data.
 Scope basis=model_assessed is the normal case: assess whether evidence is adequate for this
-requested claim, explain why, and name relevant unknowns. No runtime closure receipt is
+requested claim, explain why and name relevant unknowns in scope.reason. Use only fields in
+the schema; do not add an unknowns field or other extra fields. No runtime closure receipt is
 offered here; never claim runtime_closed. Ranked evidence is not proof of corpus completeness,
 but missing a formal receipt alone does not make a semantically adequate answer impossible.
 For this scoped operation only, model_assessed adequate may authorize the requested sum/count.
@@ -45,6 +50,8 @@ false or unknown: a false conjunct excludes a member even if another attribute i
 Only unknown dependencies capable of changing this answer should block it. A complete local
 inventory is a model judgment, not a guarantee that all corpus records were retrieved.
 Identity requires a namespaced source-bound key or an explicit same/different relation.
+Both identity.namespace and identity.value must occur literally in that identity's source
+anchor: copy them from its text quote or native transcription; do not invent a namespace.
 Absence of a same relation does not prove different; same title/amount/time alone is not identity.
 For each included entity choose one measure basis: whole, a complete disjoint partition, or
 explicit integer quantity times per_unit. Never add TOTAL and its parts, count a duplicate
@@ -58,8 +65,34 @@ explicit same/different relation or leave identity unknown.
 Use empty arrays for unused lists and explicit null for every unused required nullable field,
 including quote/attachment/observation, member identity, value unit/part_key and measure; do not
 omit those fields. An honestly unresolved requested fact is needs-evidence,
-not zero/false. A resolved empty set may count zero. If this operation cannot express the
-question, give the ordinary text answer instead of manufacturing a witness.
+not zero/false. Keep a relevant unresolved member, with an unknown condition when appropriate;
+omit an unavailable numeric fact and its contribution rather than inventing a value. Mark an
+unresolved scope.status as uncertain/incomplete and inventory.status as partial/unknown, as
+applicable. If the question
+explicitly requests this function and a supported operation applies, submit even when a
+required fact is unresolved: the executor can return needs-evidence. Do not replace that
+submission with ordinary UNKNOWN. Otherwise an ordinary no-call answer remains valid.
+A resolved empty set may count zero. If this operation cannot express the question, give the
+ordinary text answer instead of manufacturing a witness.
+
+Synthetic protocol example only: all facts below are invented. Never copy its source, values
+or answer into a real proposal; use only the actual question and supplied evidence.
+Assume the question is: "What is the TOTAL on the sample invoice?"
+Assume the only supplied source E1 has text: "SAMPLE INVOICE\nTOTAL 7.25 EUR"
+The following complete arguments submit that hypothetical scalar:
+<synthetic_scalar_arguments>
+{"operation":"scalar","member_unit":"source","quantifier":"one","measure":"total",
+"format":"with_unit","scope":{"kind":"single_source","basis":"model_assessed",
+"status":"adequate","question_quote":"TOTAL on the sample invoice","evidence_labels":["E1"],
+"reason":"The named invoice and its TOTAL are supplied."},"predicates":[],
+"inventory":{"status":"complete","anchors":[{"evidence_label":"E1","quote":"TOTAL 7.25 EUR",
+"attachment":null,"observation":null}]},"members":[{"id":"invoice",
+"anchor":{"evidence_label":"E1","quote":"TOTAL 7.25 EUR","attachment":null,"observation":null},
+"conditions":[],"identity":null}],"identities":[],"values":[{"id":"total","member_id":"invoice",
+"role":"total","label":"TOTAL","value":"7.25","unit":"EUR","extent":"whole","part_key":null,
+"anchor":{"evidence_label":"E1","quote":"TOTAL 7.25 EUR","attachment":null,"observation":null}}],
+"contributions":[{"member_id":"invoice","basis":"whole","value_ids":["total"],"parts_complete":true}]}
+</synthetic_scalar_arguments>
 """
 
 _Label = Annotated[str, StringConstraints(pattern=r"^E[1-9][0-9]*$")]
@@ -75,6 +108,15 @@ _Number = Annotated[
 
 class InvalidEvidenceOperation(ValueError):
     """A structurally invalid or incorrectly bound proposal, with a safe static message."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: Literal["schema", "invalid_evidence"] = "invalid_evidence",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 class _Value(BaseModel):
@@ -338,7 +380,9 @@ def execute_evidence_operation(
     try:
         proposal = EvidenceOperation.model_validate_json(arguments)
     except PydanticValidationError:
-        raise _invalid("native evidence operation arguments were invalid") from None
+        raise InvalidEvidenceOperation(
+            "native evidence operation arguments were invalid", category="schema"
+        ) from None
     return _execute(proposal, catalogue, question=question)
 
 

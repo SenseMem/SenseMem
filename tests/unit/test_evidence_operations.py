@@ -10,6 +10,7 @@ from typing import Literal, cast
 import pytest
 
 from sensemem.models._evidence_operations import (
+    EVIDENCE_OPERATION_INSTRUCTION,
     EVIDENCE_OPERATION_PARAMETERS,
     EVIDENCE_OPERATION_TOOL_NAME,
     EvidenceAnchor,
@@ -163,12 +164,30 @@ def test_schema_has_native_name_and_strict_required_objects() -> None:
     assert EVIDENCE_OPERATION_TOOL_NAME == "submit_evidence_operation"
     assert EVIDENCE_OPERATION_PARAMETERS["additionalProperties"] is False
     assert "scope" in cast(list[str], EVIDENCE_OPERATION_PARAMETERS["required"])
-    with pytest.raises(InvalidEvidenceOperation, match="arguments were invalid"):
+    with pytest.raises(InvalidEvidenceOperation, match="arguments were invalid") as caught:
         execute_evidence_operation(
             '{"operation":"scalar","unexpected":"private provider body"}',
             make_evidence_catalogue((), visible_media={}),
             question=QUESTION,
         )
+    assert caught.value.category == "schema"
+
+
+def test_instruction_scalar_example_executes_without_omitted_fields() -> None:
+    arguments = EVIDENCE_OPERATION_INSTRUCTION.split("<synthetic_scalar_arguments>\n", 1)[1].split(
+        "\n</synthetic_scalar_arguments>", 1
+    )[0]
+    catalogue = make_evidence_catalogue(
+        (_hit("sample", "SAMPLE INVOICE\nTOTAL 7.25 EUR", "sample-invoice"),),
+        visible_media={},
+    )
+    result = execute_evidence_operation(
+        arguments, catalogue, question="What is the TOTAL on the sample invoice?"
+    )
+    assert (result.status, result.answer) == ("executed", "7.25 EUR")
+    with pytest.raises(InvalidEvidenceOperation) as caught:
+        execute_evidence_operation(arguments, catalogue, question="A different question")
+    assert caught.value.category == "invalid_evidence"
 
 
 def test_catalogue_preserves_alias_order_and_shared_native_attachment() -> None:
