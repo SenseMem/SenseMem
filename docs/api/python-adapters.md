@@ -236,6 +236,7 @@ OpenAIModels(
     generation_answer_style: Literal["default", "concise"] = "default",
     generation_answer_format: Literal["text", "structured"] = "text",
     generation_image_source_prose: Literal["include", "context_when_supplied"] = "include",
+    generation_evidence_operation_tool: bool = False,
     generation_source_metadata_key: str = "source_id",
     vision_video_frames: int = 4,
     image_max_pixels: int | None = None,
@@ -251,6 +252,7 @@ Close leaves caller-supplied OpenAI clients open. Pass the same object only to d
 | `embedding_request_format` | `embedding.request_format` |
 | `generation_answer_style` / `generation_answer_format` | `generation.answer_style` / `answer_format` |
 | `generation_image_source_prose` | `generation.image_source_prose` |
+| `generation_evidence_operation_tool` | `generation.evidence_operation_tool` |
 | `generation_source_metadata_key` | `generation.source_metadata_key` |
 | `generation_request_max_bytes` | `generation.request_max_bytes` |
 | `generation_media_max_tokens` | `generation.media_max_tokens` |
@@ -274,6 +276,23 @@ retain ordinary full text. If the optional view's added field or prompt exceeds 
 configured wire bound, the already-fitted ordinary view is used without that prompt. No source
 text is truncated and no more media is admitted. Recall planning is unchanged. This adds no
 model call, but adds role-prompt tokens when applied; evaluate quality before deployment.
+
+`generation_evidence_operation_tool=True` requires text answers and a provider that supports
+native function calling. After fitting complete original evidence, the adapter may offer
+`submit_evidence_operation` within the remaining text and wire budgets. The model supplies
+scoped member/value witnesses; validated source selection, distinct counting and numeric
+operations render directly into the answer. Source IDs use `generation_source_metadata_key`.
+Text quotes must refer to supplied text, and native observations must reference media actually
+supplied. These checks do not establish visual truth, real-world identity or corpus completeness;
+scope sufficiency can remain a fallible model assessment.
+
+No function call preserves the ordinary text path. An invalid initial proposal is discarded and
+may trigger at most one final read from the same original fitted evidence without tools; a valid
+proposal with unresolved required evidence remains an abstention. Final failures keep their
+normal errors, and all actual requests and missing usage reports remain accounted for. Public
+streaming yields only the validated executed answer or final ordinary text. The option defaults
+to false; when enabled, `generation_extra_body` cannot replace `tools`, `tool_choice` or
+`parallel_tool_calls`. Qualify both quality and cost on the intended model and task.
 
 ### Structured answer witnesses
 

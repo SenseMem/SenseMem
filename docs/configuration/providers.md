@@ -56,7 +56,8 @@ Vision adds `video_frames=4` (2–64). Generation adds:
 | `answer_style` | `default` | Standard reader or answer-only `concise` |
 | `answer_format` | `text` | Text or validated `structured` draft |
 | `image_source_prose` | `include` | Keep image-source text in `content`, or use `context_when_supplied` to preserve it as auxiliary context when all source images are supplied |
-| `source_metadata_key` | `source_id` | Application identifier field for structured source lists |
+| `evidence_operation_tool` | `False` | Optional native function for source-bound member selection and numeric execution; requires `answer_format: text` |
+| `source_metadata_key` | `source_id` | Application identifier field for structured and executed source lists |
 | `request_max_bytes` | `None` | Optional complete answer-request JSON byte bound |
 | `video_limit` | `8` | Retrieved-video cap; `None` disables this count |
 | `min_video_seconds` | `None` | Convert shorter video to four ordered stills; needs image support |
@@ -131,6 +132,27 @@ planning and other completion roles do not use this policy. The option adds no m
 its role prompt adds input tokens when applied. Evaluate quality with the chosen model before
 enabling it. Both buffered and streamed answers retain their configured `text` or `structured`
 contract.
+
+`evidence_operation_tool: true` offers one native `submit_evidence_operation` function after
+fitting the original evidence. The model can submit source-bound member, condition, identity
+and value witnesses for source selection, distinct counting, scalar values, sums, differences
+and explicitly supported quantity products. The adapter validates references and literal
+values, checks the declared accounting basis, and renders an accepted operation directly.
+The model still judges relevance, visual observations, entity identity and whether the evidence
+is sufficient. A model-assessed scope is not a runtime guarantee that the corpus is complete.
+Unresolved facts that can change the requested answer produce an abstained answer under the
+configured policy; unrelated unknowns do not invalidate an otherwise supported result.
+
+The option defaults to false and requires a provider with native function calling. If the model
+returns ordinary text, the existing answer path applies. Tool overhead must fit the remaining
+text and request-byte budgets without removing original evidence or media. If the first native
+response cannot be validated, none of its proposed facts is accepted; the adapter can make one
+final read of the original fitted evidence without tools. It does not recursively repair the
+response or add recall rounds. Final failures retain the normal error mapping, and all actual
+requests contribute to usage accounting. Public streaming buffers the tool protocol and yields
+only the executed or final text. With this option enabled, `extra_body` cannot override `tools`,
+`tool_choice` or `parallel_tool_calls`. Evaluate semantic quality and cost with the chosen model
+before enabling it.
 
 ## Generation routes
 

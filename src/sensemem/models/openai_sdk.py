@@ -59,6 +59,15 @@ from sensemem.models._answer_output import (
     render_answer_draft,
 )
 from sensemem.models._concurrency import ordered_calls
+from sensemem.models._evidence_operations import (
+    EVIDENCE_OPERATION_INSTRUCTION,
+    EVIDENCE_OPERATION_PARAMETERS,
+    EVIDENCE_OPERATION_TOOL_NAME,
+    EvidenceCatalogue,
+    InvalidEvidenceOperation,
+    execute_evidence_operation,
+    make_evidence_catalogue,
+)
 from sensemem.models._media import (
     asset_data,
     asset_url_part,
@@ -613,6 +622,11 @@ _SAFETY_ERRORS = frozenset({"content_policy_violation", "content_filter"})
 _MAX_INLINE_MODEL_BYTES = 64 * 1024 * 1024
 _MAX_INLINE_MODEL_ITEM_BYTES = 20 * 1024 * 1024
 _MAX_GROUNDED_TEXT_BYTES = 4 * 1024 * 1024
+_EVIDENCE_OPERATION_RECOVERY = (
+    " The preliminary response was not accepted. No proposed evidence operation or result "
+    "was accepted. Answer using only the original supplied evidence and the existing answer "
+    "policy; do not assume that any proposed fact was verified."
+)
 # The rate every hosted ASR model resamples its input to, so demuxing to it adds no loss.
 _ASR_SAMPLE_RATE = 16_000
 _WAV_TYPE = "audio/wav"
@@ -625,6 +639,8 @@ _GENERATION_MODALITY_BY_PART_TYPE = {
 
 class _InvalidStructuredResponse(ModelError):
     """A successful provider response whose structured payload can be retried once."""
+
+    _cleanup_failed = False
 
 
 class OpenAIModels:
@@ -647,6 +663,7 @@ class OpenAIModels:
         "_generation_answer_format",
         "_generation_answer_style",
         "_generation_capabilities",
+        "_generation_evidence_operation_tool",
         "_generation_extra_body",
         "_generation_image_source_prose",
         "_generation_max_tokens",
@@ -709,6 +726,7 @@ class OpenAIModels:
         generation_stream: bool = False,
         generation_answer_style: Literal["default", "concise"] = "default",
         generation_answer_format: Literal["text", "structured"] = "text",
+        generation_evidence_operation_tool: bool = False,
         generation_image_source_prose: Literal["include", "context_when_supplied"] = "include",
         generation_source_metadata_key: str = "source_id",
         vision_video_frames: int = 4,
@@ -728,6 +746,11 @@ class OpenAIModels:
         }:
             raise ValidationError("generation_answer_format must be text or structured")
         self._generation_answer_format = generation_answer_format
+        if not isinstance(generation_evidence_operation_tool, bool):
+            raise ValidationError("generation_evidence_operation_tool must be a boolean")
+        if generation_evidence_operation_tool and generation_answer_format != "text":
+            raise ValidationError("generation_evidence_operation_tool requires text answer format")
+        self._generation_evidence_operation_tool = generation_evidence_operation_tool
         if not isinstance(
             generation_image_source_prose, str
         ) or generation_image_source_prose not in {
@@ -827,6 +850,14 @@ class OpenAIModels:
             json.dumps(generation_extra_body, allow_nan=False, sort_keys=True)
         except (RecursionError, TypeError, ValueError):
             raise ValidationError("generation_extra_body must be JSON-compatible") from None
+        if generation_evidence_operation_tool and {
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+        }.intersection(generation_extra_body or {}):
+            raise ValidationError(
+                "generation_extra_body must not override the evidence operation tool"
+            )
         if not isinstance(generation_stream, bool):
             raise ValidationError("generation_stream must be a boolean")
         if not isinstance(generation_store, bool):
@@ -1552,7 +1583,17 @@ class OpenAIModels:
                 abstained=True,
                 abstention_reason=prepared,
             )
-        response, grounded, modalities, request_count = self._create_answer(
+        operation_request = self._evidence_operation_request(prepared, stream=False)
+        if operation_request is not None:
+            return self._answer_with_evidence_operation(
+                question,
+                hits,
+                prepared,
+                operation_request,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+            )
+        response, grounded, modalities, request_count, _request = self._create_answer(
             question,
             hits,
             prepared,
@@ -1634,9 +1675,22 @@ class OpenAIModels:
             return AnswerResult(
                 answer=UNKNOWN_ANSWER, hits=(), abstained=True, abstention_reason=prepared
             )
+        operation_request = self._evidence_operation_request(prepared, stream=True)
+        if operation_request is not None:
+            result = self._answer_with_evidence_operation(
+                question,
+                hits,
+                prepared,
+                operation_request,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+                stream=True,
+            )
+            yield result.answer
+            return result
         started = time.perf_counter()
         usage_response: object | None = None
-        responses, grounded, modalities, request_count = self._create_answer(
+        responses, grounded, modalities, request_count, _request = self._create_answer(
             question,
             hits,
             prepared,
@@ -1749,6 +1803,282 @@ class OpenAIModels:
             return result
         return result if answer_policy == "best_effort" else replace(result, answer=streamed)
 
+    def _evidence_operation_fits(self, request: Mapping[str, object], *, stream: bool) -> bool:
+        texts: list[str] = []
+        for message in cast(list[dict[str, object]], request["messages"]):
+            content = message["content"]
+            if isinstance(content, str):
+                texts.append(content)
+            else:
+                texts.extend(
+                    cast(str, part["text"])
+                    for part in cast(list[dict[str, object]], content)
+                    if part["type"] == "text"
+                )
+        if "tools" in request:
+            texts.append(_json_text(request["tools"]))
+        try:
+            _require_answer_text_size(texts)
+        except ModelError as error:
+            if error.reason != "payload_too_large":
+                raise
+            return False
+        return self._generation_request_max_bytes is None or (
+            _answer_wire_size(request, stream=stream) <= self._generation_request_max_bytes
+        )
+
+    def _evidence_operation_request(
+        self,
+        prepared: tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]],
+        *,
+        stream: bool,
+    ) -> tuple[dict[str, object], EvidenceCatalogue] | None:
+        if not self._generation_evidence_operation_tool:
+            return None
+        request, grounded, _modalities = prepared
+        aliases = evidence_aliases(grounded)
+        visible: dict[str, frozenset[str]] = {label: frozenset() for label in aliases.values()}
+        messages = [dict(message) for message in cast(list[dict[str, object]], request["messages"])]
+        messages[0]["content"] = (
+            cast(str, messages[0]["content"]) + "\n" + EVIDENCE_OPERATION_INSTRUCTION
+        )
+        content = messages[-1]["content"]
+        if isinstance(content, str):
+            payload = json.loads(content)
+            for hit, memory in zip(grounded, payload["hits"], strict=True):
+                memory["evidence_label"] = aliases[hit.id]
+            messages[-1]["content"] = _json_text(payload)
+        else:
+            original = cast(list[dict[str, object]], content)
+            supplied: set[str] = set()
+            current: str | None = None
+            for part in original:
+                if part["type"] == "text":
+                    marker = re.fullmatch(
+                        r"(attachment [1-9][0-9]*)(?: \(.*\))?", cast(str, part["text"])
+                    )
+                    current = None if marker is None else marker[1]
+                elif part["type"] in _GENERATION_MODALITY_BY_PART_TYPE and current is not None:
+                    supplied.add(current)
+            parts: list[dict[str, object]] = []
+            index = 0
+            for part in original:
+                if part["type"] == "text" and cast(str, part["text"]).startswith('{"memory":'):
+                    payload = json.loads(cast(str, part["text"]))
+                    memory = payload["memory"]
+                    label = aliases[grounded[index].id]
+                    index += 1
+                    memory["evidence_label"] = label
+                    visible[label] |= frozenset(memory.get("media_modalities", {})).intersection(
+                        supplied
+                    )
+                    part = {**part, "text": _json_text(payload)}
+                parts.append(part)
+            messages[-1]["content"] = parts
+        candidate = {
+            **request,
+            "messages": messages,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": EVIDENCE_OPERATION_TOOL_NAME,
+                        "description": "Submit one source-bound membership or numeric operation for local execution.",
+                        "parameters": EVIDENCE_OPERATION_PARAMETERS,
+                    },
+                }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        }
+        # This optional view may only use space left by the complete original fit. Reserve
+        # the tool-free recovery notice without dropping or admitting any original media.
+        if not self._evidence_operation_fits(
+            candidate, stream=stream
+        ) or not self._evidence_operation_fits(
+            _evidence_operation_recovery(request), stream=stream
+        ):
+            return None
+        return candidate, make_evidence_catalogue(
+            grounded,
+            visible_media=visible,
+            source_metadata_key=self._generation_source_metadata_key,
+        )
+
+    def _answer_with_evidence_operation(  # noqa: C901 - one first response and one bounded recovery
+        self,
+        question: ModelInput,
+        hits: Sequence[SearchHit],
+        prepared: tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]],
+        operation: tuple[dict[str, object], EvidenceCatalogue],
+        *,
+        answer_policy: AnswerPolicy,
+        exhaustive: bool,
+        stream: bool = False,
+    ) -> AnswerResult:
+        attempted = 0
+        usages: list[_ModelUsage | None] = []
+        finish_reasons: list[str] = []
+        recovery_prepared = prepared
+        may_recover = False
+        submitted = False
+
+        def attempt() -> None:
+            nonlocal attempted
+            attempted += 1
+            mark_model_requests(attempted)
+
+        def remember(response: object, modalities: frozenset[Modality]) -> None:
+            _record_openai_provenance(response)
+            choices = getattr(response, "choices", None)
+            if isinstance(choices, list) and len(choices) == 1:
+                reason = getattr(choices[0], "finish_reason", None)
+                if isinstance(reason, str) and reason:
+                    finish_reasons.append(reason)
+            usages.append(
+                _model_usage(
+                    response,
+                    input_modalities=modalities,
+                    output_modalities=frozenset({Modality.TEXT}),
+                )
+            )
+
+        def read(
+            ready: tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]],
+            *,
+            first: bool = False,
+        ) -> tuple[object, tuple[SearchHit, ...], dict[str, object]]:
+            nonlocal may_recover, recovery_prepared
+            may_recover = False
+            response, grounded, modalities, _count, request = self._create_answer(
+                question,
+                hits,
+                ready,
+                answer_policy=answer_policy,
+                exhaustive=exhaustive,
+                stream=stream,
+                on_request=attempt,
+            )
+            if first and "tools" not in request:
+                recovery_prepared = request, grounded, modalities
+            may_recover = True
+            try:
+                if stream:
+                    response = _collect_streamed_completion(
+                        response,
+                        subject="generation",
+                        stage="generate",
+                        on_failure=lambda value: remember(value, modalities),
+                        allow_tool_calls=True,
+                        require_usage=False,
+                    )
+            except ModelError as error:
+                if not isinstance(error, _InvalidStructuredResponse) or error._cleanup_failed:
+                    may_recover = False
+                raise
+            except Exception as error:
+                may_recover = False
+                raise ModelError(
+                    "generation request failed", reason=_provider_reason(error), stage="generate"
+                ) from error
+            remember(response, modalities)
+            cleanup_error = getattr(response, "_cleanup_error", None)
+            if isinstance(cleanup_error, Exception):
+                may_recover = False
+                raise ModelError(
+                    "generation response cleanup failed",
+                    reason=_provider_reason(cleanup_error),
+                    stage="generate",
+                ) from cleanup_error
+            return response, grounded, request
+
+        try:
+            try:
+                response, grounded, request = read(
+                    (operation[0], prepared[1], prepared[2]), first=True
+                )
+                choices = getattr(response, "choices", None)
+                if (
+                    not isinstance(choices, list)
+                    or len(choices) != 1
+                    or getattr(choices[0], "index", None) != 0
+                ):
+                    raise ModelError(
+                        "generation response was invalid",
+                        reason="response_invalid",
+                        stage="generate",
+                    )
+                choice = choices[0]
+                message = getattr(choice, "message", None)
+                reason = getattr(choice, "finish_reason", None)
+                if getattr(message, "refusal", None) or reason in {"length", "content_filter"}:
+                    _answer_text(response)
+                calls = getattr(message, "tool_calls", None)
+                if not calls:
+                    return self._finish_answer(
+                        _answer_text(response),
+                        question.evidence_sources or hits,
+                        grounded,
+                        answer_policy=answer_policy,
+                    )
+                submitted = True
+                _evidence_operation_event("submitted")
+                if (
+                    "tools" not in request
+                    or reason != "tool_calls"
+                    or not isinstance(calls, list | tuple)
+                    or len(calls) != 1
+                ):
+                    raise InvalidEvidenceOperation("native evidence operation protocol was invalid")
+                function = _member(calls[0], "function")
+                arguments = _member(function, "arguments")
+                if (
+                    _member(calls[0], "type") != "function"
+                    or _member(function, "name") != EVIDENCE_OPERATION_TOOL_NAME
+                    or not isinstance(arguments, str)
+                ):
+                    raise InvalidEvidenceOperation("native evidence operation protocol was invalid")
+                outcome = execute_evidence_operation(
+                    arguments, operation[1], question=question.text
+                )
+                _evidence_operation_event(outcome.status)
+                if outcome.status == "executed":
+                    return AnswerResult(answer=cast(str, outcome.answer), hits=outcome.hits)
+                return AnswerResult(
+                    answer=outcome.answer
+                    if answer_policy == "best_effort" and outcome.answer
+                    else UNKNOWN_ANSWER,
+                    hits=outcome.hits,
+                    abstained=True,
+                    abstention_reason=outcome.reason or AbstentionReason.INSUFFICIENT_EVIDENCE,
+                )
+            except InvalidEvidenceOperation:
+                _evidence_operation_event("rejected")
+            except ModelError as error:
+                if not may_recover or error.reason != "response_invalid":
+                    raise
+                _evidence_operation_event("rejected" if submitted else "response_invalid")
+            final = _evidence_operation_recovery(recovery_prepared[0])
+            if not self._evidence_operation_fits(final, stream=stream):
+                raise ModelError(
+                    "generation response was invalid", reason="response_invalid", stage="generate"
+                )
+            _evidence_operation_event("recovery")
+            response, grounded, _request = read((final, recovery_prepared[1], recovery_prepared[2]))
+            answer = _answer_text(response)
+            final_choice = cast(list[object], getattr(response, "choices", None))[0]
+            if getattr(getattr(final_choice, "message", None), "tool_calls", None):
+                raise ModelError(
+                    "generation response was invalid", reason="response_invalid", stage="generate"
+                )
+            return self._finish_answer(
+                answer, question.evidence_sources or hits, grounded, answer_policy=answer_policy
+            )
+        finally:
+            _record_usage_batch(usages, request_count=attempted)
+            if finish_reasons:
+                trace.get_current_span().set_attribute(GEN_AI_FINISH_REASONS, tuple(finish_reasons))
+
     def _create_answer(
         self,
         question: ModelInput,
@@ -1758,13 +2088,16 @@ class OpenAIModels:
         answer_policy: AnswerPolicy = "strict",
         stream: bool = False,
         exhaustive: bool = False,
-    ) -> tuple[object, tuple[SearchHit, ...], frozenset[Modality], int]:
+        on_request: Callable[[], None] | None = None,
+    ) -> tuple[object, tuple[SearchHit, ...], frozenset[Modality], int, dict[str, object]]:
         request, grounded, modalities = prepared
         create_completion = cast(
             Callable[..., object], self._client("generation").chat.completions.create
         )
 
         def create() -> object:
+            if on_request is not None:
+                on_request()
             if stream:
                 return create_completion(
                     **request,
@@ -1775,7 +2108,7 @@ class OpenAIModels:
 
         mark_model_requests(1)
         try:
-            return create(), grounded, modalities, 1
+            return create(), grounded, modalities, 1, request
         except ModelError:
             raise
         except Exception as error:
@@ -1797,7 +2130,7 @@ class OpenAIModels:
             request, grounded, modalities = fallback
             mark_model_requests(2)
             try:
-                return create(), grounded, modalities, 2
+                return create(), grounded, modalities, 2, request
             except ModelError:
                 raise
             except Exception as retry_error:
@@ -3504,7 +3837,9 @@ def _formation_spatial(value: object) -> SpatialContext | None:
     )
 
 
-def _invalid_json_response(subject: str, stage: str, detail: str = "") -> ModelError:
+def _invalid_json_response(
+    subject: str, stage: str, detail: str = ""
+) -> _InvalidStructuredResponse:
     return _InvalidStructuredResponse(
         f"{subject} response was invalid{detail}",
         reason="response_invalid",
@@ -3961,8 +4296,10 @@ def _collect_streamed_completion(  # noqa: C901 - validates one streamed respons
     subject: str,
     stage: str,
     on_failure: Callable[[object], None] | None = None,
+    allow_tool_calls: bool = False,
+    require_usage: bool = True,
 ) -> object:
-    """Collect a completed OpenAI SSE response for a JSON-only caller."""
+    """Collect a completed response before exposing native proposals or provisional text."""
     content: list[str] = []
     usage: object | None = None
     finish_reason: object = None
@@ -3971,9 +4308,25 @@ def _collect_streamed_completion(  # noqa: C901 - validates one streamed respons
     refused = False
     completed = False
     cleanup_error: Exception | None = None
+    invalid: _InvalidStructuredResponse | None = None
+    call: dict[str, object] | None = None
+    started = time.perf_counter()
+    first_chunk = first_text = True
+
+    def incomplete_response() -> object:
+        return SimpleNamespace(
+            usage=usage,
+            model=model,
+            system_fingerprint=fingerprint,
+            choices=[SimpleNamespace(finish_reason=finish_reason)],
+        )
+
     _record_provider_request_id(responses)
     try:
         for response in cast(Iterable[object], responses):
+            if allow_tool_calls and first_chunk:
+                trace.get_current_span().set_attribute(GEN_AI_TTFC, time.perf_counter() - started)
+                first_chunk = False
             model = getattr(response, "model", None) or model
             fingerprint = getattr(response, "system_fingerprint", None) or fingerprint
             if (response_usage := getattr(response, "usage", None)) is not None:
@@ -3993,10 +4346,38 @@ def _collect_streamed_completion(  # noqa: C901 - validates one streamed respons
                 if not isinstance(piece, str):
                     raise _invalid_json_response(subject, stage)
                 content.append(piece)
+                if allow_tool_calls and piece and first_text:
+                    trace.get_current_span().set_attribute(
+                        MODEL_TTFT, time.perf_counter() - started
+                    )
+                    first_text = False
+            if allow_tool_calls and (fragments := getattr(delta, "tool_calls", None)) is not None:
+                if not isinstance(fragments, list):
+                    raise _invalid_json_response(subject, stage)
+                for fragment in fragments:
+                    index = getattr(fragment, "index", None)
+                    if isinstance(index, bool) or not isinstance(index, int) or index != 0:
+                        raise _invalid_json_response(subject, stage)
+                    if call is None:
+                        call = {"type": None, "function": {"name": "", "arguments": ""}}
+                    kind = getattr(fragment, "type", None)
+                    if kind is not None:
+                        if kind != "function":
+                            raise _invalid_json_response(subject, stage)
+                        call["type"] = kind
+                    function = cast(dict[str, str], call["function"])
+                    for key in ("name", "arguments"):
+                        value = getattr(getattr(fragment, "function", None), key, None)
+                        if value is not None:
+                            if not isinstance(value, str):
+                                raise _invalid_json_response(subject, stage)
+                            function[key] += value
         completed = True
-    except Exception:
+    except Exception as error:
+        if isinstance(error, _InvalidStructuredResponse):
+            invalid = error
         if on_failure is not None:
-            on_failure(SimpleNamespace(usage=usage, model=model, system_fingerprint=fingerprint))
+            on_failure(incomplete_response())
         if refused or finish_reason == "content_filter":
             raise _model_refused(subject, stage) from None
         raise
@@ -4008,18 +4389,24 @@ def _collect_streamed_completion(  # noqa: C901 - validates one streamed respons
             except Exception as error:
                 if completed:
                     cleanup_error = error
-    if (usage is None and not refused and finish_reason != "content_filter") or (
+                if invalid is not None:
+                    invalid._cleanup_failed = True
+    if (require_usage and usage is None and not refused and finish_reason != "content_filter") or (
         finish_reason is None and not refused
     ):
         if on_failure is not None:
-            on_failure(SimpleNamespace(usage=usage, model=model, system_fingerprint=fingerprint))
-        raise _invalid_json_response(subject, stage)
+            on_failure(incomplete_response())
+        invalid = _invalid_json_response(subject, stage)
+        invalid._cleanup_failed = cleanup_error is not None
+        raise invalid
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
                 index=0,
                 message=SimpleNamespace(
-                    content="".join(content), refusal="refused" if refused else None
+                    content="".join(content),
+                    refusal="refused" if refused else None,
+                    tool_calls=None if call is None else [call],
                 ),
                 finish_reason=finish_reason,
             )
@@ -4054,6 +4441,36 @@ def _answer_wire_size(request: Mapping[str, object], *, stream: bool) -> int:
     return len(
         json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
     )
+
+
+def _evidence_operation_recovery(request: Mapping[str, object]) -> dict[str, object]:
+    messages = cast(list[dict[str, object]], request["messages"])
+    system = messages[0]
+    return {
+        **{
+            key: value
+            for key, value in request.items()
+            if key not in {"tools", "tool_choice", "parallel_tool_calls"}
+        },
+        "messages": [
+            {**system, "content": cast(str, system["content"]) + _EVIDENCE_OPERATION_RECOVERY},
+            *messages[1:],
+        ],
+    }
+
+
+def _evidence_operation_event(
+    status: Literal[
+        "submitted", "executed", "needs_evidence", "rejected", "response_invalid", "recovery"
+    ],
+) -> None:
+    # Reuse the caller's tracer provider. These stages make no model request, and carry no
+    # proposal, source, answer or provider body; names alone suffice for aggregate counts.
+    with nested_model_span(
+        f"sensemem.evidence_operation.{status}",
+        attributes={"sensemem.span.kind": "stage", "sensemem.stage": "generate"},
+    ):
+        pass
 
 
 def _answer_parts(
