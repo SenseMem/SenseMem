@@ -29,6 +29,7 @@ scope.question_quote and every predicate.question_quote must each be an exact su
 the original question, not a paraphrase. For scalar/sum/difference, every non-quantity value's
 role must exactly equal the top-level measure string; a quantity value's role is "quantity".
 For count/select_sources, measure must be null and values/contributions must be empty arrays.
+Every value.value is a quoted numeric JSON string, such as "2.5", not a JSON number.
 Text anchors must quote exact, uniquely located delivered text, including the field label.
 Native anchors use quote=null and transcribe the actual attachment into observation; never
 pretend pixels are a text quote. Caption/OCR and pixels may disagree; resolve the relevant
@@ -45,8 +46,11 @@ change this requested result remains unresolved and must produce needs-evidence.
 operation rule does not change the ordinary text answer policy.
 Do not silently narrow an overall total to current hits. For a named single field, unrelated
 sources or unknown attributes do not matter. For one supported photo, do not append distractors.
-List relevant occurrences, including known excluded candidates. Predicate verdicts are true,
-false or unknown: a false conjunct excludes a member even if another attribute is unknown.
+List relevant occurrences, including known excluded candidates. Every member must include
+each declared predicate ID exactly once in conditions. A verdict is the JSON string "true",
+"false" or "unknown", never a JSON boolean or null. In contrast, parts_complete is a JSON
+boolean true/false, not a string. A false conjunct excludes a member even if another attribute
+is unknown. Keep different objects separate even when they occur in the same source.
 Only unknown dependencies capable of changing this answer should block it. A complete local
 inventory is a model judgment, not a guarantee that all corpus records were retrieved.
 Identity requires a namespaced source-bound key or an explicit same/different relation.
@@ -72,6 +76,8 @@ applicable. If the question
 explicitly requests this function and a supported operation applies, submit even when a
 required fact is unresolved: the executor can return needs-evidence. Do not replace that
 submission with ordinary UNKNOWN. Otherwise an ordinary no-call answer remains valid.
+Submit the same operation envelope for unresolved facts: needs_evidence is an executor
+outcome, not an operation name or an extra status/answer/missing field in the arguments.
 A resolved empty set may count zero. If this operation cannot express the question, give the
 ordinary text answer instead of manufacturing a witness.
 
@@ -93,6 +99,69 @@ The following complete arguments submit that hypothetical scalar:
 "anchor":{"evidence_label":"E1","quote":"TOTAL 7.25 EUR","attachment":null,"observation":null}}],
 "contributions":[{"member_id":"invoice","basis":"whole","value_ids":["total"],"parts_complete":true}]}
 </synthetic_scalar_arguments>
+
+Another invented example: assume the question is:
+"What is the exact combined mass of these two vessels?"
+E1 text is "VESSEL C1 MASS 2 kg"; E2 text is "VESSEL C2 MASS UNREADABLE".
+The unresolved vessel remains a member; only the known mass has a value and contribution.
+This complete sum proposal produces needs-evidence, not a claimed total of 2 kg:
+<synthetic_unknown_arguments>
+{"operation":"sum","member_unit":"entity","quantifier":"exact","measure":"mass",
+"format":"with_unit","scope":{"kind":"explicit_source_set","basis":"model_assessed",
+"status":"incomplete","question_quote":"combined mass of these two vessels",
+"evidence_labels":["E1","E2"],"reason":"Both named vessels are supplied, but C2 mass is unreadable."},
+"predicates":[],"inventory":{"status":"complete","anchors":[
+{"evidence_label":"E1","quote":"VESSEL C1 MASS 2 kg","attachment":null,"observation":null},
+{"evidence_label":"E2","quote":"VESSEL C2 MASS UNREADABLE","attachment":null,"observation":null}]},
+"members":[{"id":"c1","anchor":{"evidence_label":"E1","quote":"VESSEL C1 MASS 2 kg",
+"attachment":null,"observation":null},"conditions":[],"identity":{"namespace":"VESSEL","value":"C1",
+"anchor":{"evidence_label":"E1","quote":"VESSEL C1 MASS 2 kg","attachment":null,"observation":null}}},
+{"id":"c2","anchor":{"evidence_label":"E2","quote":"VESSEL C2 MASS UNREADABLE",
+"attachment":null,"observation":null},"conditions":[],"identity":{"namespace":"VESSEL","value":"C2",
+"anchor":{"evidence_label":"E2","quote":"VESSEL C2 MASS UNREADABLE","attachment":null,"observation":null}}}],
+"identities":[],"values":[{"id":"mass_c1","member_id":"c1","role":"mass","label":"MASS",
+"value":"2","unit":"kg","extent":"whole","part_key":null,"anchor":{"evidence_label":"E1",
+"quote":"VESSEL C1 MASS 2 kg","attachment":null,"observation":null}}],
+"contributions":[{"member_id":"c1","basis":"whole","value_ids":["mass_c1"],"parts_complete":true}]}
+</synthetic_unknown_arguments>
+
+Another invented example: assume the question is:
+"Which supplied source shows the same toy car that is red and parked?"
+E1 text is "Toy car A is red and parked."
+E2 text is "Toy car B is red and moving. Toy car C is blue and parked."
+Host source IDs are sample-a and sample-b.
+Only sample-a matches: the red car and the parked car in E2 are different objects. Each
+occurrence below accounts for both predicates, using JSON string verdicts:
+<synthetic_and_arguments>
+{"operation":"select_sources","member_unit":"source","quantifier":"exact","measure":null,
+"format":"source_ids","scope":{"kind":"explicit_source_set","basis":"model_assessed",
+"status":"adequate","question_quote":"same toy car that is red and parked",
+"evidence_labels":["E1","E2"],"reason":"Both supplied scene inventories identify each toy car and both attributes."},
+"predicates":[{"id":"red","question_quote":"red"},{"id":"parked","question_quote":"parked"}],
+"inventory":{"status":"complete","anchors":[
+{"evidence_label":"E1","quote":"Toy car A is red and parked.","attachment":null,"observation":null},
+{"evidence_label":"E2","quote":"Toy car B is red and moving. Toy car C is blue and parked.",
+"attachment":null,"observation":null}]},"members":[
+{"id":"car_a","anchor":{"evidence_label":"E1","quote":"Toy car A is red and parked.",
+"attachment":null,"observation":null},"conditions":[
+{"predicate_id":"red","verdict":"true","anchors":[{"evidence_label":"E1",
+"quote":"Toy car A is red and parked.","attachment":null,"observation":null}]},
+{"predicate_id":"parked","verdict":"true","anchors":[{"evidence_label":"E1",
+"quote":"Toy car A is red and parked.","attachment":null,"observation":null}]}],"identity":null},
+{"id":"car_b","anchor":{"evidence_label":"E2","quote":"Toy car B is red and moving.",
+"attachment":null,"observation":null},"conditions":[
+{"predicate_id":"red","verdict":"true","anchors":[{"evidence_label":"E2",
+"quote":"Toy car B is red and moving.","attachment":null,"observation":null}]},
+{"predicate_id":"parked","verdict":"false","anchors":[{"evidence_label":"E2",
+"quote":"Toy car B is red and moving.","attachment":null,"observation":null}]}],"identity":null},
+{"id":"car_c","anchor":{"evidence_label":"E2","quote":"Toy car C is blue and parked.",
+"attachment":null,"observation":null},"conditions":[
+{"predicate_id":"red","verdict":"false","anchors":[{"evidence_label":"E2",
+"quote":"Toy car C is blue and parked.","attachment":null,"observation":null}]},
+{"predicate_id":"parked","verdict":"true","anchors":[{"evidence_label":"E2",
+"quote":"Toy car C is blue and parked.","attachment":null,"observation":null}]}],"identity":null}],
+"identities":[],"values":[],"contributions":[]}
+</synthetic_and_arguments>
 """
 
 _Label = Annotated[str, StringConstraints(pattern=r"^E[1-9][0-9]*$")]
@@ -106,6 +175,14 @@ _Number = Annotated[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class SchemaIssue:
+    """A bounded schema diagnostic containing only allowlisted codes and field names."""
+
+    error_type: str
+    location: tuple[str, ...]
+
+
 class InvalidEvidenceOperation(ValueError):
     """A structurally invalid or incorrectly bound proposal, with a safe static message."""
 
@@ -114,9 +191,11 @@ class InvalidEvidenceOperation(ValueError):
         message: str,
         *,
         category: Literal["schema", "invalid_evidence"] = "invalid_evidence",
+        schema_issues: tuple[SchemaIssue, ...] = (),
     ) -> None:
         super().__init__(message)
         self.category = category
+        self.schema_issues = schema_issues
 
 
 class _Value(BaseModel):
@@ -219,6 +298,44 @@ class EvidenceOperation(_Value):
 
 
 EVIDENCE_OPERATION_PARAMETERS: dict[str, object] = EvidenceOperation.model_json_schema()
+_SCHEMA_ERROR_TYPES = frozenset(
+    {
+        "json_invalid",
+        "json_type",
+        "model_type",
+        "dict_type",
+        "tuple_type",
+        "string_type",
+        "string_too_short",
+        "string_too_long",
+        "string_pattern_mismatch",
+        "bool_type",
+        "literal_error",
+        "none_required",
+        "missing",
+        "extra_forbidden",
+        "too_long",
+        "too_short",
+        "value_error",
+    }
+)
+_SCHEMA_FIELD_NAMES = frozenset(
+    name
+    for model in (
+        EvidenceAnchor,
+        ScopeAssessment,
+        Predicate,
+        PredicateVerdict,
+        IdentityKey,
+        OperationMember,
+        IdentityRelation,
+        MemberInventory,
+        OperationValue,
+        MemberContribution,
+        EvidenceOperation,
+    )
+    for name in model.model_fields
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,11 +496,34 @@ def execute_evidence_operation(
     """Validate one native proposal and execute only its supported requested claim."""
     try:
         proposal = EvidenceOperation.model_validate_json(arguments)
-    except PydanticValidationError:
-        raise InvalidEvidenceOperation(
-            "native evidence operation arguments were invalid", category="schema"
-        ) from None
-    return _execute(proposal, catalogue, question=question)
+    except PydanticValidationError as error:
+        issues = tuple(
+            SchemaIssue(
+                issue["type"] if issue["type"] in _SCHEMA_ERROR_TYPES else "other",
+                tuple(
+                    "item"
+                    if isinstance(segment, int)
+                    else segment
+                    if segment in _SCHEMA_FIELD_NAMES
+                    and (issue["type"] != "extra_forbidden" or index < len(issue["loc"]) - 1)
+                    else "other"
+                    for index, segment in enumerate(issue["loc"])
+                )
+                or ("root",),
+            )
+            for issue in error.errors(
+                include_input=False, include_context=False, include_url=False
+            )[:16]
+        )
+    else:
+        return _execute(proposal, catalogue, question=question)
+    # Raise outside the handler so the rejected provider payload is not retained as
+    # the new exception's implicit Pydantic exception context.
+    raise InvalidEvidenceOperation(
+        "native evidence operation arguments were invalid",
+        category="schema",
+        schema_issues=issues,
+    ) from None
 
 
 def _execute(  # noqa: C901 - evaluate the requested operation's dependency footprint together

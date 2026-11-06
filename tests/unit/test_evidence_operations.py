@@ -190,6 +190,64 @@ def test_instruction_scalar_example_executes_without_omitted_fields() -> None:
     assert caught.value.category == "invalid_evidence"
 
 
+def test_instruction_unknown_example_preserves_members_without_fabricating_value() -> None:
+    arguments = EVIDENCE_OPERATION_INSTRUCTION.split("<synthetic_unknown_arguments>\n", 1)[1].split(
+        "\n</synthetic_unknown_arguments>", 1
+    )[0]
+    proposal = EvidenceOperation.model_validate_json(arguments)
+    assert len(proposal.members) == 2
+    assert len(proposal.values) == len(proposal.contributions) == 1
+    assert proposal.values[0].value == "2"
+    assert proposal.contributions[0].parts_complete is True
+    catalogue = make_evidence_catalogue(
+        (
+            _hit("c1", "VESSEL C1 MASS 2 kg", "vessel-c1"),
+            _hit("c2", "VESSEL C2 MASS UNREADABLE", "vessel-c2"),
+        ),
+        visible_media={},
+    )
+    question = "What is the exact combined mass of these two vessels?"
+    result = execute_evidence_operation(arguments, catalogue, question=question)
+    assert result.status == "needs_evidence"
+    assert result.answer is None
+    assert result.reason is AbstentionReason.INSUFFICIENT_EVIDENCE
+    assert set(result.missing) == {"scope_insufficient", "value_missing"}
+    with pytest.raises(InvalidEvidenceOperation) as caught:
+        execute_evidence_operation(
+            arguments.replace('"value":"2"', '"value":2'), catalogue, question=question
+        )
+    assert caught.value.category == "schema"
+
+
+def test_instruction_and_example_keeps_predicates_on_the_same_object() -> None:
+    arguments = EVIDENCE_OPERATION_INSTRUCTION.split("<synthetic_and_arguments>\n", 1)[1].split(
+        "\n</synthetic_and_arguments>", 1
+    )[0]
+    proposal = EvidenceOperation.model_validate_json(arguments)
+    assert len(proposal.members) == 3
+    assert all(
+        {condition.predicate_id for condition in member.conditions} == {"red", "parked"}
+        for member in proposal.members
+    )
+    catalogue = make_evidence_catalogue(
+        (
+            _hit("a", "Toy car A is red and parked.", "sample-a"),
+            _hit("b", "Toy car B is red and moving. Toy car C is blue and parked.", "sample-b"),
+        ),
+        visible_media={},
+    )
+    question = "Which supplied source shows the same toy car that is red and parked?"
+    result = execute_evidence_operation(arguments, catalogue, question=question)
+    assert (result.status, result.answer) == ("executed", "sample-a")
+    with pytest.raises(InvalidEvidenceOperation) as caught:
+        execute_evidence_operation(
+            arguments.replace('"verdict":"true"', '"verdict":true', 1),
+            catalogue,
+            question=question,
+        )
+    assert caught.value.category == "schema"
+
+
 def test_catalogue_preserves_alias_order_and_shared_native_attachment() -> None:
     first = _hit("a", "Source A", "photo-a")
     second = _hit("b", "Source B", "photo-b")
