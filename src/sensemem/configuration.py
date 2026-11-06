@@ -211,6 +211,7 @@ class OpenAIGenerationConfig(_OpenAICompletionConfig):
     request_max_bytes: _PositiveInt | None = None
     answer_style: Literal["default", "concise"] = "default"
     answer_format: Literal["text", "structured"] = "text"
+    image_source_prose: Literal["include", "context_when_supplied"] = "include"
     source_metadata_key: _Text = "source_id"
     image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
     video_limit: _PositiveInt | None = 8
@@ -575,6 +576,7 @@ def _build_native_generation(config: OpenAIGenerationConfig) -> GenerationBacken
     for name, value, default in (
         ("generation_request_max_bytes", config.request_max_bytes, None),
         ("generation_answer_format", config.answer_format, "text"),
+        ("generation_image_source_prose", config.image_source_prose, "include"),
         ("generation_source_metadata_key", config.source_metadata_key, "source_id"),
         ("generation_answer_style", config.answer_style, "default"),
         ("generation_media_max_tokens", config.media_max_tokens, 8192),
