@@ -25,6 +25,9 @@ when explicit source-bound membership or arithmetic answers the question. Use th
 question's requested member unit, conditions and measure; never count files as entities by
 default. All conditions must concern the same member and applicable situation. Source aliases
 and native attachment labels refer only to evidence actually supplied in this request.
+Use E aliases only inside native function arguments. Ordinary text answers must use the
+requested original source fields or facts, never internal aliases. Submit operations only
+through the native function; never imitate a tool call with text, JSON or XML.
 scope.question_quote and every predicate.question_quote must each be an exact substring of
 the original question, not a paraphrase. For scalar/sum/difference, every non-quantity value's
 role must exactly equal the top-level measure string; a quantity value's role is "quantity".
@@ -909,7 +912,11 @@ def _numeric_answer(  # noqa: C901 - operation-dependent numeric dependency eval
             value = sum(totals.values(), Decimal(0))
     text = _decimal_text(value)
     if proposal.format == "with_unit":
-        text += " " + next(iter(units))
+        unit = next(iter(units))
+        if unit in {"£", "$", "€"}:
+            text = f"-{unit}{text[1:]}" if text.startswith("-") else f"{unit}{text}"
+        else:
+            text += " " + unit
     return text, list(dict.fromkeys(missing)), totals
 
 

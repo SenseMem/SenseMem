@@ -290,6 +290,47 @@ def test_scalar_total_ignores_unrelated_sources_and_line_inventory() -> None:
 
 
 @pytest.mark.parametrize(
+    ("unit", "expected"),
+    [("£", "£19.2"), ("$", "$19.2"), ("€", "€19.2"), ("kg", "19.2 kg"), ("EUR", "19.2 EUR")],
+)
+def test_numeric_unit_presentation_preserves_currency_and_physical_units(
+    unit: str, expected: str
+) -> None:
+    anchor = _text("E1", f"TOTAL 19.20 {unit}")
+    proposal = _proposal(
+        members=(_member("a", anchor),),
+        values=(_fact("total", "a", anchor, "19.20", unit=unit),),
+        contributions=(_contribution("a", "total"),),
+    )
+    assert _run(proposal, (_hit("a", anchor.quote or ""),)).answer == expected
+    number_only = proposal.model_copy(update={"format": "number"})
+    assert _run(number_only, (_hit("a", anchor.quote or ""),)).answer == "19.2"
+
+
+@pytest.mark.parametrize("unit", ["£", "$", "€"])
+def test_negative_currency_result_places_sign_before_symbol(unit: str) -> None:
+    anchors = (_text("E1", f"TOTAL 10 {unit}"), _text("E2", f"TOTAL 29.20 {unit}"))
+    proposal = _proposal(
+        operation="difference",
+        unit="source",
+        labels=("E1", "E2"),
+        members=tuple(
+            _member(label, anchor) for label, anchor in zip(("a", "b"), anchors, strict=True)
+        ),
+        values=tuple(
+            _fact(label, label, anchor, value, unit=unit)
+            for label, anchor, value in zip(("a", "b"), anchors, ("10", "29.20"), strict=True)
+        ),
+        contributions=(_contribution("a", "a"), _contribution("b", "b")),
+    )
+    hits = tuple(
+        _hit(str(index), anchor.quote or "", f"bill-{index}")
+        for index, anchor in enumerate(anchors)
+    )
+    assert _run(proposal, hits).answer == f"-{unit}19.2"
+
+
+@pytest.mark.parametrize(
     "anchor",
     [
         _text("E2", "TOTAL 12 EUR"),

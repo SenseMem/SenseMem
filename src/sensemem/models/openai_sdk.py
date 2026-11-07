@@ -2032,8 +2032,32 @@ class OpenAIModels:
                     _answer_text(response)
                 calls = getattr(message, "tool_calls", None)
                 if not calls:
+                    answer = _answer_text(response)
+                    if "tools" in request:
+                        labels = "|".join(
+                            re.escape(label)
+                            for label in evidence_aliases(operation[1].hits).values()
+                        )
+                        item = rf"(?:{labels}|\"(?:{labels})\"|'(?:{labels})')"
+                        alias_list = re.fullmatch(
+                            rf"\s*(?:\[\s*)?{item}(?:[\s,;\uff0c\uff1b\u3001]+{item})*\s*(?:\])?\s*",
+                            answer,
+                        )
+                        pseudo_call = re.search(
+                            r"<tool_calls>\s*<invoke\s+name=([\"'])"
+                            r"(?:functions\.)?submit_evidence_operation\1\s*>"
+                            r".*?</invoke>\s*</tool_calls>",
+                            answer,
+                            re.DOTALL,
+                        )
+                        if alias_list or pseudo_call:
+                            raise ModelError(
+                                "generation response contained unaccepted protocol text",
+                                reason="response_invalid",
+                                stage="generate",
+                            )
                     return self._finish_answer(
-                        _answer_text(response),
+                        answer,
                         question.evidence_sources or hits,
                         grounded,
                         answer_policy=answer_policy,

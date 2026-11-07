@@ -28,7 +28,10 @@ from sensemem._telemetry import (
     model_span,
     operation_span,
 )
-from sensemem.models._evidence_operations import EVIDENCE_OPERATION_TOOL_NAME
+from sensemem.models._evidence_operations import (
+    EVIDENCE_OPERATION_INSTRUCTION,
+    EVIDENCE_OPERATION_TOOL_NAME,
+)
 from sensemem.types import AbstentionReason, AnswerPolicy
 
 QUESTION = "What is the TOTAL?"
@@ -400,14 +403,159 @@ def test_first_generic_invalid_response_recovers_without_inventing_a_submission(
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "first_answer",
+    [
+        "E1",
+        "E1, E2",
+        '["E1", "E2"]',
+        '<tool_calls><invoke name="submit_evidence_operation"><parameter name="operation">'
+        "scalar</parameter></invoke></tool_calls>",
+        '<tool_calls><invoke name="functions.submit_evidence_operation">'
+        '<parameter name="operation">scalar</parameter></invoke></tool_calls>',
+    ],
+)
+def test_no_call_protocol_text_gets_one_original_evidence_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: bool, first_answer: str
+) -> None:
+    hits = (
+        replace(
+            _search_hit(),
+            id="image-source",
+            content="The entrance is E1.",
+            metadata={"source_id": "entrance-photo"},
+            assets=(_image(tmp_path, "entrance"),),
+            modality=Modality.IMAGE,
+        ),
+        replace(_search_hit(), id="text-source", content="The matching wing is E1."),
+    )
+    sent: list[dict[str, object]] = []
+    final_answer = first_answer if first_answer.startswith("<tool_calls>") else "E1"
+
+    def unexpected_execution(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("text must never be executed as a native proposal")
+
+    monkeypatch.setattr(adapter, "execute_evidence_operation", unexpected_execution)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return _reply(request, answer=first_answer if len(sent) == 1 else final_answer)
+
+    provider, exporter = _provider()
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = OpenAIModels(
+            _sdk_client(client),
+            generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
+            generation_evidence_operation_tool=True,
+            generation_image_source_prose="context_when_supplied",
+        )
+        with model_span(provider.get_tracer("test"), "model", attributes={}):
+            if stream:
+                assert list(model.stream_answer(ModelInput("Which entrance?"), hits)) == [
+                    final_answer
+                ]
+            else:
+                assert model.answer(ModelInput("Which entrance?"), hits).answer == final_answer
+    provider.shutdown()
+    assert len(sent) == 2
+    assert all(key not in sent[1] for key in ("tools", "tool_choice", "parallel_tool_calls"))
+    assert _memories(sent[1]) == [
+        {key: value for key, value in memory.items() if key != "evidence_label"}
+        for memory in _memories(sent[0])
+    ]
+    assert [part for part in _parts(sent[0]) if part["type"] == "image_url"] == [
+        part for part in _parts(sent[1]) if part["type"] == "image_url"
+    ]
+    messages = cast(list[dict[str, object]], sent[1]["messages"])
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert EVIDENCE_OPERATION_INSTRUCTION not in cast(str, messages[0]["content"])
+    assert "<tool_calls>" not in json.dumps(sent[1])
+    assert _events(exporter) == {"response_invalid": 1, "recovery": 1}
+    attributes = next(
+        span for span in exporter.get_finished_spans() if span.name == "model"
+    ).attributes
+    assert attributes is not None
+    assert attributes[MODEL_REQUEST_COUNT] == 2 and attributes[TOKEN_TOTAL] == 24
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "The entrance is E1.",
+        "E10",
+        "E1, E99",
+        '<event code="E1">Arrival</event>',
+        '<tool_calls><invoke name="lookup">Literal example</invoke></tool_calls>',
+    ],
+)
+def test_no_call_factual_alias_or_unrelated_xml_text_is_not_rejected(
+    stream: bool, answer: str
+) -> None:
+    sent: list[dict[str, object]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return _reply(request, answer=answer)
+
+    provider, exporter = _provider()
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        with model_span(provider.get_tracer("test"), "model", attributes={}):
+            if stream:
+                assert list(model.stream_answer(ModelInput(QUESTION), (_search_hit(),))) == [answer]
+            else:
+                assert model.answer(ModelInput(QUESTION), (_search_hit(),)).answer == answer
+    provider.shutdown()
+    assert len(sent) == 1 and not _events(exporter)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_no_call_protocol_text_does_not_override_content_filter(stream: bool) -> None:
+    sent: list[dict[str, object]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return _reply(request, answer="E1", finish="content_filter")
+
+    provider, exporter = _provider()
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        with (
+            model_span(provider.get_tracer("test"), "model", attributes={}),
+            pytest.raises(ModelError) as failure,
+        ):
+            if stream:
+                list(model.stream_answer(ModelInput(QUESTION), (_search_hit(),)))
+            else:
+                model.answer(ModelInput(QUESTION), (_search_hit(),))
+    provider.shutdown()
+    assert failure.value.reason == "model_refused"
+    assert len(sent) == 1 and not _events(exporter)
+    attributes = next(
+        span for span in exporter.get_finished_spans() if span.name == "model"
+    ).attributes
+    assert attributes is not None
+    assert attributes[MODEL_REQUEST_COUNT] == 1 and attributes[TOKEN_TOTAL] == 12
+
+
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("final_finish", ["tool_calls", "stop"])
-def test_bad_final_response_never_causes_a_third_reader(stream: bool, final_finish: str) -> None:
+@pytest.mark.parametrize("first_text", [False, True])
+def test_bad_final_response_never_causes_a_third_reader(
+    stream: bool, final_finish: str, first_text: bool
+) -> None:
     hit = replace(_search_hit(), content=QUOTE)
     sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
-        return _reply(request, arguments="{}", finish=final_finish if len(sent) == 2 else None)
+        return _reply(
+            request,
+            arguments=None if len(sent) == 1 and first_text else "{}",
+            answer="E1",
+            finish=final_finish if len(sent) == 2 else None,
+        )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
