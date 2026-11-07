@@ -57,7 +57,13 @@ For select_sources, use member_unit="source", every member.identity=null and ide
 The host catalogue supplies source identity; do not construct placeholder entity keys or
 identity anchors for unreadable identifiers. Still list each candidate occurrence separately
 and prove all conditions on that same member before projecting to sources; one source may
-contain several members. Entity count and numeric operations retain their identity rules below.
+contain several members. Entity count and multi-member arithmetic retain their identity rules below.
+For scalar with exactly one evidenced target occurrence represented by one member, use
+member.identity=null and identities=[]. Its member and value anchors identify that local target;
+do not invent a redundant namespace or key. Keep relevant excluded or unresolved candidates.
+If a scalar target has repeated recorded occurrences, keep them separate and use supported
+identity keys or same/different relations when needed to reconcile them; do not collapse
+possible targets or change the requested member unit merely to avoid identity uncertainty.
 Entity identity requires a namespaced source-bound key or an explicit same/different relation.
 Both identity.namespace and identity.value must occur literally in that identity's source
 anchor: copy them from its text quote or native transcription; do not invent a namespace.
