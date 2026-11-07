@@ -53,7 +53,12 @@ boolean true/false, not a string. A false conjunct excludes a member even if ano
 is unknown. Keep different objects separate even when they occur in the same source.
 Only unknown dependencies capable of changing this answer should block it. A complete local
 inventory is a model judgment, not a guarantee that all corpus records were retrieved.
-Identity requires a namespaced source-bound key or an explicit same/different relation.
+For select_sources, use member_unit="source", every member.identity=null and identities=[].
+The host catalogue supplies source identity; do not construct placeholder entity keys or
+identity anchors for unreadable identifiers. Still list each candidate occurrence separately
+and prove all conditions on that same member before projecting to sources; one source may
+contain several members. Entity count and numeric operations retain their identity rules below.
+Entity identity requires a namespaced source-bound key or an explicit same/different relation.
 Both identity.namespace and identity.value must occur literally in that identity's source
 anchor: copy them from its text quote or native transcription; do not invent a namespace.
 Absence of a same relation does not prove different; same title/amount/time alone is not identity.
