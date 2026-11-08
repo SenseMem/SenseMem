@@ -32,6 +32,9 @@ Changes for version `0.3.0`.
 
 ### Added
 
+- Optional image-source context and native evidence operations for grounded answers, including
+  source selection, distinct counting and witnessed arithmetic. See
+  [provider configuration](docs/configuration/providers.md).
 - Native MOSAIC evaluation with pinned data and judge prompts, plus an EmbeddingGemma 2 /
   Qwen Omni [reproduction recipe and results](docs/benchmarks/mosaic-native.md).
 

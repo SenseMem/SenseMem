@@ -36,6 +36,34 @@ embedding isolate consolidation quality. The media case has no cached caption an
 the original image; its independent 8192-token diagnosis ceiling includes reasoning and remains
 bounded by the configured overall output ceiling.
 
+## ATM-Bench evidence-operation evaluation
+
+The CLOSED18 evaluation of source commit `ddb85e7e67fa86a41e34e2b763d783e51426704c`
+scored **79.6271%** mean official Question Score over all 1,013 ATM-Bench Main questions,
+with zero final generation or scoring errors. Number, List and Open-ended scores were
+81.3889%, 78.8652% and 78.5992%, respectively. The equivalent image-context baseline scored
+79.2141%. These are single-run observations.
+
+The reader used `deepseek-v4.1-flash` with thinking enabled and maximum reasoning effort;
+the provider exposed a model alias rather than an immutable revision. Embeddings used
+`tencent/WeMM-Embedding-9B`, reranking used `Qwen3-VL-Rerank-8B`, and open-ended judging used
+`gpt-5-mini` with minimal reasoning. The pinned Main fixture SHA-256 was
+`ab6eaa9df62fb4162e0f5eecd98768a7e3ae721e32d2db2cf227ff41e3295762`, with scorer protocol
+`atm_bench_scorer_ef4e5dff1a47_minimal_v3`.
+
+The evaluated settings included `answer_style: concise`, `answer_format: text`,
+`image_source_prose: context_when_supplied` and `evidence_operation_tool: true`, with recall
+limit 20, two recall rounds, two queries per round and 64,000-character evidence budgets.
+The independent synthetic qualification fixtures passed 32 technical cases and five safety
+cases, covering grounded answers, unresolved evidence and embedded instructions. All 32
+semantic diagnostics passed; the stricter direct-operation mechanism gate did not pass.
+The score target of greater than 81.78% was not reached.
+
+Integration also rejects the observed `function_calls` text wrapper and repeated protocol
+text in the final recovery answer. Buffered and streamed regression tests cover this fix.
+No new real-service qualification or full Main run was performed for the integration;
+79.6271% identifies the original CLOSED18 execution. Both new provider options remain opt-in.
+
 ## Run the answering and workflow gates
 
 Set `OPENAI_API_KEY` through a secret manager or the process environment. For a compatible server,
