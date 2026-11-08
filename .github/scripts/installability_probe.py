@@ -80,13 +80,15 @@ def _product_cli() -> None:
 
 
 def _benchmarks() -> None:
-    """Reach the download client and the Parquet reader the catalog tasks load lazily."""
+    """Reach the download client and text scorers the catalog tasks load lazily."""
     from sensemem.benchmarks.cli import main
 
     assert main(["--help"]) == 0
     importlib.import_module("httpx")
-    importlib.import_module("pyarrow.parquet")
     importlib.import_module("nltk")
+    from sensemem.benchmarks._official.mosaic_scoring import parse_judge_score
+
+    assert parse_judge_score("{score: 0.7,}") == (0.7, True)
 
 
 def _observability() -> None:

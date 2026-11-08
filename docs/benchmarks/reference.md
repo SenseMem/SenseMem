@@ -96,6 +96,12 @@ Use repeatable `--task-data TASK=PATH` and `--media-root TASK=PATH` to override 
 `--allow-unverified-data` is required when an annotation override fails the pinned digest; its
 identity is recorded. `--no-download` prevents acquisition.
 
+Explicit generation modalities and routes retain their declared capabilities. Native corpus media
+does not promote a text/image reader into an audio/video reader; configure a compatible route or
+the corresponding labelled conversion backend.
+Modality sets serialize in a stable order so cache and resume identities remain identical across
+Python processes.
+
 Timed media is prepared into bounded clips under `.benchmarks/.prepared/`. Invalid video-cache
 entries are rebuilt; genuine one-frame inputs remain one-frame inputs. `--media-manifest FILE`
 supplies prepared observations. Version 1 contains `tasks` → `units` → observations with `path`
@@ -157,9 +163,8 @@ use the matching hypergeometric expectation.
 | Exact source IDs | LoCoMo-Refined, ATM-Bench, Mem-Gallery |
 | Session groups | MemLens; ES-MemEval at published session retrieval granularity |
 | Clip IDs, possibly incomplete | ICM-Bench |
-| Exact images; unresolved memory-point labels | WorldMemArena |
 | Temporal/spatial labels, not joined source-record IDs | VideoZeroBench, MM-Lifelong; SuperMemory-VQA retains video IDs without gold clip groups |
-| No compatible source labels, or a degenerate single-clip pool | AMA-Bench, LongMemEval-V2, M3-Bench, CL-Bench, BEAM, PersonaMem-v3, EgoTempo, OpenEQA, Video-MME-v2 |
+| No compatible source labels, or a degenerate single-clip pool | AMA-Bench, LongMemEval-V2, M3-Bench, PersonaMem-v3, EgoTempo |
 
 Missing source labels do not make an answer score unavailable, but prevent a retrieval-quality
 claim. Task templates and stored `[source_id: ...]` markers also affect retrieval; original bare
@@ -312,6 +317,8 @@ measurements are refused. The same mapping can live under `benchmark.performance
 `--resume` reuses committed ingestion from the same explicit `--run-id`. They recover different
 work; resume alone still regenerates answers. Enable response caching on the original run, then
 rerun the same command with `--resume` after interruption.
+Each successful answer is cached when it completes, even while other questions in the same unit
+are still running. Answers from units with ingestion failures are not cached.
 
 Checkpoints are always written after committed batches. A unit rebuilds if its input/configuration
 identity changed, its store vanished, or its state passed the earliest unanswered causal cutoff.

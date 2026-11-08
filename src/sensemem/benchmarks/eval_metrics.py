@@ -77,9 +77,7 @@ _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
     "icm-bench": ("category",),
     "locomo-refined": ("category",),
     "m3-bench": ("question_types",),
-    "video-mme-v2": ("group_type", "level", "second_head", "third_head"),
     "videozerobench": ("category", "language", "evidence_span", "annotation_capabilities"),
-    "worldmemarena": ("question_type", "question_type_abbrev", "difficulty"),
     "egotempo": ("question_type",),
     "memlens": ("question_type", "question_subtype"),
     "mm-lifelong": ("question_type",),
@@ -88,10 +86,7 @@ _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
     "mem-gallery": ("point",),
     "longmemeval-v2": ("domain", "environment", "question_type"),
     "es-memeval": ("capability",),
-    "clbench": ("context_category", "sub_category"),
-    "beam": ("category", "difficulty"),
     "personamem-v3": ("task_family", "task_type"),
-    "openeqa": ("category",),
 }
 
 
@@ -271,31 +266,6 @@ def _metrics(
             task, samples if task.spec.name == "mosaic" else primary_samples, arguments
         ),
     }
-    if task.spec.name == "video-mme-v2" and scored:
-        rating = _video_mme_v2_rating(
-            samples,
-            seed=seed,
-            bootstrap_samples=arguments.bootstrap_samples,
-        )
-        accuracy = _video_mme_v2_accuracy(
-            samples,
-            seed=seed,
-            bootstrap_samples=arguments.bootstrap_samples,
-            official_metric=official("accuracy"),
-        )
-        result.update(
-            {
-                "primary_metric": "rating",
-                "official_metric": official("rating"),
-                "score": rating,
-                "accuracy": accuracy,
-            }
-        )
-        metric_rows["rating"] = {"official_metric": official("rating"), **rating}
-        metric_rows["accuracy"] = {
-            "official_metric": official("accuracy"),
-            **cast(Mapping[str, object], accuracy["overall"]),
-        }
     if task.spec.name == "personamem-v3":
         from sensemem.benchmarks._official.personamem_v3_scoring import (
             COMPLETE_HEADLINE_COVERAGE,
@@ -362,21 +332,6 @@ def _metrics(
         }
         result["unavailable_metrics"] = {
             "qa_mrr": "answer-option scores are not exposed by the SenseMem answer backend"
-        }
-    if task.spec.name == "worldmemarena":
-        result["unavailable_metrics"] = {
-            "memory_snapshot": (
-                "the unified runner has no per-session memory-snapshot export required by the "
-                "official recall/correctness, update-handling, and interference protocols"
-            ),
-            "retrieval_coverage": (
-                "the official semantic evidence-coverage judge is not part of checkpoint QA; "
-                "the generic exact-ID retrieval block remains a SenseMem diagnostic"
-            ),
-            "retrieval_ranking": (
-                "the official fuzzy memory/session/content matching protocol cannot be reproduced "
-                "from SenseMem source IDs"
-            ),
         }
     if (
         task.spec.name == "videozerobench"
@@ -885,116 +840,6 @@ def _metric_breakdowns(
     return result
 
 
-def _video_mme_v2_rating(
-    samples: Sequence[SampleResult], *, seed: int, bootstrap_samples: int
-) -> dict[str, object]:
-    return summarize(
-        _video_mme_v2_group_values(
-            tuple(
-                {
-                    "unit_id": sample.unit_id,
-                    "score": sample.score,
-                    "metadata": sample.metadata,
-                }
-                for sample in samples
-            )
-        ),
-        seed=seed,
-        bootstrap_samples=bootstrap_samples,
-        clamp=(0.0, 100.0),
-    )
-
-
-def _video_mme_v2_accuracy(
-    samples: Sequence[SampleResult],
-    *,
-    seed: int,
-    bootstrap_samples: int,
-    official_metric: bool,
-) -> dict[str, object]:
-    """Reproduce the released `_acc.json` scale, denominator, and taxonomy cells."""
-
-    def summary(selected: Sequence[SampleResult], suffix: str) -> dict[str, object]:
-        return summarize(
-            tuple(
-                ScoredValue(sample.sample_id, sample.unit_id, 100.0 * float(sample.score or 0.0))
-                for sample in selected
-            ),
-            seed=_task_seed(seed, suffix),
-            bootstrap_samples=bootstrap_samples,
-            clamp=(0.0, 100.0),
-        )
-
-    answered = tuple(sample for sample in samples if sample.parsed_choice is not None)
-    taxonomy_fields = ("group_type", "level", "second_head", "third_head")
-    cells: dict[str, object] = {}
-    for taxonomy_field in taxonomy_fields:
-        labels = sorted({str(sample.metadata.get(taxonomy_field, "")) for sample in samples})
-        cells[f"by_{taxonomy_field}"] = {
-            (f"level_{label}" if taxonomy_field == "level" else label): summary(
-                tuple(
-                    sample
-                    for sample in samples
-                    if str(sample.metadata.get(taxonomy_field, "")) == label
-                ),
-                f"accuracy:{taxonomy_field}:{label}",
-            )
-            for label in labels
-            if label
-        }
-    return {
-        "official_metric": official_metric,
-        "overall": summary(samples, "accuracy"),
-        "answered_accuracy": (
-            summary(answered, "answered_accuracy")
-            if answered
-            else {
-                **summary((), "answered_accuracy"),
-                "mean": 0.0,
-            }
-        ),
-        "question_count": len(samples),
-        "answered_count": len(answered),
-        "correct_count": sum(sample.score == 1.0 for sample in samples),
-        "error_count": sum(sample.error_code is not None for sample in samples),
-        **cells,
-    }
-
-
-def _video_mme_v2_group_values(
-    rows: Sequence[Mapping[str, object]],
-) -> tuple[ScoredValue, ...]:
-    from sensemem.benchmarks.video_mme_v2 import score_group_answers
-
-    groups: dict[str, list[tuple[int, float, Mapping[str, object]]]] = {}
-    for row in rows:
-        unit_id, score, metadata = row.get("unit_id"), row.get("score"), row.get("metadata")
-        if not isinstance(unit_id, str) or not unit_id:
-            raise ValueError("Video-MME-v2 sample unit ID must be a non-empty string")
-        if isinstance(score, bool) or not isinstance(score, int | float):
-            raise ValueError("Video-MME-v2 sample score must be numeric")
-        if not isinstance(metadata, Mapping):
-            raise ValueError("Video-MME-v2 sample metadata must be an object")
-        position = metadata.get("position")
-        if isinstance(position, bool) or not isinstance(position, int):
-            raise ValueError("Video-MME-v2 sample position must be an integer")
-        groups.setdefault(unit_id, []).append((position, float(score), metadata))
-
-    ratings = []
-    for unit_id in sorted(groups):
-        group = sorted(groups[unit_id], key=lambda item: item[0])
-        if tuple(item[0] for item in group) != (1, 2, 3, 4):
-            raise ValueError(f"Video-MME-v2 group {unit_id} must hold positions 1 to 4")
-        metadata = group[0][2]
-        rating = score_group_answers(
-            str(metadata["group_type"]),
-            str(metadata.get("group_structure", "")),
-            tuple(item[1] == 1.0 for item in group),
-        )
-        ratings.append(ScoredValue(unit_id, unit_id, rating))
-    return tuple(ratings)
-
-
 def _answerability(samples: Sequence[SampleResult]) -> dict[str, object]:
     true_positive = false_positive = false_negative = 0
     for sample in samples:
@@ -1019,7 +864,7 @@ def _answerability(samples: Sequence[SampleResult]) -> dict[str, object]:
     }
 
 
-def _comparisons(  # noqa: C901 - preserve each task's own comparison aggregation
+def _comparisons(
     arguments: _Arguments,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
@@ -1069,36 +914,11 @@ def _comparisons(  # noqa: C901 - preserve each task's own comparison aggregatio
                 for row in previous_scored
                 if _primary_sample("mosaic", cast(Mapping[str, object], row["metadata"]))
             )
-        if task.spec.name == "video-mme-v2":
-            current_ids = tuple(sample.sample_id for sample in current_scored)
-            previous_ids = tuple(
-                sample_id
-                for row in previous_scored
-                if isinstance((sample_id := row.get("sample_id")), str)
-            )
-            if (
-                len(previous_ids) != len(previous_scored)
-                or len(set(previous_ids)) != len(previous_ids)
-                or set(current_ids) != set(previous_ids)
-            ):
-                raise ValueError("candidate and baseline must contain identical scored samples")
-            current = _video_mme_v2_group_values(
-                tuple(
-                    {
-                        "unit_id": sample.unit_id,
-                        "score": sample.score,
-                        "metadata": sample.metadata,
-                    }
-                    for sample in current_scored
-                )
-            )
-            previous = _video_mme_v2_group_values(previous_scored)
-        else:
-            current = tuple(
-                ScoredValue(sample.sample_id, sample.unit_id, cast(float, sample.score))
-                for sample in current_scored
-            )
-            previous = tuple(_baseline_value(row) for row in previous_scored)
+        current = tuple(
+            ScoredValue(sample.sample_id, sample.unit_id, cast(float, sample.score))
+            for sample in current_scored
+        )
+        previous = tuple(_baseline_value(row) for row in previous_scored)
         if not current:
             continue
         rows.append(
@@ -1108,7 +928,7 @@ def _comparisons(  # noqa: C901 - preserve each task's own comparison aggregatio
                 task_primary_metric(task.spec.name),
                 current,
                 previous,
-                score_scale=100.0 if task.spec.name == "video-mme-v2" else 1.0,
+                score_scale=1.0,
             )
         )
     return rows

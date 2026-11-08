@@ -104,14 +104,16 @@ trace IDs for production diagnosis. Local storage does not imply that inference 
 
 ## EmbeddingGemma 2 model server
 
-Run vLLM separately from the SenseMem owner, with a version containing
-[EmbeddingGemma 2 support](https://github.com/vllm-project/vllm/pull/60254). Obtain access to the
+Run vLLM 0.32.0 or later separately from the SenseMem owner;
+[v0.32.0 introduced EmbeddingGemma 2 support](https://github.com/vllm-project/vllm/releases/tag/v0.32.0).
+SenseMem's optional local reranker dependency is not the embedding server runtime. Obtain access to the
 model checkpoint and install the model runtime dependencies required by that vLLM version in its
 own environment. Start a pooling server with the checkpoint's bundled chat template:
 
 ```bash
 vllm serve google/embeddinggemma-2 \
   --runner pooling \
+  --dtype bfloat16 \
   --max-model-len 8192 \
   --host 127.0.0.1 \
   --port 8000
@@ -122,6 +124,11 @@ shared by text and media in each input; split larger inputs before ingestion. Do
 a generative Gemma chat template or rename the served model: SenseMem selects its retrieval
 recipe using the exact model name. Record the server's resolved model identity alongside the
 application configuration for rollout comparisons.
+
+Use `--dtype float32` when BF16 is unavailable; do not use FP16. For text-only serving, add
+`--limit-mm-per-prompt image=0,audio=0,video=0` and declare only `"text"` in the application's
+embedding modalities. Keep a separate server environment so its PyTorch/CUDA requirements do
+not replace the application's local reranker runtime.
 
 Install `sensemem[openai]` in the application environment and use the
 [EmbeddingGemma 2 vLLM configuration](configuration/models.md#embeddinggemma-2-through-vllm), which sends

@@ -33,20 +33,38 @@ Install `sensemem[local]`:
     "provider": "sentence-transformers",
     "model": "google/embeddinggemma-2",
     "dimension": 768,
-    "device": "cpu",
+    "device": "cuda",
+    "dtype": "auto",
     "batch_size": 8
   }
 }
 ```
 
-The local extra requires Sentence Transformers 6.1+ and Transformers 5.18+. The adapter loads
-FP32 on CPU or CUDA; injected encoders must use FP32/BF16, never FP16. Text queries/documents
+The local extra requires Sentence Transformers 6.1+ and Transformers 5.18+. The adapter uses
+PyTorch through Sentence Transformers and Transformers. `dtype="auto"` selects BF16 on the
+chosen CUDA GPU when it has native support, otherwise FP32. Explicit `float32` or `bfloat16`
+overrides automatic selection; FP16 is rejected. Use `device="cpu"` for CPU inference.
+Injected encoders own their loading configuration and must use FP32/BF16, never FP16.
+Text queries/documents
 receive the checkpoint's retrieval prompts automatically; pure media receives no prefix. Text,
-images, audio, video, and ordered combinations share a space. PyAV preserves model video sampling.
+images, audio, video, and ordered combinations share a space. PyAV preserves model video sampling
+and decodes audio to float32 mono at 16 kHz without the deprecated audioread fallback.
+
+An optional `modalities` list omits unused encoders before weights are allocated. For example,
+`"modalities": ["text"]` loads the 270M text model; `["text", "image"]` or `["text", "video"]`
+keeps vision and drops audio; `["text", "audio"]` drops vision. Omission loads the full 740M
+model. Only declared modalities appear in capabilities and routes. Selecting towers preserves
+the vector space for common inputs; changing precision does not. BF16 has a distinct identity,
+and the new PyAV audio recipe requires replay of stores created with the earlier local recipe.
+When reopening on different hardware, pin
+`dtype` to the original precision or replay into a fresh directory.
 
 Dimensions are 128/256/512/768 with renormalization after shortening. The shared context is 8192
 tokens; split larger inputs. The text prompt recipe has its own identity. The Apache-2.0 checkpoint
 loads with `trust_remote_code=False` and supplies embedding, not recognition or generation.
+Document titles currently use `none`; metadata is not implicitly promoted into a model instruction.
+See the [official best practices](https://huggingface.co/google/embeddinggemma-2#best-practices)
+and the [precision quality check](../model-quality.md#check-embeddinggemma-2-loading).
 
 ### EmbeddingGemma 2 through vLLM
 
@@ -102,7 +120,9 @@ reranking:
   timeout: 240.0
 ```
 
-The absolute HTTP(S) server base must have no query/fragment; the client appends `/rerank`.
+The absolute HTTP(S) server base must have no query/fragment; the client appends `/score`.
+The server must support vLLM's `queries`/`documents` scoring protocol. It returns the
+same pair scores without echoing the original text or base64 media in the response.
 An unset key sends no authorization header and does not read `OPENAI_API_KEY`.
 Counts/timeouts are positive, media weight is (0,1], and modalities include text/image/video.
 `request_concurrency` bounds active HTTP batches across calls sharing this adapter (default 32).
@@ -199,6 +219,7 @@ The `local` extra installs FunASR at
 [`940b0d2463141a2e9ace8a9fd965b4aea93f2db5`](https://github.com/modelscope/FunASR/commit/940b0d2463141a2e9ace8a9fd965b4aea93f2db5),
 so installation needs Git. The recipe pins Fun-ASR-Nano, FSMN-VAD, and CAM++; Nano covers Chinese,
 English, and Japanese, rather than the MLT checkpoint's separate 31-language contract.
+The local extra requires ModelScope Hub 0.6.1+ to resolve the recipe's pinned commit revisions.
 
 ```yaml
 speech:
@@ -212,6 +233,8 @@ speech:
 ASR device accepts auto/cpu/cuda/cuda:index. Auto selects the upstream accelerator or CPU fallback;
 VAD/speaker placement accepts cpu/cuda/cuda:index and otherwise inherits ASR. Placement is fixed at
 first load and preserves pinned VAD limits. CPU submodels trade accelerator memory for latency.
+Videos without an audio track produce empty speech analysis without invoking ASR; their native
+visual evidence remains available. Unreadable video still raises a model error.
 
 Positive `ncpu` changes process-wide PyTorch/BLAS budgets; another loaded model can replace them.
 It does not enable concurrent transcriber calls: the loaded FunASR pipeline serializes inference.

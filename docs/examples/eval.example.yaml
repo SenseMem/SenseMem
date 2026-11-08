@@ -96,7 +96,7 @@ benchmark:
   #   answer_throughput: 0.10
 
   run:
-    tasks: locomo-refined,clbench
+    tasks: locomo-refined
     # sensemem, blind, full-context, random, compile; baseline scores are non-official.
     arms: sensemem
     full_context_chars: 128000
@@ -152,9 +152,9 @@ benchmark:
 
     # Per-task input overrides:
     # task_data:
-    #   clbench: /corpus/clbench/custom.json
+    #   locomo-refined: /corpus/locomo-refined/custom.json
     # media_root:
-    #   video-mme-v2: /corpus/video-mme-v2/videos
+    #   videozerobench: /corpus/videozerobench/compressed
     # media_manifest: /corpus/prepared/media-manifest.jsonl
 
 # Invocation-only flags include --resume, --blind, --blind-baseline, --deliberate,

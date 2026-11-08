@@ -37,18 +37,6 @@ _VIDEO_FILTER = f"fps=1,{_VIDEO_SCALE_FILTER}"
 _VIDEO_FILTER_NATIVE = _VIDEO_SCALE_FILTER
 _MIN_PREPROCESSABLE_VIDEO_FRAMES = 2
 _COMPLETE_MARKER = ".complete"
-# The concat demuxer has no following packet from which the fps filter can infer
-# the final frame's duration. Passing it through keeps N official frames as N seconds.
-_OPENEQA_VIDEO_FILTER = f"fps=1:eof_action=pass,{_VIDEO_SCALE_FILTER}"
-# OpenEQA episode histories are directories of RGB frames with no published
-# video encoding for evaluation -- upstream's `data/frames2videos.py` writes at
-# 30 fps into `viewer/static/videos` for its web viewer, not for scoring. One
-# frame per second is the rate that loses nothing: `_VIDEO_FILTER` resamples
-# every prepared segment to `fps=1`, so encoding the sequence at 1 fps makes
-# that resample an identity step and keeps every extracted frame, where 30 fps
-# would silently discard 29 of every 30. Raise it only to deliberately thin a
-# scene's history.
-_OPENEQA_FRAME_RATE = 1
 # ponytail: ffmpeg is already multithreaded; bound source-level fan-out at four unless profiling
 # on supported hardware demonstrates that a public tuning knob pays for itself.
 _PREPARATION_WORKERS = min(4, os.cpu_count() or 1)
@@ -175,7 +163,7 @@ def _prepared_manifest(
             ),
             **({"unavailable_units": dict(unavailable_units)} if unavailable_units else {}),
         }
-    if spec.name in {"video-mme-v2", "videozerobench", "egotempo"}:
+    if spec.name in {"videozerobench", "egotempo"}:
         return {
             "units": _video_manifest(
                 spec.name,
@@ -191,19 +179,6 @@ def _prepared_manifest(
     if spec.name.startswith("mm-lifelong-"):
         return {
             "units": _lifelong_manifest(spec, media_root, cache, segment_announce, on_progress),
-        }
-    if spec.name.startswith("openeqa-"):
-        return {
-            "units": _openeqa_manifest(
-                spec,
-                dataset,
-                media_root,
-                cache,
-                limit,
-                offset,
-                segment_announce,
-                on_progress,
-            )
         }
     if spec.name == "supermemory-vqa":
         return {
@@ -236,8 +211,6 @@ def _acquire_selected(
         return _acquire_youtube(spec, dataset, root, patterns, download, announce)
     elif source.acquirer == "ego4d":
         _acquire_ego4d(spec, dataset, root, patterns, download, announce)
-    elif source.acquirer in {"open-eqa-hm3d-frames", "scannet"}:
-        _acquire_openeqa(spec, root, patterns)
     else:
         acquire_media(
             spec,
@@ -267,7 +240,11 @@ def _manifest_has_task(manifest: MediaManifest | None, task_name: str) -> bool:
 
 
 def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int) -> tuple[str, ...]:
-    if spec.name == "mosaic":
+    source = spec.media_source
+    if source is None:
+        return ()
+    name = spec.name
+    if name == "mosaic":
         from sensemem.benchmarks.mosaic import load_mosaic, mosaic_media_path
 
         return tuple(
@@ -279,10 +256,6 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
                 if message.multimodal_content is not None
             )
         )
-    source = spec.media_source
-    if source is None:
-        return ()
-    name = spec.name
     if name.startswith("longmemeval-v2-"):
         from sensemem.benchmarks.longmemeval_v2 import load_longmemeval_v2_questions
 
@@ -307,14 +280,6 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
             f"videos/{subset}/{_component(video.video_id)}.mp4"
             for video in _selected(load_m3_bench(dataset), limit, offset)
         )
-    if name == "video-mme-v2":
-        from sensemem.benchmarks.video_mme_v2 import load_video_mme_v2
-
-        volumes = {
-            (int(group.video_id) - 1) // 20 + 1
-            for group in _selected(load_video_mme_v2(dataset), limit, offset)
-        }
-        return tuple(f"videos/{volume:03d}.zip" for volume in sorted(volumes))
     if name == "egotempo":
         from sensemem.benchmarks.egotempo import load_egotempo
 
@@ -326,22 +291,6 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
         )
     if name.startswith("mm-lifelong-"):
         return (f"videos/{str(spec.variant).split('_', 1)[0]}/*",)
-    if name.startswith("openeqa-"):
-        from sensemem.benchmarks.openeqa import FRAME_GLOB, load_openeqa
-
-        split = str(spec.variant)
-        return tuple(
-            f"data/frames/{split}/{episode}/{FRAME_GLOB}"
-            for episode in _selected(
-                tuple(
-                    dict.fromkeys(
-                        question.episode_name for question in load_openeqa(dataset, split=split)
-                    )
-                ),
-                limit,
-                offset,
-            )
-        )
     if name == "supermemory-vqa":
         questions = _supermemory_questions(dataset, limit, offset)
         horizon = max(question.question_ended_at.timestamp() for question in questions)
@@ -417,13 +366,6 @@ def _video_manifest(
                 for question in _selected(load_videozerobench(dataset), limit, offset)
             )
         )
-    elif task_name == "video-mme-v2":
-        from sensemem.benchmarks.video_mme_v2 import load_video_mme_v2
-
-        sources = tuple(
-            (group.video_id, find_media(f"{group.video_id}.mp4"))
-            for group in _selected(load_video_mme_v2(dataset), limit, offset)
-        )
     else:
         from sensemem.benchmarks.egotempo import load_egotempo
 
@@ -475,132 +417,6 @@ def _lifelong_manifest(
             )
         timeline += segments[-1][1]
     return {str(spec.variant): parts}
-
-
-def _openeqa_manifest(
-    spec: TaskSpec,
-    dataset: Path,
-    media_root: Path,
-    cache: Path,
-    limit: Limit,
-    offset: int,
-    announce: Callable[[str], None] | None,
-    on_progress: ProgressCallback | None = None,
-) -> dict[str, list[dict[str, object]]]:
-    from sensemem.benchmarks.openeqa import load_openeqa
-
-    split = str(spec.variant)
-    episodes = _selected(
-        tuple(
-            dict.fromkeys(question.episode_name for question in load_openeqa(dataset, split=split))
-        ),
-        limit,
-        offset,
-    )
-
-    def prepare(episode: str) -> tuple[str, list[dict[str, object]]]:
-        segments = _openeqa_segments(
-            _openeqa_episode(media_root, split, episode),
-            cache / _component(episode),
-            announce,
-        )
-        return episode, [
-            _path_part(path, f"{episode}-{index:05d}", start, end)
-            for index, (start, end, path) in enumerate(segments)
-        ]
-
-    return dict(_prepare_many(prepare, episodes, on_progress))
-
-
-def _openeqa_episode(media_root: Path, split: str, episode: str) -> Path:
-    """Locate one episode history under either `frames/<split>` or `frames`."""
-    for candidate in (media_root / episode, media_root / split / episode):
-        if candidate.is_dir():
-            return candidate
-    raise FileNotFoundError(
-        f"OpenEQA episode history does not exist: {media_root / episode} "
-        f"(nor {media_root / split / episode})"
-    )
-
-
-def _openeqa_segments(
-    episode: Path,
-    cache: Path,
-    announce: Callable[[str], None] | None,
-) -> tuple[tuple[float, float, Path], ...]:
-    """Encode one episode's official frame order directly into cached causal segments."""
-    from sensemem.benchmarks.openeqa import episode_frames
-
-    frames = episode_frames(episode)
-    unquotable = tuple(frame for frame in frames if "'" in str(frame) or "\n" in str(frame))
-    if unquotable:
-        raise ValueError(f"OpenEQA frame path is not safe to encode: {unquotable[0]}")
-    boundaries = _grid(len(frames) / _OPENEQA_FRAME_RATE, ())
-    key = hashlib.sha256(
-        json.dumps(
-            [
-                "openeqa-segments-v1",
-                str(episode.resolve()),
-                len(frames),
-                frames[0].name,
-                frames[-1].name,
-                sum(frame.stat().st_size for frame in frames),
-                _OPENEQA_FRAME_RATE,
-                boundaries,
-                _ffmpeg_id(),
-            ],
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()[:20]
-    seconds = 1 / _OPENEQA_FRAME_RATE
-    # The concat demuxer takes the frame order this adapter resolved rather than
-    # ffmpeg's own globbing. The usual "repeat the final entry" workaround is
-    # not applied: `eof_action=pass` preserves the last frame's duration, while
-    # repeating the final entry measurably adds a phantom frame (76 encoded from
-    # 75 extracted).
-    listing = "ffconcat version 1.0\n" + "".join(
-        f"file '{frame.resolve()}'\nduration {seconds:.6f}\n" for frame in frames
-    )
-
-    def command(working: Path) -> list[str]:
-        index = working / "frames.ffconcat"
-        index.write_text(listing, encoding="utf-8")
-        return [
-            _executable("ffmpeg"),
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(index),
-            "-r",
-            str(_OPENEQA_FRAME_RATE),
-            "-t",
-            f"{boundaries[-1]:.3f}",
-            "-map",
-            "0:v:0",
-            "-vf",
-            _OPENEQA_VIDEO_FILTER,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-tune",
-            "zerolatency",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
-            "-map_metadata",
-            "-1",
-        ]
-
-    return _cached_segments(episode, boundaries, cache, key, command, announce)
 
 
 def _video_parts(
@@ -916,29 +732,6 @@ def _yt_dlp_error(output: str) -> str:
     lines = tuple(line.strip() for line in output.splitlines() if line.strip())
     errors = tuple(line for line in lines if line.casefold().startswith("error:"))
     return (errors or lines or ("unknown yt-dlp error",))[-1]
-
-
-def _acquire_openeqa(spec: TaskSpec, root: Path, patterns: Sequence[str]) -> None:
-    """Accept episode histories an operator already extracted, and fetch nothing.
-
-    There is nothing here to download: HM3D frames are a tarball the upstream
-    `data/README.md` links from a third-party host, and ScanNet requires its own
-    signed terms of use. What this does do is let frames extracted into the
-    catalog's own media root count, so `--media-root` is a convenience rather
-    than the only way to run the task.
-    """
-    source = spec.media_source
-    if source is None:
-        raise ValueError(f"{spec.name} has no media source")
-    release = root / source.release
-    missing = tuple(pattern for pattern in patterns if not tuple(release.glob(pattern)))
-    if not missing:
-        return
-    raise FileNotFoundError(
-        f"{spec.name} needs {len(missing)} of {len(patterns)} selected episode histories its "
-        f"{source.acquirer} acquirer supplies; extract them under {release} or pass "
-        f"--media-root {spec.name}=DIR. Absent: {missing[0]}"
-    )
 
 
 def _acquire_ego4d(

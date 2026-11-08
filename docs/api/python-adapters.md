@@ -27,6 +27,8 @@ SentenceTransformersEmbedder(
     dimension: int | None = None,
     device: str | None = None,
     batch_size: int = 32,
+    dtype: Literal["auto", "float32", "bfloat16"] = "auto",
+    modalities: Iterable[Modality] | None = None,
 )
 
 SentenceTransformersEmbedder.load(
@@ -36,6 +38,8 @@ SentenceTransformersEmbedder.load(
     dimension: int | None = None,
     device: str | None = None,
     batch_size: int = 32,
+    dtype: Literal["auto", "float32", "bfloat16"] = "auto",
+    modalities: Iterable[Modality] | None = None,
 ) -> SentenceTransformersEmbedder
 ```
 
@@ -44,8 +48,15 @@ Without one, constructor/load immediately load the checkpoint. Explicit revision
 40-character commit; omission resolves the Hub revision and needs access. An injected encoder
 needs an immutable model _commit_hash or explicit revision. Remote model code is disabled.
 
-EmbeddingGemma 2 loads FP32 and supports 128/256/512/768 dimensions without optional Matryoshka
-metadata. Checkpoint query/document prompts and model-specific input limits are documented in
+For EmbeddingGemma 2, `dtype="auto"` uses BF16 on the selected CUDA GPU when it has native
+support, otherwise FP32. Explicit FP32/BF16 is supported; FP16 is rejected. Other models keep
+their checkpoint precision with `auto`. These loading options cannot alter an injected encoder.
+
+EmbeddingGemma 2 accepts an optional nonempty set of atomic `modalities`: unused vision/audio
+encoders are omitted at load time and routes advertise only the selected modalities. Video uses
+the vision encoder. Omission loads all modalities. Other models do not accept this selection.
+It supports 128/256/512/768 dimensions without optional Matryoshka metadata. BF16 has a distinct
+space. The PyAV audio recipe requires source replay for older local stores. Prompts and limits are in
 [model setup](../configuration/models.md#embeddinggemma-2).
 
 ## SentenceTransformersReranker
@@ -95,7 +106,8 @@ VLLMReranker(
 )
 ```
 
-Uses the openai extra's HTTP transport for `base_url`/rerank and restores finite input-order scores.
+Uses the openai extra's HTTP transport for `base_url`/score and restores finite input-order scores.
+The server must support vLLM's `queries`/`documents` protocol; score responses omit source media.
 It owns its client, including an injected client, and waits for active calls on close.
 `request_concurrency` bounds HTTP batches across callers sharing the adapter; batch completion
 order does not change returned score positions.

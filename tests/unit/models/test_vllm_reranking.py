@@ -1,4 +1,4 @@
-"""vLLM rerank wire protocol, failure mapping, and resource ownership."""
+"""vLLM score wire protocol, failure mapping, and resource ownership."""
 
 import base64
 import hashlib
@@ -29,12 +29,12 @@ def _reply(*scores: float) -> httpx.Response:
     return httpx.Response(
         200,
         json={
-            "id": "rerank-fixture",
+            "id": "score-fixture",
             "model": "served-reranker",
             "usage": {"prompt_tokens": 12, "total_tokens": 12},
-            "results": sorted(
-                [{"index": index, "relevance_score": score} for index, score in enumerate(scores)],
-                key=lambda row: row["relevance_score"],
+            "data": sorted(
+                [{"index": index, "score": score} for index, score in enumerate(scores)],
+                key=lambda row: row["score"],
                 reverse=True,
             ),
         },
@@ -63,14 +63,13 @@ def test_text_requests_batch_all_documents_and_restore_server_indices() -> None:
 
     def respond(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert str(request.url) == "https://fixture.test/proxy/rerank"
+        assert str(request.url) == "https://fixture.test/proxy/score"
         assert request.headers["authorization"] == "Bearer fixture-key"
         assert request.extensions["timeout"] == dict.fromkeys(
             ("connect", "read", "write", "pool"), 7.0
         )
         payload = json.loads(request.content)
         sent.append(payload)
-        assert payload["top_n"] == len(payload["documents"])
         return _reply(0.2, 0.9) if len(sent) == 1 else _reply(-1.5)
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
@@ -87,8 +86,8 @@ def test_text_requests_batch_all_documents_and_restore_server_indices() -> None:
             ModelInput(text="query"), [ModelInput(text=str(i)) for i in range(3)]
         ) == (0.2, 0.9, -1.5)
         assert sent == [
-            {"model": "org/model", "query": "query", "documents": ["0", "1"], "top_n": 2},
-            {"model": "org/model", "query": "query", "documents": ["2"], "top_n": 1},
+            {"model": "org/model", "queries": "query", "documents": ["0", "1"]},
+            {"model": "org/model", "queries": "query", "documents": ["2"]},
         ]
     finally:
         adapter.close()
@@ -270,9 +269,9 @@ def test_fusion_retains_query_media_when_candidates_have_only_text(tmp_path: Pat
         payload = json.loads(request.content)
         sent.append(payload)
         if len(sent) == 1:
-            assert payload["query"] == "Retrieve candidates relevant to the query media."
+            assert payload["queries"] == "Retrieve candidates relevant to the query media."
             return _reply(0.3, 0.9)
-        assert isinstance(payload["query"], dict)
+        assert isinstance(payload["queries"], dict)
         assert payload["documents"] == ["second"]
         return _reply(0.8)
 
@@ -312,15 +311,15 @@ def test_multimodal_query_and_mixed_documents_use_content_without_chat_roles(
 
     def respond(request: httpx.Request) -> httpx.Response:
         assert "authorization" not in request.headers
+        assert str(request.url) == "https://fixture.test/score"
         assert json.loads(request.content) == {
             "model": "org/model",
-            "query": {"content": [video_part, image_part]},
+            "queries": {"content": [video_part, image_part]},
             "documents": [
                 "plain text",
                 {"content": [image_part]},
                 {"content": [{"type": "text", "text": "caption"}, video_part, image_part]},
             ],
-            "top_n": 3,
         }
         return _reply(0.1, 0.8, 0.5)
 
@@ -413,24 +412,24 @@ def test_close_waits_for_active_request_and_rejects_new_calls(
     [
         "not JSON",
         {},
-        {"results": None},
-        {"results": []},
-        {"results": [{"index": 0, "relevance_score": 0.5}]},
-        {"results": [{"index": 0, "relevance_score": 0.5}, {"index": 0, "relevance_score": 0.8}]},
-        {"results": [{"index": 0, "relevance_score": 0.5}, {"index": 2, "relevance_score": 0.8}]},
-        {"results": [{"index": -1, "relevance_score": 0.5}, {"index": 1, "relevance_score": 0.8}]},
+        {"data": None},
+        {"data": []},
+        {"data": [{"index": 0, "score": 0.5}]},
+        {"data": [{"index": 0, "score": 0.5}, {"index": 0, "score": 0.8}]},
+        {"data": [{"index": 0, "score": 0.5}, {"index": 2, "score": 0.8}]},
+        {"data": [{"index": -1, "score": 0.5}, {"index": 1, "score": 0.8}]},
         {
-            "results": [
-                {"index": True, "relevance_score": 0.5},
-                {"index": 0, "relevance_score": 0.8},
+            "data": [
+                {"index": True, "score": 0.5},
+                {"index": 0, "score": 0.8},
             ]
         },
-        {"results": [{"index": "0", "relevance_score": 0.5}, {"index": 1, "relevance_score": 0.8}]},
+        {"data": [{"index": "0", "score": 0.5}, {"index": 1, "score": 0.8}]},
         *[
             {
-                "results": [
-                    {"index": 0, "relevance_score": score},
-                    {"index": 1, "relevance_score": 0.8},
+                "data": [
+                    {"index": 0, "score": score},
+                    {"index": 1, "score": 0.8},
                 ]
             }
             for score in [True, "0.5", None, float("nan"), float("inf")]

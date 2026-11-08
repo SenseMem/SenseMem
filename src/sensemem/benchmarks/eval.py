@@ -27,6 +27,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from importlib import metadata
 from pathlib import Path
 from tempfile import gettempdir
@@ -2254,6 +2255,14 @@ async def _answer_arms(
             request_concurrency=request_concurrency,
             request_semaphore=request_semaphore,
             model_semaphore=model_semaphore,
+            on_answer=partial(
+                _cache_outcome,
+                response_cache,
+                task,
+                unit,
+                ingest_failures=ingest_failures,
+                arm=arm,
+            ),
             recall_limit=recall_limit,
             arm=arm,
             task_name=task.spec.name,
@@ -2266,15 +2275,6 @@ async def _answer_arms(
             stream_answers=stream_answers,
         )
         for question, outcome in zip(questions, answered, strict=True):
-            _cache_outcome(
-                response_cache,
-                task,
-                unit,
-                question,
-                outcome,
-                ingest_failures,
-                arm=arm,
-            )
             results[(arm.name, question.question_id)] = _sample(
                 task,
                 unit,
@@ -3309,7 +3309,7 @@ def _sample(
     choices = tuple(
         str(value) for value in cast(Sequence[object], question.metadata.get("choices", ()))
     )
-    parsed = _parsed_choice(task.spec.name, prediction, choices)
+    parsed = parse_choice(prediction, choices)
     metrics, score, matched = _score(
         task.spec.name,
         question,
@@ -3556,14 +3556,6 @@ def _ref_at_n(
     if not predicted_buckets and not expected_buckets:
         return 0.0
     return len(predicted_buckets & expected_buckets) / len(predicted_buckets | expected_buckets)
-
-
-def _parsed_choice(task_name: str, prediction: str, choices: Sequence[str]) -> str | None:
-    if task_name == "video-mme-v2":
-        from sensemem.benchmarks.video_mme_v2 import parse_video_mme_v2_option
-
-        return parse_video_mme_v2_option(prediction)
-    return parse_choice(prediction, choices)
 
 
 def _incomplete_search_replay(rows: Sequence[Mapping[str, object]]) -> bool:

@@ -88,7 +88,7 @@ def test_dispatch_lazily_calls_each_supported_runner(
 
     assert cli.main(["local-index", "--rows", "10"]) == 0
     assert cli.main(["locomo-refined", "--limit", "2"]) == 0
-    assert cli.main(["eval", "--tasks", "video-mme-v2"]) == 0
+    assert cli.main(["eval", "--tasks", "videozerobench"]) == 0
     assert cli.main(["review-samples", "--samples", "samples.jsonl"]) == 0
     assert cli.main(["ama-bench", "export"]) == 0
     assert calls == [
@@ -98,7 +98,7 @@ def test_dispatch_lazily_calls_each_supported_runner(
             ("--limit", "2"),
             "sensemem-bench locomo-refined",
         ),
-        ("eval", ("--tasks", "video-mme-v2"), "sensemem-bench eval"),
+        ("eval", ("--tasks", "videozerobench"), "sensemem-bench eval"),
         ("review-samples", ("--samples", "samples.jsonl"), "sensemem-bench review-samples"),
         ("ama-bench", ("export",), "sensemem-bench ama-bench"),
     ]

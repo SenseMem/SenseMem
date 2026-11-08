@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import threading
+import wave
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import sensemem.models.sentence_transformers as sentence_transformers
@@ -382,12 +386,87 @@ def test_embeddinggemma2_dimensions_without_optional_mrl_metadata(dimension: int
         )
 
 
-def test_embeddinggemma2_loader_uses_safe_precision(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("device", "detected", "native_bf16", "expected"),
+    [
+        ("cpu", "cuda:0", True, "float32"),
+        ("mps", "mps", True, "float32"),
+        ("cuda:1", "cuda:0", True, "bfloat16"),
+        ("cuda:1", "cuda:0", False, "float32"),
+        (None, "cuda:1", True, "bfloat16"),
+        (None, "cpu", False, "float32"),
+    ],
+)
+def test_embeddinggemma2_loader_uses_safe_precision(
+    monkeypatch: pytest.MonkeyPatch,
+    device: str | None,
+    detected: str,
+    native_bf16: bool,
+    expected: str,
+) -> None:
     calls: list[dict[str, object]] = []
     encoder = RecordingEncoder([[1.0, 0.0]])
+    selected = device or detected
+    active: list[str] = []
+
+    @contextmanager
+    def cuda_device(value: str) -> Iterator[None]:
+        active.append(value)
+        yield
+        active.pop()
+
+    def is_bf16_supported(*, including_emulation: bool) -> bool:
+        assert including_emulation is False
+        assert active == [selected]
+        return native_bf16
 
     def factory(model_path: str, **kwargs: object) -> RecordingEncoder:
         assert model_path == "google/embeddinggemma-2"
+        calls.append(kwargs)
+        return encoder
+
+    modules = {
+        "sentence_transformers": SimpleNamespace(SentenceTransformer=factory),
+        "sentence_transformers.util": SimpleNamespace(get_device_name=lambda: detected),
+        "torch": SimpleNamespace(
+            cuda=SimpleNamespace(device=cuda_device, is_bf16_supported=is_bf16_supported)
+        ),
+    }
+    monkeypatch.setattr(sentence_transformers, "import_module", modules.__getitem__)
+    SentenceTransformersEmbedder.load("google/embeddinggemma-2", revision=REVISION, device=device)
+
+    assert calls == [
+        {
+            "revision": REVISION,
+            "trust_remote_code": False,
+            "device": selected,
+            "model_kwargs": {"dtype": expected},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("modalities", "disabled"),
+    [
+        ((Modality.TEXT,), {"vision_config": None, "audio_config": None}),
+        ((Modality.TEXT, Modality.IMAGE), {"audio_config": None}),
+        ((Modality.TEXT, Modality.VIDEO), {"audio_config": None}),
+        ((Modality.TEXT, Modality.AUDIO), {"vision_config": None}),
+        ((Modality.TEXT, Modality.IMAGE, Modality.AUDIO, Modality.VIDEO), {}),
+    ],
+)
+def test_embeddinggemma2_loads_only_selected_towers_and_limits_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    modalities: tuple[Modality, ...],
+    disabled: dict[str, object],
+) -> None:
+    calls: list[dict[str, object]] = []
+    encoder = RecordingEncoder(
+        [[1.0, 0.0]], supported=("text", "image", "audio", "video", "message")
+    )
+
+    def factory(_model: str, **kwargs: object) -> RecordingEncoder:
         calls.append(kwargs)
         return encoder
 
@@ -396,16 +475,126 @@ def test_embeddinggemma2_loader_uses_safe_precision(monkeypatch: pytest.MonkeyPa
         "import_module",
         lambda _name: SimpleNamespace(SentenceTransformer=factory),
     )
-    SentenceTransformersEmbedder.load("google/embeddinggemma-2", revision=REVISION)
+    embedder = SentenceTransformersEmbedder.load(
+        "google/embeddinggemma-2", revision=REVISION, dtype="float32", modalities=modalities
+    )
+    assert calls[0].get("config_kwargs", {}) == disabled
+    assert calls[0]["model_kwargs"] == {"dtype": "float32"}
+    assert embedder.embedding_capabilities == frozenset(modalities)
+    assert all(route.modalities <= frozenset(modalities) for route in embedder.embedding_routes)
+    if Modality.IMAGE not in modalities:
+        image = _asset(tmp_path, "image", Modality.IMAGE, "image/png")
+        with pytest.raises(ModelError, match="does not support image"):
+            embedder.embed((ModelInput(assets=(image,)),))
+        assert encoder.calls == []
 
-    assert calls == [
-        {
-            "revision": REVISION,
-            "trust_remote_code": False,
-            "device": None,
-            "model_kwargs": {"dtype": "float32"},
-        }
-    ]
+
+def test_embeddinggemma2_precision_changes_space_but_tower_selection_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoder = RecordingEncoder([[1.0, 0.0]])
+    monkeypatch.setattr(
+        sentence_transformers,
+        "import_module",
+        lambda _name: SimpleNamespace(SentenceTransformer=lambda *_args, **_kwargs: encoder),
+    )
+    full = SentenceTransformersEmbedder.load(
+        "google/embeddinggemma-2", revision=REVISION, dtype="float32"
+    )
+    text = SentenceTransformersEmbedder.load(
+        "google/embeddinggemma-2", revision=REVISION, dtype="float32", modalities=(Modality.TEXT,)
+    )
+    bf16 = SentenceTransformersEmbedder.load(
+        "google/embeddinggemma-2", revision=REVISION, dtype="bfloat16"
+    )
+    previous = SentenceTransformersEmbedder(
+        encoder, model_id="google/embeddinggemma-2", revision=REVISION
+    )
+    assert full.embedding_space == text.embedding_space == previous.embedding_space
+    assert bf16.embedding_space != full.embedding_space
+    assert full.embedding_space != sentence_transformers._recipe_space(
+        "embeddinggemma2-text-prompts-pyav-v1", "google/embeddinggemma-2", REVISION, 2
+    )
+
+
+def test_embeddinggemma2_audio_is_resampled_to_16khz_mono(tmp_path: Path) -> None:
+    path = tmp_path / "stereo.wav"
+    samples = np.tile(np.array([8192, -8192], dtype="<i2"), (16000, 1))
+    with wave.open(str(path), "wb") as source:
+        source.setnchannels(2)
+        source.setsampwidth(2)
+        source.setframerate(32000)
+        source.writeframes(samples.tobytes())
+    asset = AssetRef(
+        id="stereo",
+        path=path,
+        modality=Modality.AUDIO,
+        media_type="audio/wav",
+        size_bytes=path.stat().st_size,
+        sha256="0" * 64,
+    )
+    encoder = RecordingEncoder([[1.0, 0.0]], supported=("audio",))
+    embedder = SentenceTransformersEmbedder(
+        encoder, model_id="google/embeddinggemma-2", revision=REVISION
+    )
+    embedder.embed((ModelInput(assets=(asset,)),))
+    prepared = encoder.calls[0][1][0]
+    assert isinstance(prepared, dict)
+    audio = prepared["audio"]
+    assert isinstance(audio, np.ndarray)
+    assert audio.dtype == np.float32 and audio.shape == (8000,)
+    assert np.allclose(audio, 0)
+
+
+def test_embeddinggemma2_audio_decode_errors_are_mapped_after_capability_validation(
+    tmp_path: Path,
+) -> None:
+    asset = _asset(tmp_path, "missing.wav", Modality.AUDIO, "audio/wav")
+    unsupported = SentenceTransformersEmbedder(
+        RecordingEncoder([[1.0, 0.0]], supported=("text",)),
+        model_id="google/embeddinggemma-2",
+        revision=REVISION,
+    )
+    with pytest.raises(ModelError, match="does not support audio"):
+        unsupported.embed((ModelInput(assets=(asset,)),))
+    supported = SentenceTransformersEmbedder(
+        RecordingEncoder([[1.0, 0.0]], supported=("audio",)),
+        model_id="google/embeddinggemma-2",
+        revision=REVISION,
+    )
+    with pytest.raises(ModelError, match="decode embedding audio"):
+        supported.embed((ModelInput(assets=(asset,)),))
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"dtype": "float16"},
+        {"modalities": ()},
+        {"modalities": (Modality.OMNI,)},
+    ],
+)
+def test_embeddinggemma2_rejects_unsafe_or_empty_loading_options(
+    options: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        SentenceTransformersEmbedder(
+            model_id="google/embeddinggemma-2",
+            revision=REVISION,
+            **options,  # type: ignore[arg-type]
+        )
+
+
+def test_loading_options_cannot_silently_change_an_injected_encoder() -> None:
+    encoder = RecordingEncoder([[1.0, 0.0]])
+    with pytest.raises(ValidationError, match="injected"):
+        SentenceTransformersEmbedder(
+            encoder, model_id="google/embeddinggemma-2", revision=REVISION, dtype="bfloat16"
+        )
+    with pytest.raises(ValidationError, match="google/embeddinggemma-2"):
+        SentenceTransformersEmbedder(
+            model_id="org/text", revision=REVISION, modalities=(Modality.TEXT,)
+        )
 
 
 @pytest.mark.parametrize("dimension", (128, 256, 512))
@@ -485,7 +674,7 @@ def test_embeddinggemma2_video_decoder_uses_pyav_and_keeps_sampling(
 
     encoder = VideoEncoder([[1.0, 0.0]])
     monkeypatch.setattr(sentence_transformers, "import_module", importer)
-    SentenceTransformersEmbedder.load("google/embeddinggemma-2", revision=REVISION)
+    SentenceTransformersEmbedder.load("google/embeddinggemma-2", revision=REVISION, device="cpu")
 
     def sample(_metadata: object) -> list[int]:
         return [0]

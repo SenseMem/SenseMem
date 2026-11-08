@@ -17,9 +17,7 @@ from sensemem.benchmarks.mosaic import (
     MOSAIC_DATA_REVISION,
     MOSAIC_DATA_SHA256,
 )
-from sensemem.benchmarks.openeqa import OPENEQA_ADAPTER_VERSION, OPENEQA_SPLITS
 from sensemem.benchmarks.videozerobench import VIDEOZERO_ADAPTER_VERSION
-from sensemem.benchmarks.worldmemarena import WORLDMEMARENA_ADAPTER_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,8 +48,7 @@ class TaskSpec:
     media_source: MediaSource | None = None
     # Glob patterns, relative to the release root, that a directory dataset
     # downloads. Without them a directory input is fetched whole, which for
-    # PersonaMem-v3 means 465 MB of `persona.html` no loader opens, and for
-    # BEAM means a `.pickle` beside every JSON the loader reads. Empty means
+    # PersonaMem-v3 means 465 MB of `persona.html` no loader opens. Empty means
     # "fetch the whole directory", which is what every other task wants.
     dataset_patterns: tuple[str, ...] = ()
 
@@ -67,12 +64,7 @@ class TaskSpec:
 
 _LOCOMO = ("mem-eval-suite/LoCoMo_refined", "887091190789e8d6760e70b9edd696539923dc4f")
 _M3 = ("ByteDance-Seed/m3-agent", "0e3e41939bd8a0b66d756e7b7eb8d5fe9992da5c")
-_VIDEO_MME_V2 = (
-    "MME-Benchmarks/Video-MME-v2",
-    "6e4bebb03202e1ddbf3d37703e560e51c5aa2d64",
-)
 _VIDEOZERO = ("marinero4972/VideoZeroBench", "aef3b0613ad2909a1355a99201b4a0c48e073836")
-_WORLDMEMARENA = ("LCZZZZ/WorldMemArena", "e2148757921fc7e2d66d8ed899823b763227c341")
 _EGOTEMPO = (
     "google-research-datasets/egotempo",
     "7022ba77b4d89f51cf34e499767995ccd5c90c7a",
@@ -89,15 +81,9 @@ _GALLERY = ("Ethan-Bei/Mem-Gallery", "af912daba984e896e253016b7c7e334ef92c2a6f")
 _ICM = ("ryanren0330/ICM-Bench", ICM_DATA_REVISION)
 _LONGMEMEVAL_V2 = ("xiaowu0162/longmemeval-v2", "f152293e235517d504809563c833d7190b8c713b")
 _ES_MEMEVAL = ("slptongji/ES-MemEval", "692624208acc077b8867698c1d6fcd998dee641a")
-_CLBENCH = ("tencent/CL-bench", "b28a5832a09b0d96c0cf4c22e90d7c60ede25b80")
-_BEAM = ("mohammadtavakoli78/BEAM", "3e12035532eb85768f1a7cd779832b650c4b2ef9")
 _PERSONAMEM_V3 = (
     "bowen-upenn/PersonaMem-v3",
     "7b00a090b35b7293e6efeeb19494207f32b5a9ee",
-)
-_OPENEQA = (
-    "facebookresearch/open-eqa",
-    "cfa3fce4595c1622bb2f8a38ae2ca9aae9eb685b",
 )
 
 _M3_ROBOT_MEDIA = MediaSource(
@@ -107,7 +93,6 @@ _M3_ROBOT_MEDIA = MediaSource(
     ("videos/robot/*",),
 )
 _M3_WEB_MEDIA = MediaSource("m3-bench", acquirer="youtube")
-_VIDEO_MME_V2_MEDIA = MediaSource("video-mme-v2", *_VIDEO_MME_V2, ("videos/*.zip",))
 _EGOTEMPO_MEDIA = MediaSource("egotempo", acquirer="ego4d")
 _LIFELONG_MEDIA = MediaSource("mm-lifelong", *_LIFELONG, ("videos/*",))
 _SUPERMEMORY_MEDIA = MediaSource("supermemory-vqa", *_SUPERMEMORY, ("data/video/*",))
@@ -117,13 +102,6 @@ _ATM_MEDIA = MediaSource(
     ("data/raw_memory/image/*", "data/raw_memory/video/*"),
 )
 _GALLERY_MEDIA = MediaSource("mem-gallery", *_GALLERY, ("data/image/*",))
-# OpenEQA publishes questions but no episode histories. HM3D frames are a 12 GB
-# tarball the upstream README links from Dropbox; ScanNet frames need its own
-# signed terms of use and ~8 hours of local extraction. Both are named as
-# acquirers so the failure says which one, and `--media-root` takes an
-# operator-extracted `data/frames/<split>` tree.
-_OPENEQA_HM3D_MEDIA = MediaSource("openeqa", acquirer="open-eqa-hm3d-frames")
-_OPENEQA_SCANNET_MEDIA = MediaSource("openeqa", acquirer="scannet")
 
 
 def _task(
@@ -225,16 +203,6 @@ TASKS: dict[str, TaskSpec] = {
             media_source=_M3_WEB_MEDIA,
         ),
         _task(
-            "video-mme-v2",
-            "Video-MME-v2",
-            "video-mme-v2/test.parquet",
-            "video_mme_v2_official_v1",
-            _VIDEO_MME_V2,
-            digest="8dc7f8c8830aa49dd08a82592f8276899472a145155dde3bea5dd6914a65a9b4",
-            media="video-mme-v2/videos",
-            media_source=_VIDEO_MME_V2_MEDIA,
-        ),
-        _task(
             "videozerobench",
             "VideoZeroBench",
             "videozerobench/VideoZeroBench_500_v0.json",
@@ -243,19 +211,6 @@ TASKS: dict[str, TaskSpec] = {
             digest="e07b42efc3d271a421c5dcccb807ea913a079bb1cdc3d4423215ad0f3af061f1",
             media="videozerobench/compressed",
             media_source=MediaSource("videozerobench", *_VIDEOZERO, ("compressed.zip",)),
-        ),
-        _task(
-            "worldmemarena",
-            "WorldMemArena",
-            "worldmemarena",
-            WORLDMEMARENA_ADAPTER_VERSION,
-            _WORLDMEMARENA,
-            dataset_patterns=(
-                "agent/**/*.json",
-                "agent/**/*.png",
-                "lifelong/**/*.json",
-                "lifelong/**/*.png",
-            ),
         ),
         _task(
             "egotempo",
@@ -418,38 +373,6 @@ TASKS: dict[str, TaskSpec] = {
             variant="qa",
         ),
         _task(
-            "clbench",
-            "CL-Bench",
-            "clbench/CL-bench.jsonl",
-            "clbench_official_v1",
-            _CLBENCH,
-            digest="d5fc88d4b2eea75c61dd40862021b6ae2fba26bd21b58e8c5e18377a763943be",
-        ),
-        *(
-            _task(
-                f"beam-{tier.casefold()}",
-                "BEAM",
-                f"beam/chats/{tier}",
-                "beam_official_v1",
-                _BEAM,
-                # A directory digest covers exactly the files
-                # `dataset_patterns` fetches, and each was computed from a
-                # completed download of that tier.
-                digest={
-                    "100K": "436b683f25e5f678f2735dd993513ec119edc2d3d2a391cc497e9849dcaa5f59",
-                    "500K": "f313b8c94256a90845b03d282cb47ca0685c16a0ecc8c105040434f3dcccaaa0",
-                    "1M": "8d9dd349a305fe15b5e87c760604e56d08def185eb34e3f1b3446c33b03160a1",
-                    "10M": "27e40a17304def64bc864d182e147b990cbb4a125b941c306eabe61a2675cd84",
-                }[tier],
-                variant=tier,
-                dataset_patterns=(
-                    f"chats/{tier}/*/chat.json",
-                    f"chats/{tier}/*/probing_questions/probing_questions.json",
-                ),
-            )
-            for tier in ("100K", "500K", "1M", "10M")
-        ),
-        _task(
             "personamem-v3",
             "PersonaMem-v3",
             "personamem-v3/backend",
@@ -471,22 +394,6 @@ TASKS: dict[str, TaskSpec] = {
                 "backend/*/calendar.json",
                 "backend/*/test.json",
             ),
-        ),
-        *(
-            _task(
-                f"openeqa-{'hm3d' if split == 'hm3d-v0' else 'scannet'}",
-                "OpenEQA",
-                "openeqa/data/open-eqa-v0.json",
-                OPENEQA_ADAPTER_VERSION,
-                _OPENEQA,
-                digest="a64dd101133213fa3b5ca31e5af8216662471aa34894b443d803f497757557ee",
-                variant=split,
-                media=f"openeqa/data/frames/{split}",
-                media_source=(
-                    _OPENEQA_HM3D_MEDIA if split == "hm3d-v0" else _OPENEQA_SCANNET_MEDIA
-                ),
-            )
-            for split in OPENEQA_SPLITS
         ),
         _task(
             "mem-gallery",
@@ -514,8 +421,6 @@ GROUPS: dict[str, tuple[str, ...]] = {
         if name.startswith("mm-lifelong-") and name != "mm-lifelong-month-train"
     ),
     "atm-bench": tuple(name for name in TASKS if name.startswith("atm-bench-")),
-    "beam": tuple(name for name in TASKS if name.startswith("beam-")),
-    "openeqa": tuple(name for name in TASKS if name.startswith("openeqa-")),
     "es-memeval": ("es-memeval-qa",),
     "all": tuple(TASKS),
 }

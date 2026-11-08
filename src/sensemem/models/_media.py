@@ -18,6 +18,8 @@ from sensemem.exceptions import ModelError, ValidationError
 from sensemem.types import AssetRef, Modality
 
 if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
     from PIL.Image import Image as PILImage
 
 
@@ -33,7 +35,7 @@ def image_capture_metadata(
         from PIL import Image
 
         with warnings.catch_warnings():
-            warnings.simplefilter("error")
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(path) if opened_image is None else nullcontext(opened_image) as image:
                 if image.width * image.height > 64_000_000:
                     return {}
@@ -142,6 +144,33 @@ def fetch_videos(
         )
         return list(zip(*decoded, strict=False))
     return load_video(videos, backend="pyav", sample_indices_fn=sample_indices_fn)
+
+
+def load_mono_audio(path: Path, *, sampling_rate: int) -> NDArray[np.float32]:
+    """Decode local audio without librosa's deprecated audioread fallback."""
+    import av
+    import numpy as np
+
+    chunks: list[NDArray[np.float32]] = []
+    try:
+        with av.open(str(path)) as source:
+            if not source.streams.audio:
+                raise ModelError("embedding audio has no audio stream")
+            resampler = av.AudioResampler(format="fltp", layout="mono", rate=sampling_rate)
+            for frame in source.decode(audio=0):
+                chunks.extend(
+                    value.to_ndarray().reshape(-1).astype(np.float32, copy=False)
+                    for value in resampler.resample(frame)
+                )
+            chunks.extend(
+                value.to_ndarray().reshape(-1).astype(np.float32, copy=False)
+                for value in resampler.resample(None)
+            )
+    except (av.FFmpegError, OSError):
+        raise ModelError("failed to decode embedding audio") from None
+    if not chunks:
+        raise ModelError("embedding audio is empty")
+    return np.concatenate(chunks).astype(np.float32, copy=False)
 
 
 class _Container(Protocol):

@@ -1,12 +1,5 @@
 # Third-party benchmark notices
 
-MOSAIC reader instructions, judge prompt, JSON repair, and text metrics are adapted from
-`HKUST-KnowComp/MOSAIC@82dc5ccf8063f41b28145f0c0e49747549aff457`,
-`evaluation/rag/eval_rag_mm.py`, `evaluation/_common.py`, and `evaluation/judge/eval_judge.py`.
-Refusal matching and answerable-only aggregation follow `evaluation/experiments/build_paper_results.py`.
-That source and `gzone0111/MOSAIC@c4567178d7430d87484db1ab207f5c8aaa26199a` declare no license
-at these revisions. No annotations or media are redistributed here.
-
 SenseMem's Apache-2.0 license does not replace the terms for the third-party benchmark material
 described below.
 
@@ -38,6 +31,15 @@ own rights. No annotations or videos are redistributed in this package.
 
 ## Upstream repository without a declared license
 
+MOSAIC's native reader instructions, five-band judge prompt, JSON parsing, and text metrics are
+adapted from `HKUST-KnowComp/MOSAIC@82dc5ccf8063f41b28145f0c0e49747549aff457`,
+`evaluation/rag/eval_rag_mm.py`, `evaluation/_common.py`, and
+`evaluation/judge/eval_judge.py`; refusal detection and answerable-only aggregation follow
+`evaluation/experiments/build_paper_results.py`. The query and judge wording is preserved.
+The repository and `gzone0111/MOSAIC@c4567178d7430d87484db1ab207f5c8aaa26199a` dataset
+declare no license at these revisions. SenseMem does not redistribute annotations, media,
+indexes, or run records. Upstream rights and permission requirements remain applicable.
+
 The pinned `slptongji/ES-MemEval@692624208acc077b8867698c1d6fcd998dee641a` repository contains
 the EvoEmo dataset and evaluator source but no license file or license declaration. SenseMem does
 not redistribute either. Its downloader retrieves `data/evo_emo.json` from the pinned repository
@@ -57,10 +59,7 @@ rights holders before downloading, using, or redistributing EvoEmo.
 - MEMLENS, copyright 2026 Xiyu Ren, Zhaowei Wang, and the MemLens Authors.
 - ATM-Bench, copyright 2026 Jingbiao Mei.
 - Mem-Gallery, copyright 2026 Yuanchen Bei.
-- BEAM, copyright 2025 Mohammad Tavakoli.
 - PersonaMem-v3 evaluation code, copyright 2026 The PersonaMem-v3 Authors.
-- OpenEQA, copyright Meta Platforms, Inc. and affiliates.
-- WorldMemArena, copyright 2026 WorldMemArena Authors.
 
 Those components are provided under the MIT License:
 
@@ -107,15 +106,6 @@ Source: `mem-eval-suite/LoCoMo_refined@887091190789e8d6760e70b9edd696539923dc4f`
 
 ## Restricted evaluator material
 
-The CL-Bench grading prompt is copied from
-`Tencent-Hunyuan/CL-bench@main/eval.py`, and the dataset it grades is
-`tencent/CL-bench@b28a5832a09b0d96c0cf4c22e90d7c60ede25b80`. The release is
-distributed under a custom evaluation-only license: it permits use, copying,
-modification, publication and distribution **solely for evaluating, testing
-and benchmarking models**, and forbids training, fine-tuning, calibrating,
-distilling, adapting, or any other parameter updating on the dataset or any
-part of it. Do not route this corpus into anything that writes model weights.
-
 PersonaMem-v3's *data* is licensed separately from its code: the personas
 derive from `facebook/gistbench` and inherit
 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) --
@@ -134,13 +124,6 @@ release permits academic research only, prohibits commercial use, and restricts 
 publication, copying, dissemination, and modification without prior approval. This notice grants
 no additional permission; confirm authorization from the rights holder before redistributing the
 instruction or a package that contains it.
-
-OpenEQA's own release -- questions, prompts and evaluator -- is MIT (above); source:
-`facebookresearch/open-eqa@cfa3fce4595c1622bb2f8a38ae2ca9aae9eb685b`. Its episode histories are
-not part of that release and carry their own terms: HM3D frames come from
-[Habitat-Matterport 3D](https://aihabitat.org/datasets/hm3d) under its own agreement, and ScanNet
-frames require ScanNet's signed terms of use. SenseMem downloads neither. Confirm your own
-authorization for whichever scene source you supply.
 
 ## Apache evaluator material
 

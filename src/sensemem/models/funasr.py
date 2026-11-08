@@ -176,13 +176,17 @@ class FunASRTranscriber:
         mark_model_requests(0, token_usage_expected=0)
         if not batch:
             return ()
+        positions = _audible_positions(batch)
+        audible = tuple(batch[index] for index in positions)
         with self._lock:
             if self._closed:
                 raise ModelError("FunASR transcriber is closed")
+            if not audible:
+                return tuple(SpeechAnalysis((), ()) for _ in batch)
             pipeline = self._load()
             analyses, calls = self._analyze_many(
                 pipeline,
-                batch,
+                audible,
                 speaker_analysis=self._recipe.speaker_model is not None,
                 sentence_timestamp=(
                     self._recipe.speaker_model is not None
@@ -190,7 +194,7 @@ class FunASRTranscriber:
                 ),
             )
         durations = []
-        for asset in batch:
+        for asset in audible:
             path = asset.path
             if path is None:  # AssetRef.is_resolved was checked above.
                 raise ValidationError("speech asset path is missing")
@@ -208,7 +212,10 @@ class FunASRTranscriber:
                 else sum(cast(float, duration) for duration in durations) * (2 if calls > 1 else 1)
             ),
         )
-        return analyses
+        aligned = [SpeechAnalysis((), ()) for _ in batch]
+        for index, analysis in zip(positions, analyses, strict=True):
+            aligned[index] = analysis
+        return tuple(aligned)
 
     def close(self) -> None:
         with self._lock:
@@ -342,6 +349,22 @@ def _speech_path(asset: AssetRef) -> str:
         return str(path.resolve(strict=True))
     except OSError:
         raise ValidationError("speech asset path does not exist") from None
+
+
+def _audible_positions(assets: Sequence[AssetRef]) -> tuple[int, ...]:
+    positions = []
+    for index, asset in enumerate(assets):
+        if asset.modality is Modality.VIDEO:
+            import av
+
+            try:
+                with av.open(_speech_path(asset)) as container:
+                    if not container.streams.audio:
+                        continue
+            except (av.error.FFmpegError, OSError) as error:
+                raise ModelError("failed to inspect the video's audio stream") from error
+        positions.append(index)
+    return tuple(positions)
 
 
 def _pipeline_output(

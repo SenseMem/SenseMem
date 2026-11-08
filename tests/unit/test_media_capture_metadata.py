@@ -5,10 +5,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import warnings
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import httpx2 as httpx
@@ -148,6 +153,38 @@ def test_malformed_image_metadata_is_optional(tmp_path: Path) -> None:
     path = tmp_path / "bad.jpg"
     path.write_bytes(b"not a decodable image")
     assert image_capture_metadata(path) == {}
+
+
+def test_image_metadata_does_not_escalate_unrelated_threads_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "image.png"
+    Image.new("RGB", (4, 4)).save(path)
+    entered = Event()
+    release = Event()
+    original_open = Image.open
+
+    @contextmanager
+    def held_open(path: Path) -> Iterator[Image.Image]:
+        with original_open(path) as image:
+            entered.set()
+            assert release.wait(5)
+            yield image
+
+    monkeypatch.setattr(Image, "open", held_open)
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", DeprecationWarning)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(image_capture_metadata, path)
+            assert entered.wait(5)
+            try:
+                warnings.warn(
+                    "unrelated speech decoder deprecation", DeprecationWarning, stacklevel=1
+                )
+            finally:
+                release.set()
+            assert result.result() == {}
+        assert len(captured) == 1 and captured[0].category is DeprecationWarning
 
 
 @pytest.mark.parametrize("operation", ["answer", "describe"])

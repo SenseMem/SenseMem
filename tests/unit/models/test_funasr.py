@@ -397,6 +397,85 @@ def test_funasr_maps_an_empty_vad_result_to_silence(tmp_path: Path) -> None:
     assert FunASRTranscriber._analyze_one(_Pipeline(), asset).turns == ()
 
 
+@pytest.mark.parametrize("include_audio", [False, True])
+def test_funasr_skips_videos_without_audio_and_keeps_batch_alignment(
+    tmp_path: Path, include_audio: bool
+) -> None:
+    import av
+
+    video = tmp_path / "silent.mp4"
+    with av.open(str(video), "w") as output:
+        stream = output.add_stream("mpeg4", rate=1)
+        stream.width = stream.height = 16
+        stream.pix_fmt = "yuv420p"
+        frame = av.VideoFrame(16, 16, "yuv420p")
+        for plane in frame.planes:
+            plane.update(bytes(plane.buffer_size))
+        for packet in (*stream.encode(frame), *stream.encode()):
+            output.mux(packet)
+    audio = tmp_path / "voice.wav"
+    with wave.open(str(audio), "wb") as wav_output:
+        wav_output.setnchannels(1)
+        wav_output.setsampwidth(2)
+        wav_output.setframerate(16000)
+        wav_output.writeframes(b"\0\0" * 16000)
+    calls: list[object] = []
+
+    class Pipeline:
+        def generate(self, **kwargs: object) -> list[dict[str, object]]:
+            calls.append(kwargs["input"])
+            return [
+                {
+                    "text": "Hello",
+                    "sentence_info": [{"start": 0, "end": 500, "text": "Hello", "spk": 0}],
+                    "spk_embedding_center": [[1.0]],
+                }
+            ]
+
+    transcriber = FunASRTranscriber()
+    transcriber._pipeline = Pipeline()
+    assets = tuple(
+        AssetRef(
+            (digest := sha256(path.read_bytes()).hexdigest()),
+            modality=modality,
+            media_type=media_type,
+            size_bytes=path.stat().st_size,
+            sha256=digest,
+            name=path.name,
+            path=path,
+        )
+        for path, modality, media_type in (
+            [(video, Modality.VIDEO, "video/mp4"), (audio, Modality.AUDIO, "audio/wav")]
+            if include_audio
+            else [(video, Modality.VIDEO, "video/mp4")]
+        )
+    )
+    analyses = transcriber.analyze(assets)
+    assert len(analyses) == len(assets)
+    assert analyses[0].turns == ()
+    assert analyses[0].speakers == ()
+    assert calls == ([str(audio.resolve())] if include_audio else [])
+    if include_audio:
+        assert analyses[1].turns[0].text == "Hello"
+
+
+def test_funasr_rejects_unreadable_video_instead_of_treating_it_as_silent(tmp_path: Path) -> None:
+    video = tmp_path / "broken.mp4"
+    video.write_bytes(b"invalid video")
+    digest = sha256(video.read_bytes()).hexdigest()
+    asset = AssetRef(
+        digest,
+        modality=Modality.VIDEO,
+        media_type="video/mp4",
+        size_bytes=video.stat().st_size,
+        sha256=digest,
+        name=video.name,
+        path=video,
+    )
+    with pytest.raises(ModelError, match="inspect the video's audio stream"):
+        FunASRTranscriber().analyze((asset,))
+
+
 def test_funasr_sends_multiple_assets_in_one_official_batch(tmp_path: Path) -> None:
     paths = (tmp_path / "first.wav", tmp_path / "second.wav")
     for path in paths:

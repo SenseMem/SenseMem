@@ -63,9 +63,9 @@ def test_public_reranker_accepts_media_only_and_mixed_pairs_without_a_mode(
             return httpx.Response(
                 200,
                 json={
-                    "results": [
-                        {"index": 1, "relevance_score": 0.9},
-                        {"index": 0, "relevance_score": 0.2},
+                    "data": [
+                        {"index": 1, "score": 0.9},
+                        {"index": 0, "score": 0.2},
                     ]
                 },
             )

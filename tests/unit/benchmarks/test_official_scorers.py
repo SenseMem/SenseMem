@@ -31,7 +31,6 @@ from sensemem.benchmarks.official_scorers import (
     official_judge_model,
     parse_judge_response,
     retrieval_gold_ids,
-    task_family,
     task_primary_metric,
 )
 from sensemem.benchmarks.task_catalog import TaskSpec
@@ -631,76 +630,6 @@ def _judged(
     return plan, combine_judge_scores(plan, outcomes)
 
 
-def test_clbench_judge_is_binary_and_skips_an_empty_answer() -> None:
-    _, scores = _judged(
-        "clbench",
-        question="What do Sighting cards do?",
-        references=("Define a Sighting card.", "Name its trigger.", "State the Myth award."),
-        prediction="They award Myth and can move Humans.",
-        metadata={},
-        replies=(
-            '{"Grading Rationale": "r", '
-            '"List of Requirement Satisfaction Status": ["yes", "no", "yes"], '
-            '"Overall Score": 1}',
-        ),
-    )
-    assert scores["solving_rate"] == 1.0
-    assert scores["requirement_ratio"] == pytest.approx(2 / 3)
-
-    # `process_single_item` scores an empty output 0 without calling the judge.
-    assert (
-        judge_plan(
-            "clbench",
-            question="q",
-            references=("r",),
-            prediction="   ",
-            metadata={},
-        )
-        is None
-    )
-
-
-def test_beam_judges_each_rubric_item_and_truncates_partial_credit() -> None:
-    rubric = ("first", "second", "third", "fourth")
-    replies = ('{"score": 1.0}', '{"score": 0.5}', '{"score": 0.0}', '{"score": 1.0}')
-    plan, scores = _judged(
-        "beam-100k",
-        question="Summarise the project",
-        references=rubric,
-        prediction="A summary.",
-        metadata={"category": "summarization"},
-        replies=replies,
-    )
-    # One call per rubric item, and the prompt keeps upstream's unsubstituted
-    # `<question>` placeholder.
-    assert len(plan.calls) == len(rubric)
-    assert "<question>" in plan.calls[0][0].content
-    assert "first" in plan.calls[0][0].content
-    # Nine categories accumulate with `int(score)`, so 0.5 truncates to 0.
-    assert scores == {"llm_judge_score": 0.5, "beam_score": 0.5}
-
-    ordering_plan, ordering = _judged(
-        "beam-100k",
-        question="Order the events",
-        references=("first", "second"),
-        prediction="second\nfirst",
-        metadata={"category": "event_ordering"},
-        replies=("NO", "YES", "YES", "NO", '{"score": 0.5}', '{"score": 1.0}'),
-    )
-    assert len(ordering_plan.calls) == 6
-    assert [message.role for message in ordering_plan.calls[0]] == ["system", "user"]
-    # `event_ordering` keeps the rubric score but the report column is normalized tau.
-    assert ordering == {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "tau_norm": 0.0,
-        "final_score": 0.0,
-        "llm_judge_score": 0.75,
-        "beam_score": 0.0,
-    }
-
-
 def test_personamem_rubric_applies_the_official_deterministic_aggregation() -> None:
     metadata: dict[str, object] = {
         "task_type": "chatbot_personalized_response",
@@ -933,123 +862,6 @@ def test_personamem_scores_exactly_the_reproducible_task_types() -> None:
         ), task_type
 
 
-def test_openeqa_llm_match_selects_its_prompt_and_trims_the_prediction() -> None:
-    plain = judge_plan(
-        "openeqa-hm3d",
-        question="What color is the rug?",
-        references=("tan with pink and blue",),
-        # `evaluate-predictions.py` cuts after the last period when that period
-        # is not already the final character, so the judge never sees the
-        # trailing unterminated sentence.
-        prediction="brown with pink and blue. I think it",
-        metadata={"category": "attribute recognition"},
-    )
-    assert plain is not None
-    prompt = plain.calls[0][0].content
-    assert prompt.endswith("Response: brown with pink and blue.\n")
-    assert "Extra Answers:" not in prompt
-    # `openai_max_tokens=32` in `get_llm_match_score`.
-    assert plain.max_tokens == 32
-    assert len(plain.calls) == 1
-
-    extra = judge_plan(
-        "openeqa-scannet",
-        question="Where is the mirror?",
-        references=("Next to the staircase",),
-        prediction="by the stairs",
-        metadata={"extra_answers": ("On the wall", "")},
-    )
-    assert extra is not None
-    extra_prompt = extra.calls[0][0].content
-    # Upstream renders the list with `str()`, so the judge sees a Python repr
-    # including the one blank entry the release ships.
-    assert "Extra Answers: ['On the wall', '']" in extra_prompt
-    assert "extra answers that are also correct" in extra_prompt
-
-    assert task_family("openeqa-hm3d") == "openeqa"
-    assert task_primary_metric("openeqa-scannet") == "llm_match"
-    assert official_judge_model("openeqa-hm3d") == "gpt-4-1106-preview"
-    # No deterministic half: LLM-Match is the whole protocol.
-    assert _scores("openeqa-hm3d", "brown", "tan", {}) == {}
-    assert _scores("openeqa-hm3d", "", "tan", {}) == {
-        "llm_match": 0.0,
-        "llm_match_score_1_5": 1.0,
-    }
-    assert (
-        judge_plan(
-            "openeqa-hm3d",
-            question="What color is the rug?",
-            references=("tan",),
-            prediction="",
-            metadata={},
-        )
-        is None
-    )
-
-
-def test_openeqa_marks_scale_and_clip_exactly_as_upstream() -> None:
-    plan = JudgePlan("p", "openeqa", ((JudgeMessage("user", "prompt"),),))
-
-    assert parse_judge_response(plan, "1") == {"llm_match": 0.0, "llm_match_score_1_5": 1.0}
-    assert parse_judge_response(plan, "3") == {"llm_match": 50.0, "llm_match_score_1_5": 3.0}
-    assert parse_judge_response(plan, "5") == {"llm_match": 100.0, "llm_match_score_1_5": 5.0}
-    # The tagged branch reads only up to the next newline, so a judge that
-    # explains itself afterwards still parses.
-    assert parse_judge_response(plan, "Your mark: 4\nbecause the color matches") == {
-        "llm_match": 75.0,
-        "llm_match_score_1_5": 4.0,
-    }
-    # `evaluate-predictions.py` clips instead of validating: 0 is upstream's own
-    # sentinel for a missing prediction and scores zero points, and an
-    # overshooting judge is capped rather than discarding the question.
-    assert parse_judge_response(plan, "0") == {"llm_match": 0.0, "llm_match_score_1_5": 1.0}
-    assert parse_judge_response(plan, "9") == {"llm_match": 100.0, "llm_match_score_1_5": 5.0}
-    with pytest.raises(ValueError, match="Invalid output string"):
-        parse_judge_response(plan, "the response is good")
-
-    assert combine_judge_scores(plan, (parse_judge_response(plan, "5"),)) == {
-        "llm_match": 100.0,
-        "llm_match_score_1_5": 5.0,
-    }
-
-
-def test_worldmemarena_qa_labels_and_empty_answer_match_upstream() -> None:
-    scores = local_scores(
-        "worldmemarena",
-        score_kind="text",
-        prediction="",
-        parsed_choice=None,
-        expected_choice=None,
-        references=("blue",),
-        question="What color?",
-        metadata={},
-        evidence_source_ids=(),
-    )
-    assert scores == {
-        "answer_f1": 0.0,
-        "answer_bleu1": 0.0,
-        "correct_ratio": 0.0,
-        "hallucination_ratio": 0.0,
-        "omission_ratio": 1.0,
-    }
-    assert (
-        judge_plan(
-            "worldmemarena",
-            question="What color?",
-            references=("blue",),
-            prediction="",
-            metadata={"gold_evidence_contents": ("the square was blue",)},
-        )
-        is None
-    )
-    plan = JudgePlan("p", "worldmemarena", ((JudgeMessage("user", "prompt"),),))
-    assert parse_judge_response(
-        plan, '{"reasoning":"wrong fact", "evaluation_result":"Hallucination"}'
-    ) == {"correct_ratio": 0.0, "hallucination_ratio": 1.0, "omission_ratio": 0.0}
-    # The release maps an unknown label to Omission.
-    assert parse_judge_response(plan, '{"evaluation_result":"Maybe"}')["omission_ratio"] == 1.0
-
-
 @pytest.mark.parametrize(
     ("task", "metric", "upstream"),
     [
@@ -1063,14 +875,12 @@ def test_worldmemarena_qa_labels_and_empty_answer_match_upstream() -> None:
         ("mm-lifelong", "ref_at_300", True),
         ("personamem-v3", "ndcg_at_5", True),
         ("personamem-v3", "pr_combined_personalization_score", True),
-        ("openeqa-hm3d", "llm_match_score_1_5", True),
         # Invented here. `_official/atm_score.py` has only `deterministic_accuracy` and
         # `list_jaccard_score`; its retrieval and joint metrics are harness diagnostics.
         ("atm-bench-hard", "retrieval_recall@10", False),
         ("atm-bench-hard", "retrieval_recall@gt", False),
         ("atm-bench-hard", "joint_partial@10", False),
         ("personamem-v3", "negative_in_top1", False),
-        ("worldmemarena", "answer_f1", True),
         # No family at all.
         ("fixture", "accuracy", False),
     ],

@@ -9,13 +9,14 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import partial
 from importlib import import_module
-from typing import Protocol, cast
+from pathlib import Path
+from typing import Literal, Protocol, cast
 
 from sensemem._telemetry import mark_model_requests, record_unmetered_model_usage
 from sensemem._validation import commit_revision, nonempty_text, optional_text, positive_int
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.models._media import fetch_videos
-from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.models._media import fetch_videos, load_mono_audio
+from sensemem.models.base import EmbedTask, ModelInput, _modalities
 from sensemem.models.reranking import reranking_inputs, reranking_scores
 from sensemem.types import EmbeddingRoute, Modality
 
@@ -23,7 +24,7 @@ _ATOMIC_MODALITIES = (Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AU
 _STANDARD_RECIPE = "sentence-transformers-standard-input-v1"
 _EMBEDDINGGEMMA2_MODEL = "google/embeddinggemma-2"
 _EMBEDDINGGEMMA2_DIMENSIONS = (128, 256, 512, 768)
-_EMBEDDINGGEMMA2_RECIPE = "embeddinggemma2-text-prompts-pyav-v1"
+_EMBEDDINGGEMMA2_RECIPE = "embeddinggemma2-text-prompts-pyav-audio16k-v2"
 
 
 class _EmbeddingMatrix(Protocol):
@@ -72,18 +73,36 @@ class SentenceTransformersEmbedder:
         dimension: int | None = None,
         device: str | None = None,
         batch_size: int = 32,
+        dtype: Literal["auto", "float32", "bfloat16"] = "auto",
+        modalities: Iterable[Modality] | None = None,
     ) -> None:
         self._model_id = nonempty_text(model_id, "model_id")
         self._device = optional_text(device, "device")
         self._batch_size = positive_int(batch_size, "batch_size")
+        if dtype not in ("auto", "float32", "bfloat16"):
+            raise ValidationError("dtype must be auto, float32, or bfloat16")
+        selected = None if modalities is None else _modalities(modalities, "embedding")
+        if selected is not None and (not selected or self._model_id != _EMBEDDINGGEMMA2_MODEL):
+            raise ValidationError("modalities must be nonempty and select google/embeddinggemma-2")
+        if encoder is not None and (dtype != "auto" or selected is not None):
+            raise ValidationError("dtype and modalities configure loading, not injected encoders")
         if dimension is not None:
             positive_int(dimension, "dimension")
         self._revision = _resolve_revision(self._model_id, revision, encoder)
         self._lock = threading.RLock()
         self._closed = False
         recipe = _STANDARD_RECIPE
+        precision: str | None = None if dtype == "auto" else dtype
         if encoder is None:
-            encoder = _load_encoder(self._model_id, revision=self._revision, device=self._device)
+            if self._model_id == _EMBEDDINGGEMMA2_MODEL:
+                precision, self._device = _embeddinggemma2_precision(dtype, self._device)
+            encoder = _load_encoder(
+                self._model_id,
+                revision=self._revision,
+                device=self._device,
+                dtype=precision,
+                modalities=selected,
+            )
         self._encoder = encoder
         self._dimension, self._truncate_dim = _dimensions(encoder, dimension, self._model_id)
         encode = getattr(encoder, "encode", None)
@@ -91,7 +110,7 @@ class SentenceTransformersEmbedder:
             object.__setattr__(encoder, "encode", encode)
         self._encode_query = encoder.encode_query
         self._encode_document = encoder.encode_document
-        self._capabilities = self._discover_capabilities()
+        self._capabilities = self._discover_capabilities(selected)
         self._message_inputs = self._supports("message")
         combinations = EmbeddingRoute.combinations(
             self._capabilities, max_assets_per_modality=None if self._message_inputs else 1
@@ -111,7 +130,11 @@ class SentenceTransformersEmbedder:
         )
         if self._model_id == _EMBEDDINGGEMMA2_MODEL:
             recipe = _EMBEDDINGGEMMA2_RECIPE
-        self._space_id = _recipe_space(recipe, self._model_id, self._revision, self._dimension)
+            # BF16 is a distinct numerical recipe even when all other input settings match.
+            precision = None if precision == "float32" else precision
+        self._space_id = _recipe_space(
+            recipe, self._model_id, self._revision, self._dimension, dtype=precision
+        )
 
     @classmethod
     def load(
@@ -122,6 +145,8 @@ class SentenceTransformersEmbedder:
         dimension: int | None = None,
         device: str | None = None,
         batch_size: int = 32,
+        dtype: Literal["auto", "float32", "bfloat16"] = "auto",
+        modalities: Iterable[Modality] | None = None,
     ) -> SentenceTransformersEmbedder:
         """Resolve and load an immutable model revision."""
         return cls(
@@ -130,6 +155,8 @@ class SentenceTransformersEmbedder:
             dimension=dimension,
             device=device,
             batch_size=batch_size,
+            dtype=dtype,
+            modalities=modalities,
         )
 
     @property
@@ -222,26 +249,34 @@ class SentenceTransformersEmbedder:
                 except Exception:
                     raise ModelError("failed to close embedding model") from None
 
-    def _discover_capabilities(self) -> frozenset[Modality]:
+    def _discover_capabilities(self, selected: frozenset[Modality] | None) -> frozenset[Modality]:
         capabilities = frozenset(
             modality for modality in _ATOMIC_MODALITIES if self._supports(modality.value)
         )
         if not capabilities:
             raise ModelError("embedding model does not advertise a supported modality")
-        return capabilities
+        if selected is not None and not selected <= capabilities:
+            raise ModelError("embedding model does not support the selected modalities")
+        return capabilities if selected is None else selected
 
     def _prepare(self, value: ModelInput) -> object:
-        parts: list[tuple[str, str]] = []
+        for kind in value.modalities:
+            if kind not in self._capabilities:
+                raise ModelError(f"embedding model does not support {kind.value} input")
+        parts: list[tuple[str, object]] = []
         if value.text:
             parts.append((Modality.TEXT.value, value.text))
         # ModelInput owns the resolved-asset check.
         parts.extend(
-            (cast(Modality, asset.modality).value, str(asset.path)) for asset in value.assets
+            (
+                cast(Modality, asset.modality).value,
+                load_mono_audio(cast(Path, asset.path), sampling_rate=16000)
+                if self._model_id == _EMBEDDINGGEMMA2_MODEL and asset.modality is Modality.AUDIO
+                else str(asset.path),
+            )
+            for asset in value.assets
         )
         modalities = tuple(modality for modality, _ in parts)
-        for modality in set(modalities):
-            if Modality(modality) not in self._capabilities:
-                raise ModelError(f"embedding model does not support {modality} input")
         if len(parts) == 1:
             modality, part = parts[0]
             return part if modality == Modality.TEXT.value else {modality: part}
@@ -290,11 +325,30 @@ def _resolve_revision(model_id: str, revision: str | None, encoder: _SentenceEnc
         raise ModelError("failed to resolve an immutable embedding model revision") from None
 
 
+def _embeddinggemma2_precision(dtype: str, device: str | None) -> tuple[str, str | None]:
+    if dtype != "auto":
+        return dtype, device
+    try:
+        if device is None:
+            device = cast(str, import_module("sentence_transformers.util").get_device_name())
+        if device.split(":", 1)[0] == "cuda":
+            cuda = import_module("torch").cuda
+            # Query the selected GPU, which may differ from the current CUDA device.
+            with cuda.device(device):
+                if cuda.is_bf16_supported(including_emulation=False):
+                    return "bfloat16", device
+        return "float32", device
+    except Exception:
+        raise ModelError("failed to select embedding precision") from None
+
+
 def _load_encoder(
     model_id: str,
     *,
     revision: str,
     device: str | None,
+    dtype: str | None,
+    modalities: frozenset[Modality] | None,
 ) -> _SentenceEncoder:
     try:
         module = import_module("sentence_transformers")
@@ -305,14 +359,19 @@ def _load_encoder(
         ) from None
 
     try:
-        # FP16 silently corrupts EmbeddingGemma 2 activations. FP32 also works on CPUs.
-        model_kwargs = {"dtype": "float32"} if model_id == _EMBEDDINGGEMMA2_MODEL else {}
+        config_kwargs: dict[str, object] = {}
+        if modalities is not None:
+            if not modalities & {Modality.IMAGE, Modality.VIDEO}:
+                config_kwargs["vision_config"] = None
+            if Modality.AUDIO not in modalities:
+                config_kwargs["audio_config"] = None
         encoder = factory(
             model_id,
             revision=revision,
             trust_remote_code=False,
             device=device,
-            **({"model_kwargs": model_kwargs} if model_kwargs else {}),
+            **({"model_kwargs": {"dtype": dtype}} if dtype is not None else {}),
+            **({"config_kwargs": config_kwargs} if config_kwargs else {}),
         )
         if model_id == _EMBEDDINGGEMMA2_MODEL:
             processor = getattr(_first_module(encoder), "processor", None)
@@ -419,7 +478,9 @@ def _vector(row: object, dimension: int) -> tuple[float, ...]:
     return values
 
 
-def _recipe_space(recipe: str, model_id: str, revision: str, dimension: int) -> str:
+def _recipe_space(
+    recipe: str, model_id: str, revision: str, dimension: int, *, dtype: str | None = None
+) -> str:
     payload = json.dumps(
         {
             "dimension": dimension,
@@ -429,6 +490,7 @@ def _recipe_space(recipe: str, model_id: str, revision: str, dimension: int) -> 
             "query": "encode_query",
             "recipe": recipe,
             "revision": revision,
+            **({"dtype": dtype} if dtype is not None else {}),
         },
         ensure_ascii=True,
         separators=(",", ":"),

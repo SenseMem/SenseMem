@@ -14,15 +14,13 @@ Baseline arms are always non-official.
 
 | Selector or group | Workload | Primary metric | Judge |
 | --- | --- | --- | --- |
-| `mosaic` | Persona conversations with native image, audio, and video | Answerable-only `judge_score` | `qwen3.7-plus` |
 | `ama-bench` | Agent action/observation histories | `accuracy` | `Qwen/Qwen3-32B` |
 | `locomo-refined` | Multi-session dialogue with published image captions | `llm_judge` | `qwen3-14b` |
 | `memlens` | 32K–256K dialogue, images, temporal reasoning, updates, and refusal | `accuracy` | `qwen3-235b-judge` |
 | `longmemeval-v2` | Web and enterprise trajectories with state screenshots | `accuracy` | Phrase/choice rules; `gpt-5.2` for judged types |
+| `mosaic` | Text, image, audio, and video conversation histories, including refusal | Answerable-only `judge_score` (0–1) | `qwen/qwen3.7-plus` |
 | `es-memeval` | Emotional-support dialogue QA | Adapted `llm_judge` (0–1) | `gpt-4o`; non-official adaptation |
-| `beam` | 100K–10M dialogue, contradictions, ordering, and updates | `llm_judge_score`; `tau_norm` for event ordering | `gpt-4.1-mini` |
 | `personamem-v3` | Cross-app personalization and preference changes | Per-family scores; overall headline unavailable with incomplete scorer coverage | `gpt-5.5` for judged families |
-| `clbench` | Learning and applying a long reference document | `solving_rate` | `gpt-5.1` |
 
 ### Personal media archives
 
@@ -31,37 +29,31 @@ Baseline arms are always non-official.
 | `atm-bench` | Email, images, and video; raw and processed-text SGM variants | `accuracy` | `gpt-5-mini` for open-ended rows; deterministic number/list scoring |
 | `mem-gallery` | Image-grounded personal dialogue | `f1` | Deterministic; optional `llm_judge` uses `qwen2.5-72b-instruct` |
 
-### Video and spatial histories
+### Video histories
 
 | Selector or group | Workload | Primary metric | Judge |
 | --- | --- | --- | --- |
-| `worldmemarena` | Causal multimodal checkpoint QA | `correct_ratio` | Configurable Correct/Hallucination/Omission judge |
 | `egotempo` | Temporal QA over Ego4D clips | `accuracy` | `gemini-1.5-flash` |
 | `mm-lifelong` | Day-to-month video memory and temporal grounding | `answer_accuracy` | `gpt-5` |
 | `supermemory-vqa` | Causal multi-video QA, including unanswerable cases | `qa_accuracy` | Deterministic choices |
 | `m3-bench` | Robot and web-video histories | `accuracy` | `gpt-4o-2024-11-20` |
 | `icm-bench` | Incremental video recall, retrieval, and profiles | `accuracy` | `gemini-3-flash-preview` |
 | `videozerobench` | Five levels of QA and temporal/spatial localization | Level-3 `accuracy` | Deterministic QA and IoU |
-| `video-mme-v2` | Grouped video relevance and logic questions | `rating`, auxiliary `accuracy` (both 0–100) | Deterministic groups |
-| `openeqa` | Fixed-scene episodic QA over HM3D/ScanNet histories | `llm_match` (0–100) | `gpt-4-1106-preview` |
 
 ## Data requirements
 
-For MOSAIC's pinned inputs, native chunking, scoring, and a complete runnable configuration, see
-the [native multimodal baseline](mosaic-native.md).
+Supported annotations and media download automatically, except for authorized Ego4D media.
+Video tasks require `ffmpeg` and `ffprobe`; M3 web also requires `yt-dlp`. Start with one task:
+the `all` group can require hundreds of gigabytes.
 
-Supported annotations and media download automatically, except for operator-supplied OpenEQA
-histories and authorized Ego4D media. Video tasks require `ffmpeg` and `ffprobe`; M3 web also
-requires `yt-dlp`. Start with one task: the `all` group can require hundreds of gigabytes.
-
-LoCoMo-Refined, MemLens, LongMemEval-V2, ES-MemEval, CL-Bench, BEAM, and PersonaMem-v3 need no
-timed-media preparation. Image-bearing tasks still require compatible embedding and reader
+LoCoMo-Refined, MemLens, LongMemEval-V2, ES-MemEval, and PersonaMem-v3 need no timed-media
+preparation. Image-bearing tasks still require compatible embedding and reader
 models. Raw ATM variants need a `vision` backend to index media descriptions; without it, their
 indexed text contains only source IDs.
 
 Review each upstream license before download. In particular, LoCoMo-Refined and PersonaMem-v3
-are CC BY-NC 4.0; MM-Lifelong restricts use to academic purposes; CL-Bench is evaluation-only;
-VideoZeroBench is CC BY-NC-ND 4.0; ICM data is CC BY-NC-SA 4.0. ES-MemEval has no declared
+are CC BY-NC 4.0; MM-Lifelong restricts use to academic purposes; VideoZeroBench is
+CC BY-NC-ND 4.0; ICM data is CC BY-NC-SA 4.0. ES-MemEval has no declared
 license at the pin, so verify permission before using EvoEmo. See the
 [scorer notices](../../src/sensemem/benchmarks/_official/NOTICE.md) for copied code and prompts.
 
@@ -80,10 +72,6 @@ protocol identities are recorded in the catalog and run artifacts.
 - **ES-MemEval:** `--limit` counts seekers and keeps every selected seeker's question. Only QA is
   adapted. Report set-overlap `f1`, normalized `llm_judge`, and raw `judge_score_0_2`; the judge
   prompt is a semantic transcription and carries `official_metric: false`. BERTScore is not run.
-- **CL-Bench:** the final user turn contains both reference and question. The adapter splits at
-  the last blank-line paragraph break; inspect `question_unsliced` before reporting affected rows.
-- **BEAM:** event ordering uses official pairwise event-equivalence calls and reports precision,
-  recall, F1, `tau_norm`, and `final_score = tau_norm × f1`. Its category headline is `tau_norm`.
 
 ### LongMemEval-V2
 
@@ -101,6 +89,13 @@ referenced screenshots fail the run.
 Scoring reproduces the six released evaluator functions. The last `\boxed{...}` is extracted;
 exact `UNKNOWN` scores zero. Flaw-awareness and gotcha judges use `gpt-5.2`, medium reasoning,
 and a 4,096-token completion limit. This harness does not calculate leaderboard LAFS gains.
+
+### MOSAIC
+
+The native multimodal task covers 923 questions across 70 persona histories. Its headline is
+answerable-only `judge_score`; refusal rates use separate answerable and unanswerable populations.
+See the [EmbeddingGemma 2 / Qwen Omni recipe](mosaic-native.md) for pinned inputs, native chunking,
+model settings, complete run commands, and measured results.
 
 ### PersonaMem-v3
 
@@ -185,34 +180,11 @@ data, use `--task-data videozerobench=/path/to/VideoZeroBench_500_v0.json` and
 conversions. Spatial localization needs visual input. This memory/retrieval route differs from
 the upstream frame sampler and priority-keyframe injection, even with identical scoring formulas.
 
-### OpenEQA
-
-Only fixed-history EM-EQA is adapted. Supply extracted histories at
-`.benchmarks/openeqa/data/frames/<split>/` or use `--media-root`:
-
-```bash
-uv run --frozen sensemem-bench eval \
-  --config eval.yaml --tasks openeqa-hm3d --limit 1 \
-  --media-root openeqa-hm3d=/datasets/open-eqa/data/frames/hm3d-v0
-```
-
-HM3D has 63 episodes/557 questions and about 12 GB of frames. ScanNet has 89 episodes/1,079
-questions; its licensed extraction produces about 62 GB and takes roughly eight hours. A split
-directory or parent `data/frames` is accepted; incomplete selected histories fail the run.
-
-`--limit` counts episodes. Frames are encoded at 1 fps, then prepared in 30-second segments.
-`llm_match` uses the official 1–5 judge marks mapped to 0–100; raw marks remain in
-`llm_match_score_1_5`. The scorer preserves upstream final-period truncation and out-of-range
-mark clipping. This does not implement active-navigation A-EQA.
-
 ### Other video tasks
 
 - **M3 web:** permanently unavailable YouTube videos are listed in the media manifest. Remaining
   samples run, but incomplete coverage makes `score_valid` and full-dataset comparability false.
   Network/authentication failures stop acquisition. An operator-supplied copy can restore coverage.
-- **WorldMemArena:** checkpoint QA is supported. Memory-snapshot recall/correctness, update,
-  interference, and evidence-coverage scorers are unavailable because the required snapshots
-  are not exported. Gold memory-point summaries are never ingested.
 - **SuperMemory-VQA:** `qa_mrr` is unavailable because the backend exposes no option scores.
 - **MM-Lifelong:** the default group includes day/week/month validation; select month-train
   explicitly. Temporal `ref_at_300` measures intervals, separately from source-ID recall.

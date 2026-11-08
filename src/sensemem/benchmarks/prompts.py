@@ -104,24 +104,6 @@ ES_MEMEVAL_QA_QUERY_PROMPT = PromptSpec(
     refusal="unknown",
 )
 
-VIDEO_MME_V2_QUERY_PROMPT = PromptSpec(
-    name="video_mme_v2_query",
-    version="video_mme_v2_query_v1",
-    purpose="Apply the official Video-MME-v2 multiple-choice answer instruction.",
-    used_by="sensemem.benchmarks.video_mme_v2._answer_question",
-    # The published prompt, minus its "These are the frames of a video." opener: SenseMem
-    # answers from memory rather than from a frame stack handed to a VLM, and claiming frames
-    # that are not in the context is the kind of drift that makes a score unquotable. Note the
-    # released standalone script emits the instruction *after* the question while the README
-    # documents it before; the README wording is the one the benchmark publishes as canonical.
-    # Every question is offered A through H here even where it lists fewer options, because
-    # that is what the official instruction says regardless of the option count.
-    text=(
-        "Select the best answer to the following multiple-choice question based on the video.\n"
-        "Respond with only the letter (A, B, C, D, E, F, G, or H) of the correct option.\n"
-        "Question: {question}\n{options}"
-    ),
-)
 
 EGOTEMPO_QUERY_PROMPT = PromptSpec(
     name="egotempo_query",
@@ -136,27 +118,6 @@ EGOTEMPO_QUERY_PROMPT = PromptSpec(
     ),
 )
 
-OPENEQA_QUERY_PROMPT = PromptSpec(
-    name="openeqa_query",
-    version="openeqa_query_v1",
-    purpose="Apply the official OpenEQA EM-EQA baseline instruction.",
-    used_by="sensemem.benchmarks.eval_adapters._openeqa",
-    # Transcribed from `prompts/gpt4v.txt`, which OpenEQA ships byte-identically
-    # as `claude3-vision.txt` and `gemini-pro-vision.txt`: one shared wording for
-    # every EM-EQA vision baseline. The second line describes that baseline's
-    # input medium -- a set of images pasted into one request -- and is kept
-    # verbatim anyway, because the published wording is what makes a number
-    # comparable with the leaderboard. SenseMem instead retrieves the episode's
-    # own stored observations.
-    text=(
-        "You are an intelligent question answering agent. I will ask you questions about an "
-        "indoor space and you must provide an answer.\n"
-        "You will be shown a set of images that have been collected from a single location.\n"
-        "Given a user query, you must output `text` to answer to the question asked by the "
-        "user.\n"
-        "User Query: {question}"
-    ),
-)
 
 ATM_BENCH_QUERY_PROMPT = PromptSpec(
     name="atm_bench_query",
@@ -263,46 +224,6 @@ def mem_gallery_refusal(point: str) -> str | None:
     prompt = _MEM_GALLERY_CONSTRAINTS.get(point.upper())
     return prompt.refusal if prompt is not None else None
 
-
-CLBENCH_QUERY_PROMPT = PromptSpec(
-    name="clbench_query",
-    version="clbench_query_v1",
-    purpose="Carry the CL-Bench record's own system prompt alongside its question.",
-    used_by="sensemem.benchmarks.eval_adapters._clbench",
-    # CL-Bench publishes no answer-generation prompt: `infer.py` posts the
-    # record's `messages` unchanged, so the system turn is the only instruction
-    # the graded model ever sees. Its rubrics grade formatting and style rules
-    # stated there, so dropping it would fail rubric items the response never
-    # had a chance to satisfy. The reference document travels through memory
-    # instead of through this prompt.
-    text="{system_prompt}\n\n{question}",
-)
-
-BEAM_QUERY_PROMPT = PromptSpec(
-    name="beam_query",
-    version="beam_query_v1",
-    purpose="Apply BEAM's official retrieval-answer instruction.",
-    used_by="sensemem.benchmarks.eval_adapters._beam",
-    # `src/prompts.py: answer_generation_for_rag`, minus its `CONTEXT:\n<context>`
-    # block. That slot is where BEAM's own harness pastes the passages its
-    # retriever returned; SenseMem answers from its own recall, and pasting an
-    # empty context section would tell the model to answer from nothing. Every
-    # instruction that shapes the answer -- answer only from context, do not use
-    # internal knowledge, be direct and concise, output only the answer -- is
-    # kept verbatim, because the rubric judge grades against them.
-    text=(
-        "You are an assistant that MUST answer questions using ONLY the information provided "
-        "in the context below. \n\n"
-        "STRICT INSTRUCTIONS:\n"
-        "1. Answer ONLY based on the provided context\n"
-        "2. Do NOT use your internal knowledge\n\n"
-        "QUESTION:\n{question}\n\n"
-        "ANSWER REQUIREMENTS:\n"
-        "- Be direct and concise\n"
-        "- Only output the answer to the question without any explanation \n\n"
-        "RESPONSE:"
-    ),
-)
 
 PERSONAMEM_V3_RANKING_PROMPT = PromptSpec(
     name="personamem_v3_ranking",

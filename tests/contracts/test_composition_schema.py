@@ -34,6 +34,41 @@ def test_branded_public_values_use_the_sensemem_namespace() -> None:
     assert SenseMemError.code == "sensemem_error"
 
 
+@pytest.mark.parametrize("modalities", [None, ["text"], ["video", "text", "audio"]])
+def test_local_embedding_loading_options_round_trip(modalities: list[str] | None) -> None:
+    config = SenseMemConfig.model_validate(
+        {
+            "embedding": {
+                "provider": "sentence-transformers",
+                "model": "google/embeddinggemma-2",
+                "dtype": "bfloat16",
+                "modalities": modalities,
+            }
+        }
+    )
+    encoded = config.model_dump(mode="json")
+    assert encoded["embedding"]["modalities"] == (
+        None if modalities is None else sorted(modalities)
+    )
+    assert SenseMemConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize("invalid", [{"dtype": "float16"}, {"modalities": []}])
+def test_local_embedding_schema_rejects_unsafe_precision_and_no_modalities(
+    invalid: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        SenseMemConfig.model_validate(
+            {
+                "embedding": {
+                    "provider": "sentence-transformers",
+                    "model": "google/embeddinggemma-2",
+                    **invalid,
+                }
+            }
+        )
+
+
 def test_composed_backends_implement_the_public_protocols() -> None:
     model = OpenAIModels()
     embedding = EmbeddingRouter((model,))

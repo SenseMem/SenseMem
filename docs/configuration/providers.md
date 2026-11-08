@@ -87,11 +87,12 @@ Slot `stream: true` collects provider SSE before parsing and requires the termin
 It can help gateways that time out on buffered JSON. This transport setting is independent of
 the public `ask_stream()` surface and benchmark reporting/answer-surface controls.
 
-### Answer presentation
-
-For `qwen3.8-omni-flash`, reader audio uses a Data URL in `input_audio.data`.
-Other readers use OpenAI's raw Base64 audio format. Set `extra_body.reasoning_effort: none`
+For `qwen3.8-omni-flash`, native reader audio uses the Data URL required by
+[Qwen-Omni](https://help.aliyun.com/en/model-studio/qwen-omni) in `input_audio.data`.
+Other readers retain OpenAI's raw Base64 audio format. Set `extra_body.reasoning_effort: none`
 to disable thinking for this Qwen model.
+
+### Answer presentation
 
 `answer_style: concise` asks for requested values/entities without explanatory prose or citations,
 while preserving refusal and evidence policy. The model checks roles, dates, units, and list
@@ -259,7 +260,7 @@ owns index formats, provenance, immutability checks, regional bounds, and geomet
 
 | Slot/provider | Required | Defaults |
 | --- | --- | --- |
-| Embedding / Sentence Transformers | `model` | `revision=None`, `dimension=None`, `device=None`, `batch_size=32` |
+| Embedding / Sentence Transformers | `model` | `revision=None`, `dimension=None`, `device=None`, `batch_size=32`, `dtype=auto`, `modalities=None` |
 | Reranking / Sentence Transformers | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=1024` |
 | Reranking / Qwen3-VL | `model` | `revision=None`, `device=None`, `batch_size=32`, `max_length=8192`, `gpu_memory_utilization=0.9`, `image_limit=8`, `video_limit=2`, `image_max_pixels=262144`, `video_frames=8` |
 | Reranking / vLLM service | `model`, `base_url` | `api_key=None`, `timeout=60.0`, `batch_size=32`, `modalities=[text,image,video]`, `media_candidates=None`, `media_weight=0.5` |

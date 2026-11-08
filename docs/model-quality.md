@@ -92,6 +92,31 @@ fixtures do not authorize testing with private production content or establish f
 quality. Use the [dataset harness](benchmarking.md) for broader comparisons, and calibrate quality
 criteria against reviewed failures before expanding this suite.
 
+## Check EmbeddingGemma 2 loading
+
+The opt-in `sensemem-embeddinggemma2-v1` fixture pins `google/embeddinggemma-2` to commit
+`f9972ac22e696a105c482202646979e33e4b5a1e`. It requires the local extra, model access, and a
+CUDA GPU with native BF16 support:
+
+```bash
+SENSEMEM_EMBEDDINGGEMMA2_EVAL=1 uv run --frozen pytest -W error -rP \
+  tests/integration/test_embeddinggemma2_quality.py
+```
+
+The baseline is full-modal FP32. Compare full-modal automatic BF16, text-only FP32, and
+text-only automatic BF16 at 256 dimensions. Synthetic inputs cover English and Chinese text,
+an image, 16 kHz mono audio, a two-frame video, and mixed image/audio input. Query and document
+vectors must remain finite, with cosine agreement of at least 0.999 for BF16 and 0.999999 for
+FP32 tower removal, after equivalent truncation and normalization. Loaded CUDA weight allocation
+must fall below 60% for BF16 and 50% for text-only FP32 relative to the full FP32 baseline.
+
+Each variant uses a fresh SDK store. Grounded English/Chinese queries must retrieve the correct
+fact despite an unrelated memory containing instructions. An unanswerable query must not gain
+more than 0.03 in retrieval score relative to the baseline. This checks retrieval parity, not
+generation or abstention. The report prints the pinned revision, case outcomes, minimum cosine,
+and allocated weight bytes; it retains no prompts or model responses. This small fixture does
+not establish dataset-wide quality or vLLM/local parity; evaluate the served recipe separately.
+
 ## Configure CI
 
 The [model-quality workflow](../.github/workflows/model-quality.yml) runs both gates for pull

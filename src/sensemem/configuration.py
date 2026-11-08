@@ -143,6 +143,8 @@ class SentenceTransformersEmbeddingConfig(_ConfigModel):
     dimension: _PositiveInt | None = None
     device: _Text | None = None
     batch_size: _PositiveInt = 32
+    dtype: Literal["auto", "float32", "bfloat16"] = "auto"
+    modalities: Annotated[frozenset[Modality], Field(min_length=1)] | None = None
 
 
 class SentenceTransformersRerankingConfig(_ConfigModel):
@@ -545,6 +547,8 @@ def _build_embedding(config: EmbeddingProviderConfig) -> EmbeddingBackend:
         dimension=config.dimension,
         device=config.device,
         batch_size=config.batch_size,
+        dtype=config.dtype,
+        modalities=config.modalities,
     )
 
 

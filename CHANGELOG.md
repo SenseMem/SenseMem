@@ -10,6 +10,13 @@ Changes for version `0.3.0`.
 
 ### Breaking changes
 
+- Default local EmbeddingGemma 2 to BF16 on CUDA GPUs with native support. BF16 has a separate
+  vector-space identity; PyAV audio decoding changes the local recipe and requires source replay. See
+  [model setup](docs/configuration/models.md#embeddinggemma-2).
+- Use vLLM's `/score` endpoint with `queries`/`documents` for remote reranking, avoiding
+  responses that echo full base64 media. See [remote reranking](docs/configuration/models.md#remote-vllm-service).
+- Remove BEAM, CL-Bench, WorldMemArena, Video-MME-v2, and OpenEQA tasks from
+  `sensemem-bench eval`. See the [supported tasks](docs/benchmarks/tasks.md).
 - Rename the distribution, import package, commands, configuration classes, exceptions, and
   telemetry to SenseMem: `sensemem`, `sensemem-bench`, `SenseMemConfig`, `SenseMemError`, and
   `SENSEMEM_*` benchmark variables. See [upgrading](docs/deployment.md#upgrading-to-sensemem).
@@ -32,12 +39,14 @@ Changes for version `0.3.0`.
 
 ### Added
 
+- EmbeddingGemma 2 precision selection and selective vision/audio loading through SDK and
+  declarative configuration, with an opt-in pinned-model parity check. See
+  [loading quality](docs/model-quality.md#check-embeddinggemma-2-loading).
 - Optional image-source context and native evidence operations for grounded answers, including
   source selection, distinct counting and witnessed arithmetic. See
   [provider configuration](docs/configuration/providers.md).
 - Native MOSAIC evaluation with pinned data and judge prompts, plus an EmbeddingGemma 2 /
   Qwen Omni [reproduction recipe and results](docs/benchmarks/mosaic-native.md).
-
 - Bounded concurrent HTTP reranking batches, local video-frame caching and media preparation
   during inference. See [reranker configuration](docs/configuration/models.md#semantic-reranking).
 - Optional `--no-search-replay` / `benchmark.run.search_replay: false` for evaluations that omit
@@ -67,6 +76,20 @@ Changes for version `0.3.0`.
 
 ### Fixed
 
+- Preserve explicitly configured evaluation reader modalities and routes when loading native
+  media; require ModelScope Hub 0.6.1+ so local speech resolves its pinned model commits.
+- Skip ASR for videos without an audio track, retaining their visual evidence and mixed-batch
+  speech alignment. The local extra includes PyAV for stream inspection.
+- Split oversized MOSAIC text chunks into separate SDK records with the same source ID, retaining
+  their complete text within the SDK's total per-record limit.
+- Serialize modality sets deterministically so evaluation caches and ingest checkpoints work
+  across processes and interpreter hash seeds.
+- Restrict image metadata warning escalation to Pillow decompression warnings so concurrent
+  speech decoding is not failed by unrelated deprecations.
+- Cache successful evaluation answers as they complete so interruption does not discard a
+  completed answer while other questions in the same unit are still running.
+- Project time-filter columns in Zvec full-text queries to avoid Arrow batch schema errors on
+  persisted indexes while retaining the same temporal predicates and rankings.
 - Recognize TokenHub SSE error `502001` as a retryable upstream failure without exposing its body.
 - Preserve event identity, requested list membership, and source-relative time precision in the
   optional concise answer style.

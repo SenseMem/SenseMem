@@ -39,13 +39,13 @@ all = [
     "json-repair>=0.30,<1",
     "librosa>=0.11,<2",
     "mcp>=2.3,<3",
+    "modelscope-hub>=0.6.1,<1",
     "nltk>=3.9,<4",
     "openai>=3,<4",
     "opencv-python-headless>=4.10,<6",
     "opentelemetry-sdk>=1.45.2,<2",
     "pillow>=13,<14",
     "pyproj>=3.7.2,<4",
-    "pyarrow>=18,<26",
     "pyyaml>=6,<7",
     "regex>=2024.11.6",
     "sentence-transformers[image,video]>=6.1,<7",
@@ -68,7 +68,6 @@ benchmarks = [
     "json-repair>=0.30,<1",
     "nltk>=3.9,<4",
     "opentelemetry-sdk>=1.45.2,<2",
-    "pyarrow>=18,<26",
     # eval.py reads its harness configuration file as YAML or JSON.
     "pyyaml>=6,<7",
     # Mem-Gallery's published normalizer uses regex Unicode word boundaries.
@@ -94,11 +93,14 @@ gazetteer = [
     "shapely>=2.1.2,<3",
 ]
 local = [
+    "av>=14,<19",
     "pillow>=13,<14",
     # Audio processors use librosa and soundfile; the broader transformers[audio] extra
     # includes unrelated decoders with incompatible NumPy requirements.
     "librosa>=0.11,<2",
     "funasr @ git+https://github.com/modelscope/FunASR.git@940b0d2463141a2e9ace8a9fd965b4aea93f2db5",
+    # Older hub releases reject the immutable commit revisions used by the speech recipe.
+    "modelscope-hub>=0.6.1,<1",
     # EmbeddingGemma 2 requires ordered multimodal inputs introduced in ST 6.1.
     "sentence-transformers[image,video]>=6.1,<7",
     "soundfile>=0.13,<1",

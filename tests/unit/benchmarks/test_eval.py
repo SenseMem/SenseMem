@@ -74,7 +74,6 @@ from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     LoadedTask,
-    MediaManifest,
     MediaResolver,
     MemoryItem,
     _choice_prompt,
@@ -93,10 +92,6 @@ from sensemem.benchmarks.eval_config import (
     _model_config,
     _run_identifier,
     _seed_values,
-)
-from sensemem.benchmarks.eval_metrics import (
-    _video_mme_v2_accuracy,
-    _video_mme_v2_rating,
 )
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.eval_statistics import (
@@ -122,7 +117,6 @@ from sensemem.benchmarks.model_config import (
 )
 from sensemem.benchmarks.official_scorers import scorer_protocol, task_family
 from sensemem.benchmarks.task_catalog import TASKS, TaskSpec, expand
-from sensemem.benchmarks.video_mme_v2 import score_group_answers
 from sensemem.configuration import OpenAIEmbeddingConfig, OpenAIGenerationConfig
 from sensemem.models.base import (
     SpeechAnalysis,
@@ -257,24 +251,19 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
     assert {task.benchmark for task in TASKS.values()} == {
         "AMA-Bench",
         "ATM-Bench",
-        "BEAM",
-        "CL-Bench",
         "EgoTempo",
         "ES-MemEval",
         "ICM-Bench",
         "LoCoMo-Refined",
         "LongMemEval-V2",
         "M3-Bench",
-        "MOSAIC",
         "MM-Lifelong",
+        "MOSAIC",
         "Mem-Gallery",
         "MemLens",
-        "OpenEQA",
         "PersonaMem-v3",
         "SuperMemory-VQA",
-        "Video-MME-v2",
         "VideoZeroBench",
-        "WorldMemArena",
     }
     assert expand(("m3-bench", "atm-bench-main", "supermemory-vqa")) == (
         "m3-bench-robot",
@@ -282,7 +271,7 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         "supermemory-vqa",
         "atm-bench-main",
     )
-    assert expand(("video-*",)) == ("video-mme-v2",)
+    assert expand(("video*",)) == ("videozerobench",)
     # The group is the evaluation set: month_train is the released training split, and its
     # 105 h of video is the same media month_val ingests, so the group would ingest it twice.
     assert expand(("mm-lifelong",)) == (
@@ -295,8 +284,6 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         expand(("video-mme",))
     with pytest.raises(ValueError, match="unknown task"):
         expand(("memeye",))
-    assert expand(("openeqa",)) == ("openeqa-hm3d", "openeqa-scannet")
-    assert expand(("openeqa-scannet",)) == ("openeqa-scannet",)
     assert expand(("es-memeval",)) == ("es-memeval-qa",)
     assert all(
         task.media_source.revision is None or len(task.media_source.revision) == 40
@@ -311,7 +298,6 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         "M3",
         "atm-main",
         "supermemory-subject-1",
-        "openeqa-scannet-v0",
         "personamem-v3-backend",
         "m3_bench_robot",
     ],
@@ -321,11 +307,42 @@ def test_catalog_requires_canonical_task_names(name: str) -> None:
         expand((name,))
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        "beam",
+        "beam-100k",
+        "beam-500k",
+        "beam-1m",
+        "beam-10m",
+        "clbench",
+        "worldmemarena",
+        "video-mme-v2",
+        "openeqa",
+        "openeqa-hm3d",
+        "openeqa-scannet",
+        "beam-*",
+        "openeqa-*",
+        "video-mme-*",
+    ),
+)
+def test_eval_rejects_removed_tasks(
+    name: str, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(("--tasks", name, "--benchmarks-root", str(tmp_path)))
+
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "unknown task" in message or "task selection is empty" in message
+    assert task_family(name) is None
+
+
 def test_task_listing(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     assert main(("--tasks", "list", "--benchmarks-root", str(tmp_path))) == 0
     output = capsys.readouterr().out
     assert "groups:" in output
-    assert "video-mme-v2" in output
+    assert "videozerobench" in output
 
 
 def test_integrity_check_is_an_offline_json_gate(
@@ -517,119 +534,6 @@ def test_cluster_statistics_and_pairing_are_seeded() -> None:
     assert parse_choice("**B**", ("one", "two", "three", "four")) == "B"
     assert parse_choice("B because it is visible.", ("one", "two", "three", "four")) == "B"
     assert parse_choice("Final: B", ("one", "two", "three", "four")) == "B"
-
-
-def test_video_mme_v2_rating_uses_the_official_zero_to_one_hundred_scale() -> None:
-    samples = tuple(
-        SampleResult(
-            task="video-mme-v2",
-            benchmark="Video-MME-v2",
-            dataset_sha256="1" * 64,
-            evaluation_sha256="2" * 64,
-            unit_id="001",
-            question_id=str(position),
-            prediction="A",
-            parsed_choice="A",
-            score=1.0 if position <= 2 else 0.0,
-            exact_match=None,
-            latency_ms=1.0,
-            confidence=1.0,
-            memory_ids=(),
-            ingest_failure_count=0,
-            error_code=None,
-            metadata={"position": position, "group_type": "relevance"},
-        )
-        for position in range(1, 5)
-    )
-
-    rating = _video_mme_v2_rating(samples, seed=3, bootstrap_samples=20)
-    accuracy = _video_mme_v2_accuracy(
-        samples,
-        seed=3,
-        bootstrap_samples=20,
-        official_metric=True,
-    )
-
-    assert rating["mean"] == 25.0
-    assert cast(dict[str, object], accuracy["overall"])["mean"] == 50.0
-    assert accuracy["question_count"] == 4
-    assert accuracy["answered_count"] == 4
-    assert accuracy["correct_count"] == 2
-    assert score_group_answers(
-        "logic", "[1, [2, 3], 4]", (True, False, True, False)
-    ) == pytest.approx(100 / 3)
-
-
-def test_video_mme_v2_comparison_uses_grouped_rating(tmp_path: Path) -> None:
-    spec = TASKS["video-mme-v2"]
-    task = LoadedTask(
-        spec,
-        tmp_path / "dataset.parquet",
-        "1" * 64,
-        (
-            EvalUnit(
-                "fixture",
-                (),
-                (
-                    EvalQuestion(
-                        "q1",
-                        ("prompt",),
-                        expected_choice="A",
-                        score_kind="choice",
-                    ),
-                ),
-            ),
-        ),
-    )
-
-    def result(unit_id: str, position: int, score: float) -> SampleResult:
-        return SampleResult(
-            task=spec.name,
-            benchmark=spec.benchmark,
-            dataset_sha256=task.dataset_sha256,
-            evaluation_sha256=task.evaluation_sha256,
-            unit_id=unit_id,
-            question_id=f"q{position}",
-            prediction="A",
-            parsed_choice="A" if score else "B",
-            score=score,
-            exact_match=None,
-            latency_ms=1.0,
-            confidence=1.0,
-            memory_ids=(),
-            ingest_failure_count=0,
-            error_code=None,
-            metadata={"position": position, "group_type": "relevance"},
-            metrics={"question_accuracy": score},
-            scorer_protocol=scorer_protocol(spec.name),
-        )
-
-    current = tuple(
-        result(unit_id, position, float(position <= 2))
-        for unit_id in ("g1", "g2")
-        for position in range(1, 5)
-    )
-    baseline = tuple(
-        result(unit_id, position, float(unit_id == "g1"))
-        for unit_id in ("g1", "g2")
-        for position in range(1, 5)
-    )
-    baseline_dir = tmp_path / "baseline"
-    baseline_dir.mkdir()
-    (baseline_dir / "samples.jsonl").write_text(
-        "".join(json.dumps(sample.json()) + "\n" for sample in baseline),
-        encoding="utf-8",
-    )
-    arguments = cast(
-        eval_config_module._Arguments,
-        SimpleNamespace(compare=baseline_dir, seed=7, bootstrap_samples=20),
-    )
-
-    comparison = eval_metrics_module._comparisons(arguments, (task,), current)[0]
-
-    assert comparison["metric"] == "rating"
-    assert comparison["mean"] == -25.0
-    assert comparison["paired_sample_count"] == 2
 
 
 def test_comparison_rejects_different_scorers_and_judges(tmp_path: Path) -> None:
@@ -1212,7 +1116,7 @@ def test_eval_rejects_unknown_options(capsys: pytest.CaptureFixture[str]) -> Non
     parser = eval_config_module._build_parser("eval")
 
     with pytest.raises(SystemExit) as error:
-        parser.parse_args(["--tasks", "clbench", "--unknown-option"])
+        parser.parse_args(["--tasks", "locomo-refined", "--unknown-option"])
 
     assert error.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
@@ -1225,7 +1129,9 @@ def test_eval_model_args_reject_unknown_keys() -> None:
 
 def test_eval_judge_args_reject_unknown_keys() -> None:
     parser = eval_config_module._build_parser("eval")
-    parsed = parser.parse_args(["--tasks", "clbench", "--judge-model-args", "unknown=fixture"])
+    parsed = parser.parse_args(
+        ["--tasks", "locomo-refined", "--judge-model-args", "unknown=fixture"]
+    )
     arguments = eval_config_module._arguments(parser, parsed)
 
     with pytest.raises(ValueError, match="invalid --judge-model-args item"):
@@ -3159,10 +3065,12 @@ def test_resume_needs_the_run_id_of_the_run_it_continues() -> None:
     parser = eval_config_module._build_parser("eval")
 
     with pytest.raises(SystemExit):
-        eval_config_module._arguments(parser, parser.parse_args(["--tasks", "clbench", "--resume"]))
+        eval_config_module._arguments(
+            parser, parser.parse_args(["--tasks", "locomo-refined", "--resume"])
+        )
 
     arguments = eval_config_module._arguments(
-        parser, parser.parse_args(["--tasks", "clbench", "--resume", "--run-id", "keep"])
+        parser, parser.parse_args(["--tasks", "locomo-refined", "--resume", "--run-id", "keep"])
     )
 
     assert arguments.resume and arguments.run_id == "keep"
@@ -3687,6 +3595,86 @@ async def test_answer_many_latency_excludes_request_semaphore_wait() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ingest_failures", [0, 1])
+async def test_answer_arms_preserves_completed_cache_when_cancelled(
+    tmp_path: Path, ingest_failures: int
+) -> None:
+    completed = asyncio.Event()
+    release_slow = asyncio.Event()
+
+    class Memory(_FakeMemory):
+        async def ask(
+            self,
+            question: object,
+            *,
+            limit: int,
+            reference_at: datetime | None = None,
+            answer_policy: AnswerPolicy = "strict",
+        ) -> AnswerResult:
+            del limit, reference_at, answer_policy
+            if question == "slow":
+                await release_slow.wait()
+            return AnswerResult("A")
+
+    unit = EvalUnit(
+        "unit",
+        (),
+        tuple(EvalQuestion(name, (name,), references=("A",)) for name in ("fast", "slow")),
+    )
+    task = LoadedTask(
+        TaskSpec("fixture", "Fixture", "fixture.json", "v1", "owner/repo", "0" * 40),
+        tmp_path / "fixture.json",
+        "1" * 64,
+        (unit,),
+    )
+    cache_path = tmp_path / "responses.db"
+    cache = ResponseCache(cache_path, "run", "namespace")
+    pending = asyncio.create_task(
+        eval_module._answer_arms(
+            cast(AsyncMemory, Memory([])),
+            task,
+            unit,
+            arms=(eval_arms_module.PRODUCT_ARM,),
+            questions_by_arm={"sensemem": unit.questions},
+            context="",
+            ingest_failures=ingest_failures,
+            ingest_failure_details=(),
+            request_concurrency=2,
+            request_semaphore=asyncio.Semaphore(2),
+            recall_limit=1,
+            predict_only=True,
+            log_samples=False,
+            response_cache=cache,
+            on_sample_completed=completed.set,
+            stream_answers=False,
+        )
+    )
+    try:
+        await asyncio.wait_for(completed.wait(), timeout=1)
+        assert not pending.done()
+        answer = cache.get(
+            eval_module._cache_task(task, eval_arms_module.PRODUCT_ARM), "unit", "fast"
+        )
+        assert (answer is not None) is (ingest_failures == 0)
+        if answer is not None:
+            assert answer.prediction == "A"
+    finally:
+        pending.cancel()
+        release_slow.set()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        cache.close()
+
+    reopened = ResponseCache(cache_path, "run", "namespace")
+    try:
+        task_key = eval_module._cache_task(task, eval_arms_module.PRODUCT_ARM)
+        assert (reopened.get(task_key, "unit", "fast") is not None) is (ingest_failures == 0)
+        assert reopened.get(task_key, "unit", "slow") is None
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
 async def test_answer_many_reports_each_completed_answer_immediately() -> None:
     completed: list[str] = []
     first_completed = asyncio.Event()
@@ -4094,153 +4082,8 @@ async def test_answer_many_preserves_structured_abstention() -> None:
     assert outcome.abstention_reason == "insufficient_evidence"
 
 
-def _openeqa_dataset(path: Path) -> Path:
-    path.write_text(
-        json.dumps(
-            [
-                {
-                    "question_id": "q1",
-                    "episode_history": "hm3d-v0/000-hm3d-BFRyYbPCCPE",
-                    "category": "object recognition",
-                    "question": "What is above the TV?",
-                    "answer": "Air conditioning unit",
-                },
-                {
-                    "question_id": "q2",
-                    "episode_history": "hm3d-v0/000-hm3d-BFRyYbPCCPE",
-                    "category": "object localization",
-                    "question": "Where is the mirror?",
-                    "answer": "Next to the staircase",
-                    "extra_answers": ["by the stairs"],
-                },
-                {
-                    "question_id": "q3",
-                    "episode_history": "hm3d-v0/001-hm3d-TPhiubUHKcP",
-                    "category": "spatial understanding",
-                    "question": "Is the door open?",
-                    "answer": "open",
-                },
-                {
-                    "question_id": "q4",
-                    "episode_history": "scannet-v0/002-scannet-scene0709_00",
-                    "category": "world knowledge",
-                    "question": "What room is this?",
-                    "answer": "an office",
-                },
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def _openeqa_manifest(task_name: str, *units: str) -> MediaManifest:
-    return parse_media_manifest(
-        {
-            "version": 1,
-            "tasks": {
-                task_name: {
-                    "units": {
-                        unit: [
-                            {
-                                "text": f"prepared segment of {unit}",
-                                "source_id": f"{unit}-00000",
-                                "start_seconds": 0,
-                                "end_seconds": 30,
-                            }
-                        ]
-                        for unit in units
-                    }
-                }
-            },
-        }
-    )
-
-
-def test_openeqa_limit_counts_episodes_and_keeps_all_their_questions(tmp_path: Path) -> None:
-    dataset = _openeqa_dataset(tmp_path / "open-eqa-v0.json")
-    spec = TASKS["openeqa-hm3d"]
-
-    loaded = load_task(
-        spec,
-        root=tmp_path,
-        dataset_path=dataset,
-        media_manifest=_openeqa_manifest(spec.name, "000-hm3d-BFRyYbPCCPE"),
-        limit=1,
-        verify_digest=False,
-    )
-
-    # One episode is one physically isolated store fed by hundreds of frames,
-    # so `--limit 1` bounds episodes; half an episode's questions would answer
-    # against the same fully ingested scene anyway.
-    assert [unit.unit_id for unit in loaded.units] == ["000-hm3d-BFRyYbPCCPE"]
-    assert [question.question_id for question in loaded.units[0].questions] == ["q1", "q2"]
-
-    question = loaded.units[0].questions[0]
-    assert question.score_kind == "text"
-    assert question.references == ("Air conditioning unit",)
-    assert question.source_question == "What is above the TV?"
-    # The official EM-EQA instruction reaches the model as its own query part,
-    # leaving the question text unpolluted for retrieval.
-    assert question.content[0] == "What is above the TV?"
-    assert "You are an intelligent question answering agent." in str(question.content[1])
-    assert question.metadata["category"] == "object recognition"
-    assert question.metadata["episode_history"] == "hm3d-v0/000-hm3d-BFRyYbPCCPE"
-    # Absent versus present decides the judge prompt, so it must survive the
-    # loader as a missing key rather than an empty one.
-    assert "extra_answers" not in question.metadata
-    assert loaded.units[0].questions[1].metadata["extra_answers"] == ("by the stairs",)
-
-
-def test_openeqa_tasks_answer_only_their_own_scene_split(tmp_path: Path) -> None:
-    dataset = _openeqa_dataset(tmp_path / "open-eqa-v0.json")
-
-    scannet = load_task(
-        TASKS["openeqa-scannet"],
-        root=tmp_path,
-        dataset_path=dataset,
-        media_manifest=_openeqa_manifest("openeqa-scannet", "002-scannet-scene0709_00"),
-        verify_digest=False,
-    )
-    assert [unit.unit_id for unit in scannet.units] == ["002-scannet-scene0709_00"]
-
-    hm3d = load_task(
-        TASKS["openeqa-hm3d"],
-        root=tmp_path,
-        dataset_path=dataset,
-        media_manifest=_openeqa_manifest(
-            "openeqa-hm3d", "000-hm3d-BFRyYbPCCPE", "001-hm3d-TPhiubUHKcP"
-        ),
-        verify_digest=False,
-    )
-    assert [unit.unit_id for unit in hm3d.units] == [
-        "000-hm3d-BFRyYbPCCPE",
-        "001-hm3d-TPhiubUHKcP",
-    ]
-
-    # An episode history is a directory of frames, not a file the resolver can
-    # match, so a run without prepared media must say so instead of indexing
-    # every PNG under a 12-62 GB tree.
-    media = tmp_path / "frames"
-    media.mkdir()
-    with pytest.raises(FileNotFoundError, match="has no media for unit"):
-        load_task(
-            TASKS["openeqa-hm3d"],
-            root=tmp_path,
-            dataset_path=dataset,
-            media_root=media,
-            verify_digest=False,
-        )
-
-
 def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
-    """One family table, not two.
-
-    `_metric_breakdowns` used to resolve families from a list local to
-    `eval.py`, which had drifted from the scorer registry: it raised
-    `unknown benchmark task` for `clbench`, `beam-*` and
-    `personamem-v3`, so summarising a finished run of any of them crashed.
-    """
+    """Every catalog task resolves through the shared scorer family table."""
     for name, spec in TASKS.items():
         task = LoadedTask(
             spec,
@@ -4266,41 +4109,20 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
         )
         assert isinstance(breakdowns, dict), name
 
-    openeqa = LoadedTask(
-        TASKS["openeqa-hm3d"],
-        tmp_path / "dataset.json",
-        "0" * 64,
-        (EvalUnit("unit", (), (EvalQuestion("q1", ("q",), ("r",)),)),),
-    )
-    sample = replace(
-        _sample_fixture(1),
-        task="openeqa-hm3d",
-        score=1.0,
-        metadata={"category": "object recognition"},
-    )
-    grouped = eval_metrics_module._metric_breakdowns(
-        openeqa, (sample,), cast(Any, _breakdown_arguments())
-    )
-    assert "category" in grouped
-    assert "object recognition" in cast(dict[str, object], grouped["category"])
-
 
 # The metadata fields each family groups its per-question scores by, written
 # from the adapters in `eval_adapters.py` -- which is what a real run puts in
 # `SampleResult.metadata` -- rather than read back off `_BREAKDOWN_FIELDS`, so
 # that a family losing its breakdown turns these tests red instead of silently
-# agreeing with the regression. That is how `clbench`, `beam`
-# and `personamem-v3` went a release reporting no breakdown at all. An empty
-# tuple means the family is expected to have no entry in the product table.
+# agreeing with the regression. An empty tuple means the family is expected
+# to have no entry in the product table.
 _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
     "mosaic": ("question_type", "answerability"),
     "ama-bench": ("domain", "task_type", "qa_type"),
     "icm-bench": ("category",),
     "locomo-refined": ("category",),
     "m3-bench": ("question_types",),
-    "video-mme-v2": ("group_type", "level", "second_head", "third_head"),
     "videozerobench": ("category", "language", "evidence_span", "annotation_capabilities"),
-    "worldmemarena": ("question_type", "question_type_abbrev", "difficulty"),
     "egotempo": ("question_type",),
     "memlens": ("question_type", "question_subtype"),
     "mm-lifelong": ("question_type",),
@@ -4309,10 +4131,7 @@ _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
     "mem-gallery": ("point",),
     "longmemeval-v2": ("domain", "environment", "question_type"),
     "es-memeval": ("capability",),
-    "clbench": ("context_category", "sub_category"),
-    "beam": ("category", "difficulty"),
     "personamem-v3": ("task_family", "task_type"),
-    "openeqa": ("category",),
 }
 
 
@@ -4369,17 +4188,17 @@ def test_the_breakdown_table_covers_every_catalog_family() -> None:
     assert {task_family(name) for name in TASKS} == set(_EXPECTED_BREAKDOWN_FIELDS)
 
 
-def test_an_unlabelled_beam_difficulty_is_left_out_of_the_breakdown(tmp_path: Path) -> None:
-    # BEAM publishes `difficulty` on some rows only. Grouping the rest under a
-    # literal "None" bucket would read as a difficulty tier in the report.
-    task = _breakdown_task("beam", tmp_path)
-    sample = _breakdown_sample(task.spec.name, {"category": "temporal", "difficulty": None})
+def test_unlabelled_metadata_is_left_out_of_the_breakdown(tmp_path: Path) -> None:
+    task = _breakdown_task("memlens", tmp_path)
+    sample = _breakdown_sample(
+        task.spec.name, {"question_type": "temporal", "question_subtype": None}
+    )
 
     breakdowns = eval_metrics_module._metric_breakdowns(
         task, (sample,), cast(Any, _breakdown_arguments())
     )
 
-    assert set(breakdowns) == {"category"}
+    assert set(breakdowns) == {"question_type"}
 
 
 def _breakdown_arguments() -> SimpleNamespace:
@@ -4753,7 +4572,7 @@ benchmark:
     parsed = parser.parse_args(
         [
             "--tasks",
-            "clbench",
+            "locomo-refined",
             "--limit",
             "1",
             "--model-args",
@@ -4815,10 +4634,12 @@ benchmark:
 def test_eval_streams_task_results_by_default_and_can_be_disabled() -> None:
     parser = eval_config_module._build_parser("eval")
 
-    default = eval_config_module._arguments(parser, parser.parse_args(["--tasks", "clbench"]))
+    default = eval_config_module._arguments(
+        parser, parser.parse_args(["--tasks", "locomo-refined"])
+    )
     deferred = eval_config_module._arguments(
         parser,
-        parser.parse_args(["--tasks", "clbench", "--no-stream-results"]),
+        parser.parse_args(["--tasks", "locomo-refined", "--no-stream-results"]),
     )
 
     assert default.stream_results is True
@@ -5312,7 +5133,7 @@ def test_eval_run_section_supplies_every_tunable_the_flags_carry(tmp_path: Path)
         + """
 benchmark:
   run:
-    tasks: clbench
+    tasks: locomo-refined
     limit: all
     offset: 3
     unit_concurrency: 6
@@ -5342,7 +5163,7 @@ benchmark:
 
     arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
 
-    assert arguments.tasks == ("clbench",)
+    assert arguments.tasks == ("locomo-refined",)
     assert arguments.limit == -1
     assert arguments.offset == 3
     assert arguments.unit_concurrency == 6
@@ -5376,7 +5197,7 @@ benchmark:
   performance_budgets:
     answer_e2e_ttft_p95: 0.10
   run:
-    tasks: clbench
+    tasks: locomo-refined
     compare: baseline
     repeat_index: 2
 """,
@@ -5410,7 +5231,7 @@ benchmark:
 def test_performance_budget_requires_a_comparison_result() -> None:
     parser = eval_config_module._build_parser("eval")
     parsed = parser.parse_args(
-        ["--tasks", "clbench", "--performance-budget", "answer_e2e_latency_p95=0.1"]
+        ["--tasks", "locomo-refined", "--performance-budget", "answer_e2e_latency_p95=0.1"]
     )
 
     with pytest.raises(SystemExit):
@@ -5480,7 +5301,7 @@ def test_eval_run_section_selects_the_baseline_arms(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    arms: sensemem,full-context\n"
+        + "benchmark:\n  run:\n    tasks: locomo-refined\n    arms: sensemem,full-context\n"
         "    full_context_chars: 4096\n",
         encoding="utf-8",
     )
@@ -5498,7 +5319,7 @@ def test_eval_arm_flags_still_beat_the_run_section(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    arms: full-context\n"
+        + "benchmark:\n  run:\n    tasks: locomo-refined\n    arms: full-context\n"
         "    full_context_chars: 4096\n",
         encoding="utf-8",
     )
@@ -5519,7 +5340,7 @@ def test_eval_blind_rejects_a_configured_arm_selection(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    arms: sensemem,full-context\n",
+        + "benchmark:\n  run:\n    tasks: locomo-refined\n    arms: sensemem,full-context\n",
         encoding="utf-8",
     )
     _, overrides = _load_memory_config(path)
@@ -5534,18 +5355,18 @@ def test_eval_flags_still_beat_the_run_section(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    unit_concurrency: 6\n    seed: 7\n",
+        + "benchmark:\n  run:\n    tasks: locomo-refined\n    unit_concurrency: 6\n    seed: 7\n",
         encoding="utf-8",
     )
     _, overrides = _load_memory_config(path)
     parser = eval_config_module._build_parser("eval")
     parsed = parser.parse_args(
-        ["--config", str(path), "--tasks", "beam-100k", "--unit-concurrency", "2", "--seed", "99"]
+        ["--config", str(path), "--tasks", "ama-bench", "--unit-concurrency", "2", "--seed", "99"]
     )
 
     arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
 
-    assert arguments.tasks == ("beam-100k",)
+    assert arguments.tasks == ("ama-bench",)
     assert arguments.unit_concurrency == 2
     assert arguments.seeds == (99, 99, 99, 99)
 
@@ -5558,7 +5379,7 @@ def test_eval_defaults_survive_an_empty_run_section(tmp_path: Path) -> None:
     )
     _, overrides = _load_memory_config(path)
     parser = eval_config_module._build_parser("eval")
-    parsed = parser.parse_args(["--config", str(path), "--tasks", "clbench"])
+    parsed = parser.parse_args(["--config", str(path), "--tasks", "locomo-refined"])
 
     arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
 
@@ -5585,12 +5406,12 @@ def test_eval_defaults_survive_an_empty_run_section(tmp_path: Path) -> None:
 
 
 def test_eval_run_section_carries_per_task_path_overrides(tmp_path: Path) -> None:
-    dataset = tmp_path / "clbench.json"
+    dataset = tmp_path / "locomo-refined.json"
     dataset.write_text("{}", encoding="utf-8")
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + f"benchmark:\n  run:\n    tasks: clbench\n    task_data:\n      clbench: {dataset}\n",
+        + f"benchmark:\n  run:\n    tasks: locomo-refined\n    task_data:\n      locomo-refined: {dataset}\n",
         encoding="utf-8",
     )
     _, overrides = _load_memory_config(path)
@@ -5599,7 +5420,7 @@ def test_eval_run_section_carries_per_task_path_overrides(tmp_path: Path) -> Non
 
     arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
 
-    assert arguments.dataset_overrides == {"clbench": dataset}
+    assert arguments.dataset_overrides == {"locomo-refined": dataset}
 
 
 def test_eval_run_section_run_id_is_validated_like_the_flag(tmp_path: Path) -> None:
@@ -5611,7 +5432,7 @@ def test_eval_run_section_run_id_is_validated_like_the_flag(tmp_path: Path) -> N
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + 'benchmark:\n  run:\n    tasks: clbench\n    run_id: "../../../escaped"\n',
+        + 'benchmark:\n  run:\n    tasks: locomo-refined\n    run_id: "../../../escaped"\n',
         encoding="utf-8",
     )
     _, overrides = _load_memory_config(path)
@@ -5626,7 +5447,7 @@ def test_eval_run_section_accepts_a_well_formed_run_id(tmp_path: Path) -> None:
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
-        + "benchmark:\n  run:\n    tasks: clbench\n    run_id: sweep-2026.09\n",
+        + "benchmark:\n  run:\n    tasks: locomo-refined\n    run_id: sweep-2026.09\n",
         encoding="utf-8",
     )
     _, overrides = _load_memory_config(path)
@@ -5643,8 +5464,8 @@ def test_eval_run_section_accepts_a_well_formed_run_id(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "body",
     (
-        "benchmark:\n  run:\n    tasks: clbench\n    seed: [1, 2]\n",
-        'benchmark:\n  run:\n    tasks: clbench\n    limit: "lots"\n',
+        "benchmark:\n  run:\n    tasks: locomo-refined\n    seed: [1, 2]\n",
+        'benchmark:\n  run:\n    tasks: locomo-refined\n    limit: "lots"\n',
     ),
 )
 def test_eval_run_section_reports_bad_values_as_usage_errors(body: str, tmp_path: Path) -> None:

@@ -29,7 +29,7 @@ def test_configured_server_reranks_search_and_records_provider_usage(
     def respond(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         sent.append(payload)
-        assert str(request.url) == "https://fixture.test/rerank"
+        assert str(request.url) == "https://fixture.test/score"
         assert request.headers["authorization"] == "Bearer fixture-key"
         return httpx.Response(
             200,
@@ -38,12 +38,12 @@ def test_configured_server_reranks_search_and_records_provider_usage(
                 "id": "rerank-fixture",
                 "model": "served-checkpoint",
                 "usage": {"prompt_tokens": 12, "total_tokens": 12},
-                "results": sorted(
+                "data": sorted(
                     [
-                        {"index": index, "relevance_score": 0.9 if "cancelled" in text else 0.1}
+                        {"index": index, "score": 0.9 if "cancelled" in text else 0.1}
                         for index, text in enumerate(payload["documents"])
                     ],
-                    key=lambda row: row["relevance_score"],
+                    key=lambda row: row["score"],
                     reverse=True,
                 ),
             },

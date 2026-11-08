@@ -21,7 +21,6 @@ from sensemem.benchmarks.mem_gallery import (
     MemGallerySession,
 )
 from sensemem.benchmarks.mosaic import MosaicSession
-from sensemem.benchmarks.openeqa import OpenEqaQuestion
 from sensemem.benchmarks.personamem_v3 import PersonaMemQuery
 from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion
 from sensemem.benchmarks.task_catalog import TaskSpec
@@ -433,19 +432,7 @@ def load_task(
     if offset < 0:
         raise ValueError("offset must not be negative")
     loader = _LOADERS[spec.name]
-    loaded_units = (
-        _clbench(
-            spec,
-            dataset,
-            resolver,
-            root,
-            limit,
-            offset,
-            validate_all=not (verify_digest and spec.digest is not None),
-        )
-        if loader is _clbench
-        else loader(spec, dataset, resolver, root, limit, offset)
-    )
+    loaded_units = loader(spec, dataset, resolver, root, limit, offset)
     units = tuple(_with_corpus_reference(unit) for unit in loaded_units)
     if not units or any(not unit.questions for unit in units):
         raise ValueError(f"{spec.name} produced no evaluation questions")
@@ -662,49 +649,6 @@ def _m3(
     return tuple(units)
 
 
-def _video_mme_v2(
-    spec: TaskSpec,
-    dataset: Path,
-    media: MediaResolver,
-    _root: Path,
-    limit: Limit,
-    offset: int,
-) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.prompts import VIDEO_MME_V2_QUERY_PROMPT
-    from sensemem.benchmarks.video_mme_v2 import load_video_mme_v2
-
-    return tuple(
-        EvalUnit(
-            group.video_id,
-            media.parts(group.video_id, (group.video_id,)),
-            tuple(
-                EvalQuestion(
-                    question.question_id,
-                    (
-                        VIDEO_MME_V2_QUERY_PROMPT.text.format(
-                            question=question.question,
-                            options="\n".join(question.options),
-                        ),
-                    ),
-                    expected_choice=question.answer,
-                    score_kind="choice",
-                    metadata={
-                        "position": question.position,
-                        "group_type": group.group_type,
-                        "group_structure": group.group_structure,
-                        "level": question.level,
-                        "second_head": question.second_head,
-                        "third_head": question.third_head,
-                        "choices": question.options,
-                    },
-                )
-                for question in group.questions
-            ),
-        )
-        for group in _selected(load_video_mme_v2(dataset), limit, offset)
-    )
-
-
 def _videozerobench(
     _spec: TaskSpec,
     dataset: Path,
@@ -822,83 +766,6 @@ def _icm_bench(
     )
 
 
-def _worldmemarena(
-    _spec: TaskSpec,
-    dataset: Path,
-    _media: MediaResolver,
-    _root: Path,
-    limit: Limit,
-    offset: int,
-) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.worldmemarena import load_worldmemarena
-
-    units = []
-    for sample in _selected(load_worldmemarena(dataset), limit, offset):
-        session_positions = {
-            session.session_id: position for position, session in enumerate(sample.sessions)
-        }
-        memories = []
-        for session_position, session in enumerate(sample.sessions):
-            for turn_position, turn in enumerate(session.turns):
-                start = float(session_position * 100_000 + turn_position * 10)
-                memories.append(
-                    MemoryItem(
-                        f"{sample.sample_id}:{session.session_id}:T{turn_position:04d}",
-                        (f"{turn.role}: {turn.content}",),
-                        start_seconds=start,
-                        end_seconds=start + 1.0,
-                    )
-                )
-                memories.extend(
-                    MemoryItem(
-                        attachment.image_id,
-                        (
-                            f"{turn.role} shared an image: {attachment.caption}",
-                            (sample.source_path.parent / attachment.file_path).resolve(),
-                        ),
-                        start_seconds=start + image_position + 1.0,
-                        end_seconds=start + image_position + 2.0,
-                    )
-                    for image_position, attachment in enumerate(turn.attachments)
-                )
-        questions = tuple(
-            EvalQuestion(
-                question.question_id,
-                _free_text_parts(question.question),
-                (question.answer,),
-                cutoff_seconds=(
-                    (max(session_positions[item] for item in checkpoint.covered_sessions) + 1)
-                    * 100_000.0
-                ),
-                metadata={
-                    "question_type": question.question_type,
-                    "question_type_abbrev": question.question_type_abbrev,
-                    "difficulty": question.difficulty,
-                    "checkpoint_id": checkpoint.checkpoint_id,
-                    # SenseMem source IDs can reproduce the release's image IDs exactly.
-                    # Gold `mp_*` IDs name scorer-authored summaries, not raw dialogue turns;
-                    # presenting those summaries as memories would leak labels into the system.
-                    "evidence_ids": tuple(
-                        identifier
-                        for identifier in question.evidence_ids
-                        if not identifier.startswith("mp_")
-                    ),
-                    "unresolved_evidence_ids": tuple(
-                        identifier
-                        for identifier in question.evidence_ids
-                        if identifier.startswith("mp_")
-                    ),
-                    "gold_evidence_contents": question.evidence_contents,
-                },
-                source_question=question.question,
-            )
-            for checkpoint in sample.checkpoints
-            for question in checkpoint.questions
-        )
-        units.append(EvalUnit(sample.sample_id, tuple(memories), questions))
-    return tuple(units)
-
-
 def _egotempo(
     spec: TaskSpec,
     dataset: Path,
@@ -929,59 +796,6 @@ def _egotempo(
             ),
         )
         for clip_id, questions in grouped.items()
-    )
-
-
-def _openeqa(
-    spec: TaskSpec,
-    dataset: Path,
-    media: MediaResolver,
-    _root: Path,
-    limit: Limit,
-    offset: int,
-) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.openeqa import load_openeqa
-    from sensemem.benchmarks.prompts import OPENEQA_QUERY_PROMPT
-
-    grouped: dict[str, list[OpenEqaQuestion]] = {}
-    for question in load_openeqa(dataset, split=str(spec.variant)):
-        grouped.setdefault(question.episode_name, []).append(question)
-    # `limit` selects episodes rather than questions: one episode is one
-    # physically isolated store fed by hundreds of RGB frames, so the cost this
-    # knob has to bound is per-episode, and half an episode's questions would
-    # answer against the same fully ingested scene anyway.
-    return tuple(
-        EvalUnit(
-            episode_name,
-            # No `source_ids` fallback: an episode history is a directory of
-            # frames, not a file the resolver can match, and asking it to look
-            # would index every PNG under a 12-62 GB tree before failing. The
-            # frames reach the runner as prepared per-episode video segments, so the
-            # manifest is the only path.
-            media.parts(episode_name),
-            tuple(
-                EvalQuestion(
-                    question.question_id,
-                    _query_parts(OPENEQA_QUERY_PROMPT.text, question.question),
-                    (question.reference_answer,),
-                    metadata={
-                        "category": question.category,
-                        "episode_history": question.episode_history,
-                        # Absent, not empty, when the release publishes none:
-                        # `get_llm_match_score` selects its judge prompt on
-                        # exactly this distinction.
-                        **(
-                            {}
-                            if question.extra_answers is None
-                            else {"extra_answers": question.extra_answers}
-                        ),
-                    },
-                    source_question=question.question,
-                )
-                for question in questions
-            ),
-        )
-        for episode_name, questions in _selected(tuple(grouped.items()), limit, offset)
     )
 
 
@@ -1341,10 +1155,8 @@ def _query_parts(template: str, question: str, **values: str) -> tuple[str, ...]
 
 
 # SenseMem caps one memory or query part at 65,536 characters
-# (`sensemem.kernel.validation.MAX_TEXT_CHARACTERS`). CL-Bench reference documents run
-# past 150,000, so a task's corpus has to be split before it can be stored at
-# all. Blocks are built well under the cap so that each one is also a usable
-# retrieval unit rather than one opaque record per task.
+# (`sensemem.kernel.validation.MAX_TEXT_CHARACTERS`). Split long passages into blocks
+# well under the cap so each block is a usable retrieval unit.
 _TEXT_BLOCK_CHARACTERS = 8_000
 
 # Recorded in place of a reference answer where a release publishes none.
@@ -1398,10 +1210,8 @@ def _text_memories(
     An oversized part is not merely dropped. `memory.add` rejects it, the
     runner records an ingest failure for the unit, and `_apply_judges` then
     skips **every** question in that unit -- so one long turn silently voids a
-    whole conversation. Measured on the pinned releases: BEAM turns reach
-    348,864 characters and 7 of the 10 conversations in its 10M tier hold one,
-    which would have left 70% of that tier unjudged. Text under the block size stays unchanged;
-    only longer passages are split.
+    whole conversation. Text under the block size stays unchanged; only longer
+    passages are split.
     """
     blocks = _text_blocks(text, _TEXT_BLOCK_CHARACTERS)
     if len(blocks) == 1:
@@ -1744,107 +1554,6 @@ def _es_memeval(
     return tuple(units)
 
 
-def _clbench(
-    _spec: TaskSpec,
-    dataset: Path,
-    _media: MediaResolver,
-    _root: Path,
-    limit: Limit,
-    offset: int,
-    *,
-    validate_all: bool = False,
-) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.clbench import _load_clbench_selected, load_clbench
-    from sensemem.benchmarks.prompts import CLBENCH_QUERY_PROMPT
-
-    tasks = (
-        _load_clbench_selected(dataset, limit, offset)
-        if not validate_all and limit is not None and limit != -1
-        else _selected(load_clbench(dataset), limit, offset)
-    )
-    units = []
-    for task in tasks:
-        memories = tuple(
-            item for turn in task.turns for item in _text_memories(turn.turn_id, turn.content)
-        )
-        prompt = CLBENCH_QUERY_PROMPT.text.format(
-            system_prompt=task.system_prompt.strip(), question=task.question
-        ).strip()
-        units.append(
-            EvalUnit(
-                task.task_id,
-                memories,
-                (
-                    EvalQuestion(
-                        task.task_id,
-                        _split_parts(prompt),
-                        # CL-Bench publishes no gold answer at all: its judge
-                        # grades the response against the rubric list, so the
-                        # rubrics are the reference material.
-                        task.rubrics,
-                        metadata={
-                            "context_id": task.context_id,
-                            "context_category": task.context_category,
-                            "sub_category": task.sub_category,
-                            "question_unsliced": task.question_unsliced,
-                        },
-                        source_question=task.question[:_MAX_PART_CHARACTERS],
-                    ),
-                ),
-            )
-        )
-    return tuple(units)
-
-
-def _beam(
-    spec: TaskSpec,
-    dataset: Path,
-    _media: MediaResolver,
-    _root: Path,
-    limit: Limit,
-    offset: int,
-) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.beam import BeamTier, load_beam
-    from sensemem.benchmarks.prompts import BEAM_QUERY_PROMPT
-
-    tier = cast("BeamTier", spec.variant)
-    units = []
-    for conversation in _selected(load_beam(dataset, tier), limit, offset):
-        memories = tuple(
-            item
-            for turn in conversation.turns
-            for item in _text_memories(
-                turn.turn_id,
-                (
-                    f"{turn.role}: {turn.content}"
-                    if turn.occurred_at is None
-                    else f"[{turn.occurred_at.date().isoformat()}] {turn.role}: {turn.content}"
-                ),
-                occurred_at=turn.occurred_at,
-            )
-        )
-        questions = tuple(
-            EvalQuestion(
-                question.question_id,
-                (BEAM_QUERY_PROMPT.text.format(question=question.question),),
-                # The rubric is the reference material: two of the ten
-                # categories publish no gold answer, and the official judge
-                # never reads one -- it scores the response against each rubric
-                # item in turn.
-                question.rubric,
-                metadata={
-                    "category": question.category,
-                    "difficulty": question.difficulty,
-                    "reference_answer": question.reference_answer,
-                },
-                source_question=question.question,
-            )
-            for question in conversation.questions
-        )
-        units.append(EvalUnit(f"{tier}-{conversation.conversation_id}", memories, questions))
-    return tuple(units)
-
-
 def _personamem_v3(
     _spec: TaskSpec,
     dataset: Path,
@@ -1939,9 +1648,7 @@ def _personamem_question(
 def _split_parts(text: str, *, max_characters: int = _MAX_PART_CHARACTERS) -> tuple[str, ...]:
     """Split one prompt into parts SenseMem will accept.
 
-    A CL-Bench record whose question could not be sliced off its reference
-    document runs past the 65,536-character limit on a single part. Splitting
-    keeps the whole question rather than truncating it away.
+    Splitting preserves prompts longer than the per-part character limit.
     """
     if len(text) <= max_characters:
         return (text,)
@@ -1951,18 +1658,14 @@ def _split_parts(text: str, *, max_characters: int = _MAX_PART_CHARACTERS) -> tu
 
 
 _LOADERS = {
-    "mosaic": _mosaic,
     "ama-bench": _ama_bench,
+    "mosaic": _mosaic,
     "icm-bench": _icm_bench,
     "locomo-refined": _locomo,
     "m3-bench-robot": _m3,
     "m3-bench-web": _m3,
-    "video-mme-v2": _video_mme_v2,
     "videozerobench": _videozerobench,
-    "worldmemarena": _worldmemarena,
     "egotempo": _egotempo,
-    "openeqa-hm3d": _openeqa,
-    "openeqa-scannet": _openeqa,
     "memlens-32k": _memlens,
     "memlens-64k": _memlens,
     "memlens-128k": _memlens,
@@ -1980,18 +1683,15 @@ _LOADERS = {
     "longmemeval-v2-small": _longmemeval_v2,
     "longmemeval-v2-medium": _longmemeval_v2,
     "es-memeval-qa": _es_memeval,
-    "clbench": _clbench,
-    "beam-100k": _beam,
-    "beam-500k": _beam,
-    "beam-1m": _beam,
-    "beam-10m": _beam,
     "personamem-v3": _personamem_v3,
 }
 
 
 def _parse_media_task(task_name: str, task: object) -> MediaTask:
     if task_name == "mosaic":
-        raise ValueError("MOSAIC uses original media with --media-root, without --media-manifest")
+        raise ValueError(
+            "MOSAIC does not support --media-manifest; use original media with --media-root"
+        )
     if not isinstance(task, dict):
         raise ValueError(f"media manifest task {task_name} must be an object")
     units = task.get("units")

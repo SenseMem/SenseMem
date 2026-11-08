@@ -67,6 +67,39 @@ def test_sentence_transformers_config_allows_omitting_revision() -> None:
     assert config.embedding.revision is None
 
 
+def test_local_embedding_config_forwards_precision_and_encoder_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    marker = object()
+
+    def build(**values: object) -> object:
+        captured.update(values)
+        return marker
+
+    monkeypatch.setattr(configuration, "SentenceTransformersEmbedder", build)
+    spec = configuration.SentenceTransformersEmbeddingConfig.model_validate(
+        {
+            "provider": "sentence-transformers",
+            "model": "google/embeddinggemma-2",
+            "device": "cuda:1",
+            "dtype": "bfloat16",
+            "modalities": ["text", "video"],
+            "dimension": 256,
+        }
+    )
+    assert configuration._build_embedding(spec) is marker
+    assert captured == {
+        "model_id": "google/embeddinggemma-2",
+        "revision": None,
+        "dimension": 256,
+        "device": "cuda:1",
+        "batch_size": 32,
+        "dtype": "bfloat16",
+        "modalities": frozenset({Modality.TEXT, Modality.VIDEO}),
+    }
+
+
 def test_conflicting_retention_is_rejected_before_constructing_backends(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

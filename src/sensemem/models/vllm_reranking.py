@@ -1,4 +1,4 @@
-"""HTTP adapter for vLLM's text and multimodal rerank endpoint."""
+"""HTTP adapter for vLLM's text and multimodal score endpoint."""
 
 from __future__ import annotations
 
@@ -33,27 +33,27 @@ if TYPE_CHECKING:
 _CAPABILITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO})
 
 
-class _RerankResult(BaseModel):
+class _ScoreResult(BaseModel):
     model_config = ConfigDict(strict=True)
 
     index: int = Field(ge=0)
-    relevance_score: FiniteFloat
+    score: FiniteFloat
 
 
-class _RerankUsage(BaseModel):
+class _ScoreUsage(BaseModel):
     model_config = ConfigDict(strict=True)
 
     prompt_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
 
 
-class _RerankResponse(BaseModel):
+class _ScoreResponse(BaseModel):
     model_config = ConfigDict(strict=True)
 
-    results: list[_RerankResult]
+    data: list[_ScoreResult]
     id: str | None = None
     model: str | None = None
-    usage: _RerankUsage | None = None
+    usage: _ScoreUsage | None = None
 
 
 @dataclass
@@ -87,7 +87,7 @@ def _server_base_url(value: str) -> str:
 
 
 class VLLMReranker:
-    """Score via ``<base_url>/rerank`` and restore input-order scores.
+    """Score via ``<base_url>/score`` and restore input-order scores.
 
     Model loading, revision pinning, templates, context limits, and media preprocessing
     belong to the server. The owning Memory closes the HTTP client, including an injected one.
@@ -111,7 +111,7 @@ class VLLMReranker:
         media_weight: float = 0.5,
     ) -> None:
         self._model_id = nonempty_text(model_id, "model_id")
-        self._url = _server_base_url(base_url) + "/rerank"
+        self._url = _server_base_url(base_url) + "/score"
         self._api_key = optional_text(api_key, "api_key")
         self._batch_size = positive_int(batch_size, "batch_size")
         self._request_concurrency = positive_int(request_concurrency, "request_concurrency")
@@ -238,9 +238,8 @@ class VLLMReranker:
             cache: dict[str, str] = {}
             payload = {
                 "model": self._model_id,
-                "query": query_payload,
+                "queries": query_payload,
                 "documents": [_score_input(document, cache) for document in chunk],
-                "top_n": len(chunk),
             }
             with request_lock:
                 usage.requests += 1
@@ -326,12 +325,12 @@ def _response_scores(
             reason = "provider_unavailable" if response.status_code >= 500 else "request_rejected"
         raise ModelError("reranking request failed", reason=reason, stage="reranking")
     try:
-        result = _RerankResponse.model_validate_json(response.content)
+        result = _ScoreResponse.model_validate_json(response.content)
     except PydanticValidationError:
         raise ModelError(
             "reranking response was invalid", reason="response_invalid", stage="reranking"
         ) from None
-    if len(result.results) != count or {row.index for row in result.results} != set(range(count)):
+    if len(result.data) != count or {row.index for row in result.data} != set(range(count)):
         raise ModelError(
             "reranking response indices were invalid", reason="response_invalid", stage="reranking"
         )
@@ -342,4 +341,4 @@ def _response_scores(
         usage.reported += 1
         usage.input_tokens += result.usage.prompt_tokens
         usage.total_tokens += result.usage.total_tokens
-    return tuple(row.relevance_score for row in sorted(result.results, key=lambda row: row.index))
+    return tuple(row.score for row in sorted(result.data, key=lambda row: row.index))

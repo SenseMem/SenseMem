@@ -362,24 +362,6 @@ def test_metrics_do_not_compare_a_selected_slice_to_the_full_dataset() -> None:
     assert coverage["score_comparable_to_full_dataset"] is False
 
 
-def test_openeqa_aggregate_keeps_the_official_zero_to_one_hundred_scale() -> None:
-    sample = replace(
-        _sample("q1", sources=(), gold=(), candidate_count=0, score=75.0),
-        task="openeqa-hm3d",
-        benchmark="OpenEQA",
-        metrics={"llm_match": 75.0, "llm_match_score_1_5": 4.0},
-        judge_model="gpt-4-1106-preview",
-    )
-    task = _metric_task("openeqa-hm3d")
-
-    result = eval_metrics_module._metrics(task, (sample,), _arguments())
-
-    assert cast(Mapping[str, object], result["score"])["mean"] == 75.0
-    metric = cast(Mapping[str, object], cast(Mapping[str, object], result["metrics"])["llm_match"])
-    assert metric["mean"] == 75.0
-    assert metric["official_metric"] is True
-
-
 def test_personamem_does_not_publish_a_biased_partial_micro_score() -> None:
     supported = replace(
         _sample("q1", sources=(), gold=(), candidate_count=0, score=0.9),

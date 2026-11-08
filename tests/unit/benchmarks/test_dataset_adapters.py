@@ -13,17 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from sensemem.benchmarks.beam import BEAM_CATEGORIES, load_beam
-from sensemem.benchmarks.clbench import (
-    OVERSIZED_QUESTION_CHARACTERS,
-    _load_clbench_selected,
-    load_clbench,
-    split_question,
-)
 from sensemem.benchmarks.download import _patterns
 from sensemem.benchmarks.eval_adapters import load_task
 from sensemem.benchmarks.memlens import load_memlens
-from sensemem.benchmarks.openeqa import OPENEQA_SPLITS, episode_frames, load_openeqa
 from sensemem.benchmarks.personamem_v3 import (
     load_personamem_v3,
     render_candidates,
@@ -115,166 +107,6 @@ def test_memlens_marks_the_published_answer_sessions_and_rejects_ones_outside_th
     synthesised["answer_session_ids"] = ["session_0001"]
     (derived,) = load_memlens(_write(tmp_path / "synthesised.json", [synthesised]))
     assert [session.is_answer_session for session in derived.sessions] == [False, True]
-
-
-def test_clbench_splits_the_question_off_its_reference_document(tmp_path: Path) -> None:
-    document = "PARA ONE\n\nPARA TWO"
-    records = [
-        {
-            "messages": [
-                {"role": "system", "content": "You are a rules referee."},
-                {"role": "user", "content": f"{document}\n\nWhat do Sighting cards do?"},
-            ],
-            "rubrics": ["The response should define a Sighting card."],
-            "metadata": {
-                "task_id": "t1",
-                "context_id": "c1",
-                "context_category": "Rule System Application",
-                "sub_category": "Game Mechanics",
-            },
-        },
-        {
-            # A record whose final turn has a blank-line break but whose
-            # trailing paragraph is still oversized: 75 released records look
-            # like this, and they carry the same flag as an unsplit one.
-            "messages": [
-                {"role": "user", "content": "lead\n\n" + "x" * OVERSIZED_QUESTION_CHARACTERS}
-            ],
-            "rubrics": ["ok"],
-            "metadata": {
-                "task_id": "t2",
-                "context_id": "c1",
-                "context_category": "Rule System Application",
-                "sub_category": "Game Mechanics",
-            },
-        },
-    ]
-    # A bare U+2028 inside a JSON string is legal JSON, but `str.splitlines()`
-    # treats it as a line break and cuts the record in half so it no longer
-    # parses. The pinned release carries 343 of them.
-    dataset = tmp_path / "CL-bench.jsonl"
-    encoded = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
-    encoded = encoded.replace("PARA ONE", "PARA\u2028ONE")
-    assert len(encoded.splitlines()) > len(encoded.split("\n"))
-    dataset.write_text(encoded + "\n", encoding="utf-8")
-
-    tasks = {task.task_id: task for task in load_clbench(dataset)}
-
-    first = tasks["t1"]
-    assert first.question == "What do Sighting cards do?"
-    assert first.question_unsliced is False
-    assert first.system_prompt == "You are a rules referee."
-    assert [turn.content for turn in first.turns] == ["PARA\u2028ONE\n\nPARA TWO"]
-    assert tasks["t2"].question_unsliced is True
-    assert split_question("only one paragraph") == ("", "only one paragraph", False)
-
-
-def test_clbench_finite_slice_only_parses_selected_jsonl_records(tmp_path: Path) -> None:
-    def record(task_id: str) -> dict[str, object]:
-        return {
-            "messages": [{"role": "user", "content": f"Question {task_id}?"}],
-            "rubrics": ["Answer it."],
-            "metadata": {
-                "task_id": task_id,
-                "context_id": "context",
-                "context_category": "category",
-                "sub_category": "subcategory",
-            },
-        }
-
-    dataset = tmp_path / "CL-bench.jsonl"
-    dataset.write_text(
-        "\n".join((json.dumps(record("skip")), json.dumps(record("keep")), "invalid")),
-        encoding="utf-8",
-    )
-
-    selected = _load_clbench_selected(dataset, 1, 1)
-
-    assert tuple(task.task_id for task in selected) == ("keep",)
-    with pytest.raises(ValueError):
-        load_clbench(dataset)
-    with pytest.raises(ValueError):
-        load_task(
-            TASKS["clbench"],
-            root=tmp_path,
-            dataset_path=dataset,
-            limit=1,
-            verify_digest=False,
-        )
-
-
-def test_beam_flattens_the_ten_million_tier_and_resolves_each_reference_key(
-    tmp_path: Path,
-) -> None:
-    def turn(index: int, anchor: str | None = None) -> dict[str, object]:
-        item: dict[str, object] = {
-            "role": "user" if index % 2 == 0 else "assistant",
-            "id": index,
-            "content": f"turn {index}",
-        }
-        if anchor is not None:
-            item["time_anchor"] = anchor
-        return item
-
-    directory = tmp_path / "10M" / "3"
-    _write(
-        directory / "chat.json",
-        [
-            {"plan-1": [{"batch_number": 1, "turns": [[turn(0, "March-15-2024"), turn(1)]]}]},
-            {"plan-2": [{"batch_number": 1, "turns": [[turn(2), turn(3)]]}]},
-        ],
-    )
-    _write(
-        directory / "probing_questions" / "probing_questions.json",
-        {
-            "abstention": [{"question": "q", "rubric": ["r"], "ideal_response": "no information"}],
-            "contradiction_resolution": [
-                {"question": "q", "rubric": ["r"], "ideal_answer": "resolved"}
-            ],
-            "summarization": [{"question": "q", "rubric": ["r"], "ideal_summary": "summary"}],
-            "temporal_reasoning": [{"question": "q", "rubric": ["r"], "answer": "three weeks"}],
-            # Two categories publish no reference answer at all.
-            "instruction_following": [{"question": "q", "rubric": ["r"]}],
-        },
-    )
-
-    conversations = load_beam(tmp_path / "10M", "10M")
-
-    assert len(conversations) == 1
-    conversation = conversations[0]
-    # Plans are consecutive stretches of one conversation, so the directory is
-    # still one retrieval scope.
-    assert [turn_.turn_id for turn_ in conversation.turns] == [
-        "3_T000000",
-        "3_T000001",
-        "3_T000002",
-        "3_T000003",
-    ]
-    # `%B` would read the process locale; the month table does not.
-    assert conversation.turns[0].occurred_at is not None
-    assert conversation.turns[0].occurred_at.isoformat() == "2024-03-15T00:00:00+00:00"
-    assert conversation.turns[1].occurred_at is None
-
-    references = {
-        question.category: question.reference_answer for question in conversation.questions
-    }
-    assert references == {
-        "abstention": "no information",
-        "contradiction_resolution": "resolved",
-        "summarization": "summary",
-        "temporal_reasoning": "three weeks",
-        "instruction_following": "",
-    }
-    # Questions carry no ID upstream; it comes from the tier, conversation,
-    # category key and list position, in catalog category order.
-    assert conversation.questions[0].question_id == "10M-3-abstention-0000"
-    assert [question.category for question in conversation.questions] == [
-        category for category in BEAM_CATEGORIES if category in references
-    ]
-
-    _write(directory / "probing_questions" / "probing_questions.json", {"mystery": []})
-    with pytest.raises(ValueError, match="unknown categories: mystery"):
-        load_beam(tmp_path / "10M", "10M")
 
 
 def _personamem_event(object_id: str, timestamp: int, **extra: object) -> dict[str, object]:
@@ -508,61 +340,17 @@ def test_download_patterns_cover_extensionless_files_and_pinned_directories() ->
         return _patterns(spec, dataset, dataset, dataset.relative_to(release).as_posix())
 
     # A suffix-less file must be offered as a file and as a directory glob.
-    spec = replace(TASKS["clbench"], dataset="fixture/annotations")
+    spec = replace(TASKS["locomo-refined"], dataset="fixture/annotations")
     dataset = spec.dataset_path(root)
     assert _patterns(spec, dataset, dataset, "annotations") == ("annotations", "annotations/*")
-    assert patterns_for("clbench") == ("CL-bench.jsonl",)
+    assert patterns_for("locomo-refined") == ("data/raw/locomo_refined.json",)
     # A directory input may pin exactly the files its loader opens.
-    assert patterns_for("beam-100k") == (
-        "chats/100K/*/chat.json",
-        "chats/100K/*/probing_questions/probing_questions.json",
-    )
     personamem = patterns_for("personamem-v3")
     assert "backend/*/test.json" in personamem
     assert not any("persona.html" in pattern for pattern in personamem)
     assert not any("profile.json" in pattern for pattern in personamem)
     # A directory with no pinned patterns keeps the old both-spellings default.
     assert patterns_for("mem-gallery") == ("data/dialog", "data/dialog/*")
-
-
-def test_beam_keys_turns_by_position_when_the_published_id_restarts(tmp_path: Path) -> None:
-    """4 of the 35 conversations in the 1M tier restart their turn counter."""
-
-    def turn(identifier: int, text: str) -> dict[str, object]:
-        return {"role": "user", "id": identifier, "content": text}
-
-    directory = tmp_path / "1M" / "5"
-    _write(
-        directory / "chat.json",
-        [
-            {"batch_number": 1, "turns": [[turn(0, "first thing"), turn(1, "reply")]]},
-            # The counter restarts here with different content under the same
-            # IDs, so `id` does not identify a turn within the conversation.
-            {"batch_number": 10, "turns": [[turn(0, "much later"), turn(1, "later reply")]]},
-        ],
-    )
-    _write(
-        directory / "probing_questions" / "probing_questions.json",
-        {"abstention": [{"question": "q", "rubric": ["r"], "ideal_response": "none"}]},
-    )
-
-    turns = load_beam(tmp_path / "1M", "1M")[0].turns
-
-    assert [item.turn_id for item in turns] == [
-        "5_T000000",
-        "5_T000001",
-        "5_T000002",
-        "5_T000003",
-    ]
-    # Document order is preserved and no turn is lost to an ID collision.
-    assert [item.content for item in turns] == [
-        "first thing",
-        "reply",
-        "much later",
-        "later reply",
-    ]
-    # The published ID is still carried, because probing questions cite it.
-    assert [item.source_id for item in turns] == [0, 1, 0, 1]
 
 
 def test_personamem_v3_reads_the_flattened_row_spelling(tmp_path: Path) -> None:
@@ -655,8 +443,7 @@ def test_text_memories_split_passages_the_product_would_reject() -> None:
 
     `memory.add` rejects a part over `MAX_TEXT_CHARACTERS`, the runner counts
     an ingest failure, and `_apply_judges` then skips every question in that
-    unit. BEAM turns reach 348,864 characters and LongMemEval has one of
-    76,594, so unsplit storage silently left 70% of BEAM's 10M tier unjudged.
+    unit. Splitting oversized passages preserves all text within the product limit.
     """
     from sensemem.benchmarks.eval_adapters import _text_memories
     from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
@@ -683,128 +470,6 @@ def test_text_memories_split_passages_the_product_would_reject() -> None:
     # Nothing is dropped.
     rebuilt = "".join(text for item in parts for text in item.content if isinstance(text, str))
     assert rebuilt.replace("\n\n", " ").split() == long_turn.split()
-
-
-def _openeqa_question(**overrides: object) -> dict[str, object]:
-    question: dict[str, object] = {
-        "question_id": "q1",
-        "episode_history": "hm3d-v0/000-hm3d-BFRyYbPCCPE",
-        "category": "object recognition",
-        "question": "What is the white object on the wall above the TV?",
-        "answer": "Air conditioning unit",
-    }
-    question.update(overrides)
-    return question
-
-
-def test_openeqa_distinguishes_absent_from_empty_extra_answers(tmp_path: Path) -> None:
-    dataset = _write(
-        tmp_path / "open-eqa-v0.json",
-        [
-            _openeqa_question(question_id="plain"),
-            _openeqa_question(
-                question_id="extra",
-                episode_history="scannet-v0/142-scannet-scene0653_01",
-                # The pinned release ships exactly one question whose extra
-                # answers include a blank entry, and upstream renders the list
-                # into the judge prompt with `str()`, blank included.
-                extra_answers=["on top of the cabinet", ""],
-            ),
-        ],
-    )
-
-    questions = {question.question_id: question for question in load_openeqa(dataset)}
-
-    # Absent must stay absent: `get_llm_match_score` selects `mmbench-extra`
-    # over `mmbench` on `extra_answers is not None`, so collapsing an absent key
-    # into an empty tuple would switch 1,373 of 1,636 questions to the wrong
-    # judge prompt.
-    assert questions["plain"].extra_answers is None
-    assert questions["extra"].extra_answers == ("on top of the cabinet", "")
-    assert questions["plain"].split == "hm3d-v0"
-    assert questions["extra"].episode_name == "142-scannet-scene0653_01"
-
-    # The third state the release never contains is refused rather than treated
-    # as either of the two it does.
-    empty = _write(tmp_path / "empty.json", [_openeqa_question(extra_answers=[])])
-    with pytest.raises(ValueError, match="absent or non-empty"):
-        load_openeqa(empty)
-
-
-def test_openeqa_splits_scene_sources_and_rejects_broken_episodes(tmp_path: Path) -> None:
-    dataset = _write(
-        tmp_path / "open-eqa-v0.json",
-        [
-            _openeqa_question(question_id="a"),
-            _openeqa_question(question_id="b", episode_history="hm3d-v0/001-hm3d-TPhiubUHKcP"),
-            _openeqa_question(
-                question_id="c", episode_history="scannet-v0/002-scannet-scene0709_00"
-            ),
-        ],
-    )
-
-    assert len(load_openeqa(dataset)) == 3
-    assert {question.question_id for question in load_openeqa(dataset, split="hm3d-v0")} == {
-        "a",
-        "b",
-    }
-    assert {question.question_id for question in load_openeqa(dataset, split="scannet-v0")} == {"c"}
-    assert OPENEQA_SPLITS == ("hm3d-v0", "scannet-v0")
-
-    with pytest.raises(ValueError, match="unknown OpenEQA split"):
-        load_openeqa(dataset, split="hm3d")
-
-    # A-EQA is not adapted, so a third split would be a silently wrong task
-    # rather than a new one.
-    unknown = _write(
-        tmp_path / "unknown.json", [_openeqa_question(episode_history="mp3d-v0/000-mp3d-x")]
-    )
-    with pytest.raises(ValueError, match="unknown OpenEQA split"):
-        load_openeqa(unknown)
-
-    flat = _write(tmp_path / "flat.json", [_openeqa_question(episode_history="000-hm3d-x")])
-    with pytest.raises(ValueError, match="invalid OpenEQA episode_history"):
-        load_openeqa(flat)
-
-    duplicated = _write(tmp_path / "duplicated.json", [_openeqa_question(), _openeqa_question()])
-    with pytest.raises(ValueError, match="duplicate question IDs"):
-        load_openeqa(duplicated)
-
-
-def test_openeqa_frames_use_the_official_lexicographic_order(tmp_path: Path) -> None:
-    episode = tmp_path / "000-hm3d-BFRyYbPCCPE"
-    episode.mkdir()
-    for name in ("00002", "00010", "00001"):
-        (episode / f"{name}-rgb.png").write_bytes(b"")
-    # Not a frame: the RGB-D extraction writes depth and pose beside the frames.
-    (episode / "00001-depth.png").write_bytes(b"")
-
-    # Every upstream baseline reads `sorted(folder.glob("*-rgb.png"))`, so that
-    # lexicographic order is the protocol rather than a numeric sort.
-    assert [path.name for path in episode_frames(episode)] == [
-        "00001-rgb.png",
-        "00002-rgb.png",
-        "00010-rgb.png",
-    ]
-
-    with pytest.raises(FileNotFoundError, match=r"has no \*-rgb\.png frames"):
-        episode_frames(tmp_path / "empty")
-
-
-def test_openeqa_catalog_pins_one_release_for_both_scene_splits() -> None:
-    hm3d, scannet = TASKS["openeqa-hm3d"], TASKS["openeqa-scannet"]
-
-    # One question file covers both splits; only the variant and the media tree
-    # differ, and neither split's frames are downloadable from here.
-    assert hm3d.dataset == scannet.dataset == "openeqa/data/open-eqa-v0.json"
-    assert hm3d.digest == scannet.digest is not None
-    assert (hm3d.variant, scannet.variant) == OPENEQA_SPLITS
-    assert hm3d.media == "openeqa/data/frames/hm3d-v0"
-    assert scannet.media == "openeqa/data/frames/scannet-v0"
-    assert hm3d.media_source is not None and scannet.media_source is not None
-    assert hm3d.media_source.acquirer == "open-eqa-hm3d-frames"
-    assert scannet.media_source.acquirer == "scannet"
-    assert hm3d.repository == "facebookresearch/open-eqa"
 
 
 # --- gold evidence: which adapters can carry a source-level retrieval label -----------------
@@ -1107,74 +772,3 @@ def test_es_memeval_rejects_unknown_dialogue_roles(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="invalid ES-MemEval dialogue role"):
         load_task(TASKS["es-memeval-qa"], root=tmp_path, dataset_path=dataset, verify_digest=False)
-
-
-def test_worldmemarena_loads_causal_checkpoint_qa_without_leaking_gold_memories(
-    tmp_path: Path,
-) -> None:
-    dataset = tmp_path / "worldmemarena"
-    sample = dataset / "agent" / "gui" / "css" / "css_01.json"
-    image = sample.parent / "images" / "css_01" / "frame.png"
-    image.parent.mkdir(parents=True)
-    image.write_bytes(b"png")
-    _write(
-        sample,
-        {
-            "sample_id": "css_01",
-            "sessions": [
-                {
-                    "_v2_session_id": "S02",
-                    "dialogue": [
-                        {
-                            "role": "user",
-                            "content": "",
-                            "attachments": [
-                                {
-                                    "image_id": "img_1",
-                                    "file_path": "images/css_01/frame.png",
-                                    "caption": "a blue page",
-                                }
-                            ],
-                        }
-                    ],
-                },
-                {
-                    "_v2_session_id": "S04",
-                    "dialogue": [{"role": "assistant", "content": "later", "attachments": []}],
-                },
-            ],
-            "memory_points": [
-                {"memory_points": [{"memory_id": "mp_S02_1", "memory_content": "blue"}]}
-            ],
-            "qa_checkpoints": [
-                {
-                    "checkpoint_id": "cp1",
-                    "covered_sessions": ["S02"],
-                    "questions": [
-                        {
-                            "question": "What color?",
-                            "answer": "blue",
-                            "question_type": "visual_factual_recall",
-                            "question_type_abbrev": "VFR",
-                            "difficulty": "easy",
-                            "evidence": [{"memory_id": "mp_S02_1"}, {"image_id": "img_1"}],
-                        }
-                    ],
-                }
-            ],
-        },
-    )
-
-    unit = load_task(
-        TASKS["worldmemarena"], root=tmp_path, dataset_path=dataset, verify_digest=False
-    ).units[0]
-
-    assert tuple(item.source_id for item in unit.memories) == (
-        "css_01:S02:T0000",
-        "img_1",
-        "css_01:S04:T0000",
-    )
-    assert unit.questions[0].cutoff_seconds == 100_000.0
-    assert unit.questions[0].metadata["evidence_ids"] == ("img_1",)
-    assert unit.questions[0].metadata["unresolved_evidence_ids"] == ("mp_S02_1",)
-    assert unit.questions[0].metadata["gold_evidence_contents"] == ("blue", "a blue page")

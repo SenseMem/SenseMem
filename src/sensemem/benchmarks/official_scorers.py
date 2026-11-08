@@ -21,21 +21,6 @@ from sensemem.benchmarks._official.atm_score import (
     deterministic_accuracy as atm_deterministic_accuracy,
 )
 from sensemem.benchmarks._official.atm_score import list_jaccard_score
-from sensemem.benchmarks._official.beam_judge import (
-    build_event_equivalence_prompt as build_beam_equivalence_prompt,
-)
-from sensemem.benchmarks._official.beam_judge import build_rubric_item_prompt as build_beam_prompt
-from sensemem.benchmarks._official.beam_judge import event_ordering_scores
-from sensemem.benchmarks._official.beam_judge import parse_rubric_item_score as parse_beam_item
-from sensemem.benchmarks._official.clbench_judge import (
-    build_grading_prompt as build_clbench_prompt,
-)
-from sensemem.benchmarks._official.clbench_judge import (
-    build_rubrics_text as build_clbench_rubrics,
-)
-from sensemem.benchmarks._official.clbench_judge import (
-    parse_grading_response as parse_clbench,
-)
 from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
 from sensemem.benchmarks._official.longmemeval_v2_scoring import (
     SCORER_VERSION as LONGMEMEVAL_V2_SCORER_VERSION,
@@ -56,28 +41,10 @@ from sensemem.benchmarks._official.memlens_prompts import (
     build_judge_prompt as build_memlens_prompt,
 )
 from sensemem.benchmarks._official.memlens_prompts import get_task_key
-from sensemem.benchmarks._official.openeqa_llm_match import (
-    MAX_SCORE as OPENEQA_MAX_SCORE,
+from sensemem.benchmarks.mosaic import (
+    MOSAIC_SCORER_VERSION,
+    mosaic_refusal,
 )
-from sensemem.benchmarks._official.openeqa_llm_match import (
-    MIN_SCORE as OPENEQA_MIN_SCORE,
-)
-from sensemem.benchmarks._official.openeqa_llm_match import (
-    build_llm_match_prompt as build_openeqa_prompt,
-)
-from sensemem.benchmarks._official.openeqa_llm_match import (
-    parse_llm_match_score as parse_openeqa_score,
-)
-from sensemem.benchmarks._official.openeqa_llm_match import (
-    truncate_prediction as truncate_openeqa_prediction,
-)
-from sensemem.benchmarks._official.worldmemarena_qa import (
-    build_qa_prompt as build_worldmemarena_prompt,
-)
-from sensemem.benchmarks._official.worldmemarena_qa import (
-    parse_qa_response as parse_worldmemarena_response,
-)
-from sensemem.benchmarks.mosaic import MOSAIC_SCORER_VERSION, mosaic_refusal
 from sensemem.benchmarks.personamem_v3 import RANKING_TASK_TYPES
 from sensemem.benchmarks.videozerobench import (
     VIDEOZERO_METRICS,
@@ -115,13 +82,8 @@ class JudgePlan:
         "atm",
         "gallery",
         "longmemeval_v2",
-        "clbench",
-        "beam",
-        "beam_event",
         "personamem_v3",
-        "openeqa",
         "es_memeval",
-        "worldmemarena",
         "ama_bench",
         "mosaic",
     ]
@@ -138,9 +100,7 @@ _PROTOCOLS = {
     "icm-bench": "icm_semantic_equivalence_10f02babe3c7_user_only_v2",
     "locomo-refined": "locomo_refined_judge_887091190789",
     "m3-bench": "m3_agent_judge_0e3e41939bd8_system_v1",
-    "video-mme-v2": "video_mme_v2_6e4bebb03202",
     "videozerobench": VIDEOZERO_SCORER_VERSION,
-    "worldmemarena": "worldmemarena_checkpoint_qa_15ea25b723d9",
     "egotempo": "egotempo_gemini_judge_7022ba77b4d8",
     "memlens": "memlens_judge_77f3ab9a52fa",
     "mm-lifelong": "mm_lifelong_judge_248aa82039a5",
@@ -148,10 +108,7 @@ _PROTOCOLS = {
     "atm-bench": "atm_bench_scorer_ef4e5dff1a47_minimal_v3",
     "mem-gallery": "mem_gallery_scorer_a93959e1e978_v2",
     "longmemeval-v2": LONGMEMEVAL_V2_SCORER_VERSION,
-    "clbench": "clbench_binary_rubric_b28a5832a09b",
-    "beam": "beam_unified_rubric_3e12035532eb",
     "personamem-v3": "personamem_v3_rubric_7b00a090b35b_ranking_ad80a3b1b322",
-    "openeqa": "openeqa_llm_match_cfa3fce4595c",
     "es-memeval": "es_memeval_qa_judge_692624208acc_v1",
 }
 
@@ -167,15 +124,8 @@ _OFFICIAL_JUDGE_MODELS = {
     "atm-bench": "gpt-5-mini",
     "mem-gallery": "qwen2.5-72b-instruct",
     "longmemeval-v2": "gpt-5.2",
-    # `eval.py --judge-model` default.
-    "clbench": "gpt-5.1",
-    # `src/llm.py: gpt_llm_obj`, the client every `evaluate_*` is handed.
-    "beam": "gpt-4.1-mini",
     # `EVAL.md`: "the judge is a QueryLLM client on Azure gpt-5.5".
     "personamem-v3": "gpt-5.5",
-    # `llm_match.get_llm_match_score`'s `openai_model` default, which
-    # `evaluate-predictions.py` never overrides.
-    "openeqa": "gpt-4-1106-preview",
     # `common_configurations.py` supplies this ID to every released QA script.
     "es-memeval": "gpt-4o",
 }
@@ -193,13 +143,7 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
     # `evaluate.py` keeps the F1 and BLEU-1 of the accepted reference beside its judge label.
     "locomo-refined": frozenset({"llm_judge", "token_f1", "bleu_1"}),
     "m3-bench": frozenset({"accuracy"}),
-    # The two files emitted by the released scorer. `question_accuracy` is an internal 0-1
-    # building block; the official `_acc.json` value is exposed as `accuracy` on 0-100.
-    "video-mme-v2": frozenset({"accuracy", "rating"}),
     "videozerobench": frozenset({"accuracy", *VIDEOZERO_METRICS}),
-    "worldmemarena": frozenset(
-        {"correct_ratio", "hallucination_ratio", "omission_ratio", "answer_f1", "answer_bleu1"}
-    ),
     "egotempo": frozenset({"accuracy", "judge_score_0_5"}),
     "memlens": frozenset({"accuracy"}),
     # `Ref@300` is MM-Lifelong's own quantized temporal IoU.
@@ -223,8 +167,6 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
         }
     ),
     "longmemeval-v2": frozenset({"accuracy"}),
-    "clbench": frozenset({"solving_rate", "requirement_ratio"}),
-    "beam": frozenset({"llm_judge_score", "precision", "recall", "f1", "tau_norm", "final_score"}),
     # Everything `_official/personamem_v3_scoring.py` emits: the unified rubric's `pr_` dims
     # (see `_OFFICIAL_METRIC_PREFIXES`), the four task-specific judges' coercions, the ranking
     # metrics the task runners report, and the 0-100 micro aggregate headline.
@@ -254,7 +196,6 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
             "abstention_quality_0_10",
         }
     ),
-    "openeqa": frozenset({"llm_match", "llm_match_score_1_5"}),
     # The release also reports BERTScore. It is intentionally not calculated
     # here because it requires a second learned scorer and model download.
     "es-memeval": frozenset({"f1", "llm_judge", "judge_score_0_2"}),
@@ -276,8 +217,6 @@ _JUDGE_METRICS = {
     "atm-bench": frozenset({"accuracy"}),
     "mem-gallery": frozenset({"llm_judge"}),
     "longmemeval-v2": frozenset({"accuracy"}),
-    "clbench": frozenset({"solving_rate", "requirement_ratio"}),
-    "beam": frozenset({"llm_judge_score", "precision", "recall", "f1", "tau_norm", "final_score"}),
     "personamem-v3": frozenset(
         {
             "accuracy_pct_micro",
@@ -293,9 +232,7 @@ _JUDGE_METRICS = {
             "abstention_quality_0_10",
         }
     ),
-    "openeqa": frozenset({"llm_match", "llm_match_score_1_5"}),
     "es-memeval": frozenset({"llm_judge", "judge_score_0_2"}),
-    "worldmemarena": frozenset({"correct_ratio", "hallucination_ratio", "omission_ratio"}),
 }
 
 # The pinned ES-MemEval repository has no declared license. Its judge wording
@@ -357,9 +294,7 @@ def task_primary_metric(task: str) -> str:
         "icm-bench": "accuracy",
         "locomo-refined": "llm_judge",
         "m3-bench": "accuracy",
-        "video-mme-v2": "rating",
         "videozerobench": "accuracy",
-        "worldmemarena": "correct_ratio",
         "egotempo": "accuracy",
         "memlens": "accuracy",
         "mm-lifelong": "answer_accuracy",
@@ -367,12 +302,7 @@ def task_primary_metric(task: str) -> str:
         "atm-bench": "accuracy",
         "mem-gallery": "f1",
         "longmemeval-v2": "accuracy",
-        "clbench": "solving_rate",
-        # Upstream publishes one column per category and uses `tau_norm` for event ordering.
-        # This mixed per-row selector is useful as a runner headline but is not itself upstream.
-        "beam": "beam_score",
         "personamem-v3": "accuracy_pct_micro",
-        "openeqa": "llm_match",
         "es-memeval": "llm_judge",
     }[family]
 
@@ -380,8 +310,6 @@ def task_primary_metric(task: str) -> str:
 def sample_primary_metric(task: str) -> str:
     """Return the per-question metric used for comparisons and grouped scoring."""
     family = _family_or_none(task)
-    if family == "video-mme-v2":
-        return "question_accuracy"
     if family == "personamem-v3":
         return "personamem_score"
     return task_primary_metric(task)
@@ -511,11 +439,7 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
             refusal_metric: float(mosaic_refusal(prediction)),
         }
     if score_kind == "choice":
-        metric = (
-            "question_accuracy"
-            if family == "video-mme-v2"
-            else ("qa_accuracy" if family == "supermemory-vqa" else "accuracy")
-        )
+        metric = "qa_accuracy" if family == "supermemory-vqa" else "accuracy"
         score = float(parsed_choice == expected_choice)
         return {metric: score}
     if family == "ama-bench":
@@ -562,33 +486,13 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
         return finalize_scores(task, scores)
     if family == "personamem-v3":
         return _personamem_local(prediction, metadata)
-    if family == "openeqa" and not prediction.strip():
-        # `get_llm_match_score` returns its zero sentinel without contacting
-        # the judge; the released aggregation clips that sentinel to 1/5 and
-        # converts it to zero percent.
-        return {"llm_match": 0.0, "llm_match_score_1_5": 1.0}
-    if family == "worldmemarena":
-        reference = references[0]
-        scores = {
-            "answer_f1": _gallery_f1(prediction, reference),
-            "answer_bleu1": _gallery_bleu(prediction, reference, (1.0, 0.0, 0.0, 0.0)),
-        }
-        if not prediction.strip():
-            scores.update({"correct_ratio": 0.0, "hallucination_ratio": 0.0, "omission_ratio": 1.0})
-        return scores
     if family == "mem-gallery":
         reference = references[0]
         scores = {
-            "f1": _gallery_f1(prediction, reference, tokenizer=_mem_gallery_tokens),
-            "bleu": _gallery_bleu(
-                prediction, reference, (0.25, 0.25, 0.25, 0.25), tokenizer=_mem_gallery_tokens
-            ),
-            "bleu_1": _gallery_bleu(
-                prediction, reference, (1.0, 0.0, 0.0, 0.0), tokenizer=_mem_gallery_tokens
-            ),
-            "bleu_2": _gallery_bleu(
-                prediction, reference, (0.5, 0.5, 0.0, 0.0), tokenizer=_mem_gallery_tokens
-            ),
+            "f1": _gallery_f1(prediction, reference),
+            "bleu": _gallery_bleu(prediction, reference, (0.25, 0.25, 0.25, 0.25)),
+            "bleu_1": _gallery_bleu(prediction, reference, (1.0, 0.0, 0.0, 0.0)),
+            "bleu_2": _gallery_bleu(prediction, reference, (0.5, 0.5, 0.0, 0.0)),
             "exact_match": float(
                 _mem_gallery_normalize(prediction) == _mem_gallery_normalize(reference)
             ),
@@ -621,7 +525,7 @@ def judge_failure_scores(task: str, scores: Mapping[str, float]) -> dict[str, fl
     if family == "personamem-v3":
         result.update((metric, 0.0) for metric in result if metric.startswith("pr_"))
     primary = sample_primary_metric(task)
-    if family in {"beam", "personamem-v3"} or primary not in result:
+    if family == "personamem-v3" or primary not in result:
         result[primary] = 0.0
     return finalize_scores(task, result)
 
@@ -645,14 +549,6 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
     if family == "atm-bench" and metadata.get("qtype") != "open_end":
         return None
     if family == "personamem-v3" and not _personamem_judged(metadata):
-        return None
-    if family == "clbench" and not prediction.strip():
-        # `process_single_item` scores an empty output 0 without calling the
-        # judge at all.
-        return None
-    if family == "openeqa" and not prediction.strip():
-        return None
-    if family == "worldmemarena" and not prediction.strip():
         return None
     if family == "memlens" and len(_memlens_prediction(prediction).split()) > 500:
         return None
@@ -808,74 +704,8 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             ((JudgeMessage("system", judge_system), JudgeMessage("user", judge_user)),),
             4096,
         )
-    if family == "clbench":
-        prompt = build_clbench_prompt(build_clbench_rubrics(references), prediction)
-        return JudgePlan(protocol, "clbench", ((JudgeMessage("user", prompt),),))
-    if family == "beam":
-        category = str(metadata.get("category", ""))
-        if category == "event_ordering":
-            system = prediction.split("\n")
-            equivalence_calls = tuple(
-                (
-                    JudgeMessage("system", build_beam_equivalence_prompt(reference, candidate)[0]),
-                    JudgeMessage("user", build_beam_equivalence_prompt(reference, candidate)[1]),
-                )
-                for candidate in system
-                for reference in references
-            )
-            rubric_calls = tuple(
-                (JudgeMessage("user", build_beam_prompt(item, prediction)),) for item in references
-            )
-            return JudgePlan(
-                protocol,
-                "beam_event",
-                (*equivalence_calls, *rubric_calls),
-                details={
-                    "category": category,
-                    "reference": json.dumps(list(references), ensure_ascii=False),
-                    "system": json.dumps(system, ensure_ascii=False),
-                },
-            )
-        return JudgePlan(
-            protocol,
-            "beam",
-            # One call per rubric item, exactly as every `evaluate_*` loops.
-            tuple(
-                (JudgeMessage("user", build_beam_prompt(item, prediction)),) for item in references
-            ),
-            details={"category": category},
-        )
     if family == "personamem-v3":
         return _personamem_plan(protocol, question, metadata, prediction)
-    if family == "openeqa":
-        declared = metadata.get("extra_answers")
-        extra = (
-            None
-            if declared is None
-            else tuple(str(value) for value in cast(Sequence[object], declared))
-        )
-        return JudgePlan(
-            protocol,
-            "openeqa",
-            (
-                (
-                    JudgeMessage(
-                        "user",
-                        build_openeqa_prompt(
-                            question,
-                            reference,
-                            # `evaluate-predictions.py` trims the prediction
-                            # before scoring it, so the judge never sees the
-                            # trailing unterminated sentence.
-                            truncate_openeqa_prediction(prediction),
-                            extra,
-                        ),
-                    ),
-                ),
-            ),
-            # `openai_max_tokens=32` in `get_llm_match_score`.
-            32,
-        )
     if family == "es-memeval":
         prompt = _ES_MEMEVAL_JUDGE_PROMPT.format(
             question=question,
@@ -892,25 +722,6 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
                 ),
             ),
             16,
-        )
-    if family == "worldmemarena":
-        declared = metadata.get("gold_evidence_contents", ())
-        evidence = (
-            tuple(str(value) for value in declared)
-            if isinstance(declared, Sequence) and not isinstance(declared, str | bytes)
-            else ()
-        )
-        return JudgePlan(
-            protocol,
-            "worldmemarena",
-            (
-                (
-                    JudgeMessage(
-                        "user",
-                        build_worldmemarena_prompt(question, reference, evidence, prediction),
-                    ),
-                ),
-            ),
         )
     if family == "mem-gallery":
         prompt = (
@@ -975,31 +786,8 @@ def parse_judge_response(  # noqa: C901 - mirrors seven incompatible upstream pa
         return {"accuracy": float(_atm_judge_accuracy(response))}
     if plan.parser == "longmemeval_v2":
         return {"accuracy": parse_longmemeval_v2(response)}
-    if plan.parser == "clbench":
-        score, ratio = parse_clbench(response)
-        return {"solving_rate": score, "requirement_ratio": ratio}
-    if plan.parser == "beam":
-        return {"llm_judge_score": parse_beam_item(response, plan.details.get("category", ""))}
-    if plan.parser == "beam_event":
-        if response.lstrip().startswith(("{", "```")):
-            return {"llm_judge_score": parse_beam_item(response, "event_ordering")}
-        return {"equivalent": float("yes" in response.lower())}
     if plan.parser == "personamem_v3":
         return _personamem_judge_scores(plan, response)
-    if plan.parser == "openeqa":
-        # Upstream clips rather than validating: `evaluate-predictions.py` maps
-        # every mark through `np.clip(scores, 1, 5)`, so a judge that answers 0
-        # -- its own sentinel for a missing prediction -- scores zero points and
-        # one that overshoots is capped instead of discarding the question.
-        clipped = min(max(parse_openeqa_score(response), OPENEQA_MIN_SCORE), OPENEQA_MAX_SCORE)
-        return {
-            "llm_match": 100.0
-            * (clipped - OPENEQA_MIN_SCORE)
-            / (OPENEQA_MAX_SCORE - OPENEQA_MIN_SCORE),
-            "llm_match_score_1_5": float(clipped),
-        }
-    if plan.parser == "worldmemarena":
-        return dict(parse_worldmemarena_response(response))
     if plan.parser == "gallery":
         score = _gallery_judge_score(response)
         return {"llm_judge": 0.0 if score < 0.25 else 0.5 if score < 0.75 else 1.0}
@@ -1013,7 +801,8 @@ def parse_judge_response(  # noqa: C901 - mirrors seven incompatible upstream pa
         es_score = float(match.group())
         return {"llm_judge": es_score / 2.0, "judge_score_0_2": es_score}
     if plan.parser == "mosaic":
-        return {"judge_score": mosaic_scoring.parse_judge_score(response)[0]}
+        mosaic_score, valid = mosaic_scoring.parse_judge_score(response)
+        return {"judge_score": mosaic_score, **({} if valid else {"judge_parse_error": 1.0})}
     raise AssertionError(f"unhandled judge parser: {plan.parser}")
 
 
@@ -1035,45 +824,10 @@ def combine_judge_scores(
             ),
         )
         return {**plan.candidate_metrics[selected], **scores[selected]}
-    if plan.parser == "beam":
-        # Every `evaluate_*` divides the accumulated per-item scores by the
-        # number of rubric items, so the category score is their mean.
-        values = [score["llm_judge_score"] for score in scores]
-        score = sum(values) / len(values)
-        return {"llm_judge_score": score, "beam_score": score}
-    if plan.parser == "beam_event":
-        return _combine_beam_event(plan, scores)
     if len(scores) == 1:
         return dict(scores[0])
     names = set().union(*(score.keys() for score in scores))
     return {name: max(score[name] for score in scores if name in score) for name in names}
-
-
-def _combine_beam_event(plan: JudgePlan, scores: Sequence[Mapping[str, float]]) -> dict[str, float]:
-    reference = cast(list[str], json.loads(plan.details["reference"]))
-    system = cast(list[str], json.loads(plan.details["system"]))
-    pair_count = len(reference) * len(system)
-    pair_scores, rubric_scores = scores[:pair_count], scores[pair_count:]
-    canonical = []
-    used: set[int] = set()
-    for system_index, candidate in enumerate(system):
-        matched = None
-        for reference_index, reference_item in enumerate(reference):
-            pair = pair_scores[system_index * len(reference) + reference_index]
-            if reference_index not in used and pair.get("equivalent") == 1.0:
-                matched = reference_index
-                canonical.append(reference_item)
-                used.add(reference_index)
-                break
-        if matched is None:
-            canonical.append(candidate)
-    result = event_ordering_scores(reference, canonical)
-    result["llm_judge_score"] = sum(score["llm_judge_score"] for score in rubric_scores) / len(
-        rubric_scores
-    )
-    # `report_results.py` uses normalized tau for the event-ordering column.
-    result["beam_score"] = result["tau_norm"]
-    return result
 
 
 def _personamem_metric(task_type: str) -> tuple[str, float] | None:
@@ -1408,19 +1162,6 @@ def _bleu_1(
     return penalty * precision
 
 
-def _gallery_normalize(value: str) -> str:
-    normalized = str(value).lower()
-    normalized = re.sub(r"(?<=\d)\.(?=\d)", "DOTPLACEHOLDER", normalized)
-    normalized = normalized.replace("_", "UNDERSCOREPLACEHOLDER")
-    normalized = re.sub(r"\b(a|an|the|and)\b", " ", normalized)
-    normalized = "".join(
-        character if character not in string.punctuation else " " for character in normalized
-    )
-    return " ".join(
-        normalized.replace("DOTPLACEHOLDER", ".").replace("UNDERSCOREPLACEHOLDER", "_").split()
-    )
-
-
 @lru_cache(maxsize=1)
 def _porter() -> _Stemmer:
     try:
@@ -1430,13 +1171,8 @@ def _porter() -> _Stemmer:
     return cast(_Stemmer, PorterStemmer())
 
 
-def _gallery_tokens(value: str) -> list[str]:
-    return _gallery_normalize(value).split()
-
-
 def _mem_gallery_normalize(value: str) -> str:
     # a93959e1e978/evaluation.py uses regex, whose word boundaries include combining marks.
-    # Keep WorldMemArena's existing stdlib-re normalizer separate.
     import regex  # type: ignore[import-untyped]
 
     normalized = str(value).lower()
@@ -1458,11 +1194,9 @@ def _mem_gallery_tokens(value: str) -> list[str]:
 def _gallery_f1(
     prediction: str,
     reference: str,
-    *,
-    tokenizer: Callable[[str], list[str]] = _gallery_tokens,
 ) -> float:
-    predicted = [_porter().stem(word) for word in tokenizer(prediction)]
-    expected = [_porter().stem(word) for word in tokenizer(reference)]
+    predicted = [_porter().stem(word) for word in _mem_gallery_tokens(prediction)]
+    expected = [_porter().stem(word) for word in _mem_gallery_tokens(reference)]
     if not predicted or not expected:
         return 0.0
     overlap = sum((Counter(predicted) & Counter(expected)).values())
@@ -1476,8 +1210,6 @@ def _gallery_bleu(
     prediction: str,
     reference: str,
     weights: tuple[float, float, float, float],
-    *,
-    tokenizer: Callable[[str], list[str]] = _gallery_tokens,
 ) -> float:
     try:
         from nltk.translate.bleu_score import (  # type: ignore[import-untyped]
@@ -1486,7 +1218,7 @@ def _gallery_bleu(
         )
     except ImportError:
         raise RuntimeError("Mem-Gallery scoring requires sensemem[benchmarks]") from None
-    predicted, expected = tokenizer(prediction), tokenizer(reference)
+    predicted, expected = _mem_gallery_tokens(prediction), _mem_gallery_tokens(reference)
     if not predicted or not expected:
         return 0.0
     return float(
