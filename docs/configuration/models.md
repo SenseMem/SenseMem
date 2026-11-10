@@ -202,7 +202,7 @@ CUDA_VISIBLE_DEVICES=0 VLLM_WORKER_MULTIPROC_METHOD=spawn uv run --frozen python
 ```
 
 Setting spawn alone does not replace the main guard. See
-[vLLM multiprocessing](https://docs.vllm.ai/en/latest/usage/troubleshooting/#python-multiprocessing).
+[vLLM multiprocessing](https://github.com/vllm-project/vllm/blob/main/docs/usage/troubleshooting.md#python-multiprocessing).
 
 ### Text reranking and scoring
 
