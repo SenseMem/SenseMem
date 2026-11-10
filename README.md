@@ -1,23 +1,43 @@
-# SenseMem
+<!-- markdownlint-disable MD033 -->
+<h1 align="center">
+  <img src="docs/assets/sensemem-banner.png" alt="SenseMem — Smarter. Stronger. Swifter. Omnimodal memory and context for AI agents." width="960">
+</h1>
 
-[![CI](https://github.com/SenseMem/SenseMem/actions/workflows/ci.yml/badge.svg)](https://github.com/SenseMem/SenseMem/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-3DA639.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/SenseMem/SenseMem/actions/workflows/ci.yml">
+    <img src="https://github.com/SenseMem/SenseMem/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-Apache%202.0-3DA639.svg" alt="License: Apache 2.0">
+  </a>
+</p>
 
-**Give your agents memory that lasts—and context that matters.**
+<p align="center">
+  <strong>Give your agents memory that lasts—and context that matters.</strong>
+</p>
 
-SenseMem is a unified context and memory layer for agents. It turns conversations, images,
-audio, and video into durable, searchable memory, then brings the right evidence back to the
-agent's current task.
+<p align="center">
+  SenseMem is a unified context and memory layer for agents. It turns conversations, images,
+  audio, and video into durable, searchable memory, then brings the right evidence back to the
+  agent's current task.
+</p>
+
+<p align="center">
+  <strong>Capture once. Remember across sessions. Build context for every task.</strong>
+</p>
+
+<p align="center">
+  <a href="docs/quickstart.md">Quick start</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="docs/api/python-sdk.md">API reference</a> ·
+  <a href="docs/benchmarks/results.md">Benchmark results</a>
+</p>
+<!-- markdownlint-enable MD033 -->
 
 An assistant should remember where you left the spare key, recognize a changed preference, and
 connect today's question with last week's conversation. SenseMem gives you the building blocks
 for that continuity: preserve the original observation, organize what it means, retrieve it by
 meaning and context, and deliver evidence your agent can use.
-
-**Capture once. Remember across sessions. Build context for every task.**
-
-[Quick start](docs/quickstart.md) · [Documentation](docs/README.md) ·
-[API reference](docs/api/python-sdk.md) · [Benchmark results](docs/benchmarks/results.md)
 
 ## Why SenseMem
 
