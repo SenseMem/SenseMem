@@ -1,7 +1,11 @@
 # Benchmarking
 
-Use `sensemem-bench eval` to measure memory quality on pinned datasets. Start with a bounded run,
-check its results, then run the full dataset and compare changes under the same conditions.
+Measure how well your agent uses memory with `sensemem-bench eval`. The harness calls the public
+SDK on isolated stores and reports answer quality, retrieval diagnostics, latency, and resource
+use. Baseline arms and paired comparisons help you choose models and evaluate changes.
+
+Start with a bounded run, then evaluate the complete dataset under the same conditions.
+For existing measurements, see [benchmark results](benchmarks/results.md).
 
 ## 1. Install and choose a task
 
@@ -68,8 +72,8 @@ uv run --frozen sensemem-bench eval \
 `sensemem` answers using memory; `blind` answers without memory and measures the same reader's
 prior knowledge. Both use the same selected questions and scorer.
 
-**`--limit 1` does not mean one question.** For LoCoMo-Refined it selects one conversation and
-all of its questions. The selection unit varies by task; report the emitted `question_count`.
+`--limit 1` selects one task-specific unit. For LoCoMo-Refined, that is one conversation and
+all its questions. Report the emitted `question_count` to show the evaluated population.
 `--limit` accepts an integer count, a fraction between zero and one, or `all`.
 
 Missing supported data downloads automatically. Video preparation needs `ffmpeg` and `ffprobe`;
@@ -113,9 +117,9 @@ Check these fields before quoting a task score:
 | `official_metric`, `scorer_protocol`, `judge_model` | Check that the metric uses the required scorer and judge |
 | `controls` | Read the blind score and, where gold source labels exist, recall and random-ranker controls |
 
-An official scoring formula does not establish leaderboard equivalence. Results record
-`cross_harness_comparable: false`; comparisons with another harness require a protocol audit.
-Partial or unverified data cannot establish a full-dataset score.
+Report scores with their recorded input and scoring protocols. Results record
+`cross_harness_comparable: false`; use matching protocols for comparisons with another harness.
+Use full, verified inputs for a full-dataset score.
 
 Retrieval controls are unavailable for datasets without compatible gold source IDs. Such runs
 report missing controls explicitly; use them for answer evaluation without claiming retrieval

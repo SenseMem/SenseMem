@@ -1,100 +1,101 @@
 # Product capabilities
 
-SenseMem gives agents durable memory and task-specific context through one embedded Python
-runtime. Applications provide observations and model backends; SenseMem stores evidence, recalls
-it, and returns search results, a context bundle, or a grounded answer.
+SenseMem gives agents continuity across sessions and modalities. It preserves observations,
+organizes evidence, and retrieves the context an application needs for its next task—all through
+one embedded runtime.
 
-## When to use it
+Use it to build assistants that remember preferences and events, agents that recall original
+photos and recordings, and applications that assemble useful context from a growing history.
 
-- Keep facts, events, preferences, and procedures across assistant sessions.
-- Recall evidence from text, images, audio, and video with compatible model backends.
-- Give an agent a bounded context bundle while it retains control of prompts and actions.
-- Run local memory behind Python, HTTP, MCP, or a command line.
+## What your application gains
 
-Phones, smart glasses, and robots can supply observations through application adapters. Device
-capture, synchronization, localization, and sensor drivers belong to the host application.
-This page describes SenseMem 0.3; [design principles](design-principles.md) covers future direction.
+**Durable memory without a database service.** Records, embeddings, and original media live in
+your application's data directory. Reopen it to continue; rebuild the search index from stored
+embeddings when needed.
+
+**One contract for text and media.** The same operations accept text, images, audio, video,
+and ordered combinations. Compatible backends process original media; transcripts and captions
+provide source-labelled text routes.
+
+**Task-ready context with traceable evidence.** Retrieve ranked hits, compile a structured
+context bundle, or generate a grounded answer. Time, place, identity, and evidence remain
+available throughout the path.
+
+**Memory that adapts to new information.** Optional formation derives typed assertions;
+explicit maintenance reinforces, consolidates, corrects, or forgets records. An operation log
+supports inspection and rollback.
 
 ## The memory loop
 
 ```text
-Observation -> durable record -> optional typed formation
-                                  |
-Task -> search -> evidence --------+
-     -> compile -> context for the host agent
-     -> ask -> grounded answer with evidence
+Observations -> durable memory -> optional formation and maintenance
+                     |
+Task ----------------+-> search  -> ranked evidence
+                     +-> compile -> structured context for your agent
+                     +-> ask     -> grounded answer with evidence
 ```
 
-`add` returns searchable records. `capture` acknowledges a durable observation before model work;
-`settle` enriches it and makes it searchable. Optional formation adds evidence-linked assertions.
-The host explicitly schedules consolidation, reviews operation history, and can roll changes back.
+`add()` returns searchable records. `capture()` saves observations before inference;
+`settle()` enriches and indexes them on the host's schedule. Both preserve the same original
+evidence and use the same configured model stages.
 
-## Capabilities and requirements
+## Choose capabilities
 
-| Capability | Supported behavior | Requirement and guide |
+| Capability | What it enables | Configuration or guide |
 | --- | --- | --- |
-| Durable capture | Single, batched, streamed, and deferred writes; immutable original media | Embedding backend; [core concepts](concepts.md) |
-| Retrieval | Dense, lexical, or hybrid search; scope/time filters; optional reranking and diagnostics | [Retrieval settings](configuration/settings.md) |
+| Durable capture | Single, batched, streamed, and deferred writes with immutable original media | Embedding backend; [core concepts](concepts.md) |
+| Retrieval | Dense, lexical, or hybrid search with scope/time filters, reranking, and diagnostics | [Retrieval settings](configuration/settings.md) |
 | Context compilation | Typed sections, item/character/media budgets, conflicts, and unknowns | [Context compilation](context-compilation.md) |
-| Grounded answers | Buffered or streamed answers, evidence, and abstention | Generation backend; [Python memory API](api/python-memory.md) |
-| Typed memory | Observations, entities, events, states, relations, affect, traits, and host-authorized response policies | Optional formation; [typed memory](typed-memory.md) |
-| Memory maintenance | Consolidate, correct, reinforce, forget, audit, and roll back | Proposals need a consolidation backend; [memory management](memory-management.md) |
-| Time and place | Event intervals, valid/known time, symbolic places, and same-frame spatial filters | Caller-supplied context; [memory types and time](memory-types-time-and-decay.md) |
+| Grounded answers | Buffered or streamed answers with evidence and abstention | Generation backend; [memory API](api/python-memory.md) |
+| Typed memory | Entities, events, states, relations, affect, and traits derived from observations | Formation backend; [typed memory](typed-memory.md) |
+| Memory maintenance | Consolidation, correction, reinforcement, reversible forgetting, and audit history | Consolidation backend for proposals; [memory management](memory-management.md) |
+| Time and place | Event intervals, valid/known time, symbolic places, and same-frame spatial filters | Caller-supplied context; [time and decay](memory-types-time-and-decay.md) |
 | Local identities | Voice/face observations, naming, corroborated linking, unlinking, and erasure | Speech and/or face backend; [identity API](api/python-identity.md) |
-| Continuous input | Explicit update/final/cancel lifecycle for audio, vision, and interaction streams | Host-normalized packets; [streaming guide](omni-streaming-and-interaction-memory.md) |
-| Data lifecycle | Host-recorded consent, subject export, deletion, and retention passes | Host authority; [data-subject operations](api/python-identity.md#data-subject-rights) |
+| Continuous input | Update/final/cancel lifecycles for audio, vision, and interaction streams | Host-normalized packets; [streaming](omni-streaming-and-interaction-memory.md) |
+| Data lifecycle | Host-recorded consent, subject export, deletion, and retention passes | [Data-subject operations](api/python-identity.md#data-subject-rights) |
 
-Modality coverage follows declared backend capabilities. A transcript supports speech content;
-visual or spatial claims need corresponding evidence. Evidence IDs establish provenance, and
-source coverage alone does not prove that a model's answer is correct.
+Enable optional capabilities independently. Modality coverage follows the selected backends'
+declarations; the kernel validates their outputs before durable state changes. Response-policy
+records require host authorization.
 
-## Python, REST, MCP, and CLI surfaces
-
-All adapters call the same `Memory` kernel. Network exposure is opt-in.
+## Connect through your preferred interface
 
 | Surface | Use | Reference |
 | --- | --- | --- |
-| Python | Full synchronous and asynchronous integration | [SDK](api/python-sdk.md) |
+| SDK | Full synchronous and asynchronous integration | [SDK](api/python-sdk.md) |
 | REST | Share one owner with HTTP clients under `/v1` | [REST](api/rest.md) |
-| MCP | Expose thirteen tools to an agent host | [MCP](api/mcp.md) |
-| CLI | Local operations or requests to an existing REST owner | [CLI](api/cli.md) |
+| MCP | Give an agent host thirteen tools with configurable authority | [MCP](api/mcp.md) |
+| CLI | Operate locally or call an existing REST owner | [CLI](api/cli.md) |
 
-Adapters expose different subsets of the SDK. Consult their references for exact routes, tools,
-administrative opt-ins, and errors. `Memory.capabilities`, `GET /healthz`, MCP instructions, and
-`sensemem doctor` describe the configured capabilities through the same document.
+These adapters share the same kernel and expose the operations listed in their references.
+`Memory.capabilities`, `GET /healthz`, MCP instructions, and `sensemem doctor` describe the
+configured capabilities through a common document.
 
-## Deployment and isolation
+## Deploy with clear ownership
 
-One physical `data_dir` has one live owner. Separate applications or security domains use separate
-directories. Other processes call the owner through a transport; directories do not synchronize.
-Metadata is application payload and provides no access-control boundary.
+One physical `data_dir` has one live owner. Allocate separate directories for independent data
+or security domains; let other processes call the owner through a transport.
+SQLite and original media are authoritative, and Zvec is rebuildable.
 
-SQLite and original media are authoritative; Zvec is rebuildable. Storage remains local while
-configured inference can be local or remote. Back up SQLite and assets together. The host supplies
-authentication, authorization, encryption, TLS, quotas, and service scheduling.
+Choose local or remote inference explicitly. The host controls authentication, authorization,
+TLS, encryption, quotas, and scheduling. Use a local filesystem and back up SQLite and assets
+together. See [deployment](deployment.md) and [operations](operations.md).
 
-See [deployment](deployment.md) for topology and [operations](operations.md) for runbooks.
+Phones, glasses, robots, and software tools can supply observations through application
+adapters. The host handles capture, device drivers, synchronization, localization, goals,
+and actions. SenseMem handles memory semantics, evidence, retrieval, and context construction.
+Spatial filters compare coordinates within a declared frame.
 
-## Extend a composition
+## Compose and extend
 
-Use bundled providers through `Memory.from_config`, grouped application backends through
-`Memory.from_plugins`, or individual backend objects through `Memory(...)`.
-[Configuration](configuration.md) explains the choices;
-[backend protocols](api/python-backends.md) define custom inference implementations.
+Use `Memory.from_config()` for bundled providers, `Memory.from_plugins()` for a capability
+bundle, or `Memory(...)` for individual backends. Narrow typed protocols let you choose models
+without changing the memory API. Reopen the instance to change its composition.
 
-Composition is fixed for one instance's lifetime. Backends declare inference capabilities; the
-kernel retains validation, stable IDs, durability, evidence policy, and final SQLite hydration.
-Custom transports call the public SDK. SQLite, media storage, and Zvec are internal components.
+The kernel keeps validation, stable IDs, durability, evidence policy, and final SQLite hydration.
+[Configuration](configuration.md) explains composition;
+[backend protocols](api/python-backends.md) define custom inference implementations;
+[plugin architecture](plugin-architecture.md) explains extension rules.
 
-## Limits
-
-- SenseMem is an embedded runtime with one writer-owner per directory. Shared-volume multi-writer
-  operation and network filesystems are unsupported.
-- Model quality depends on the selected backends and workload. Evaluate changes with the
-  [model quality gate](model-quality.md) and [benchmarks](benchmarking.md).
-- The host agent owns goals, tools, actions, and scheduling. Stored procedures and response-policy
-  memories are evidence, never authority to change runtime policy.
-- Spatial metadata does not provide coordinate transforms or native 3D-scene understanding.
-- There is no bundled cross-device sync, device SDK, plugin discovery, or live backend swap.
-
-Start with the [quick start](quickstart.md), then select the capabilities your application needs.
+This guide describes SenseMem 0.3.0. Start with the [quick start](quickstart.md), or explore the
+long-term goals in [design principles](design-principles.md).

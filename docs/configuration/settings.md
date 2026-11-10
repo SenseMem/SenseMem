@@ -1,9 +1,10 @@
 # Runtime settings
 
-The declarative `settings` mapping is the value-only `MemoryConfig`. Pass it through
-`Memory(..., config=MemoryConfig(...))` or `Memory.from_plugins` for direct construction.
-Tracing uses a separate `tracer=` argument. Return to [Configuration](../configuration.md)
-for model slots.
+Control how SenseMem retrieves, packs evidence, ranks memories, and matches identities through
+the `settings` mapping. Each setting below lists its default and effect.
+
+For direct construction, pass `config=MemoryConfig(...)` to `Memory` or `Memory.from_plugins`.
+Tracing uses the separate `tracer=` argument. [Configuration](../configuration.md) covers model slots.
 
 ## Retrieval and grounding
 
@@ -161,11 +162,12 @@ See [formation history and retention](lifecycle.md), [independent evidence](../t
 | `face_margin` | `0.05` |
 | `identity_link_min_assets` | `2` |
 
-These are starting thresholds, not calibrated probabilities or biometric authentication.
-A high threshold fragments people; a low one can falsely merge them. Matching uses the best score
+Calibrate these matching thresholds for the intended devices and population. A high threshold
+fragments people; a low one can falsely merge them. Matching uses the best score
 from up to 20 exemplars per identity, so pairwise calibration alone is insufficient. Margins reject
 ambiguous competitors and cannot replace calibration, especially with one enrolled identity.
 
 Use separate labelled enrollment/evaluation samples from the intended microphones, cameras,
 environment, and population. Measure false matches/rejections at the deployed bank size and
-recheck changed recipes or conditions. Identity scopes provide no access control.
+recheck changed recipes or conditions. Identity scores are similarity signals; use host
+authentication and authorization for access control.

@@ -1,10 +1,11 @@
 # Affective memory
 
-SenseMem represents affect as a sourced, timed assessment, with confidence and an explicit evidence
-basis. A model estimate does not establish a person's internal state. Preserve the observation,
-the estimate, and the person's own statement as distinct evidence.
+Keep interaction context without turning one moment into a permanent profile. SenseMem records
+affect as a sourced, timed assessment and requires independent support before an inferred trait
+becomes active in recall. Original observations, model estimates, and a person's own statements
+remain distinct.
 
-This page describes the supported representation and its limits. The
+This page explains representation, formation, visibility, and response-policy authority. The
 [SDK reference](api/python-sdk.md) defines the values, [memory lifecycle guide](memory-types-time-and-decay.md)
 defines visibility and withdrawal, and [context compilation](context-compilation.md) defines delivery.
 
@@ -33,9 +34,9 @@ The bundled OpenAI-compatible `FormationBackend` can propose affect and trait re
 source observation commits. Formation is disabled unless configured. Its native modalities default
 to text; source-labelled captions and transcripts can also provide a text route.
 
-There is no bundled prosody, facial-expression, or acoustic-affect recognizer. Declaring audio or
-visual support on the formation slot only controls which inputs reach the model; it does not
-establish affect-recognition quality. A custom adapter can use the existing formation contract.
+Use a custom formation adapter for prosody, facial-expression, or acoustic-affect analysis.
+Declare the modalities it analyzes and evaluate its estimates on representative inputs.
+Formation modality declarations control routing.
 See [formation configuration](configuration/lifecycle.md#automatic-memory-formation).
 
 Keep one estimate per cue channel when the channels disagree. The kernel excludes `AFFECT` from
@@ -73,8 +74,8 @@ mean that the event caused the affect, nor does it deliver the event's content. 
 is optional and can be skipped after the compilation deadline. See
 [affect cues](context-compilation.md#affect-cues) for rendering and limits.
 
-No built-in trajectory, change-point, per-person baseline, or affect-specific ranking API is
-provided. Ordinary relevance, time, scope, and evidence rules determine retrieval.
+Ordinary relevance, time, scope, and evidence rules determine affect retrieval. Applications can
+use those records for their own trajectory or per-person analysis.
 
 ## Response-policy authority
 
@@ -102,8 +103,7 @@ changing the analysis or prompt.
 
 ## Evaluation and privacy
 
-SenseMem does not publish a calibrated affect benchmark result. Evaluate a proposed adapter on
-held-out, representative, appropriately authorized inputs before relying on its estimates. Useful
+Evaluate an affect adapter on held-out, representative, appropriately authorized inputs. Useful
 measurements include valence/arousal error, label accuracy, calibration, abstention, false trait
 promotion, correction behavior, and downstream task quality against a text-only baseline.
 Report the model revision, source population, modality, annotation basis, and costs.

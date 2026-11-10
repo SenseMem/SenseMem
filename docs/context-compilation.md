@@ -1,8 +1,11 @@
 # Context compilation
 
-Use `memory.compile(goal)` when the host agent needs evidence for its own prompt or workflow.
-It returns a bounded `ContextBundle` with typed sections, conflicts, and missing-context notes.
-Use `ask()` when SenseMem should generate the answer.
+Give your agent structured memory that fits its context budget. `memory.compile(goal)` selects
+evidence and returns a `ContextBundle` organized into actors, facts, events, procedures, affect,
+and traits, with conflicts and missing-context notes.
+
+Use the bundle in your own prompt or workflow. Compilation needs no generation model;
+`ask()` adds grounded answer generation when you want SenseMem to produce the answer.
 
 ## Compile a first bundle
 
@@ -53,10 +56,11 @@ tripled when `min_confidence` or `freshness` is set. Each requested memory type 
 index route; selecting every type uses the unfiltered route. Confidence and freshness filter
 the returned window. Scope, relative time, and authoritative SQLite visibility match search.
 
-There is no generation, recall planning, evidence expansion, or conflict resolution. Spoken
-query preparation may cache a transcript, and an empty bundle records a bounded query-failure
-signal; neither creates a memory record. Counts describe the candidate window, not the whole
-store. A full window that still loses evidence reports `candidates_exhausted`.
+Compilation uses one retrieval round and preserves conflicts for the host to resolve. It runs
+without answer generation, recall planning, or linked evidence expansion. Spoken-query preparation
+may cache a transcript; an empty bundle records a bounded query-failure signal. Neither creates
+a memory record. Counts describe the candidate window, and a full window that still loses
+evidence reports `candidates_exhausted`.
 
 ## Budget
 
@@ -126,8 +130,8 @@ controls the whole selection. Remaining places fill by score, and a cheaper cand
 an oversized one. Derived closures or conflicts instead require strictly ranked atomic groups.
 
 The bundle also reports included-hit/excerpt event bounds, sorted spatial `frames` and symbolic
-`places`, complete `hits` in rank order, and `excerpts` in selection order. This selection policy
-needs downstream evaluation before claiming a diversity benefit.
+`places`, complete `hits` in rank order, and `excerpts` in selection order. Evaluate section
+coverage and downstream task quality when choosing a budget for your application.
 
 ## Evidence-closed selection
 

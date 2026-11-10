@@ -1,7 +1,8 @@
 # Troubleshooting
 
-Use the structured error fields to identify the failing boundary. This example assumes an open
-`memory` with a configured answerer:
+Find the failing stage, take the corresponding action, and retry when the error says the request
+can succeed later. SenseMem's structured errors share the same classification across interfaces.
+This example assumes an open `memory` with a configured answerer:
 
 ```python
 from sensemem import SenseMemError
@@ -24,14 +25,14 @@ store, and `--url` checks `/healthz`.
 
 ## Error triage
 
-| Signal | First check | Do not assume |
+| Signal | Meaning | Action |
 | --- | --- | --- |
-| `validation_error`, REST 422 | Input shape, media type, event bounds, IDs, and declared modality support | Retrying unchanged input will help. |
-| `model_error` | Backend slot, credentials, endpoint, timeout, provider response, and capability declaration | SQLite or Zvec is damaged. |
-| `model_output_truncated` | Generation output limit and ask evidence limit | An identical retry will finish. |
-| `index_unavailable` | Zvec open, mutation, flush, file descriptors, and collection files | The preceding SQLite write rolled back. |
-| `storage_error` | Directory ownership, filesystem, assets, SQLite, schema, and compatibility metadata | Deleting `zvec/` repairs authoritative data. |
-| `memory_not_found`, REST 404 | The ID and authoritative SQLite record | A stale Zvec candidate is a record. |
+| `validation_error`, REST 422 | Input violates its contract | Correct shape, media type, event bounds, IDs, or declared modality support. |
+| `model_error` | A configured model stage failed | Check the slot, endpoint, credentials, timeout, and capability declaration. |
+| `model_output_truncated` | Generation reached its output limit | Increase output capacity or reduce selected evidence. |
+| `index_unavailable` | Search projection work failed | Inspect Zvec, disk, and file descriptors; check SQLite for the committed record. |
+| `storage_error` | Local state or ownership failed validation or I/O | Check the directory owner, filesystem, assets, SQLite, schema, and model identities. |
+| `memory_not_found`, REST 404 | The authoritative record is absent | Verify the ID and directory with `get()` or `list()`. |
 
 Retry only when `retryable` is true. The closed retryable reasons are `connection_failed`,
 `capacity_exceeded`, `data_dir_in_use`, `flush_failed`, `index_missing`, `provider_unavailable`,

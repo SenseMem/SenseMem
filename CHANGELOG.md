@@ -1,8 +1,8 @@
 # Changelog
 
-Notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-SenseMem is pre-1.0; backward compatibility is not maintained. See the
-[documentation index](docs/README.md) for supported contracts.
+Release changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Review the breaking changes before upgrading a deployment. The
+[documentation index](docs/README.md) describes the current supported contracts.
 
 ## Unreleased
 
@@ -39,6 +39,8 @@ Changes for version `0.3.0`.
 
 ### Added
 
+- A task-oriented documentation map, a minimal getting-started path, and consolidated
+  [benchmark results](docs/benchmarks/results.md).
 - EmbeddingGemma 2 precision selection and selective vision/audio loading through SDK and
   declarative configuration, with an opt-in pinned-model parity check. See
   [loading quality](docs/model-quality.md#check-embeddinggemma-2-loading).
@@ -111,11 +113,11 @@ Changes for version `0.3.0`.
 - PostgreSQL/pgvector, Celery, Redis, S3, service workers, logical tenant/request scoping,
   automatic schema migration, and obsolete SDK/CLI aliases.
 
-### Known limits
+### Deployment notes
 
 - One physical `data_dir` has one live owner. Hosts provide authentication, authorization, TLS,
   quotas, filesystem protection, and backup policy.
 - Deletion removes live records and unreferenced media; it does not guarantee secure erasure
   from storage remnants, operation payloads, snapshots, or backups.
-- Model proposals and citations are not proofs of factual support. Optional inference and
-  retrieval policies require task-specific quality evaluation before a deployment relies on them.
+- Qualify model and retrieval choices for your application with the
+  [model quality gate](docs/model-quality.md) and [benchmark harness](docs/benchmarking.md).

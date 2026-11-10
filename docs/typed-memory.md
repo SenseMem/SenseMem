@@ -1,8 +1,11 @@
 # Typed memory and evidence
 
-Typed memory adds assertions to retained observations. Use
-[memory types and time](memory-types-time-and-decay.md) for ordinary roles and filters, and
-[formation configuration](configuration/lifecycle.md#automatic-memory-formation) to enable a former.
+Turn observations into entities, events, changing states, and relationships while keeping their
+supporting evidence. Typed memory separates what was captured from what was inferred and
+maintains confidence, visibility, and history as evidence changes.
+
+Use [memory types and time](memory-types-time-and-decay.md) for ordinary roles and filters.
+Enable a formation backend with [formation configuration](configuration/lifecycle.md#automatic-memory-formation).
 
 ## Add an observation
 
@@ -37,7 +40,7 @@ The persisted record exposes `MemoryContext` and `MemoryRecord.place_id`. Source
 | `TRAIT` | Semantic | Longer-term characteristic |
 | `RESPONSE_POLICY` | Procedural | Host-authorized, feedback-grounded response guidance |
 
-A former can propose the first six kinds; the host authorizes response policies through
+A formation backend can propose the first six kinds; the host authorizes response policies through
 `apply()`. Source commit precedes formation. A model error leaves that observation durable and
 the unfinished formation retryable. The kernel checks proposals, assigns IDs, versions claims,
 and commits evidence-linked records without rewriting the source.
@@ -165,5 +168,5 @@ and alternatives and makes no model request. Formation/apply/rollback may re-emb
 inside that transaction; embedding failure rolls it back. Deletion prepares a batch from an exact
 rollback-only preview before its final commit.
 
-Structural SDK fixtures validate these rules; real perception and interaction quality still need
-task-specific evaluation.
+Use the [model quality gates](model-quality.md) and [benchmark harness](benchmarking.md) to evaluate
+a model configuration against the tasks your application needs.

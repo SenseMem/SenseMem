@@ -1,8 +1,8 @@
 # Product goals and design principles
 
-SenseMem connects incoming context, durable memory, task-specific recall, and context construction
-through one embedded runtime. Applications supply goals, actions, and source integrations; SenseMem
-maintains memory semantics, evidence, retrieval, and local consistency.
+SenseMem is designed to make an agent's history useful at the moment it acts. Three goals guide
+the product: better context, simpler composition, and broader capability. One embedded runtime
+connects incoming observations, durable memory, task-specific recall, and context construction.
 
 This page explains the design criteria. [Product capabilities](product-capabilities.md) describes
 supported behavior, [architecture](architecture.md) describes its implementation, and
@@ -16,8 +16,9 @@ supported behavior, [architecture](architecture.md) describes its implementation
 | **Swifter** | Make capabilities easy to compose, models easy to select, and integrations easy to extend. | Measure integration effort and verify that optional components can be enabled independently. |
 | **Stronger** | Support more deployment environments and improve quality across memory and multimodal tasks. | Publish tested configurations with reproducible quality, latency, and resource measurements. |
 
-Hardware coverage and state-of-the-art quality are goals evaluated per configuration. Neither a
-model's capabilities nor a score on one dataset establishes support or superiority elsewhere.
+Assess hardware coverage and task quality for each model configuration using reproducible
+measurements. The [benchmark results](benchmarks/results.md) show measured configurations;
+these principles guide further development.
 
 ## One memory surface across modalities
 
@@ -41,7 +42,7 @@ affect durable state; a model never grants itself authority to change runtime po
 
 `search()` returns evidence. `compile()` selects an evidence-closed context bundle and reports
 conflicts and missing information. `ask()` adds grounded generation and explicit abstention.
-Citations and confidence values remain inspectable claims, rather than proofs of truth.
+Citations expose the source of a claim, and confidence records its operational support.
 
 Corrections preserve the distinction between what was observed and what was inferred. Cognitive
 forgetting, validity expiration, ranking decay, and physical deletion have different effects and
@@ -76,7 +77,7 @@ OpenAPI, MCP schemas, and structured CLI output.
 
 Transport authority is explicit. REST and MCP expose documented subsets and switches; memory
 management and index maintenance stay with the owning process. Model capabilities and granted
-administrative authority are different concerns. The [surface map](product-capabilities.md#python-rest-mcp-and-cli-surfaces)
+administrative authority are different concerns. The [surface map](product-capabilities.md#connect-through-your-preferred-interface)
 lists the supported operations.
 
 ## Durable local authority
@@ -122,7 +123,6 @@ Use official SDKs, maintained model runtimes, existing dependencies, and the sta
 building infrastructure. New dependencies require a public use case and belong in the narrowest
 optional extra.
 
-SenseMem does not provide agent planning, robot control, device synchronization, a hosted database,
-or a worker service. Add abstractions when a concrete requirement demonstrates a gap in the
-existing boundary. Keep benchmark code outside product dependencies and exercise product behavior
-through the public SDK.
+The host owns agent planning, device integration, robot control, and synchronization. SenseMem
+focuses on the memory boundary and runs its storage and execution inside the owning process.
+Add abstractions for demonstrated requirements, and evaluate product behavior through the public SDK.

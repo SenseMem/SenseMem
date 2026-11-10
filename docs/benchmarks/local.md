@@ -1,7 +1,8 @@
 # Local benchmark measurements
 
-These utilities measure storage, SDK load, or consolidation. For dataset answer quality, use
-the [evaluation runner](../benchmarking.md).
+Size a local deployment and measure maintenance behavior with focused benchmarks for the index,
+SDK concurrency, and consolidation. Each utility reports the boundary it measures.
+Use the [evaluation runner](../benchmarking.md) for dataset answer quality.
 
 ## Measure the local index
 
@@ -16,10 +17,9 @@ The directory must be absent or empty. Output is one JSON object with ingestion/
 seconds, exact-search `recall_at_k`, p50/p95/p99 query latency, QPS, and SQLite/Zvec/total disk
 bytes. Use a fresh directory for each quantization mode.
 
-This is the sole direct-storage-adapter benchmark. Its synthetic vectors bypass embedding,
-media preparation, retrieval policy, and answering. Output records
-`scope: storage_microbenchmark` and exclusions; end-to-end product ingestion comes from an
-`eval` run's `ingest` block.
+This microbenchmark isolates SQLite and Zvec with synthetic vectors. Output records
+`scope: storage_microbenchmark`; use an `eval` run's `ingest` block to measure product
+ingestion including embedding and media preparation.
 
 ## Measure local SDK concurrency
 
@@ -81,8 +81,8 @@ first. The deliberation window covers the whole fixture.
 | `deliberation.model_calls` | Backend round trips; a request-count proxy, not token or currency cost |
 
 Undefined rates are `null`. The fixture sets `minimum_relevance=0` and disables answer
-reinforcement. Report the consolidator revision and scenario seed. Fixture success does not
-establish retrieval quality or real-world consolidation quality.
+reinforcement. Report the consolidator revision and scenario seed. Use representative application
+evidence for deployment-specific quality evaluation.
 
 To measure the slow loop's effect on dataset answers, use `eval --deliberate` with a
 `consolidation` configuration. It runs after each causal cutoff's ingestion, before its questions,

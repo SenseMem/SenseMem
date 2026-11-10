@@ -1,7 +1,10 @@
 # Runtime limits
 
-These fixed limits apply to the process owning each data directory. For overload handling and
-sizing procedures, see [Operations](operations.md#concurrency-and-overload).
+Bound producer concurrency and size the host using SenseMem's admission, worker, and input
+budgets. The tables below distinguish per-directory limits from process-wide budgets shared
+across directories.
+
+For overload handling and sizing procedures, see [Operations](operations.md#concurrency-and-overload).
 
 ## Admission limits
 
@@ -90,7 +93,7 @@ ceiling. Caller-owned buffers and threads, framework bodies,
 decoded media, native model/Zvec allocations, backend request sizes, and provider quotas still
 need host sizing. A full capture backlog refuses new queued records atomically; settle existing
 captures before retrying. Duplicate captures remain idempotent at the limit.
-The limits are conservative safety bounds, not measured optimal throughput settings.
+Choose producer concurrency from measurements within these bounds.
 Use the [local SDK load test](benchmarks/local.md#measure-local-sdk-concurrency) to measure throughput,
 tail latency, and overload rejections for a physical store before tuning its producers.
 Use backend timeouts and bound the host's own producers. At the HTTP server boundary,

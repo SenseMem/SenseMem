@@ -1,8 +1,12 @@
 # Python control operations
 
-These host-process methods change memory deliberately. They are not exposed by REST or MCP.
-Start with the [management guide](../memory-management.md); see [typed evidence](../typed-memory.md)
-for support and state semantics and [operation values](python-values.md#control-operations) for fields.
+Consolidate evidence, correct claims, forget reversibly, and audit or undo memory changes.
+These methods run in the owning host process, where the application controls inference budgets
+and administrative authority.
+
+Start with [memory management](../memory-management.md). See [typed evidence](../typed-memory.md)
+for support semantics and [operation values](python-values.md#control-operations) for fields.
+REST and MCP leave these operations with the owner.
 
 | Task | Methods |
 | --- | --- |
@@ -103,7 +107,7 @@ consolidate_pending(
 ) -> ConsolidationReport
 ```
 
-Runs due candidates with each row's trigger, for at most `max_rounds`. `Idle=True` admits the host's
+Runs due candidates with each row's trigger, for at most `max_rounds`. `idle=True` admits the host's
 approved idle window. It stops on a zero-yield pass without spinning; no due candidates means no
 backend call. Candidate scheduling arguments belong here, while explicit trigger belongs to
 consolidate. Returns the same `ConsolidationReport`.
@@ -170,7 +174,7 @@ Unlink rollback re-merges; identity erasure logs IDs/counts only and cannot reve
 ### Replay
 
 Replay onto a fresh store with the same sources/recipe reproduces operation keys and
-content-addressed derived IDs. `Applied_at` is new. Event-derived IDs reproduce only with matching
+content-addressed derived IDs. `applied_at` is new. Event-derived IDs reproduce only with matching
 source `occurred_at`. A changed derivation recipe intentionally produces different IDs.
 
 ## forget

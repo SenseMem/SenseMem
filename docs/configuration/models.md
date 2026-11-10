@@ -1,7 +1,11 @@
 # Model setup
 
-Choose the [extras and composition](../configuration.md) first. Connection fields and defaults
-are in [Provider fields](providers.md). This page covers model recipes and runtime requirements.
+Select an embedding model, add reranking or perception where useful, and keep stored model spaces
+compatible across restarts. This guide gives runnable configurations and runtime requirements
+for each bundled model path.
+
+Start with [extras and composition](../configuration.md).
+[Provider fields](providers.md) lists connection controls and defaults.
 
 ## Embedding choices
 

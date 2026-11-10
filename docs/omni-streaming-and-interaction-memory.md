@@ -1,7 +1,8 @@
 # Omni streaming and interaction memory
 
-SenseMem separates changing capture state from durable memory. `StreamEvent` is the explicit form
-of that separation:
+Connect continuous input to durable memory without storing every partial hypothesis.
+SenseMem supports speculative recall during a turn and an explicit commit when the observation
+is complete. `StreamEvent` defines that lifecycle:
 
 1. An `UPDATE` is a complete current snapshot used only for speculative search.
 2. A `FINAL` is a completed observation eligible for exactly one durable write.
@@ -34,10 +35,8 @@ Partial query snapshots must be immutable: prefetch rejects `Path` atoms, whose 
 change while a search is running. Read a capture frame into `Blob` or use an existing `AssetRef`.
 Completed durable writes still accept ordinary local `Path` content through the SDK.
 
-Everything on this page except `ask_stream()` streams input into memory; `ask_stream()` is the one
-that streams an answer out, and it is a delivery choice rather than a capture lifecycle. Its
-contract lives with the other recall operations in the
-[Python SDK reference](api/python-memory.md).
+The capture APIs stream observations into memory. `ask_stream()` streams an answer out; its
+delivery contract is in the [memory API](api/python-memory.md#ask_stream).
 
 ## Add completed observations
 
@@ -91,18 +90,16 @@ while memory.settle(limit=32):
     pass
 ```
 
-Loop on what `settle()` returns rather than on `pending_captures()`: a record that reached the
-retry ceiling stays queued on purpose, so a loop that waits for the queue to empty never ends.
-`pending_captures()` is how you then see which record it is and why, and `awaiting` says whether
-a queued record has no vectors yet or is already searchable and owes only formation.
-`settle(memory_ids=...)` runs named records alone and ignores the ceiling for them, so a parked
-capture is retried by hand rather than by raising the ceiling for everything. Settlement claims are per record: concurrent calls for the same record wait and recheck its
-queue entry, while disjoint records can settle concurrently.
+Continue while `settle()` returns completed work. Rows at the retry ceiling remain queued;
+inspect their `attempts`, `last_error`, and `awaiting` fields with `pending_captures()`.
+`awaiting="enrichment"` means vectors are pending; `awaiting="formation"` means the record is
+searchable and typed formation remains. After fixing a failure, retry that record explicitly with
+`settle(memory_ids=...)`, which bypasses its attempt ceiling. Claims prevent duplicate work on
+one record while disjoint records can settle concurrently.
 
-**Contract:** keep `add()` where a caller needs the record searchable on return, and keep the
-enrichment loop explicit. Nothing else settles for you, so an application that never calls
-`settle()` accumulates durable memories that `search()`, `ask()`, and `compile()` cannot see. See
-the [Python SDK reference](api/python-memory.md) for the exact failure semantics.
+Use `add()` when the caller needs searchability on return. With `capture()`, schedule
+`settle()` explicitly; retrieval and shutdown leave deferred work queued. See
+[memory operations](api/python-memory.md) for failure semantics.
 
 ## Prefetch a changing query
 
@@ -181,9 +178,8 @@ SQLite commit, and enrichment deferred to `settle()`. In capture mode, automatic
 `search()` until settlement. The flag identifies capture mode; an idempotent capture of an existing
 record preserves its readiness. Use `pending_captures()` to inspect actual outstanding work.
 A `StreamInput` transcript or description is folded in at capture time,
-so the deferred commit lands on the same content-addressed record the strong path would have
-written. The default is unchanged: without the flag, a final still commits through `add()` and is
-searchable when the commit yields.
+so capture and add produce the same content-addressed record. By default, finals use `add()`
+and yield searchable records.
 
 ```python
 audio = AsyncAudioStream(async_memory, limit=8, capture=True)
@@ -292,17 +288,14 @@ embedder, `VisionPartial` drives retrieval and its final value attaches to the k
 final frame once, before finalization, so speculative retrieval has a query to work with. With none
 of those routes, finalization fails instead of discarding the frame.
 
-That early call is the text-only case only. It is a scheduling choice, not the condition for
-describing at all: `add` and `add_many` call a configured describer for **every** embedder whenever
-a visual asset still has no description, and union the text into the stored and indexed document
-regardless of embedder capability, because what the lexical document contains is a separate question
-from which modality the embedder accepts. Configuring no describer stays an exact no-op on both
-paths.
+This early description prepares speculative retrieval for a text-only embedder. During ordinary
+writes, a configured describer processes every not-yet-described visual regardless of embedding
+modality. Its labelled text enriches the stored record and lexical search while original media
+remains available.
 
 ## Interaction-derived records
 
-Without a configured former, interaction memory is an application convention over the existing
-three memory types, not another store or a fourth type:
+Organize interaction memory with the existing three memory types:
 
 | Derived information | Memory type |
 | --- | --- |
@@ -372,9 +365,11 @@ A trait is a long-horizon claim and has a stricter visibility rule:
 - a `MODEL_INFERENCE` stays hidden from active search until two independent source observations
   support the same normalized subject/predicate/value claim;
 - repeated extraction from one observation or shared `source_id` counts once;
-- confidence uses the maximum within one source and noisy-OR across independent sources;
-- deleting source evidence recomputes confidence and can hide or remove the trait;
-- explicit corrections use state-like bitemporal replacement instead of overwriting history.
+- evidence changes recompute confidence and visibility;
+- user-stated trait corrections retain bitemporal history.
+
+[Typed memory](typed-memory.md) defines joint support clauses, independent alternatives, and
+confidence calculation.
 
 `get` and `list` may expose a hidden trait with `MemoryContext.visible=False` for audit, while
 ordinary search and answer exclude it. Developers can inspect why a profile did not activate without
@@ -394,7 +389,7 @@ Every completed stream item emits a `sensemem.add` operation span, or `sensemem.
 `capture=True`. Every speculative
 search that starts emits an ordinary `sensemem.search` span. This keeps model request, token,
 latency, and failure accounting comparable with non-streaming calls. See
-[operations](observability.md) for the attribute contract.
+[observability](observability.md) for the attribute contract.
 
 Useful end-to-end measurements for a capture reducer are:
 

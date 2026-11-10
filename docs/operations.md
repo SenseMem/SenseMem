@@ -1,8 +1,8 @@
 # Operations
 
-Operate the process that owns the local data directory. SenseMem has no separate database
-service, queue, or background owner. Use [deployment](deployment.md) for topology and
-[troubleshooting](troubleshooting.md) for error diagnosis.
+Keep memory available and recoverable with explicit lifecycle, backup, and index-maintenance
+procedures. Run these operations through the process that owns the data directory.
+[Deployment](deployment.md) covers topology; [troubleshooting](troubleshooting.md) covers errors.
 
 | Task | Procedure |
 | --- | --- |
@@ -137,8 +137,8 @@ may leave `.zvec.compact-*` debris or a missing index; the next open cleans/rebu
 
 Supported quantization is none/fp16/int8/rabitq. Changing it within the current recipe rebuilds from
 stored vectors without model calls. INT8 is unrotated; RABITQ needs dimensions 64–4095 and native
-support. FP32 vectors remain authoritative, so smaller total disk use is not guaranteed.
-Quantized candidates get exact local rescoring, which cannot recover undiscovered ANN neighbors.
+support. SQLite retains authoritative FP32 vectors, so measure total directory size as well as
+the derived index. Quantized candidates receive exact local rescoring within the discovered pool.
 
 Applications can set Zvec process resources once, before constructing memory:
 

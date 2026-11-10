@@ -1,14 +1,12 @@
 # MCP API
 
+Give an agent durable memory through thirteen typed tools. The host selects the models and tool
+authority; the agent can store observations, retrieve evidence, compile context, and ask grounded
+questions through the same SenseMem kernel.
+
 Jump to [authority switches](#withholding-a-group-of-tools), [startup](#start-the-adapter),
 [tools](#tools), [results](#result-objects), [errors](#validation-and-errors),
 or [input limits](#input-limits).
-
-Tool calls share the directory's 32 request slots with REST, before framework worker dispatch.
-Overload returns the stable tool error envelope with `reason="capacity_exceeded"`,
-`stage="admission"`, and `retryable=true`. Process-wide budgets apply across independent
-directories; see [runtime limits](../operations.md#concurrency-and-overload). The serving host
-must also bound HTTP connections and MCP sessions.
 
 ## Surface
 
@@ -22,11 +20,9 @@ reduction, stay Python-only because a tool call is a finite request.
 Tools cover ingestion, retrieval, grounded answers, context compilation, perception, identity
 administration, and feedback. The host chooses which groups an agent may call.
 
-Naming a person is host authority. `register_identity` asserts a name on
-the host's behalf: the assertion is a versioned memory record, it is written to the operation
-log, and it is reversible, and the tool descriptions say so. Splitting a wrong merge is written
-to the log and reversible too, and erasing a person leaves an irreversible row so the request
-stays auditable; `get_identity` reads the current profile without changing it.
+Naming, unlinking, and erasure tools exercise host-granted identity authority. Naming and unlinking
+are logged and reversible; erasure is logged and irreversible. `get_identity` reads the current
+profile.
 
 ### Withholding a group of tools
 
@@ -50,17 +46,13 @@ build_mcp_server(
 )
 ```
 
-With all three `False`, five recall and record-reading tools remain: `search_memories`,
-`ask_memory`, `compile_context`, `get_memory` and `list_memories`. `ask_memory` stays because it
-is a recall surface; the reinforcement it records for the
-memories its answer cited is the owner's `reinforce_on_answer` setting rather than a capability
-these switches grant. Set `reinforce_on_answer=False` on the injected memory when recall should
-not add ranking feedback. Recall can still persist query-transcript caches, recognition caches, and
-bounded query-failure signals; these switches do not make storage immutable.
-`embodied_operations=False` withholds cross-modal linking that `ask_memory` could
-otherwise still reach: it passes `link_identities=False` into `Memory.ask`, so answering over a
-photo or video may still identify who appears in it, but a corroborated voice-and-face pair is
-never fused into one identity through that answer call.
+With all three switches `False`, five tools remain: `search_memories`, `ask_memory`,
+`compile_context`, `get_memory`, and `list_memories`.
+
+Recall can persist query/recognition caches and bounded failure signals. Set
+`reinforce_on_answer=False` on the owner to disable automatic ranking feedback. With
+`embodied_operations=False`, `ask_memory` passes `link_identities=False`: recognition can identify
+someone in evidence, while cross-modal merges are withheld.
 
 ## Start the adapter
 
@@ -103,20 +95,15 @@ build_mcp_server(
 [configuration](../configuration/lifecycle.md#running-the-loop-inside-a-server-process). It runs in the
 server lifespan and is disabled by default. No tool exposes consolidation directly.
 
-`build_mcp_server` reads `memory.capabilities` once and publishes it as the server `instructions`,
-so a connecting agent learns the configured modalities, embedding identity, and backends without
-spending a tool call. There is no capabilities tool. The text also states that `compile_context` is
-the preferred way to obtain context, and that cognitive forgetting, consolidation, and operation
-rollback have no tool here. The document's `operations` list agrees with that prose: it is narrowed
-to the operations this server's tools exercise -- some directly, some while `add_memory` ingests or
-`ask_memory` answers -- so `consolidate` is never listed however the
-composition is configured, `perceive` is listed only with `embodied_operations=True`,
-and `formation` and `describe_vision` -- which run on the write path alone -- only with
-`write_operations=True`. `transcribe` stays listed either way, because a read tool transcribes
-the audio a question arrives as.
-MCP fixes `instructions` at construction, so a server built before a
-composition change keeps advertising the composition it was built with;
-[`GET /healthz`](rest.md#endpoints) is the live reading.
+`build_mcp_server` publishes an assembly-time `memory.capabilities` snapshot in its
+`instructions`. A connecting agent learns the model and modality declarations without a tool call.
+The instructions recommend `compile_context` for task-ready context and list the tool groups
+the host has withheld.
+
+The document's `operations` match reachable capabilities: `perceive` requires
+`embodied_operations=True`; write-path formation and visual description require
+`write_operations=True`; transcription remains available for spoken queries. Control-plane
+operations stay with the owner. Rebuild the server after changing the owner's composition.
 
 ## Lifecycle and ownership
 
@@ -199,25 +186,19 @@ and still reports `abstained`, so an agent that must produce an answer keeps the
 signal without losing the answer. Under `best_effort` a question that grounds nothing spends a
 generation call too, where the default returns without one.
 
-`compile_context` is the preferred way to get task-ready context: it returns a structured,
-budgeted bundle with provenance instead of one sentence, calls no generation model, and stores no
-memory. It shares the retrieval path with `search_memories`, including the two writes both can
-make -- a cached transcript for spoken query media, and a recorded recall failure when the bundle
-holds no evidence -- which is why neither is annotated read-only. It
-reports lineage conflicts and never resolves them, and names in `unknowns` what the request
-implied that the bundle does not carry. `ask_memory` remains a convenience for one grounded
-answer. The optional `budget` object is the transport form of `ContextBudget` with the
-`freshness` timedelta expressed as `freshness_seconds`; omitting it uses 16,000 characters and 24
-items. `freshness_seconds` must be positive, finite, and representable as a Python `timedelta`, or
-the tool returns `validation_error`; `max_chars`
-accepts 1 through 65,536, `max_items` 1 through 100, `max_media_items` any non-negative count or
-`null`, and `max_latency_ms` is a deadline the
-compiler checks between stages rather than a timeout that aborts. The
-[compiler reference](../context-compilation.md) owns section, selection, and conflict semantics.
-`allow_partial_sources=true` explicitly enables verified raw-text excerpts when the full parent
-does not fit. The default false keeps full-record-only selection and skips selector reads; the
-additive `excerpts` result remains empty. Tool calls reject non-boolean values rather than coercing
-them into the opt-in.
+`compile_context` returns a structured evidence bundle with provenance, conflicts, and unknowns.
+It runs without answer generation and creates no memory record. Like search, it can cache spoken
+queries and record empty-recall signals. Use `ask_memory` for one grounded answer.
+
+Its optional `budget` defaults to 16,000 characters and 24 items. The transport uses
+`freshness_seconds` for the SDK's `freshness` timedelta. It must be positive, finite, and
+representable as a `timedelta`. `max_chars` accepts 1–65,536; `max_items` accepts 1–100;
+`max_media_items` is non-negative or `null`. `max_latency_ms` is a deadline checked between
+stages. See [context compilation](../context-compilation.md) for selection and closure.
+
+`allow_partial_sources=true` enables verified raw-text excerpts when their full parent does not
+fit. The default `false` uses full records and leaves `excerpts` empty. Non-boolean values fail
+validation.
 
 The embodied and identity tools follow the SDK operation they dispatch to:
 
@@ -367,15 +348,15 @@ The remaining Python operations use the SDK, local CLI, or the REST routes liste
 
 | Operation | Why, and what to call instead |
 | --- | --- |
-| `add_stream` | **Transport limitation.** It consumes a lazy iterable and yields records as it goes, and one tool call is a finite request with one response, so a stream cannot be started, fed, and drained through it. Call `add_memory` for each completed observation, or use the SDK for a live source. |
-| `ask_stream` | **Transport limitation.** One MCP tool call has one finite response. Call `ask_memory` for the completed answer, or use the Python SDK or REST `POST /v1/answers/stream` when time to first token matters. |
+| `add_stream` | Call `add_memory` for each completed observation; use SDK streams for a live source. |
+| `ask_stream` | Use `ask_memory` for a completed answer or SDK/REST streaming for incremental delivery. |
 | `add_many` | Use the SDK or `POST /v1/memories/batch` for an atomic source batch. Use `add_memory` for individual observations. |
-| `reindex` | Rebuilds the whole search projection from SQLite. The duration grows with the store and has no upper bound, so it does not belong behind a client that expects one timely response. It is also an operator decision, not a caller's. |
+| `reindex` | Run index rebuilds through the SDK or local CLI in the owning process. |
 | `optimize` | Operator-scheduled index maintenance through the SDK or local CLI. |
-| `capture`, `settle`, `pending_captures` | Deferred enrichment is the owning process's scheduling decision: how long a record may stay unsearchable is a property of that host's loop, not of a caller's request. Use `add_memory`, which returns searchable. |
-| `record_consent`, `consent` | Consent is a statement its subject makes, relayed by the host. An agent that could record one could manufacture permission to process a person, which is the same reason a `CONSENT` operation proposed by a model is refused as `unauthorized`. A host application collects the statement and calls the SDK, or `POST /v1/identities/{identity_id}/consent` behind its own `identity_operations` switch. |
-| `export`, `apply_retention` | The two remaining data-subject rights, and both are host authority over a person's whole record: an export is everything held about somebody, and retention physically deletes. They stay with the process that owns the `data_dir`, and reach a network only through REST's `identity_operations` switch. |
-| `consolidation_candidates`, `consolidate`, `consolidate_pending`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | The memory control plane rewrites and retires derived memory and is deliberately not reachable from a client. It stays with the process that owns the `Memory`, which can audit and reverse it through the operation log. `consolidate_pending` spends that owner's model budget on its own schedule; `apply` applies an operation supplied by the host. |
+| `capture`, `settle`, `pending_captures` | Schedule deferred enrichment through the SDK or REST; `add_memory` returns searchable records. |
+| `record_consent`, `consent` | The host collects the subject's statement and uses the SDK or consent REST route with `identity_operations=True`. |
+| `export`, `apply_retention` | Use the SDK or gated REST routes for host-authorized subject export and physical retention. |
+| `consolidation_candidates`, `consolidate`, `consolidate_pending`, `apply`, `record_outcome`, `forget`, `rollback`, `operations` | Run control-plane operations through the SDK or local CLI, where the owner schedules inference and audits or reverses changes. |
 
 `Memory.capabilities` has no tool either: it is a property rather than an operation, published
 here as the server `instructions` and by REST in [`GET /healthz`](rest.md#endpoints). The tools
@@ -384,6 +365,12 @@ that need a backend say so in their description and return `model_error` when it
 `list_memories` supports the same default page size and opaque cursor contract as `Memory.list`.
 
 ### Input limits
+
+Tool calls share the directory's 32 request slots with REST, before framework worker dispatch.
+Overload returns the stable tool error envelope with `reason="capacity_exceeded"`,
+`stage="admission"`, and `retryable=true`. Process-wide budgets apply across independent
+directories; see [runtime limits](../operations.md#concurrency-and-overload). The serving host
+must also bound HTTP connections and MCP sessions.
 
 | Bound | MCP value |
 | --- | --- |

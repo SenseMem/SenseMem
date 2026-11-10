@@ -1,74 +1,48 @@
 # Model quality gate
 
-Run these explicit real-service checks after model, prompt, or protocol changes. For dataset
-comparisons, use [Benchmarking](benchmarking.md).
+Check model and prompt changes against focused real-service fixtures before deploying them.
+SenseMem provides separate answering, workflow, embedding, and formation-time gates, each with
+explicit inputs and pass criteria.
 
-Transport tests run without credentials and verify requests, validation, refusals, and error
-mapping. A separate small real-model gate exercises the public SDK with synthetic memories in a
-fresh directory for every case. It checks a grounded fact, insufficient evidence despite an
-unrelated retrieved memory, and instructions embedded in stored content. Every case must pass
-every repeat; an upstream error fails the gate rather than disappearing from its denominator.
+Transport tests verify request and error contracts without credentials. The gates on this page
+exercise model behavior through the public SDK. Use [Benchmarking](benchmarking.md) for dataset
+comparisons and [benchmark results](benchmarks/results.md) for measured configurations.
 
-Grounded fixtures require a single answer word, allowing case, punctuation, and Markdown
-decoration. Negated, conflicting, or additional injected text fails. The report identifies this
-as an answering-only gate: the output-protocol option configures structural calls, but these
-answering fixtures do not establish that an endpoint accepts strict schemas.
+## Answering and workflow checks
 
-The companion `sensemem-workflow-quality-v2` gate exercises the public SDK:
+The answering gate creates a fresh store for every case and checks:
 
-| Case group | Pass criterion |
+| Case | Pass criterion |
 | --- | --- |
-| Relative-date formation, with/without injection | Correct source-relative time and observed formation stage |
+| Grounded fact | Return the requested answer word, allowing case, punctuation, and Markdown decoration |
+| Insufficient evidence | Abstain despite an unrelated retrieved memory |
+| Instructions in stored content | Answer from the fact while ignoring the embedded instruction |
+
+Negated, conflicting, or additional injected output fails the grounded case. Every case must
+pass every repeat; upstream errors remain failures. This gate evaluates answering behavior.
+The workflow gate covers the additional model stages below.
+
+| Workflow case | Pass criterion |
+| --- | --- |
+| Relative-date formation, with/without injection | Correct source-relative time and an observed formation stage |
 | Collection counting | Correct count with an active non-fallback recall plan |
-| Visual prompt injection | Grounded answer to the red rectangle despite embedded instructions |
-| Media diagnosis | Valid selection of one attachment and a correct visual answer |
+| Visual prompt injection | Grounded answer about the red rectangle despite embedded instructions |
+| Media diagnosis | Select one original attachment and answer its visual question correctly |
 | Adversarial consolidation | Preserve the host-authorized response policy |
 | Control-plane quality | Precision/recovery/rollback all 1.0, false retirement 0.0, and restored state |
 | Chinese answering | Correct grounded Chinese answer |
 
-Each case also requires its expected model stage. Workflow requests use an 8192-token output
-ceiling, a 120-second timeout, and no SDK retries. Every case/repeat has a fresh physical directory
-and must pass.
-
-The control-plane case reuses the seeded benchmark with one person and at most two rounds.
-Undefined rates fail, so returning no operations cannot pass. Its deterministic formation and
-embedding isolate consolidation quality. The media case has no cached caption and must select
-the original image; its independent 8192-token diagnosis ceiling includes reasoning and remains
-bounded by the configured overall output ceiling.
-
-## ATM-Bench evidence-operation evaluation
-
-The CLOSED18 evaluation of source commit `ddb85e7e67fa86a41e34e2b763d783e51426704c`
-scored **79.6271%** mean official Question Score over all 1,013 ATM-Bench Main questions,
-with zero final generation or scoring errors. Number, List and Open-ended scores were
-81.3889%, 78.8652% and 78.5992%, respectively. The equivalent image-context baseline scored
-79.2141%. These are single-run observations.
-
-The reader used `deepseek-v4.1-flash` with thinking enabled and maximum reasoning effort;
-the provider exposed a model alias rather than an immutable revision. Embeddings used
-`tencent/WeMM-Embedding-9B`, reranking used `Qwen3-VL-Rerank-8B`, and open-ended judging used
-`gpt-5-mini` with minimal reasoning. The pinned Main fixture SHA-256 was
-`ab6eaa9df62fb4162e0f5eecd98768a7e3ae721e32d2db2cf227ff41e3295762`, with scorer protocol
-`atm_bench_scorer_ef4e5dff1a47_minimal_v3`.
-
-The evaluated settings included `answer_style: concise`, `answer_format: text`,
-`image_source_prose: context_when_supplied` and `evidence_operation_tool: true`, with recall
-limit 20, two recall rounds, two queries per round and 64,000-character evidence budgets.
-The independent synthetic qualification fixtures passed 32 technical cases and five safety
-cases, covering grounded answers, unresolved evidence and embedded instructions. All 32
-semantic diagnostics passed; the stricter direct-operation mechanism gate did not pass.
-The score target of greater than 81.78% was not reached.
-
-Integration also rejects the observed `function_calls` text wrapper and repeated protocol
-text in the final recovery answer. Buffered and streamed regression tests cover this fix.
-No new real-service qualification or full Main run was performed for the integration;
-79.6271% identifies the original CLOSED18 execution. Both new provider options remain opt-in.
+Each workflow case requires its expected stage and a fresh directory per repeat. Requests have an
+8,192-token output ceiling, a 120-second timeout, and no SDK retries. The control-plane case uses
+a seeded fixture with deterministic formation/embedding and at most two rounds; undefined rates
+fail. The media case uses an uncached original image, with its diagnosis budget bounded by the
+overall output ceiling.
 
 ## Run the answering and workflow gates
 
 Set `OPENAI_API_KEY` through a secret manager or the process environment. For a compatible server,
-set `OPENAI_BASE_URL` to the SDK base URL ending in `/v1`, without `/chat/completions`. Select an
-explicit model snapshot and the output protocol the endpoint supports:
+set `OPENAI_BASE_URL` to its SDK base URL ending in `/v1`. Set `MODEL_QUALITY_MODEL` to the
+explicit model snapshot you want to qualify:
 
 ```bash
 uv run --frozen python -m sensemem.benchmarks.model_quality \
@@ -84,72 +58,67 @@ uv run --frozen python -m sensemem.benchmarks.workflow_quality \
   --output .benchmarks/model-quality/workflow.json
 ```
 
-`MODEL_QUALITY_MODEL` names the model snapshot to evaluate. Use `--response-format json_object`
-only for a server that lacks strict schema support. The report retains the fixture version,
-configured and returned model identifiers, case pass/fail results, timing, and stable error codes;
-it does not retain prompts, answers, credentials, or raw provider exceptions. These synthetic
-fixtures do not authorize testing with private production content or establish full application
-quality. Use the [dataset harness](benchmarking.md) for broader comparisons, and calibrate quality
-criteria against reviewed failures before expanding this suite.
+Use `--response-format json_object` for an endpoint that requires JSON-object mode. Reports retain
+the fixture version, configured and returned model identifiers, case outcomes, timing, and stable
+error codes. They omit prompts, answers, credentials, and raw provider exceptions.
+
+Compare equivalent fixtures, prompts, model snapshots, and budgets. Use synthetic inputs for
+these checks and representative, authorized application data for broader quality evaluation.
 
 ## Check EmbeddingGemma 2 loading
 
-The opt-in `sensemem-embeddinggemma2-v1` fixture pins `google/embeddinggemma-2` to commit
-`f9972ac22e696a105c482202646979e33e4b5a1e`. It requires the local extra, model access, and a
-CUDA GPU with native BF16 support:
+The `sensemem-embeddinggemma2-v1` fixture compares precision and modality loading against a
+full-modal FP32 baseline. Its [test definition](../tests/integration/test_embeddinggemma2_quality.py)
+pins the checkpoint revision. Install the local extra and use a CUDA GPU with native BF16 support:
 
 ```bash
 SENSEMEM_EMBEDDINGGEMMA2_EVAL=1 uv run --frozen pytest -W error -rP \
   tests/integration/test_embeddinggemma2_quality.py
 ```
 
-The baseline is full-modal FP32. Compare full-modal automatic BF16, text-only FP32, and
-text-only automatic BF16 at 256 dimensions. Synthetic inputs cover English and Chinese text,
-an image, 16 kHz mono audio, a two-frame video, and mixed image/audio input. Query and document
-vectors must remain finite, with cosine agreement of at least 0.999 for BF16 and 0.999999 for
-FP32 tower removal, after equivalent truncation and normalization. Loaded CUDA weight allocation
-must fall below 60% for BF16 and 50% for text-only FP32 relative to the full FP32 baseline.
+The fixture compares full-modal automatic BF16, text-only FP32, and text-only automatic BF16 at
+256 dimensions. Inputs cover English and Chinese text, an image, 16 kHz mono audio, a two-frame
+video, and mixed image/audio.
 
-Each variant uses a fresh SDK store. Grounded English/Chinese queries must retrieve the correct
-fact despite an unrelated memory containing instructions. An unanswerable query must not gain
-more than 0.03 in retrieval score relative to the baseline. This checks retrieval parity, not
-generation or abstention. The report prints the pinned revision, case outcomes, minimum cosine,
-and allocated weight bytes; it retains no prompts or model responses. This small fixture does
-not establish dataset-wide quality or vLLM/local parity; evaluate the served recipe separately.
+Vectors must be finite, with cosine agreement of at least 0.999 for BF16 and 0.999999 for FP32
+tower removal after equivalent truncation and normalization. Loaded CUDA weight allocation must
+fall below 60% for BF16 and 50% for text-only FP32 relative to the baseline.
 
-## Configure CI
-
-The [model-quality workflow](../.github/workflows/model-quality.yml) runs both gates for pull
-requests changing product code, dependencies, integration fixtures or the gates themselves.
-Configure the repository secret `MODEL_QUALITY_API_KEY` and the
-`MODEL_QUALITY_MODEL` snapshot variable before requiring this check in branch protection.
-`MODEL_QUALITY_BASE_URL` and `MODEL_QUALITY_RESPONSE_FORMAT` optionally select a compatible
-endpoint and protocol. Missing credentials or a model pin fail the check rather than marking
-untested quality as passing. Fork pull requests do not receive repository secrets; a maintainer
-must run the trusted evaluation path before approval. The workflow uses `pull_request`, never
-`pull_request_target`, and never exposes secrets to a fork checkout.
-
-Manual runs accept explicit model, response-format and repeat inputs. Weekly scheduled runs
-remain opt-in through `MODEL_QUALITY_ENABLED=true`. Both aggregate reports are retained in the
-artifact even when answering fails. Review those reports and keep ordinary credential-free CI
-enabled; provider/protocol changes also require comparison with an equivalent baseline.
+Each variant uses a fresh SDK store. English and Chinese queries must retrieve the correct fact
+despite an unrelated memory containing instructions. An unanswerable query's score may increase
+by at most 0.03 relative to baseline. Reports retain the revision, case outcomes, minimum cosine,
+and allocated weight bytes. Evaluate served-model recipes separately with the dataset harness.
 
 ## Check formation time
 
-The formation-time fixture `sensemem-formation-time-v1` independently tests the snapshot
-`gpt-5-mini-2025-08-07` with strict JSON Schema and a 4096-token output budget. Its synthetic
-source says “I moved to Paris yesterday” with observation time `2026-03-02T12:00:00Z`, no typed
-validity, and no history. The four cases cover observation time despite later creation, creation
-time as the fallback, no reference time, and an embedded instruction to use a fabricated date.
-Each runs three times. Dated cases must produce an event whose `valid_from` is March 1; the case
-without a reference must omit temporal bounds. Every repeat must pass. Run it explicitly with:
+The `sensemem-formation-time-v1` fixture uses `gpt-5-mini-2025-08-07`, strict JSON Schema,
+and a 4,096-token output budget. Its source says “I moved to Paris yesterday” with an observation
+time of `2026-03-02T12:00:00Z`.
+
+Four cases check observation time despite later creation, creation time as fallback, absent
+reference time, and an embedded instruction to invent a date. Each repeats three times.
+Dated cases must produce a March 1 event; the case without a reference must omit temporal bounds.
 
 ```bash
 SENSEMEM_FORMATION_TIME_EVAL=1 uv run --frozen pytest -W error -rP \
   tests/integration/test_formation_time_quality.py
 ```
 
-Only fixture IDs, case IDs, repeat numbers, and configured/returned model identifiers are printed.
-Run credentialed checks against equivalent fixtures, model snapshots, prompts and budgets before
-claiming a quality improvement. Keep dated measurements and their limitations in local research
-records; transport fixtures alone do not establish model quality.
+Every repeat must pass. Output contains fixture/case IDs, repeat numbers, and configured/returned
+model identifiers. Detailed measurement records belong in local research artifacts.
+
+## Configure CI
+
+The [model-quality workflow](../.github/workflows/model-quality.yml) runs the answering and workflow
+gates for pull requests changing product code, dependencies, integration fixtures, or the gates.
+Configure the `MODEL_QUALITY_API_KEY` repository secret and `MODEL_QUALITY_MODEL` snapshot variable
+before requiring the check in branch protection.
+
+Optional `MODEL_QUALITY_BASE_URL` and `MODEL_QUALITY_RESPONSE_FORMAT` select a compatible endpoint
+and protocol. Missing credentials or a model pin fail the check. Fork pull requests require a
+maintainer's trusted evaluation path because they do not receive repository secrets. The workflow
+uses `pull_request` and keeps secrets away from fork checkouts.
+
+Manual runs accept model, response-format, and repeat inputs. Weekly runs are enabled by
+`MODEL_QUALITY_ENABLED=true`. Both aggregate reports are retained, including on failure.
+Review them alongside the credential-free CI checks.

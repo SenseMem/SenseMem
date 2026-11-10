@@ -1,73 +1,47 @@
 # Quick start
 
-Store a memory, close and reopen the runtime, and retrieve the persisted record. The main example
-uses local embedding and needs no database service or API key. Optional examples add grounded
-answers, event times, and multimodal input.
+Give an agent its first persistent memory. This guide stores a fact, retrieves it, and reopens the
+same store. It then adds grounded answers, event time, and an image observation.
+
+The first example runs locally without a database service or model API key.
 
 ## 1. Install SenseMem
 
-The SDK supports Python 3.11 through 3.14. In an existing Python project, install the local surface
-used by the first example:
+In an existing uv project:
 
 ```bash
 uv add "sensemem[local]"
 ```
 
-With `pip`:
+With pip:
 
 ```bash
-python -m pip install "sensemem[local]"
+pip install "sensemem[local]"
 ```
 
-| Install | Choose it when |
-| --- | --- |
-| `sensemem[all]` | You want every optional model runtime, transport, observability, and benchmark dependency. |
-| `sensemem[local]` | You want local embedding and speech without an API key. |
-| `sensemem[openai]` | You want OpenAI or an OpenAI-compatible model endpoint. |
-| `sensemem` | Your application supplies its own embedding backend. |
+Use `uv init` first if you are starting in an empty directory. For a repository checkout, follow
+[Contributing](../CONTRIBUTING.md#setup). Runtime requirements and other integrations are listed
+in [installation](configuration.md#1-install-only-the-surfaces-you-use).
 
-`sensemem[all]` installs dependencies; it does not configure providers, download benchmark
-datasets, or supply YuNet and SFace model files. Install the smallest surface that fits your
-deployment once you know which capabilities it needs.
-
-If you are starting without a Python project, run `uv init` in an empty working directory before
-`uv add`. For development from this repository, use the locked setup in
-[CONTRIBUTING.md](../CONTRIBUTING.md) instead of adding a second installed copy of SenseMem.
-
-## 2. Store and retrieve one memory
+## 2. Store and retrieve a memory
 
 Save this as `quickstart.py`:
 
 ```python
 from sensemem import Memory
 
-# Everything stored by this example lives under this directory.
 config = {
     "data_dir": "./data/sensemem-quickstart",
-    # EmbeddingGemma 2 embeds text, images, video, and audio locally.
     "embedding": {
         "provider": "sentence-transformers",
         "model": "google/embeddinggemma-2",
     },
-    # These two zeroes make this one-record tutorial deterministic.
-    # Remove this block to use the default retrieval thresholds.
-    "settings": {
-        "minimum_relevance": 0.0,
-        "ambiguity_margin": 0.0,
-    },
 }
 
-# Open the store, add one durable record, then close every resource.
 with Memory.from_config(config) as memory:
     stored = memory.add("The spare key is in the blue toolbox.")
-    print("stored:", stored.id)
-
-# Reopen the same directory and search the persisted record.
-with Memory.from_config(config) as memory:
-    hits = memory.search("Where is the spare key?", limit=1).hits
-    if not hits:
-        raise SystemExit("No memory matched the question.")
-    print("found:", hits[0].content)
+    hits = memory.search("Where is the spare key?", limit=3).hits
+    print(hits[0].content)
 ```
 
 Run it:
@@ -76,32 +50,37 @@ Run it:
 uv run python quickstart.py
 ```
 
-The first run may pause while the local model downloads. Success ends with:
+The first run downloads the embedding model. The output is:
 
 ```text
-found: The spare key is in the blue toolbox.
+The spare key is in the blue toolbox.
 ```
 
-The program demonstrates four core contracts:
+`add()` returns a durable, searchable record. `search()` returns ranked evidence in
+`SearchResult.hits`. The context manager closes model and storage resources when the block ends.
 
-1. `Memory.from_config()` opens one embedded memory system. No external database is required.
-2. `add()` returns a durable `MemoryRecord`; repeating the same canonical input returns the same
-   record instead of creating a duplicate.
-3. Leaving the first `with` block closes the model, SQLite connection, and search index. Reopening
-   the same `data_dir` proves that the memory survived the process-local runtime.
-4. `search()` returns ranked `SearchHit` values. An empty tuple is a valid result when no evidence
-   clears the relevance or ambiguity gates.
+### Reopen the same memory
 
-SQLite owns the authoritative records and embeddings. Zvec is a rebuildable search projection, so
-a missing index can be restored from SQLite without embedding stored content again.
+Append this second block to the script:
+
+```python
+with Memory.from_config(config) as memory:
+    recovered = memory.get(stored.id)
+    print(recovered.content)
+```
+
+It prints the same fact from the persisted store. Repeating an add with identical canonical content,
+metadata, time, type, and context returns the existing record. SQLite retains records and
+embeddings, and a missing search index rebuilds from those embeddings.
+
+In your application, handle empty `hits` as a normal outcome. The default relevance gate excludes
+weak candidates; `limit=1` also enables the top-two ambiguity check. Use
+[retrieval diagnostics](troubleshooting.md#search-returns-no-hits) to tune a larger corpus.
 
 ## 3. Add grounded answers
 
-Search returns evidence for your application to use. `ask()` additionally asks a configured
-generation model to answer from that evidence.
-
-If you installed only `local`, add the OpenAI integration and provide a key. Skip this installation
-step if you already use `sensemem[all]`.
+A generation backend lets `ask()` turn retrieved evidence into an answer. Install the integration
+alongside the local embedder and set its credential:
 
 ```bash
 uv add "sensemem[local,openai]"
@@ -111,34 +90,32 @@ export OPENAI_API_KEY="replace-with-your-key"
 Append this to `quickstart.py`:
 
 ```python
-# Reuse the local embedding space and add only a generation backend.
 answer_config = {
     **config,
     "generation": {"provider": "openai", "model": "gpt-5-mini-2025-08-07"},
 }
 
 with Memory.from_config(answer_config) as memory:
-    # ask() searches first, then gives the retrieved evidence to the answerer.
-    result = memory.ask("Where is the spare key?", limit=1)
+    result = memory.ask("Where is the spare key?")
 
     if result.abstained:
-        print("no answer:", result.abstention_reason)
+        print("More evidence needed:", result.abstention_reason)
     else:
-        print("answer:", result.answer)
-        print("evidence:", [hit.id for hit in result.hits])
+        print(result.answer)
+        print("Evidence:", [hit.id for hit in result.hits])
 ```
 
-`AnswerResult.hits` contains the evidence reported by the answer backend; it does not prove factual
-support. Treat abstention as a normal result. In this composition, records and embeddings remain
-local, while the question and retrieved evidence are sent to the configured OpenAI endpoint.
+`AnswerResult` keeps the answer and its evidence together. Your application can display the
+supporting records and handle insufficient evidence explicitly. With this configuration, storage
+and embedding stay local; the question and retrieved evidence go to the generation endpoint.
 
-## 4. Add one capability at a time
+To build your own agent prompt instead, use [context compilation](context-compilation.md).
+It produces a structured, budgeted bundle without a generation model.
 
-The same `Memory` surface accepts richer observations without changing the storage model.
+## 4. Remember an event
 
-### Typed events
-
-Use `MemoryType` and timezone-aware event times when *what happened when* matters:
+Attach a memory role and event time when the application needs to recall what happened when.
+The following snippets reuse `config` from step 2.
 
 ```python
 from datetime import datetime, timezone
@@ -157,19 +134,17 @@ with Memory.from_config(config) as memory:
     ).hits
 ```
 
-SenseMem also supports semantic memories for facts and procedural memories for instructions.
-Event intervals, bitemporal validity, spatial scope, decay, and reinforcement are covered in
-[Memory types, time, and decay](memory-types-time-and-decay.md).
+Use semantic memories for facts, episodic memories for events, and procedural memories for
+instructions. [Memory types, time, and decay](memory-types-time-and-decay.md) covers event
+intervals, historical validity, spatial scope, and ranking.
 
-### Omni-modal observations
+## 5. Add an image to the same observation
 
-With a local multimodal embedder, one record can preserve ordered text and media. Supply an
-existing image at `./workshop.jpg`, then reuse `config` from step 2:
+Place an image at `./workshop.jpg`, then add text and media together:
 
 ```python
 from pathlib import Path
 
-# Text and image remain one observation with one stable memory ID.
 with Memory.from_config(config) as memory:
     record = memory.add(
         ("Maya is showing the blue toolbox.", Path("./workshop.jpg")),
@@ -177,31 +152,27 @@ with Memory.from_config(config) as memory:
     print(record.modality, record.assets)
 ```
 
-`ContentInput` accepts text, local `Path`, inline `Blob`, existing `AssetRef`, or an ordered
-combination. The selected embedding backend must support the supplied modalities; unsupported input
-fails explicitly instead of silently discarding evidence.
+The ordered text and image share one memory ID, and SenseMem retains an immutable copy of the
+original image. The same content contract accepts audio, video, inline `Blob` bytes, and existing
+`AssetRef` values when the configured backends support them.
 
-## 5. Keep these boundaries in mind
+## Prepare your application
 
-- One physical `data_dir` has one live owner. Use separate directories for independent applications,
-  processes, tenants, tests, or security domains.
-- Metadata is application data. It is not a retrieval filter, authorization rule, or isolation
-  boundary.
-- An embedding model, revision, dimension, and request recipe define a durable vector space. Start a
-  new directory when intentionally changing that space.
-- Local Sentence Transformers models load with `trust_remote_code=False`. Review the selected
-  model's license. The loader resolves its current Hub commit and records that identity in the
-  embedding space; a later incompatible commit requires a fresh store.
-- Remote URLs are not fetched. Download and validate remote media in the host application before
-  passing a `Blob` to SenseMem.
+Keep one live owner per physical `data_dir`; use distinct directories for independent memory
+domains. Keep the embedding space, dimension, and precision compatible when reopening a store.
+For remote media, download and validate it in the host before passing bytes or a local path.
+
+Choose model backends in [configuration](configuration.md), and use the
+[deployment guide](deployment.md) to select process and network boundaries.
 
 ## Where to go next
 
-| Goal | Continue with |
+| Goal | Guide |
 | --- | --- |
-| See the complete product surface | [Product capabilities](product-capabilities.md) |
-| Configure providers and optional formation | [Configuration](configuration.md) |
-| Use every SDK operation | [Python SDK](api/python-sdk.md) |
-| Build live audio, vision, or interaction memory | [Omni streaming and interaction memory](omni-streaming-and-interaction-memory.md) |
-| Expose memory to other runtimes | [REST](api/rest.md), [MCP](api/mcp.md), or [CLI](api/cli.md) |
-| Diagnose startup or retrieval | [Troubleshooting](troubleshooting.md) |
+| Choose capabilities for an application | [Product capabilities](product-capabilities.md) |
+| Understand records, evidence, and model routing | [Core concepts](concepts.md) |
+| Configure models and optional formation | [Configuration](configuration.md) |
+| Use the complete API | [SDK reference](api/python-sdk.md) |
+| Capture live audio, vision, or interaction | [Streaming and interaction memory](omni-streaming-and-interaction-memory.md) |
+| Connect another process or an agent host | [REST](api/rest.md) · [MCP](api/mcp.md) · [CLI](api/cli.md) |
+| Evaluate your setup | [Benchmarking](benchmarking.md) |

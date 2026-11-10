@@ -1,9 +1,12 @@
 # Python identity and data-subject operations
 
-These methods act on an open `Memory`. See [construction](python-sdk.md),
-[returned values](python-values.md#identity-and-retention), and
-[model thresholds](../configuration/settings.md#identity-thresholds).
-Network adapters expose administrative operations only where their references explicitly allow them.
+Recognize people in retained media, attach names, manage consent statements, and control the
+identity data lifecycle. These methods act on an open `Memory` and return typed results for
+inspection and audit.
+
+See [construction](python-sdk.md), [returned values](python-values.md#identity-and-retention),
+and [matching thresholds](../configuration/settings.md#identity-thresholds).
+Network adapters gate administrative operations through their documented authority switches.
 
 | Task | Method |
 | --- | --- |
@@ -52,8 +55,8 @@ register_identity(identity_id: str, name: str, *, relationship: str | None = Non
 ```
 
 Assigns/replaces the name of an existing recognized identity; unknown IDs raise `IdentityNotFoundError`.
-There is no enrollment method creating a person from a sample: add media, perceive it, then name
-the observed ID. Omitting relationship preserves an existing relationship; no clear operation exists.
+To name someone, add their media, call `perceive()`, and register the observed identity ID.
+Omitting relationship preserves its existing value.
 
 Registration writes a searchable user-stated `ENTITY` naming assertion, logs `IDENTIFY`, and can be
 rolled back. Repeating a standing assertion logs nothing. Registry and indexed speech text project

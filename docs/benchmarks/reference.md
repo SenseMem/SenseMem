@@ -1,8 +1,11 @@
 # Evaluation reference
 
-For the normal workflow, start with [Benchmarking](../benchmarking.md). This page covers run
-controls, diagnostics, performance, and recovery. See [tasks](tasks.md) for dataset protocols and
-[local measurements](local.md) for storage, concurrency, and consolidation utilities.
+Control an evaluation, compare memory strategies, diagnose answer quality, and measure performance.
+This reference covers the options and result fields behind the workflow in
+[Benchmarking](../benchmarking.md).
+
+Use [tasks](tasks.md) for dataset protocols, [results](results.md) for measured configurations,
+and [local measurements](local.md) for storage, concurrency, and consolidation utilities.
 
 ## Configuration and execution
 
@@ -137,9 +140,9 @@ surfaces; none is a provider-token limit. Set and report comparable evidence cap
 comparison, and measure actual tokens separately. Compile samples record bundle characters/items.
 Random is a control at its recorded retrieval depth, not a permutation of identical product hits.
 
-These are end-to-end system comparisons. Differences in evidence, prompts, budgets, planning,
-and model calls prevent attributing the entire score delta to memory alone. Report answerable and
-abstention subsets alongside the unchanged overall metric.
+These comparisons measure end-to-end systems. Keep evidence, prompts, budgets, planning, and
+model-call conditions aligned when isolating a memory change. Report answerable and abstention
+subsets alongside the overall metric.
 
 To reuse a separate blind run, run with `--blind`, then pass its output directory through
 `--blind-baseline`. Both commands must use the same reader, judge, task selection, seed, and
@@ -231,8 +234,8 @@ the mean and `error_count`. Shared embedding-service failures stop dependent que
 planned rows as structured errors. Input-specific failures isolate affected items. Local parsing,
 cache, or accounting bugs stop evaluation rather than becoming wrong-answer scores.
 
-For reproducibility retain dataset/input/evaluation hashes, source and scorer revisions, immutable
-model identities, full memory settings, seed, selected slice, hardware, and measurement protocol.
+Keep the generated input/scoring manifest, model identities, memory settings, seed, selected slice,
+hardware, and measurement protocol with each result.
 Questions sharing a store are one independent cluster; cluster-bootstrap intervals are `null`
 below two clusters. `noise_floor.minimum_meaningful_difference` combines the configured floor
 with cluster uncertainty. It is a reporting guard, not proof of reproducibility.

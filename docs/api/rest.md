@@ -1,14 +1,10 @@
 # REST API
 
+Share one SenseMem owner with HTTP clients. The REST adapter exposes memory writes, retrieval,
+grounded answers, and context compilation under `/v1`, with typed JSON responses and SSE answers.
+
 Jump to [startup](#start-the-adapter), [content](#content-input), [endpoints](#endpoints),
 [response objects](#response-objects), [errors](#error-envelope), or [input limits](#input-limits).
-
-REST and MCP share a directory's 32 request slots before body parsing or framework worker
-dispatch. Request bodies have a 30-second total read deadline; each response send has a 30-second
-deadline. Body timeout returns the retryable 503 envelope with `reason="timeout"` and
-`stage="transport.read"`. A stalled response send ends the response and releases its request
-slot. Terminal answer streams return their worker before network delivery. See
-[runtime limits](../operations.md#concurrency-and-overload) for process-wide budgets.
 
 ## Surface
 
@@ -32,7 +28,7 @@ REST accepts finalized media. Live audio packets, vision frames, partials, and s
 have no client-streaming route; run `AsyncAudioStream`, `AsyncVisionStream`, or
 `AsyncCaptureStream` in the application that owns the connection.
 
-The generated FastAPI schema is the machine-readable contract. A running application serves it at
+The generated OpenAPI schema is the machine-readable contract. A running application serves it at
 `/openapi.json`, with Swagger UI at `/docs` and ReDoc at `/redoc`.
 
 ## Start the adapter
@@ -79,6 +75,17 @@ curl --fail-with-body \
   --data '{"content":"The spare key is in the blue toolbox."}' \
   http://127.0.0.1:8000/v1/memories
 ```
+
+Retrieve it through the same owner:
+
+```bash
+curl --fail-with-body \
+  --header 'content-type: application/json' \
+  --data '{"query":"Where is the spare key?","limit":3}' \
+  http://127.0.0.1:8000/v1/memories/search
+```
+
+The response's `hits` array contains the ranked records and their scores.
 
 ## Lifecycle and ownership
 
@@ -292,18 +299,12 @@ caller with recall access alone cannot acquire that merge authority through an a
 host has also opted `create_app` into `embodied_operations`: with the switch off, an answer may
 still identify who appears in the evidence, but the cross-modal bind is never committed.
 
-`compileContext` selects and structures existing evidence, reports conflicts without resolving
-them, calls no generation model, and stores no memory. It is not a pure read: it runs the same
-retrieval path `searchMemories` runs and can make the same one write, caching a transcript for
-spoken query media, which is a cache of the caller's own input rather than a new memory. A
-compilation that finds nothing does record that, as the bounded signal the control plane's
-`QUERY_FAILURE` trigger reads, which changes no evidence and no memory. Its request `budget` is
-the transport form of `ContextBudget`, with the `freshness` timedelta expressed as
-`freshness_seconds` and `max_latency_ms` a deadline the compiler checks between stages rather than
-a timeout that aborts. The bundle reports `elapsed_ms`, `deadline_exceeded`, and an `unknowns`
-array naming what the request implied and the bundle does not carry. The
-[compiler reference](../context-compilation.md) owns section, selection, unknown, and conflict
-semantics.
+`compileContext` returns a structured evidence bundle with conflicts and unknowns, without answer
+generation or new memory records. Retrieval can cache a spoken-query transcript and record an
+empty-query signal. The transport expresses `ContextBudget.freshness` as `freshness_seconds`.
+`max_latency_ms` is a deadline checked between stages; the result reports `elapsed_ms` and
+`deadline_exceeded`. See [context compilation](../context-compilation.md) for selection and
+evidence-closure rules.
 
 `budget.selected_proofs` defaults to `false`. Enabling it adds complete current-knowledge witnesses
 in the response's `proofs` array, while retaining every hit's full `context.evidence_ids` audit
@@ -464,27 +465,20 @@ to send a probe write to learn what the deployment can do:
 }
 ```
 
-The seven modality lists are the declarations routing reads, sorted for a stable document; an empty
-list means no native capability is declared. A `null` optional model ID means no name was declared;
-generation plugins are not required to publish one, so this alone does not mean the plugin is absent.
-`generation_routes` lists individual native route coverage. Separate image-text and video-text
-routes do not imply a route covering text, image and video together. `embedding_routes` lists
-exact native combinations and per-modality asset count limits; an unsupported joint input may
-still use atomic retrieval keys. `reranking` and `reranking_model` describe the configured scorer.
-`embedding_space` is the value that decides whether stored vectors and a new backend belong to the
-same space. `speaker_recognition` is not derivable from `transcription`: a transcription backend
-and a speech backend occupy one slot and declare the same modalities, but only the second resolves
-speakers, so this is the field that says whether speech recognition will work. `operations` is derived from
-those backends rather than declared, so a caller does not have to know that `ask` needs generation,
-and it is then narrowed to what this app can actually route to: `perceive` appears only
-when the host built it with `embodied_operations=True` (the example above), and `consolidate` never
-appears, because the control plane has no `/v1` route. Values are captured when `Memory` is
-constructed, so the route performs no I/O and no model call.
+The modality lists declare native backend support; empty lists mean the capability is absent.
+Optional model IDs can be `null` when a plugin publishes no diagnostic name.
+`generation_routes` lists each executable native combination; separate text/image and text/video
+routes do not imply one route accepting all three together. `embedding_routes` lists exact native
+combinations and asset-count limits; unsupported aggregates may still use supported atomic keys.
 
-This is `MemoryCapabilities.document()` with `operations` filtered that way. The MCP server embeds
-the same document, filtered to the operations its tools reach, and `sensemem doctor` prints the
-whole derivation under `capabilities`, so no surface can describe one composition differently or
-promise an operation it cannot serve.
+`embedding_space` identifies the stored vector space. `reranking` and `reranking_model` describe
+the scorer. `speaker_recognition` distinguishes a speech backend that resolves speakers from a
+plain transcriber.
+
+The document is an immutable assembly snapshot: reading it opens no store and calls no model.
+Its `operations` are narrowed to this app's routes: `perceive` requires `embodied_operations=True`,
+and control-plane operations stay with the owner. MCP instructions use the same renderer narrowed
+to registered tools; `sensemem doctor` reports the full composition.
 
 ## Errors and limits
 
@@ -587,28 +581,27 @@ REST has no route for these Python operations:
 `exportSubject` includes operation-log rows related to the selected records. It is read-only and
 gated on `identity_operations`; it cannot propose, apply, or reverse operations.
 
-A record containing two recognized people is returned for both of their exports, with the other
-person's observations embedded in it, for the reasons the
-[SDK contract](python-identity.md#data-subject-rights) states. Over a network that matters more than it
-does in-process: a host serving this route decides who receives the response, and the response
-may contain a second person's data.
+Subject exports can include shared recordings and other participants' observations. The host
+authorizes recipients and reviews shared content before disclosure; see
+[the SDK export contract](python-identity.md#data-subject-rights).
 
-`applyRetention` deletes irrecoverably. It is behind `identity_operations` rather than always on
-like `deleteMemory`, because it acts on a declared policy over the whole store rather than on one
-record the caller named. Send `{"dry_run": true}` first: it reports the same identifiers and
-deletes nothing.
+`applyRetention` applies store-wide deletion policy and requires `identity_operations=True`.
+Send `{"dry_run": true}` first to preview the selected IDs. Applied physical deletion is irreversible.
 
-`perceive`, `register_identity`, `identity`, `unlink_identity`, `forget_identity`,
-`record_consent`, `consent`, `export`, and `apply_retention` do
-have routes, listed in [Endpoints](#endpoints) -- but only when the host enables
-`embodied_operations` or `identity_operations`. A host that leaves a switch off gets no route for
-the operations it gates, exactly as the table above describes for the operations no switch can
-turn on.
+Identity and perception routes are listed in [Endpoints](#endpoints). A disabled authority switch
+leaves its routes unregistered.
 
 Use the [Python SDK](python-sdk.md) or local CLI for owner-only operations. `ask_stream` is
 exposed as SSE at `POST /v1/answers/stream`.
 
 ### Input limits
+
+REST and MCP share a directory's 32 request slots before body parsing or framework worker
+dispatch. Request bodies have a 30-second total read deadline; each response send has a 30-second
+deadline. Body timeout returns the retryable 503 envelope with `reason="timeout"` and
+`stage="transport.read"`. A stalled response send ends the response and releases its request
+slot. Terminal answer streams return their worker before network delivery. See
+[runtime limits](../operations.md#concurrency-and-overload) for process-wide budgets.
 
 | Bound | REST value |
 | --- | --- |

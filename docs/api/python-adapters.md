@@ -1,8 +1,11 @@
 # Bundled Python model adapters
 
-Use these objects with the [Memory constructor](python-sdk.md#construction) or `MemoryPlugins`.
-Their inference methods implement the [backend protocols](python-backends.md).
-For declarative examples and runtime requirements, see [model setup](../configuration/models.md).
+Choose a bundled adapter for local embedding, model endpoints, reranking, speech, faces, or map
+context. Pass it to the [Memory constructor](python-sdk.md#construction) or `MemoryPlugins`.
+This reference lists constructors and resource ownership.
+
+[Backend protocols](python-backends.md) define inference methods;
+[model setup](../configuration/models.md) provides declarative examples and runtime requirements.
 
 | Adapter | Role |
 | --- | --- |
@@ -85,7 +88,7 @@ SentenceTransformersReranker.load(
 Loads a pinned cross-encoder when no encoder is supplied. Omitted revision resolves through Hub;
 an injected encoder also needs an explicit revision to avoid resolution. Loading disables remote
 code. Inference/batching serialize per adapter. Predict requests raw logits with identity activation
-and no softmax. `Max_length` bounds the pair with cross-encoder truncation. `Memory` owns the adapter;
+and no softmax. `max_length` bounds the pair with cross-encoder truncation. `Memory` owns the adapter;
 changing it requires reopen, not re-embedding.
 
 ## VLLMReranker
@@ -190,9 +193,9 @@ FunASRRecipe(
 ```
 
 `DEFAULT_FUNASR_MODEL_ID` and `DEFAULT_FUNASR_RECIPE` publish the speech defaults.
-`FunASRRecipe.auto_model_arguments`() returns dict[str,object]. The transcription space includes the
+`FunASRRecipe.auto_model_arguments()` returns a `dict[str, object]`. The transcription space includes the
 immutable FunASR revision and complete recipe; execution placement/CPU budget do not change it.
-Ncpu affects process-wide PyTorch/BLAS threads; VAD/speaker devices can differ.
+`ncpu` affects process-wide PyTorch/BLAS threads; VAD/speaker devices can differ.
 See [speech setup](../configuration/models.md#local-speech-with-funasr).
 
 ## OpenCVFaceAnalyzer
@@ -315,7 +318,7 @@ configured metadata key. Invalid labels/missing IDs/unsupported witnesses raise 
 Numeric/date witnesses are exact uniquely located quotes with matching literals, or permitted
 `occurred_at` date witnesses. Arithmetic uses validated operands; durations declare closed/half-open
 intervals. This does not prove relevance, event uniqueness, unit conversion, or set completeness.
-Dates require `source_value` plus granularity/format. Iso8601 preserves timezone; `utc_datetime` needs
+Dates require `source_value` plus granularity/format. `iso8601` preserves timezone; `utc_datetime` needs
 explicit zone and minute/second precision, rendering UTC without suffix. Number/duration formats
 are `with_unit` or number and preserve unit checks. Missing format is `response_invalid`.
 Structured streaming buffers the draft and yields rendered text, never raw JSON.
@@ -452,7 +455,7 @@ transcribe(assets: Sequence[AssetRef]) -> tuple[str, ...]
 Close releases the adapter's own resources, not injected OpenAI clients.
 
 Structural requests default to strict JSON schema; JSON-object mode is explicit and retains
-validation. Strict rejection never silently downgrades. `Generation_store` is a strict boolean,
+validation. Strict rejection never silently downgrades. `generation_store` is a strict boolean,
 default false, and cannot be overridden through provider fields. Sampling/token serialization and
 provider SSE are documented in [Provider fields](../configuration/providers.md#sampling-and-streaming).
 
@@ -465,8 +468,8 @@ provider upload adapter.
 Grounded answer text, including system/user text and attachment labels, is capped at 4 MiB.
 Question capacity is reserved before ranked evidence; overflow media may remain as text. A single
 oversized embedding key can be elided while usable keys keep the write searchable, recorded as
-`sensemem.`embedding.elided_parts``. Refusing every key fails. Technical context-length video fallback
-records `sensemem.`embedding.video_sampled_inputs`` and preserves original assets for answering.
+`sensemem.embedding.elided_parts`. Refusing every key fails. Technical context-length video fallback
+records `sensemem.embedding.video_sampled_inputs` and preserves original assets for answering.
 
 ## Named recipes
 

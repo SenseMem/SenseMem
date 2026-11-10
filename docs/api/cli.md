@@ -1,5 +1,8 @@
 # Command-line API
 
+Operate memory from a shell or script. The `sensemem` command can open a local composition or
+call an existing REST owner, returning one JSON document per invocation.
+
 Jump to [invocation](#invoke-the-cli), [recipes](#bundled-recipes), [commands](#commands),
 [content and JSONL](#content-and-jsonl-input), [output](#output), [diagnostics](#doctor-and-explain),
 or [exit codes](#exit-codes).
@@ -86,15 +89,15 @@ server's owner.
 | `funasr` | `--transcriber` | pinned FunASR model and component revisions |
 | `openai` | `--embedder`, `--answerer`, `--former`, `--consolidator`, `--transcriber`, `--vision` | `text-embedding-3-small`, `gpt-5-mini-2025-08-07`, `gpt-5-mini-2025-08-07`, `gpt-5-mini-2025-08-07`, `whisper-1`, `gpt-5-mini-2025-08-07` |
 
-Only `openai` accepts a model suffix, for example `--former openai:gpt-5-mini-2025-08-07`. Selecting a former
-opts into one formation model call after each source observation commits; omitting `--former`
-keeps formation off. `--consolidator` is what the `consolidate` command needs, and it costs
-nothing until that command runs: unlike a former it is not on the write path. `--vision` selects
-the describer that captions visual memories so the lexical half of retrieval can reach an image
-with no words of its own; it declares the `image` modality, costs one chat completion per write
-batch that carries an image, and omitting it keeps the write path as cheap as it is without one.
-Recipe names form a closed table; use `--app` for other backends. Provider trust, license, model
-identity, and credential behavior live in [configuration](../configuration.md).
+Use a model suffix with `openai`, for example `--former openai:gpt-5-mini-2025-08-07`.
+The optional slots run independently:
+
+- `--former` adds one formation call after a source or source batch commits.
+- `--consolidator` enables explicit maintenance commands.
+- `--vision` captions image-bearing write batches, making visual content searchable lexically.
+
+Use `--app` for backends outside the recipe catalog. [Configuration](../configuration.md) covers
+credentials, model identity, and resource ownership.
 
 ```bash
 sensemem --embedder openai --former openai --vision openai add @panel.png
@@ -138,6 +141,8 @@ sensemem --embedder openai --former openai --vision openai add @panel.png
 | `optimize` | none | `{}` | no |
 | `doctor` | none | composition and loader report | yes |
 
+#### Defaults and context options
+
 Defaults match the SDK: `add`, `add-many`, `add-stream`, and `capture` use
 `memory_type=semantic`; search uses `limit=10`; ask uses `limit=5`; list, `settle`,
 `pending-captures`, and `operations` use `limit=100`; `settle` also uses `max-attempts=3`;
@@ -158,30 +163,21 @@ provenance. Without the option, `proofs` is empty.
 when a full parent does not fit. It is off by default, which preserves full-record-only compilation
 and leaves the additive `excerpts` array empty. Each rendered excerpt line is labelled partial and
 warns that omitted source text may qualify it.
-Each row `operations` prints carries `operation_id`, `intent`, `trigger`, `evidence_ids`,
-`target_ids`, `claim`, `consent`, `identity`, `rationale`, `model_id`, `recipe`, `created_ids`,
-`changed_ids`, `forgotten_ids`, `superseded`, `applied_at`, `rolled_back_at`, `outcome`, and
-`outcome_note` -- the same fields `apply` and `record-outcome` print back for the one operation
-each names. `identity` is
-set on the three rows that name a person instead of records -- the cross-modal `merge` the kernel
-commits, the `correct` that `unlink-identity` logs, and the irreversible `forget` that
-`forget-identity` logs -- and is `null` on every other row. `claim` carries the name an `identify`
-row asserted and `consent` the state a `consent` row recorded, so a row about a person always says
-what it said about them. `outcome` and `outcome_note` are `null` until `record-outcome` names the
-operation, are post-hoc and never fed back into a decision, and a later `record-outcome` call
-replaces the earlier judgement without reversing the operation.
 
-`consolidation-candidates`'s `--idle` declares an approved idle window, admitting lineages
-nothing has ever weighed; the CLI never infers idleness from a clock. `consolidate-pending` runs
-`consolidation-candidates` and `consolidate` in a loop, each round consolidating every row
-`consolidation-candidates` returns with that row's own trigger, until a round yields no
-candidates or `--max-rounds` is reached; the counters it prints are summed across every round,
-and its own `--idle` passes the same declaration through to `consolidation-candidates` on every
-round. `apply` applies one host-supplied operation -- read from `--operation` in the same JSON
-shape `operations` logs a row in -- through the same kernel validation a proposal gets, which is
-the public replay path: reproducing a logged sequence against a fresh store configured with the
-recipe that produced it reproduces the same derived IDs. A refused operation exits
-`validation_error` naming the kernel's rejection reason.
+#### Control operations and replay
+
+`operations` prints the full current operation payload with IDs, intent, evidence, proposal,
+identity/consent changes, recipe, timestamps, rollback state, and outcome fields. See
+[operation values](python-values.md#control-operations) for the complete field inventory.
+`record-outcome` adds or replaces a later assessment; it changes neither policy nor rollback state.
+
+`consolidation-candidates --idle` declares a host-approved idle window.
+`consolidate-pending` processes candidates under each one's trigger until no work remains or
+`--max-rounds` is reached, and reports aggregate counters.
+
+`apply --operation` replays a host-supplied operation through kernel validation. Matching sources
+and recipes reproduce derived IDs on a fresh store. Refused operations return `validation_error`
+with the kernel's rejection reason.
 
 `--operation` requires the complete current log payload, including explicit nulls and empty
 arrays; it does not fill missing fields from older or abbreviated formats. For example, a
@@ -203,6 +199,8 @@ forget operation has this shape (replace the target ID with a real memory ID):
 Proposal, claim, consent and identity objects also require their current logged fields. A row
 copied from `operations` supplies them. An incomplete payload raises `storage_error` during log
 decoding before the kernel applies it.
+
+#### Consent, export, and retention
 
 `record-consent` takes `granted`, `withheld`, or `withdrawn`, and prints the logged operation, or
 `null` when that statement already stands. `consent` reads back the standing state, where `null`
@@ -236,6 +234,8 @@ values use the CLI's `validation_error` exit status without sending a remote req
 unreferenced media, without a secure-erasure guarantee. With the
 default `reinforce_on_answer=True`, a non-abstained `ask` also reinforces backend-declared hits;
 abstention adds no reinforcement. Use `--app` to construct a memory with that policy disabled.
+
+#### Answer-time identity linking
 
 `ask` may run face recognition on a retrieved photo or video before answering. With the default
 `--link-identities` (true), a voice-and-face pair corroborated across enough assets is fused into
@@ -405,9 +405,7 @@ search, answer, or page limits from 1 through 100. `--url` applies the REST boun
 content parts and the 8 MiB request body. Local `add-many` accepts at most 1,024 items through the SDK; `add-stream` has no total item-count
 cap and collects its results for one JSON document. Remote `add-many` accepts at most 100 items.
 
-There is no configuration file, `SENSEMEM_*` composition variable, plugin registry, interactive
-prompt, streaming stdout, output-format switch, `serve` command, capture-event reducer, or
-coordinate-frame transform. Use the Python configuration boundary and an ASGI server instead of a
-second CLI configuration or server implementation. `add-stream` is for finite finalized JSONL;
-use `AsyncAudioStream`, `AsyncVisionStream`, or `AsyncCaptureStream` in Python for live sensor
-packets and associated update/final/cancel capture events.
+Use `--app` to load an application-owned configuration file or custom backend composition.
+For serving, host `create_app()` with an ASGI server. For live sensor packets and update/final/cancel
+events, use `AsyncAudioStream`, `AsyncVisionStream`, or `AsyncCaptureStream` in the SDK.
+`add-stream` handles finite finalized JSONL; stdout remains one JSON document.

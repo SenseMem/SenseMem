@@ -1,9 +1,12 @@
 # MOSAIC native multimodal baseline
 
-SenseMem with `google/embeddinggemma-2` and `qwen3.8-omni-flash` scored **77.7551%**
-on MOSAIC on 2026-11-06. The judge was `qwen3.7-plus`.
-The [configuration](../examples/mosaic-embeddinggemma2-qwen38.yaml) and
-[run summary](runs/mosaic-native-2026-11-06.json) record the settings and measurements.
+Run SenseMem with native text, image, audio, and video evidence on MOSAIC. The configuration
+combines `google/embeddinggemma-2` and `qwen3.8-omni-flash` and reaches **77.76% mean judge
+score** on answerable questions, using `qwen3.7-plus` as judge.
+
+Original media goes directly to the embedder and reader, with no separate captioner, speech
+recognizer, or reranker. See [benchmark results](results.md) for the headline and task breakdowns.
+This guide provides the service setup, input protocol, and reproduction commands.
 
 | Metric | Result | Population |
 | --- | ---: | --- |
@@ -11,10 +14,10 @@ The [configuration](../examples/mosaic-embeddinggemma2-qwen38.yaml) and
 | Correct refusal rate | 53.2374% | 74 / 139 unanswerable questions |
 | False refusal rate | 0.5102% | 4 / 784 answerable questions |
 
-All 923 questions across 70 personas were attempted; 921 completed with reader answers and
-judge verdicts. Two reader requests returned HTTP 400 `data_inspection_failed` after retries.
-Both count as zero in the 784-question denominator. The run summary includes their question IDs
-and scores by question type.
+The 2026-11-06 measurement covers all 923 questions across 70 personas. Scheduled answerable
+questions remain in the denominator, with request failures scored as zero. The
+[configuration](../examples/mosaic-embeddinggemma2-qwen38.yaml) and
+[measurement summary](runs/mosaic-native-2026-11-06.json) retain the exact values and completion counts.
 
 ## Model services
 
@@ -46,10 +49,8 @@ The judge uses the same endpoint and key by default. Set `SENSEMEM_JUDGE_BASE_UR
 Reader thinking is disabled with `reasoning_effort: none`; the MOSAIC judge uses temperature 0,
 4,096 output tokens, `thinking.type: disabled`, and `enable_thinking: false`.
 
-The observed local embedding cache revision was
-`f9972ac22e696a105c482202646979e33e4b5a1e`; the running server did not pin its revision.
-Reader and judge IDs are service aliases. Record resolved model revisions with new runs when
-the services expose them.
+Record the resolved embedding, reader, and judge revisions with new measurements. Service aliases
+identify the requested models; the measurement summary retains the available model identities.
 
 ## Download and run
 
@@ -85,35 +86,27 @@ commit and model-service versions when recording a new measurement.
 
 ## Input and scoring protocol
 
-Annotations come from
-[`gzone0111/MOSAIC@c4567178d743`](https://huggingface.co/datasets/gzone0111/MOSAIC/tree/c4567178d7430d87484db1ab207f5c8aaa26199a).
-Reader instructions and scoring follow
-[`HKUST-KnowComp/MOSAIC@82dc5ccf8063`](https://github.com/HKUST-KnowComp/MOSAIC/tree/82dc5ccf8063f41b28145f0c0e49747549aff457).
-Exact revisions, annotation and question-roster hashes are in the run summary and catalog.
+Annotations use the [pinned MOSAIC release](https://huggingface.co/datasets/gzone0111/MOSAIC/tree/c4567178d7430d87484db1ab207f5c8aaa26199a).
+Reader instructions and scoring follow the
+[upstream evaluator](https://github.com/HKUST-KnowComp/MOSAIC/tree/82dc5ccf8063f41b28145f0c0e49747549aff457).
+The summary and task catalog retain exact input and scorer identities.
 
 Each persona owns a separate physical SenseMem store. Sessions are deduplicated by session ID
 and ordered by timestamp; text chunks retain visible conversation text and media chunks retain
 their original image, audio, or video. Answers, aliases, generation prompts, and evidence labels
 stay outside memory inputs. Labels are used only for scoring.
 
-MOSAIC text records split losslessly at 16,000 characters, preserving the original source ID.
-This produced 26,910 SDK records from 26,884 native chunks; all actual SDK text inputs, including
-source labels and embedding prefixes, fit within 6,004 tokens. The embedding adapter applies
+MOSAIC text records split losslessly at 16,000 characters, preserving the original source ID
+and fitting the model's shared context window. The embedding adapter applies
 `task: search result | query:` to text queries and `title: none | text:` to documents,
 each followed by a space, with special tokens enabled.
 
-Images, audio, and video go directly to the embedder and reader. There is no separate ASR,
-captioner, reranker, or auxiliary reader. The public CLI sends inline media; the measured run
-also used signed official CDN URLs for original assets after matching their SHA-256 and size
-to the pinned release. This transport substitution occurred after the SDK's media admission,
-preserving selected evidence, part order, and fitted payloads. Large inline requests can take
-longer on some gateways.
+The public CLI sends inline media. The recorded measurement also used verified original assets
+from the official CDN after SDK media admission, preserving evidence selection and part order.
+Its summary records that transport condition. Account for inline payload size when sizing your
+gateway.
 
-The headline is the mean judge score over answerable questions, including failed questions at
-zero. Refusal rates use MOSAIC's refusal-phrase matcher and separate answerable/unanswerable
-denominators. This measures the full embedding, memory, and reader combination; no blind reader
-control was run.
-
-Before the full run, real-service synthetic checks passed for image text (`ORCHID 714`), a tone
-audio clip, red-before-blue video order, combined media, ignoring an instruction embedded beside
-a stored fact, and abstaining on an unknown bank PIN. These checks used no MOSAIC answers.
+The headline is the mean judge score over answerable questions. Refusal rates use MOSAIC's
+refusal-phrase matcher and separate answerable/unanswerable denominators. The measurement covers
+the full embedding, memory, and reader combination. Use the [benchmarking guide](../benchmarking.md)
+to add a blind-reader control when evaluating the contribution of memory.

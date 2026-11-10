@@ -1,8 +1,11 @@
 # Benchmark tasks
 
-Return to the [benchmarking guide](../benchmarking.md) for setup and a complete run.
-Use `uv run --frozen sensemem-bench eval --list-tasks` for exact selectors, variants, source
-revisions, and local readiness. Group selectors expand to several tasks.
+Choose a workload that matches your agent: conversation history, personalization, personal
+media, or long video memory. The tables list selectors, primary metrics, and required judges.
+
+Follow [Benchmarking](../benchmarking.md) for setup and execution. Use
+`uv run --frozen sensemem-bench eval --list-tasks` for exact variants and local-data readiness.
+Group selectors expand to several tasks.
 
 ## Choose a workload
 
@@ -59,8 +62,8 @@ license at the pin, so verify permission before using EvoEmo. See the
 
 ## Protocol notes
 
-These notes describe differences that affect input, scoring, or comparability. Exact pins and
-protocol identities are recorded in the catalog and run artifacts.
+Use these notes to choose the right input and scoring condition. The task catalog and generated
+manifests retain exact source and protocol identities.
 
 ### Dialogue tasks
 
@@ -105,7 +108,7 @@ knowledge while requiring support for personal facts. Its `answer_policy` is `nu
 no ranked retrieval list. This differs from the grounded-reader `compile` baseline.
 
 Scored families use the released personalization rubric, four task-specific judges, and ranking
-formula pinned at `ad80a3b1b322`. Ranking reports `ndcg_at_5`: positive gain +2, filler +1, hard
+formula recorded in the task catalog. Ranking reports `ndcg_at_5`: positive gain +2, filler +1, hard
 negative −2; historical hidden-persona slates without hard negatives use filler gain zero.
 `target_only_ndcg@5` is a local diagnostic.
 
@@ -188,6 +191,3 @@ the upstream frame sampler and priority-keyframe injection, even with identical 
 - **SuperMemory-VQA:** `qa_mrr` is unavailable because the backend exposes no option scores.
 - **MM-Lifelong:** the default group includes day/week/month validation; select month-train
   explicitly. Temporal `ref_at_300` measures intervals, separately from source-ID recall.
-
-ScriptMem is absent because its released conversations are placeholders and the source scripts
-are withheld; the public release cannot support a memory-retrieval evaluation.

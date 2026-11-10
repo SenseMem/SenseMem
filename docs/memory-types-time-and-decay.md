@@ -1,8 +1,12 @@
 # Memory types, time, and decay
 
-Choose a memory role, attach time when it is known, and use explicit filters when records must
-be excluded. Decay and reinforcement adjust ranking. [Typed memory](typed-memory.md) explains
-derived assertions and evidence; [memory management](memory-management.md) covers deliberate changes.
+Recall what happened, when it was true, and what the system knew at the time. SenseMem separates
+memory roles, event time, historical validity, and ranking so your application can control each
+independently.
+
+Choose a role when writing, attach known times, and apply strict filters when a task requires them.
+Decay and reinforcement adjust ranking. [Typed memory](typed-memory.md) explains derived
+assertions; [memory management](memory-management.md) covers deliberate changes.
 
 ## Choose a memory type
 

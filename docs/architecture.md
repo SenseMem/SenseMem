@@ -4,10 +4,12 @@ Jump to [code layout](#code-layout), [durable state](#durable-state),
 [write consistency](#write-consistency), [retrieval](#retrieval-consistency),
 [concurrency](#ownership-and-concurrency), or [trust boundaries](#public-and-trust-boundaries).
 
-SenseMem implements the unified Context & Memory layer as an embedded Python runtime. The host
-application constructs one `Memory`, supplies model backends, and owns process and transport
-policy. The kernel owns validation, durable state, retrieval, context compilation, and resource
-lifecycle; the `Memory` facade validates, wires, and forwards to its owning planes.
+SenseMem keeps durable evidence and task-specific context in one embedded runtime. SQLite and
+original media preserve authoritative state, a rebuildable index accelerates retrieval, and
+typed model backends provide replaceable inference. The same kernel serves every interface.
+
+The host constructs one `Memory`, supplies backends, and controls process and transport policy.
+The `Memory` facade validates, wires, and forwards; each kernel plane owns one behavior.
 
 This page defines implementation invariants. See [core concepts](concepts.md) for the user model,
 [deployment](deployment.md) for topology choices, and [operations](operations.md) for procedures.
@@ -29,14 +31,13 @@ data, not an account, authorization, request, or isolation boundary.
 
 ## Code layout
 
-`memory.py` holds the two public facades, `Memory` and `AsyncMemory`, and nothing else that
-decides behavior. `Memory.__init__` is the one place the runtime is assembled: it resolves
+`memory.py` holds the two public facades, `Memory` and `AsyncMemory`.
+`Memory.__init__` assembles the runtime: it resolves
 `Settings` and `Backends`, opens the store, constructs the planes that need no index, delegates
 store recovery to `Recovery`, retains cached speech bindings when its producer is omitted,
 opens the index, constructs the remaining planes,
-and drains the outbox. Every plane's dependencies are keyword arguments to its constructor, so
-the wiring in that method is the dependency graph, and a plane cannot reach a resource it was
-not handed.
+and drains the outbox. Each plane declares its dependencies as constructor keyword arguments,
+making assembly the explicit dependency graph.
 
 | Module | Plane | Owns |
 | --- | --- | --- |
@@ -246,19 +247,14 @@ it without buying the same vectors twice. `capture()` keeps its queue row throug
 commit for the same reason. The per-source recipe marker makes the retry idempotent: a source
 that already formed is skipped.
 
-`memory_semantics.identity_id` binds a typed claim to a recognized person, and the kernel is the
-only writer of it. It is `ON DELETE SET NULL` on purpose: erasing a person drops the attribution
-and keeps the claim, which is the same promise as keeping the evening after forgetting who was in
-it. Naming a person travels this path too, as an `ENTITY` assertion carrying that binding, so it
-needs no formation backend and inherits versioning, visibility, and rollback rather than getting
-its own. `identities.name` and `identities.relationship` are then a projection of the current
-visible assertion, not an independently writable field, and every recompute replaces the affected
-indexed documents in the same transaction. Every write that can change a bound assertion's
-visibility recomputes the projection in its own transaction -- naming, evidence, correction,
-cognitive forgetting, rollback, a merge that re-points the assertion onto the survivor, an
-unlink, an erasure, and the ordinary deletion of the assertion record -- so no committed state
-exists in which `identities.name`, the stored text, and the currently visible assertion
-disagree.
+`memory_semantics.identity_id` binds a typed claim to a recognized person. The kernel owns this
+binding. Its `ON DELETE SET NULL` rule removes attribution on identity erasure while preserving
+the claim. Naming creates a bound `ENTITY` assertion and uses the same versioning, visibility,
+and rollback rules without requiring formation.
+
+`identities.name`, `identities.relationship`, and indexed speech text project the current visible
+naming assertion. Every operation that changes its visibility or binding updates these projections
+in the same SQLite transaction, keeping names, evidence, and search documents consistent.
 
 The binding is deterministic policy, never a model's choice: the kernel stamps it when a
 proposed claim's subject matches the canonical subject of a visible naming assertion under the
@@ -269,10 +265,9 @@ host. Undoing a merge re-evaluates the claims bound to the survivor: one resting
 that moved back is re-attributed to the restored person, one resting on both people's media is
 unbound, and none is left attributed to somebody it was never about.
 
-An identity with no visible naming assertion is provisional: derived state, not a stored flag.
-`IdentityProfile.confirmed` reports it, and a compiled bundle's `actors` carries one
-`ProvisionalActor` per unnamed person in its evidence, because an unrecognized person in the room
-must be distinguishable from one who is absent.
+An identity with no visible naming assertion is provisional. `IdentityProfile.confirmed` reports
+this derived state, and compiled `actors` includes `ProvisionalActor` entries for unnamed people
+present in the selected evidence.
 
 ## Retrieval consistency
 
@@ -311,6 +306,8 @@ routes. A query has at most eight dense keys. With `K` distinct query vectors, `
 `T * (K + 1) * B` candidates, or twice that with a temporal preference, before deduplication.
 Native index work and record size still affect latency and memory.
 
+### Candidate scoring
+
 Temporal lexical retrieval applies the preferred time window inside Zvec before taking its
 bounded top-k, using the same type, place, identity, and explicit hard-time intersection as the
 dense route. The global fallback retains the soft time preference. It does not double global
@@ -343,7 +340,9 @@ projection ranking: `valid_at` and `known_at` select the assertion valid in the 
 the system at those instants, while `near` and `radius_m` compare distance only within a matching
 spatial frame and anchor, with no implicit frame transform.
 
-`RetrievalScope.identity_id` is the fourth axis: the memories one person is in. A memory is in
+### Identity scope
+
+`RetrievalScope.identity_id` selects memories involving one person. A memory is in
 scope when its semantic subject is that identity or the identity was observed in it -- a face
 observation or a diarised speech segment on one of its media assets -- and a merged alias resolves
 to the surviving identity. `identity_id` and `place_id` are the two axes that are static per
@@ -353,6 +352,8 @@ candidate window happening to contain its few matches. The index fields are a pr
 merging, splitting, or erasing an identity re-enqueues the affected memories through the same
 durable outbox, and a stale field can only cost recall: SQLite reapplies both predicates during
 hydration and decides.
+
+### Answer and context delivery
 
 Optional answer policies reuse this retrieval plane:
 
@@ -412,6 +413,8 @@ lease. Native mutations and maintenance acquire the process-wide FD lock before 
 lease; flush releases its shared lease before taking an exclusive maintenance lease, while
 retaining the process lock so another writer cannot exhaust recovery headroom.
 
+### Retrieval snapshots and media leases
+
 After candidate discovery, retrieval holds the write lock only while reading records, protecting
 candidate media, and starting any FP32 scoring stream. The stream keeps one SQLite WAL snapshot
 across SQL batches; scoring, lexical coverage, and ranking then run outside the write lock.
@@ -431,6 +434,8 @@ it never combines cached records with records from a newer SQLite snapshot. Scop
 and semantic contexts retain their existing record-read path, including time-dependent validity
 selection and media leases. Missing IDs are not cached. Candidate discovery, scoring, and ranking
 remain unchanged.
+
+### Maintenance and shutdown
 
 `reindex()` reads authoritative SQLite pages, replaces the Zvec collection, then replays the
 outbox so writes committed during the scan are retained. `close()` rejects new work, waits for

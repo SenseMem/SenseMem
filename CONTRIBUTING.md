@@ -1,8 +1,8 @@
 # Contributing to SenseMem
 
-Thanks for helping improve SenseMem. This guide covers local setup, quality gates, storage
-invariants, and review expectations. Automated contributors must also follow
-[AGENTS.md](AGENTS.md).
+Contribute model integrations, memory behavior, evaluations, examples, or documentation.
+This guide takes you from a locked development environment to a reviewable change.
+Automated contributors must also follow [AGENTS.md](AGENTS.md).
 
 ## Setup
 
@@ -198,10 +198,15 @@ Public guides must stand alone without links into that directory and use the pub
 checkout. A documentation review should compare signatures, defaults, exports, transport switches,
 and example configurations against their implementations, not only check Markdown.
 
-Keep implementation plans and review notes in the ignored `.superpowers/` directory. Public
-pages should describe supported behavior and reproducible usage, with detailed contracts in one
-owning guide. Preserve model revisions, dataset checksums, source snapshots, and manifests needed
-to reproduce measurements; private research artifacts remain local-only.
+Write for the task a reader wants to complete. Open each guide with its outcome, use a minimal
+working example where appropriate, and explain a capability's practical value before its fields.
+Keep the README focused on the problem, core features, first result, and next steps. Describe
+supported behavior directly and confidently, with claims tied to code or measured results.
+
+Give each contract one owning guide and link to it from related pages. Public measurement pages
+state results, model choices, metrics, and scoring populations; linked manifests retain exact
+revisions and checksums. Experiment chronology, internal run names, trial narratives, and review
+notes belong in ignored local research or `.superpowers/`, rather than user guides.
 
 Keep one-off experiment runners, ablation recipes, and their supporting tests in `docs/research/`.
 Tracked benchmarks and tests should exercise supported behavior rather than preserve an

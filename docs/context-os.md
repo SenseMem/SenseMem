@@ -1,13 +1,13 @@
 # Context OS direction
 
-**Context OS** names SenseMem's design direction for managing the lifecycle from incoming
-observations to durable memory and task-ready context. The host agent owns goals, planning, tool
-selection, and action; SenseMem owns the narrower context and memory boundary.
+**Context OS** is SenseMem's design direction for connecting observation, memory, and action-ready
+context. It gives a host agent a consistent memory lifecycle while the agent controls goals,
+planning, tool selection, and actions.
 
 The current runtime implements capture, deferred enrichment, evidence-linked memory management,
-and context compilation. This page explains how they fit together. Exact supported behavior lives
-in the [SDK](api/python-sdk.md), [configuration](configuration.md), and [architecture](architecture.md)
-references. Broader scheduling and interaction goals do not imply additional APIs.
+and context compilation. This page explains how they fit together and the goals that guide their
+development. Use the [SDK](api/python-sdk.md), [configuration](configuration.md), and
+[architecture](architecture.md) references to implement an integration.
 
 ## Product boundary
 
@@ -154,7 +154,7 @@ The control plane has no REST route or MCP tool. A server host can enable `delib
 run `consolidate_pending()` in its lifespan. That timer does not settle captured records.
 High-rate sensor input stays on the embedded SDK boundary.
 
-All interfaces share one owner per physical directory. [Product capabilities](product-capabilities.md#python-rest-mcp-and-cli-surfaces)
+All interfaces share one owner per physical directory. [Product capabilities](product-capabilities.md#connect-through-your-preferred-interface)
 maps the operations, and [configuration](configuration/lifecycle.md#running-the-loop-inside-a-server-process)
 describes server scheduling.
 
@@ -168,6 +168,6 @@ describes server scheduling.
 | Memory management | Consolidation precision, contradiction recovery, false retirement, rollback success, model cost, and formation lag. |
 | Reliability | Crash recovery, replay, provenance coverage, authority enforcement, and deletion behavior. |
 
-The [benchmark harness](benchmarking.md) supports task evaluation, capture measurements, and a
-`compile` arm. Continuous sensor behavior and real-world interaction quality require application
-evaluations on named hardware. Mechanism and contract tests alone do not establish those results.
+Use the [benchmark harness](benchmarking.md) for task evaluation, capture measurements, and
+comparisons with a `compile` arm. Evaluate continuous sensor behavior and interaction quality
+with representative application inputs on the target hardware.

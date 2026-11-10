@@ -1,7 +1,10 @@
 # Formation, consolidation, and retention configuration
 
-These features are optional and independent. Return to [Configuration](../configuration.md)
-for the required embedding slot. [Typed memory](../typed-memory.md) owns evidence semantics;
+Derive useful assertions after capture, maintain them as evidence changes, and apply a retention
+policy on your schedule. Formation, consolidation, and retention are optional and independent.
+
+[Configuration](../configuration.md) covers construction,
+[typed memory](../typed-memory.md) explains evidence semantics, and
 [memory management](../memory-management.md) explains deliberate operations.
 
 ## Automatic memory formation
@@ -57,8 +60,8 @@ not semantic history search or another formation target.
 Each target has one read-snapshot-grounded history. Identical ordered snapshots serialize once as
 read-only groups; different versions/provenance/truncation remain separate. Shared serialization
 does not broaden citation authority. The adapter aliases background rows `history_N`; a target
-may cite only itself, its batch, and its own active history. This changes the recipe in both JSON
-modes, without changing public input types.
+may cite only itself, its batch, and its own active history. History participates in the recipe
+identity for both JSON modes.
 
 With history enabled, a named event/state/relation/trait/affect must jointly cite a standing entity
 record naming its subject. Retired, missing, or competing names withhold that proposal; supported

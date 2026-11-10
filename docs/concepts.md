@@ -1,10 +1,13 @@
 # Core concepts
 
-SenseMem provides a unified Context & Memory layer through an embedded runtime. The host
-application supplies content and model capabilities; one local `Memory` owns persistence,
-retrieval, context compilation, and grounded-answer orchestration.
-Use [product capabilities](product-capabilities.md) to choose an integration, [architecture](architecture.md)
-for consistency guarantees, and the [Python SDK](api/python-sdk.md) for exact signatures.
+SenseMem turns observations into persistent evidence and brings that evidence back to an agent's
+current task. One `Memory` instance handles storage, retrieval, context compilation, and
+grounded answers. Your application supplies observations, model backends, and the agent's goals.
+
+This guide explains the concepts behind the [quick start](quickstart.md). Use
+[product capabilities](product-capabilities.md) to choose features,
+[architecture](architecture.md) for consistency guarantees, and the
+[SDK reference](api/python-sdk.md) for exact signatures.
 
 ## Context and memory
 
@@ -15,8 +18,8 @@ organize stored evidence over time.
 
 To return memory to the current task, `search()` retrieves evidence, `compile()` constructs a
 bounded structured context bundle, and `ask()` generates an evidence-backed answer. The agent
-still owns its prompt, goals, and actions. This is the product loop: receive context, form and
-maintain memory, recall for a task, and build useful context.
+owns its prompt, goals, and actions. SenseMem connects them to retained evidence through the
+memory loop: capture, organize, recall, and construct context.
 
 ## From input to evidence
 
@@ -55,7 +58,8 @@ downloads it. Fetch remote media in the application, then pass a `Blob` or local
 MCP accept neither remote URLs nor server filesystem paths.
 
 Each record has one modality. Text without media is `text`; text plus one media family keeps that
-media modality; multiple media families produce `omni`.
+media modality; multiple media families produce `omni`. For example, a caption and photo form
+one `image` record; text, a photo, and a voice recording form one `omni` record.
 
 `ObservationContext` is caller input for provenance, confidence, world-time validity, metric pose,
 and symbolic `place_id`. The returned `MemoryRecord` exposes the authoritative stored
@@ -125,7 +129,8 @@ the three paths, formation controls, and ownership rules.
 ## Retrieval can return no evidence
 
 `search()` returns a `SearchResult`; its `hits` field is a `tuple[SearchHit, ...]`.
-An empty `hits` tuple is normal when no candidate clears
+The relevance gate keeps weak matches out of an agent's context. An empty `hits` tuple is normal
+when no candidate clears
 `minimum_relevance`. With `limit=1`, SenseMem may also withhold an unresolved top-two tie. A score
 ranks hits against one query and does not move with the `limit` you ask for; it is not a global
 probability.

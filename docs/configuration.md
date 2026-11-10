@@ -1,7 +1,8 @@
 # Configuration
 
-Configure the required embedding backend, then add the capabilities your application uses.
-Every construction path opens the same embedded kernel and validates settings before storage.
+Choose your models without changing the memory API. Configure an embedding backend to enable
+storage and retrieval, then add answering, perception, formation, or maintenance independently.
+All construction paths validate the composition before opening the same embedded kernel.
 
 ## 1. Install only the surfaces you use
 
@@ -18,6 +19,7 @@ Every construction path opens the same embedded kernel and validates settings be
 | `all` | Union of the optional surfaces |
 
 The base package includes local storage, Zvec, public values, and backend protocols.
+The runtime supports Python 3.11–3.14; verify the selected optional runtimes on your target platform.
 
 ```bash
 uv add "sensemem[local,openai]"
@@ -90,9 +92,9 @@ or consolidation.
 | Change retrieval, grounding, or identity thresholds | `settings` | [Runtime settings](configuration/settings.md) |
 | Declare explicit physical retention | Top-level `retention` | [Retention](configuration/lifecycle.md#retention-policy) |
 
-For native media, declare only modalities the deployed endpoint accepts. Caption/transcript
-fallback needs a matching backend; declared capability does not establish task accuracy.
-`memory.capabilities` describes the resolved composition.
+For native media, declare the modalities the deployed endpoint accepts. Add matching speech or
+vision backends for caption/transcript routes. `memory.capabilities` describes the resolved
+composition; use the [quality gate](model-quality.md) to qualify it for your tasks.
 
 ## 4. Choose an ownership boundary
 

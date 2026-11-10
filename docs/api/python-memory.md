@@ -1,8 +1,11 @@
 # Python memory operations
 
-All methods belong to `Memory`, re-exported from `sensemem`. See
-[construction/content/errors](python-sdk.md), [identity and data-subject operations](python-identity.md),
-[control operations](python-control.md), and [async streams](python-streams.md).
+Write searchable records with `add()`, defer inference with `capture()`, and choose
+`search()`, `compile()`, or `ask()` to bring evidence back to a task. This reference defines
+the arguments, results, and lifecycle of each `Memory` operation.
+
+See [construction and content](python-sdk.md), [identity and data lifecycle](python-identity.md),
+[control operations](python-control.md), and [async streams](python-streams.md) for related APIs.
 
 | Task | Methods |
 | --- | --- |
@@ -138,7 +141,7 @@ search(
 Returns `SearchResult` with ranked hits and optional trace. Explain preserves hits and reports
 IDs, score components, ranks, and rejections, excluding query/content/metadata/media/vectors/paths.
 
-`Reference_at` is timezone-aware; omission uses the resolved query clock or current UTC. Explicit
+`reference_at` is timezone-aware; omission uses the resolved query clock or current UTC. Explicit
 occurrence bounds are half-open event-overlap filters, exclude missing event times, and require
 an increasing interval. Natural-language dates are a soft preference; coarse clock phrases need
 not resolve a window.
@@ -185,7 +188,7 @@ and reversible. `False` still recognizes faces but commits no merge or new link.
 ### Answer grounding
 
 The ranked limit window is protected, with its best-hit modality floor. A modality absent from
-the first limit hits can contribute its best hit in the last slot. `Evidence_budget_chars` widens
+the first limit hits can contribute its best hit in the last slot. `evidence_budget_chars` widens
 this window with ranked records, pricing image/audio/video at 2000/4000/12000 characters.
 `None` disables that tail, while optional planning/linked reads and source closure can still add.
 
@@ -210,7 +213,7 @@ recording, and occurrence times remain distinct.
 
 Direct adapters can label omitted cited sources S without claiming delivery. Beyond 64 unique
 omitted support IDs, bounded counts/pairwise overlaps replace individual labels; these cannot
-determine higher-order unions. `Supporting_record_count` counts unique `evidence_ids`, not captures
+determine higher-order unions. `supporting_record_count` counts unique `evidence_ids`, not captures
 or independent corroboration. Source origin and supersession are separate relations unless also
 cited. Omitted media is counted by modality beside retained text.
 

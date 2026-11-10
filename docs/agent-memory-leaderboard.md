@@ -1,9 +1,12 @@
 # Agent Memory Leaderboard
 
-`sensemem-bench eval serve` exposes SenseMem in the
-[Agent Memory Leaderboard (AML) Add/Search format](https://agentmemoryleaderboard.ai/api-guide).
-It is a participant-hosted benchmark adapter. AML calls these endpoints and runs its own Answer
-and Eval stages; this command does not generate final answers or publish local evaluation scores.
+Connect SenseMem to the
+[Agent Memory Leaderboard (AML)](https://agentmemoryleaderboard.ai/api-guide) through its
+participant-hosted Add/Search API. `sensemem-bench eval serve` handles ingestion and retrieval;
+AML runs the Answer and Eval stages.
+
+Each user history receives a separate physical store, while loaded model weights are shared
+across the server.
 
 ## Start the server
 
@@ -144,6 +147,4 @@ root together, including these adapter files. Access logging is disabled by the 
 
 Use evaluation data only for the evaluation, keep it private, and remove the dedicated root
 within AML's required retention period. For open-source submissions, configure any Add-stage
-model calls according to AML's current model requirements. These operational requirements are
-defined by the linked AML guide; serving the protocol alone does not establish leaderboard
-eligibility or score comparability.
+model calls in line with the linked AML guide's current submission and model requirements.

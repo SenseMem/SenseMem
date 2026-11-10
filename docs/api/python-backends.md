@@ -1,8 +1,9 @@
 # Python backend protocols
 
-Backends are runtime-checkable, thread-safe inference protocols. Import supported public protocols
-from `sensemem`; [bundled adapters](python-adapters.md) implement these contracts.
-The kernel retains storage, IDs, visibility, and final validation.
+Connect a custom model through a narrow inference protocol while retaining SenseMem's storage,
+IDs, evidence, and visibility rules. Backends are runtime-checkable and must be thread-safe.
+Import public protocols from `sensemem`; [bundled adapters](python-adapters.md) provide reference
+implementations.
 
 ## Declarations and ownership
 
@@ -175,7 +176,7 @@ and an end needs an earlier start. Resolve relative dates against occurrence, th
 For example, yesterday observed on March 2 is March 1 even if stored later. Missing timestamps
 and undated evidence do not authorize a wall-clock guess. The SDK supplies committed `created_at`.
 
-`Evidence_ids` is `None` for the primary singleton or a nonempty unique ordered conjunction containing
+`evidence_ids` is `None` for the primary singleton or a nonempty unique ordered conjunction containing
 the primary input. It can cite that exact batch or that target's active history, never another
 target's private history. Separate clauses are alternatives. Losing a member retires the whole
 conjunction; provenance does not establish independent or complete semantic support.

@@ -1,26 +1,12 @@
 # Deployment
 
-Deploy one live `Memory` owner per physical `data_dir`. Separate applications, tenants, or workers
-that require isolation must use separate directories.
+Run SenseMem inside your application, expose it over HTTP, or connect an agent host through MCP.
+All topologies use one live `Memory` owner per physical `data_dir`. Independent memory domains
+use separate directories.
 
 This page chooses and configures a topology. See [architecture](architecture.md) for invariants,
 [operations](operations.md) for runbooks, and [troubleshooting](troubleshooting.md) when startup or
 traffic fails.
-
-## Upgrading to SenseMem
-
-Use the `sensemem` distribution, root Python imports, and the `sensemem` and `sensemem-bench`
-commands. Install the extras required by the selected adapters and review
-[configuration](configuration.md) before changing a deployment.
-
-The current runtime accepts SQLite schema 21 and its declared representation identities.
-It does not migrate older schemas or convert incompatible model spaces. Read source data with
-its original runtime, then re-ingest into a fresh physical directory. Renaming a directory does
-not convert its format. Keep the original runtime and a tested backup until verification is complete.
-
-Run one version and one owner per data directory. Evaluation artifacts also have explicit schema
-and scorer identities; retain their original manifests and use compatible inputs for new runs.
-See [representation changes](operations.md#changing-the-runtime-or-stored-representations).
 
 ## Choose a topology
 
@@ -73,18 +59,13 @@ from openai import OpenAI
 
 from sensemem import SentenceTransformersEmbedder, Memory, OpenAIModels
 
-client = OpenAI(timeout=30.0, max_retries=3)
-try:
+with OpenAI(timeout=30.0, max_retries=3) as client:
     with Memory(
         "/var/lib/sensemem/assistant",
-        embedder=SentenceTransformersEmbedder(
-            model_id="google/embeddinggemma-2",
-        ),
+        embedder=SentenceTransformersEmbedder(model_id="google/embeddinggemma-2"),
         answerer=OpenAIModels(generation_client=client),
     ) as memory:
         memory.add("Process-owned memory")
-finally:
-    client.close()
 ```
 
 Keep one `Memory` open for a long-running process. `Memory.close()` closes supplied backend objects;
@@ -219,6 +200,21 @@ is final. A stdio server inherits the host user's filesystem, environment, and m
 If the host chooses SSE or streamable HTTP, it must add authentication, authorization, TLS, request
 limits, and rate limiting. The server publishes thirteen tools; MCP error subjects may contain
 owner-local paths.
+
+## Upgrading to SenseMem
+
+Use the `sensemem` distribution, root Python imports, and the `sensemem` and `sensemem-bench`
+commands. Install the extras required by the selected adapters and review
+[configuration](configuration.md) before changing a deployment.
+
+The current runtime accepts SQLite schema 21 and its declared representation identities.
+It does not migrate older schemas or convert incompatible model spaces. Read source data with
+its original runtime, then re-ingest into a fresh physical directory. Renaming a directory does
+not convert its format. Keep the original runtime and a tested backup until verification is complete.
+
+Run one version and one owner per data directory. Evaluation artifacts also have explicit schema
+and scorer identities; retain their original manifests and use compatible inputs for new runs.
+See [representation changes](operations.md#changing-the-runtime-or-stored-representations).
 
 ## Media and model placement
 

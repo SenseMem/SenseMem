@@ -1,8 +1,13 @@
 # Use a local WeMM embedding service
 
-Connect an already-running WeMM service through the OpenAI-compatible embedding adapter. This
-example expects a `messages` endpoint serving `tencent/WeMM-Embedding-2B` with 2,048-dimensional
-vectors. Configure generation separately. SenseMem does not install or launch either model service.
+Use WeMM to embed text, images, and video into one searchable memory space. This guide connects
+an existing `tencent/WeMM-Embedding-2B` service through the OpenAI-compatible adapter, with
+2,048-dimensional vectors and the `messages` request format.
+
+Run the model services separately from SenseMem. The example also configures a generation
+endpoint for grounded answers and FunASR for speech.
+
+## Configure the services
 
 ```yaml
 data_dir: /absolute/path/to/a-new-sensemem-store
@@ -46,7 +51,9 @@ host's YAML parser:
 uv add "sensemem[openai,local]" pyyaml
 ```
 
-Decode the file before opening the configuration with the public SDK:
+## Store and retrieve a memory
+
+Decode the configuration file and open it through the public SDK:
 
 ```python
 from pathlib import Path
@@ -72,8 +79,7 @@ audio into searchable text, then keep `index_speech` enabled. This adds ASR work
 Verify your service's batch, inline-byte, and video-frame limits before ingestion. The SDK's
 own transport bounds remain in force; see the [adapter limits](api/python-adapters.md).
 
-The local server runtime, model checkpoint, and service script are machine-managed dependencies;
-they are not installed by SenseMem. Use the official
+Use the official
 [WeMM-Embedding-2B model card](https://huggingface.co/tencent/WeMM-Embedding-2B) to obtain the
 checkpoint and its serving prerequisites, then configure the service to expose the `messages`,
 2048-dimension contract shown above. Keep its runtime and model files outside the SenseMem

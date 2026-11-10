@@ -1,7 +1,11 @@
 # Python async and streaming APIs
 
-Async methods preserve synchronous arguments, defaults, results, and errors.
-See [the streaming guide](../omni-streaming-and-interaction-memory.md) for complete capture examples.
+Use memory in an async application, prefetch context during a changing turn, and commit finalized
+audio or vision observations. Async methods preserve the synchronous API's arguments, defaults,
+results, and errors.
+
+See [the streaming guide](../omni-streaming-and-interaction-memory.md) for complete capture examples
+and update/final/cancel semantics.
 
 | Need | API |
 | --- | --- |
@@ -130,6 +134,6 @@ the model path: automatic retrieval is skipped, and every `StreamCommit` reports
 `pending_settlement=True`, `prefetch=None`, and `retrieval_error=None`. New records require
 `settle` before retrieval; capturing an existing record preserves its readiness. Inspect
 `pending_captures()` for actual outstanding work. Use `AsyncOmniPrefetch` separately if speculative
-retrieval is needed. The default stays the strong `add`. See
+retrieval is needed. By default, finals use `add()` and yield searchable records. See
 [omni streaming and interaction memory](../omni-streaming-and-interaction-memory.md) for event
 semantics and complete examples.

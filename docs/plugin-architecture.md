@@ -1,14 +1,14 @@
 # Plugin architecture
 
+Compose the models your application needs while keeping one consistent memory system.
+SenseMem's typed backend protocols make inference replaceable; the kernel keeps evidence,
+identity, storage, and retrieval semantics consistent across providers.
+
 ## Kernel and capability model
 
-**Swifter** means users can compose capabilities, choose models, and extend implementations.
-SenseMem applies the "everything is a plugin" principle to replaceable capabilities around one
-memory kernel. See [product principles](design-principles.md#smarter--swifter--stronger).
-
-SenseMem uses a stable memory kernel with explicit, typed computation plugins. It does not use a
-global registry, arbitrary pipeline hooks, automatic package installation, or a second execution
-plane.
+Applications select plugins explicitly at construction. This implements the
+[Swifter principle](design-principles.md#smarter--swifter--stronger): make capabilities easy to
+compose and integrations easy to extend.
 
 Applications normalize input and capture formats at their boundary. Replaceable model plugins
 implement narrow capabilities behind the same memory operations.
@@ -35,8 +35,6 @@ with Memory.from_config(
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
         },
-        "speech": {"provider": "funasr"},
-        "settings": {"index_speech": True},
     }
 ) as memory:
     memory.add("Remember this")
@@ -45,8 +43,7 @@ with Memory.from_config(
 `Memory.from_config` validates a closed catalog of bundled providers, constructs owned adapters, and
 then delegates through `Memory.from_plugins` to the normal constructor. Plugin bundles contain
 values; protocols and declarations are validated once at assembly, before storage opens.
-Custom and third-party
-implementations remain explicit object injection. All paths share capability validation, durable
+Inject custom and third-party backends as objects. All paths share capability validation, durable
 identity checks, storage, and execution. Omitting an optional plugin adds no model call or optional
 dependency. Reusing one object for several protocols is supported by the object API, and the bundled
 OpenAI adapter does exactly that.
@@ -175,10 +172,8 @@ A new public capability protocol is admitted only together with all of:
    failure mapping.
 5. Tests that exercise the capability through the public product path.
 
-Face analysis is the worked example: `FaceBackend` arrived with a local OpenCV implementation, an
-end-to-end identity use case, and product-path tests. A capability that satisfies the type system
-but nothing else is exported surface area with no user, and it costs the same to maintain as one
-that works.
+`FaceBackend` illustrates this rule: the local OpenCV adapter supports recognition and naming
+through the public identity API, with product-path tests for that integration.
 
 `VisionDescriptionBackend` meets the rule through `OpenAIModels.describe`, the optional
 [`vision` configuration](configuration/models.md#visual-descriptions), and the `add`/`add_many` product path.
@@ -193,14 +188,12 @@ improvements require separate evaluation.
 
 ## Embodied integration boundary
 
-SenseMem may improve embodied memory representation, retrieval, provenance, temporal validity,
-and failure diagnosis without becoming a robot AgentOS. Planner, skill-runner, verifier,
-edge/cloud routing, robot-control, benchmark harness, and model-training contracts remain outside
-the product boundary. Procedural memory is evidence and is never executed as code.
+SenseMem gives embodied applications memory representation, retrieval, provenance, and temporal
+validity. The host supplies planning, skill execution, verification, edge/cloud placement, and
+robot control. Procedural memories provide evidence for that host; their text is never executed.
 
-New entity, relation, or spatial projections must remain additive to authoritative records and earn
-their complexity through SenseMem's own measured retrieval results. A paper's architecture or
-benchmark score is not by itself a reason to replace the flat durable representation.
+New entity, relation, or spatial projections must remain derived from authoritative records and
+demonstrate a retrieval benefit through SenseMem's public API.
 
 Interaction memory uses the existing semantic, episodic, and procedural roles. The current
 `FormationBackend` can propose affect and trait records; additional analysis must preserve the

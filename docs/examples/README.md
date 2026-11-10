@@ -1,8 +1,10 @@
 # Configuration examples
 
-These files are starting points. They do not install model servers, supply credentials, or
-establish benchmark scores. Run repository commands from the repository root, using the locked
-environment in [Contributing](../../CONTRIBUTING.md#setup).
+Choose a configuration for your evaluation, connect its model services, and run it with
+`sensemem-bench eval --config`. The catalog below lists each example's purpose and prerequisites.
+
+Run repository commands from the repository root with the locked environment in
+[Contributing](../../CONTRIBUTING.md#setup).
 
 ## Choose an example
 
@@ -13,10 +15,11 @@ environment in [Contributing](../../CONTRIBUTING.md#setup).
 | [atm-sgm-max-thinking-vllm.yaml](atm-sgm-max-thinking-vllm.yaml) | ATM source descriptions with bounded recall, reader reasoning, and remote reranking | Local ATM SGM corpus and compatible WeMM, DeepSeek, vLLM rerank, and judge endpoints; install `benchmarks,openai` |
 | [mem-gallery-qwen-wemm.yaml](mem-gallery-qwen-wemm.yaml) | Image-dialogue evaluation with query vision | Compatible WeMM and Qwen endpoints, `benchmarks,openai`, and Mem-Gallery inputs |
 
-Each YAML file contains a harness-owned `benchmark` section and is an input to
-`sensemem-bench eval --config`. To use a file with `Memory.from_config()`, decode it in the host,
-remove `benchmark`, and set the application's own `data_dir`. Product configuration accepts no
-`benchmark` key. The evaluator replaces `data_dir` with physically isolated per-unit stores.
+Each YAML combines product model configuration with a harness-owned `benchmark` section.
+The evaluator allocates physically isolated stores for independent units.
+
+To reuse a composition in your application, decode the YAML, remove `benchmark`, and set your
+own `data_dir` before calling `Memory.from_config()`.
 
 ## Customize locally
 
@@ -47,6 +50,6 @@ uv run --frozen sensemem-bench eval \
   --tasks locomo-refined --check-integrity --no-download
 ```
 
-The integrity command requires the selected corpus locally and makes no model calls. It does
-not validate model-service readiness or quality. See [benchmarking](../benchmarking.md) for
-downloads, sampling units, resource requirements, and result interpretation.
+The integrity command checks the local corpus without model calls. Continue with
+[benchmarking](../benchmarking.md) to download inputs, run a bounded evaluation, and interpret
+results. [Benchmark results](../benchmarks/results.md) documents measured configurations.

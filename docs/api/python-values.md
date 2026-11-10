@@ -1,7 +1,8 @@
 # Python public values
 
-These immutable values and literal/enum contracts are re-exported from `sensemem`.
-Use the [SDK index](python-sdk.md) to find methods consuming or returning them.
+Look up the fields returned by memory operations and the values accepted by typed inputs.
+These immutable records, literal aliases, and enums are re-exported from `sensemem`.
+Use the [SDK index](python-sdk.md) to find the methods that consume or return them.
 
 `MemoryRecord.content` preserves caller text at the front, followed by derived sections marked
 `[transcript:<asset_id>]`, `[visual description:<asset_id>]`, `[facts:<asset_id>]`, or

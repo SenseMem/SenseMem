@@ -1,6 +1,11 @@
 # Observability
 
-For lifecycle and recovery, see [Operations](operations.md).
+See where time and model usage go across capture, retrieval, generation, and transport delivery.
+SenseMem emits OpenTelemetry spans with stable stage names, exact reported usage, and provider
+request IDs while keeping memory content out of ordinary traces.
+
+This reference explains setup and attributes. [Operations](operations.md) covers lifecycle
+and recovery.
 
 ## Enable tracing
 
@@ -50,8 +55,8 @@ speculative prefetch use `sensemem.search`. `AsyncMemory` preserves tracing cont
 worker thread. Both buffered `AsyncMemory.ask()` and `AsyncMemory.ask_stream()` record their
 initial executor queue delay.
 
-Inside `sensemem.ask`, `sensemem.retrieve` measures the complete prerequisite-to-ranked-hits
-leg: question content preparation, reference-time and temporal parsing, scope normalization,
+Inside `sensemem.ask`, `sensemem.retrieve` measures the complete path to ranked hits:
+question content preparation, reference-time and temporal parsing, scope normalization,
 required query speech work, query embedding, index lookup, and ranking. Its existing
 `sensemem.content.prepare`, model, `sensemem.index.search`, and `sensemem.retrieval.rank`
 children remain available for attribution.

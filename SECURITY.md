@@ -17,9 +17,10 @@ SenseMem is pre-1.0. Security fixes land on `master`; there are no maintained re
 
 ### Filesystem isolation
 
-One `data_dir` is one memory domain. SenseMem has no tenant, user, or request scope inside that
-directory. Any process that can read it can read original media under `assets/`, SQLite records and
-metadata, cached speech and face analyses, and FP32 content and identity embeddings.
+One physical `data_dir` is one memory domain. Allocate separate directories and host permissions
+for independent trust boundaries. A process that can read the directory can read original media
+under `assets/`, SQLite records and metadata, cached speech and face analyses, and content and
+identity embeddings.
 
 SenseMem holds an operating-system lock so two live instances cannot own the same directory. On
 POSIX, it creates data directories with mode `0700`, sets `state.sqlite3` to `0600`, and resets an
@@ -31,9 +32,9 @@ directories. Do not use metadata as an authorization boundary.
 
 ### REST deployment boundary
 
-`create_app(memory=...)` is an unauthenticated ASGI application. SenseMem does not ship a product
-server. Internet-facing deployments must host the app behind their existing authenticated gateway,
-service mesh, or ASGI authentication middleware.
+`create_app(memory=...)` provides an ASGI application for the memory owner. Protect network access
+through the deployment's authenticated gateway, service mesh, or ASGI middleware. Authentication
+and authorization are host responsibilities.
 
 `/v1` bodies larger than 8 MiB are rejected before framework parsing, text is limited to 65,536
 characters, and canonical metadata is limited to 262,144 UTF-8 bytes.
@@ -82,9 +83,13 @@ SQLite is authoritative; Zvec is a rebuildable search projection, not an access-
 Public search hydrates Zvec IDs from SQLite, so stale index entries are not returned after logical
 deletion.
 
-`delete` is logical deletion, not guaranteed secure erasure from SQLite free pages, WAL files,
-filesystem snapshots, or backups. Use encrypted storage and a documented backup-retention process
-when secure deletion matters. Stop the owning process before copying or restoring a directory.
+`delete()` removes the live record, its dependent state, and orphaned media according to the
+[deletion contract](docs/api/python-memory.md#delete). Related text can remain in independently
+supported records and append-only operation payloads. Physical removal from live state does not
+securely erase SQLite free pages, WAL files, filesystem snapshots, or backups.
+
+Use encrypted storage and a documented backup-retention process when secure deletion matters.
+Stop the owning process before copying or restoring a directory.
 
 ### Credentials and logs
 

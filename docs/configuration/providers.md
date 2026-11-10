@@ -1,8 +1,11 @@
 # Provider fields
 
-Return to [Configuration](../configuration.md) for composition and ownership.
-This page owns OpenAI-compatible connection, completion, routing, and transport controls.
-[Model configuration](models.md) covers embedding, reranking, speech, and visual-description recipes.
+Configure endpoints, completion controls, generation routes, and media delivery for bundled
+providers. The tables list accepted fields and defaults; the following sections explain their
+effects on requests and returned answers.
+
+[Configuration](../configuration.md) covers composition and ownership.
+[Model setup](models.md) covers embedding, reranking, speech, and visual-description recipes.
 
 ## Connections and response format
 
@@ -94,12 +97,16 @@ to disable thinking for this Qwen model.
 
 ### Answer presentation
 
+#### Concise answers
+
 `answer_style: concise` asks for requested values/entities without explanatory prose or citations,
 while preserving refusal and evidence policy. The model checks roles, dates, units, and list
 conditions, keeps separate event episodes distinct, and includes every supported item matching
 the requested category. Approximate relative periods retain their precision and source-date
 anchor. These are prompt instructions, not deterministic validators. Evaluate the style for
 the chosen model/task. Formation, vision, and consolidation do not accept it.
+
+#### Structured answers
 
 `answer_format: structured` validates a typed draft against final fitted evidence, then renders
 it. Source lists resolve local aliases through `source_metadata_key`; supply that metadata when
@@ -112,6 +119,8 @@ timestamp to UTC without a suffix. Numeric/duration drafts select with-unit or n
 These checks do not establish relevance, real-event uniqueness, or set completeness. Other answers
 use text drafts. Structured streaming buffers validation before yielding rendered text.
 Returned hits are the declared support subset in kernel-selected order; use search for ranking.
+
+#### Image evidence and accompanying text
 
 `image_source_prose: context_when_supplied` moves the complete original source text to
 `auxiliary_source_text` on the same evidence object, leaving its `content` empty. This final
@@ -137,6 +146,8 @@ planning and other completion roles do not use this policy. The option adds no m
 its role prompt adds input tokens when applied. Evaluate quality with the chosen model before
 enabling it. Both buffered and streamed answers retain their configured `text` or `structured`
 contract.
+
+#### Source-bound evidence operations
 
 `evidence_operation_tool: true` offers one native `submit_evidence_operation` function after
 fitting the original evidence. The model can submit source-bound member, condition, identity
@@ -192,6 +203,8 @@ selects no media and reports its diagnostic failure.
 Direct composition uses `EvidenceGeneration(model, selector=model, media_max_items=2)`.
 For direct adapters, `generation_media_max_tokens` sets the independent diagnosis ceiling;
 `generation_max_tokens` remains the overall output ceiling.
+
+### Complete request-byte limit
 
 `request_max_bytes` bounds the final answer JSON, including base64, UTF-8 text, provider fields,
 and streaming fields, excluding headers/framing. Existing fitting is preserved when unset or the

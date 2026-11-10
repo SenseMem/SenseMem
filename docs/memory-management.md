@@ -1,8 +1,11 @@
 # Memory management
 
-The host schedules deliberate changes to stored memory. A consolidation backend proposes
-operations; the kernel validates and logs each accepted operation. Ordinary writes and retrieval
-need no consolidation backend.
+Keep memory useful as facts change and evidence accumulates. SenseMem supports consolidation,
+correction, reinforcement, and reversible forgetting, with an operation log for inspection and undo.
+
+The host schedules maintenance. A consolidation backend proposes changes, and the kernel validates
+and logs accepted operations. You can also apply explicit host changes without a consolidation
+backend.
 
 ## Run a deliberate pass
 
@@ -55,8 +58,10 @@ The [control API](api/python-control.md) owns exact checks and rejection reasons
 
 ## Schedule due work
 
+When your host has determined that the application is charging and idle:
+
 ```python
-report = memory.consolidate_pending(idle=is_charging_and_idle)
+report = memory.consolidate_pending(idle=True)
 ```
 
 The host declares idleness. The loop derives candidates from committed signals, processes them
@@ -85,5 +90,5 @@ Re-adding forgotten content does not restore it.
 
 Physical deletion and identity erasure cannot be recovered by rollback. Use
 [the local consolidation benchmark](benchmarks/local.md#measure-consolidation-quality) to measure
-precision, contradiction recovery, false retirement, and rollback on a fixed fixture. It does not
-establish real-world model quality.
+precision, contradiction recovery, false retirement, and rollback on a fixed fixture. Evaluate the
+selected backend with representative application evidence before deploying its proposals.

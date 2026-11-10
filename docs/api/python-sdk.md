@@ -1,7 +1,8 @@
 # Python SDK
 
-Import supported public SDK values from `sensemem`. `Memory` is synchronous;
-`AsyncMemory` wraps the same instance semantics. REST/MCP/CLI expose documented subsets.
+Store observations, retrieve evidence, build context, and manage memory through one SDK.
+Import public values from `sensemem`. Use `Memory` for synchronous calls and `AsyncMemory`
+for the same operations in an async application.
 
 ## Find an API
 
@@ -161,7 +162,7 @@ Errors may carry reason, stage, and subject. Retryability comes only from the st
 Truncation is a model error; index unavailability is a storage error.
 
 Provider refusals map to `model_refused` without exposing refusal text. Quota exhaustion requires
-operator action; `provider_unavailable` follows the SDK retry budget. `Context_length_exceeded` is
+operator action; `provider_unavailable` follows the SDK retry budget. `context_length_exceeded` is
 permanent provider context overflow; `payload_too_large` is a byte limit or HTTP 413, including
 non-JSON proxy responses. Neither silently trims selected evidence for a retry. Output truncation
 is separate. See [the shared error vocabulary](rest.md#codes-and-reasons).
