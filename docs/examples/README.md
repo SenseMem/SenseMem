@@ -6,6 +6,9 @@ Choose a configuration for your evaluation, connect its model services, and run 
 Run repository commands from the repository root with the locked environment in
 [Contributing](../../CONTRIBUTING.md#setup).
 
+For runnable promotional demos and English video scripts, see
+[the three-demo guide](promo-demos.md).
+
 ## Choose an example
 
 | File | Purpose | Prerequisites |

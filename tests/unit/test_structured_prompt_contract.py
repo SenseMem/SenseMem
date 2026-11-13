@@ -4,6 +4,8 @@ import json
 import re
 from collections.abc import Mapping
 
+import pytest
+
 from sensemem.models._answer_output import parse_answer_draft
 from sensemem.models._openai_schemas import response_schema
 from sensemem.models.openai_sdk import _CONSOLIDATION_SYSTEM_PROMPT, _STRUCTURED_ANSWER_PROMPT
@@ -28,8 +30,11 @@ def test_all_structured_answer_examples_are_complete_valid_envelopes() -> None:
     ]
 
 
-def test_consolidation_example_obeys_the_required_schema_and_cites_counterevidence() -> None:
-    start = _CONSOLIDATION_SYSTEM_PROMPT.index('{"operations":[{"intent":"correct"')
+@pytest.mark.parametrize("intent", ("reinforce", "correct"))
+def test_consolidation_examples_keep_new_proposals_out_of_existing_target_operations(
+    intent: str,
+) -> None:
+    start = _CONSOLIDATION_SYSTEM_PROMPT.index('{"operations":[{"intent":"' + intent + '"')
     example, _length = json.JSONDecoder().raw_decode(_CONSOLIDATION_SYSTEM_PROMPT[start:])
     operation = example["operations"][0]
     properties = response_schema("consolidation")["properties"]

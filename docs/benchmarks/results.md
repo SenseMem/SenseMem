@@ -25,6 +25,14 @@ The measured configuration also scores **83.76% on temporal reasoning** and **82
 information extraction**. These task breakdowns cover time-sensitive questions and specific
 details drawn from multimodal history.
 
+![MOSAIC configuration scores and required-source recall versus complete-support coverage.](../assets/tech-report/mosaic-evidence-budget.png)
+
+*From the SenseMem technical report, Figure 5. Panel (a) shows the top five configurations in
+the 2026-11-09 leaderboard snapshot; reader models differ across configurations. Panel (b)
+measures source coverage over 784 answerable questions as the number of distinct ranked sources
+increases. Shading gives 95% persona-cluster bootstrap intervals from 2,000 resamples over
+70 personas, conditional on fixed predictions.*
+
 Follow the [MOSAIC reproduction guide](mosaic-native.md) for service setup and full-run commands.
 The [configuration](../examples/mosaic-embeddinggemma2-qwen38.yaml) and
 [measurement summary](runs/mosaic-native-2026-11-06.json) preserve the scoring populations,
@@ -53,6 +61,14 @@ This measurement belongs to the
 [evaluated source revision](https://github.com/SenseMem/SenseMem/commit/ddb85e7e67fa86a41e34e2b763d783e51426704c).
 See [ATM-Bench protocols](tasks.md#atm-bench-and-mem-gallery) for input conditions and scoring,
 and [provider fields](../configuration/providers.md#answer-presentation) for the answer controls.
+
+![ATM-Bench Main Question Score against source Recall@10, with a detail view of the highest-scoring configurations.](../assets/tech-report/atm-quality-retrieval.png)
+
+*From the SenseMem technical report, Figure 6: the SenseMem submission and ten published
+reference configurations, retrieved 2026-11-11, on the 1,013-question Main workload. Panel (b)
+enlarges the four configurations above 75% Question Score; marker shapes identify answer models.
+SenseMem scores 79.63% Question Score and 90.45% source-ID Recall@10. These are historical
+configuration comparisons; model and input choices are part of each result.*
 
 ## Use results to choose a configuration
 

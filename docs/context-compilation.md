@@ -38,6 +38,12 @@ and conflict notes with that text so missing evidence remains visible. `AsyncMem
 the same operation. REST uses `POST /v1/context`, MCP uses `compile_context`, and the CLI uses
 `sensemem compile`.
 
+Both `render()` and `compact().text` mark memory content, including procedures, as untrusted
+evidence. Pass these presentations as task context in a user or tool message, keeping host
+instructions separate. Retrieved text cannot grant permission to change policy or take actions;
+use the current request and host policy for that authority. Preserve relevant uncertainty, and
+do not treat omitted or unretrieved memories as proof that a fact is absent.
+
 ## Contract
 
 ```text
@@ -168,6 +174,15 @@ Per anchor, search reads at most 256 ancestry nodes and 4096 clause-member rows,
 alternatives produce unknowns; an uncertifiable or oversized witness union withholds the claim.
 Historical `scope.known_at` retains full-closure delivery. This opt-in changes no stored record,
 schema, or default policy.
+
+![Complete support preserves AND premises, combines count and confidence witnesses, and charges shared sources once.](assets/tech-report/support-compilation.png)
+
+*From the SenseMem technical report, Figure 4. Panels (a–c) illustrate selected delivery
+certificates: every chosen AND assessment remains complete, and count and confidence can need
+different witnesses. The nine-to-three-record example uses `selected_proofs=True`; default
+compilation retains the full audit union. Panel (d) shows why shared sources can support more
+claims within the same item budget. These schematic record counts exclude character and media
+costs, which the compiler also enforces.*
 
 ## Exact raw excerpts
 

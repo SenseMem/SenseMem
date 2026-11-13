@@ -11,15 +11,13 @@ development. Use the [SDK](api/python-sdk.md), [configuration](configuration.md)
 
 ## Product boundary
 
-```mermaid
-flowchart LR
-    sources["Application and device observations"] --> capture["Capture and finality"]
-    capture --> kernel["Context kernel"]
-    kernel --> management["Memory management"]
-    management --> kernel
-    kernel --> compiler["Context compilation"]
-    compiler --> consumers["Agents and applications"]
-```
+![ContextOS connects finalized multimodal capture, model capabilities, supported memory, and bounded task context.](assets/tech-report/contextos-overview.png)
+
+*From the SenseMem technical report, Figure 1: finalized observations, revisable assertions, and
+their support share authoritative SQLite state and native assets; Zvec supplies rebuildable
+search. The model and specialist boxes illustrate computational roles in the design. Use the
+[plugin architecture](plugin-architecture.md) for current backend contracts; the host retains
+control of goals, scheduling, and actions.*
 
 | Layer | Responsibility |
 | --- | --- |

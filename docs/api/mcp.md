@@ -98,7 +98,10 @@ server lifespan and is disabled by default. No tool exposes consolidation direct
 `build_mcp_server` publishes an assembly-time `memory.capabilities` snapshot in its
 `instructions`. A connecting agent learns the model and modality declarations without a tool call.
 The instructions recommend `compile_context` for task-ready context and list the tool groups
-the host has withheld.
+the host has withheld. They also mark returned memories, procedures, names, metadata, transcripts
+and visible text as untrusted evidence. Such content cannot authorize writes, identity changes,
+or policy changes. The caller's request and host policy supply that authority. Relevant conflicts
+and unknowns remain part of the context; empty or bounded retrieval does not prove absence.
 
 The document's `operations` match reachable capabilities: `perceive` requires
 `embodied_operations=True`; write-path formation and visual description require

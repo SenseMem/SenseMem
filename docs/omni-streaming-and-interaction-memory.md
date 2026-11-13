@@ -14,6 +14,14 @@ This page owns those lifecycle boundaries. Sensor capture, stream reconnection, 
 decoding, pixel conversion, frame selection, and turn detection remain application or adapter
 work: the application decides when an observation is complete and normalizes it to `ContentInput`.
 
+![Streaming finality separates speculative recall from durable capture; personalization separates affect, traits, and authorized response guidance.](assets/tech-report/streaming-personalization.png)
+
+*From the SenseMem technical report, Figure 3. Panel (a) shows the alternative speculative-recall
+and deferred-capture modes: unfinished input stays transient, while finalized capture commits
+before acknowledgement and host-scheduled settlement. Panel (b) shows the downstream
+[affective-memory](affective-memory.md) rules: inferred traits need independent capture groups,
+and response guidance requires feedback and host authorization.*
+
 ## Choose the smallest stream API
 
 | Need | API |

@@ -26,6 +26,7 @@ These guides describe SenseMem 0.3.0; the [changelog](../CHANGELOG.md#unreleased
 | Serve EmbeddingGemma 2 through vLLM | [Model server](deployment.md#embeddinggemma-2-model-server) · [Client configuration](configuration/models.md#embeddinggemma-2-through-vllm) |
 | Add text or multimodal reranking | [Semantic reranking](configuration/models.md#semantic-reranking) |
 | Choose a working evaluation configuration | [Example catalog](examples/README.md) |
+| Run the three promotional demos and prepare English videos | [Promotional demos](examples/promo-demos.md) |
 | See measured results or evaluate my own setup | [Benchmark results](benchmarks/results.md) · [Benchmarking](benchmarking.md) |
 | Deploy, back up, or recover memory | [Deployment](deployment.md) · [Operations](operations.md) |
 | Diagnose an error or empty search | [Troubleshooting](troubleshooting.md) |

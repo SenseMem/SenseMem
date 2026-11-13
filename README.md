@@ -39,6 +39,12 @@ connect today's question with last week's conversation. SenseMem gives you the b
 for that continuity: preserve the original observation, organize what it means, retrieve it by
 meaning and context, and deliver evidence your agent can use.
 
+![Multimodal observations become revisable knowledge and evidence-backed task context.](docs/assets/tech-report/memory-lifecycle.png)
+
+*From the SenseMem technical report, Figure 2: an image places a headset on a desk; a later
+observation moves it to a cabinet. The original observations remain available while the current
+claim and its supporting source feed context compilation or grounded answering.*
+
 ## Why SenseMem
 
 - **One memory for every modality.** Store ordered text, images, audio, and video together.

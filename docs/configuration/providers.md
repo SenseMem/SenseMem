@@ -90,9 +90,10 @@ Slot `stream: true` collects provider SSE before parsing and requires the termin
 It can help gateways that time out on buffered JSON. This transport setting is independent of
 the public `ask_stream()` surface and benchmark reporting/answer-surface controls.
 
-For `qwen3.8-omni-flash`, native reader audio uses the Data URL required by
+For `qwen3.8-omni-flash`, native audio in answering, formation, and consolidation uses the Data URL
+required by
 [Qwen-Omni](https://help.aliyun.com/en/model-studio/qwen-omni) in `input_audio.data`.
-Other readers retain OpenAI's raw Base64 audio format. Set `extra_body.reasoning_effort: none`
+Other models retain OpenAI's raw Base64 audio format. Set `extra_body.reasoning_effort: none`
 to disable thinking for this Qwen model.
 
 ### Answer presentation

@@ -80,7 +80,7 @@ MEMLENS_QUERY_PROMPT = PromptSpec(
     name="memlens_query",
     version="memlens_query_v2",
     purpose="Add the required MEMLENS abstention response.",
-    used_by="sensemem.benchmarks.memlens_runner._question_query",
+    used_by="sensemem.benchmarks.eval_adapters._memlens",
     text=(
         '{question}\n\nIf the memories are insufficient, answer exactly "Insufficient information".'
     ),
@@ -109,7 +109,7 @@ EGOTEMPO_QUERY_PROMPT = PromptSpec(
     name="egotempo_query",
     version="egotempo_query_v1",
     purpose="Apply the official EgoTempo open-question instruction.",
-    used_by="sensemem.benchmarks.egotempo._answer_question",
+    used_by="sensemem.benchmarks.eval_adapters._egotempo",
     text=(
         "These are frames from a video that I want to upload. Use the visual cues to answer the "
         "question: {question}. You need to answer the question in any case and not demand "

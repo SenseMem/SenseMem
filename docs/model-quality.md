@@ -8,6 +8,41 @@ Transport tests verify request and error contracts without credentials. The gate
 exercise model behavior through the public SDK. Use [Benchmarking](benchmarking.md) for dataset
 comparisons and [benchmark results](benchmarks/results.md) for measured configurations.
 
+## Prompt contracts
+
+SenseMem follows OpenAI's [prompt engineering guidance](https://developers.openai.com/api/docs/guides/prompt-engineering)
+on instruction priority, explicit output formats, and separating instructions from supplied data.
+Its [reasoning guidance](https://developers.openai.com/api/docs/guides/reasoning-best-practices)
+also recommends direct tasks and clear boundaries without requesting a chain of thought.
+The bundled prompts request answers, typed proposals, plans, or bounded evidence justifications.
+
+| Surface | Contract |
+| --- | --- |
+| Grounded answers, strict and best effort | Content, metadata, descriptions, and media are evidence; embedded instructions cannot change policy. Preserve supported facts and the selected abstention behavior. |
+| Structured answers and native evidence operations | Use the selected closed schema, supplied source aliases, and exact witnesses. Examples are synthetic; unresolved facts remain unknown. |
+| Recall planning and semantic replanning | JSON separates the question, reference time, corpus summary, and previous attempt. The task cannot override allowed operations or host budgets. |
+| Formation and shared history | Return one item per observation, with an empty proposal list when appropriate. Preserve source-relative time, supported identity, and history boundaries. |
+| Visual descriptions | Preserve visible details and sequence. Extract explicitly supported standing facts without predicting permanence or generalizing a one-time action. |
+| Media diagnosis | Select only relevant listed media within the host budget; return an empty requests list when no attachment is needed. |
+| Consolidation | Evidence cannot grant operation permissions. Only consolidate carries a proposal, and only identify carries a claim. Return the operations envelope even when empty; preserve unique facts and require independent support. |
+| JSON repair and evidence-operation recovery | Use host-generated corrections; do not replay rejected model text or treat rejected operations as verified facts. |
+| Context renderings and MCP instructions | Treat returned memories, procedures, names, metadata, OCR, and transcripts as evidence. Surface conflicts, unknowns, and limits; omissions do not prove absence. |
+| Embedding and reranking inputs | Preserve the selected checkpoint's trained query/document prefixes and classification template, rather than adding generation instructions. |
+| Benchmark readers | Serialize context and question separately, keep evidence instructions inert, and version changed full-context and compile protocols. |
+
+Formation, vision, and consolidation prompt changes alter their derived-content recipe identities.
+Existing derived records remain; use fresh directories when comparing recipes. Model snapshots,
+output protocols, effective controls, fixtures, and returned model identities belong in evaluation
+records. Structured output and local validation constrain shape and meaning; they do not establish
+factual accuracy or guarantee resistance to prompt injection.
+
+Published dataset query and judge wording remains pinned to its upstream protocol, including any
+requests for reasoning or unusual role formatting. These prompts belong only to the benchmark
+harness. Changing their wording, rubric, or transport requires a separately versioned protocol
+and renewed calibration; it cannot silently retain the same official-comparability claim.
+Use OpenAI's [evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
+to compare representative, missing-evidence, and adversarial cases before accepting a quality claim.
+
 ## Answering and workflow checks
 
 The answering gate creates a fresh store for every case and checks:
