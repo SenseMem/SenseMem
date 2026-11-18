@@ -139,10 +139,10 @@ between storage writes can leave a durable prefix of parts; recovery finishes th
 Event identity includes the original capture intervals, media, segmenter recipe, and per-chunk
 source/place/pose context. Equal media captured under different source contexts cannot join one
 event merely because their timestamps coincide.
-Checkpoint format v3 preserves these event identities and adds durably staged pending input with
-byte-size metadata. Earlier v1 and v2 manifests are rejected without migration; finish their pending
-work with the original runtime before upgrading, or retain a complete backup for explicit operator
-handling. Checkpoint format and the segmenter's event recipe have independent versions.
+Checkpoint format v5 preserves these event identities, durably staged pending input with byte-size
+metadata, and the storage-part bounds. Earlier v1–v4 manifests are rejected without migration; finish
+their pending work with the original runtime before upgrading, or retain a complete backup for
+explicit operator handling. Checkpoint format and the segmenter's event recipe have independent versions.
 
 A single-part event includes its synopsis as explicitly unverified model interpretation. For an
 event spanning several parts, the full synopsis remains in event metadata; each part's searchable

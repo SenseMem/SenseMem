@@ -216,7 +216,7 @@ from the client machine.
 
 Separate Python, REST, and MCP processes cannot open the same `data_dir`. Put the required
 adapters around one constructed `Memory`, call the running REST owner, or allocate deliberately
-separate memory domains. REST has thirteen product routes under `/v1`, or twenty-two with both
+separate memory domains. REST has fourteen product routes under `/v1`, or twenty-three with both
 opt-in switches enabled; MCP has thirteen tools.
 
 Neither network adapter adds SenseMem authentication, and stdio MCP inherits the host process

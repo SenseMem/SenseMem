@@ -34,7 +34,7 @@ Changes for version `0.3.0`.
   Evaluation options are immutable, run statistics are isolated, and runner v28 invalidates old caches.
 
 - Separate continuous-event intake from model assessment with `AsyncEventStream.append()`
-  and `process()`. Checkpoint format v3 retains pending input as disk references with a separate
+  and `process()`. Checkpoint format v5 retains pending input as disk references with a separate
   `max_pending_bytes` budget; `append()` acknowledges durable media without waiting for a model.
   Earlier checkpoints require their original runtime to finish or replay retained source input.
 - Publish `ContextBundle.proof_scoring` and `ContextProofNode.source_group_id` across SDK, REST,
@@ -50,7 +50,7 @@ Changes for version `0.3.0`.
 - Advance OpenAI event segmentation to recipe v3. Requests preserve interleaved source parts
   and distinguish original text from model-derived interpretations, with explicit native media
   references. Finish pending checkpoints with their original segmenter recipe before starting
-  new streams. Checkpoint format is v3. See [continuous events](docs/omni-streaming-and-interaction-memory.md).
+  new streams. Checkpoint format is v5. See [continuous events](docs/omni-streaming-and-interaction-memory.md).
 - Require `MODEL_INFERENCE` for all automatic formation and consolidation proposals. A
   host-marked source and an exact quote no longer promote an extracted state or trait to
   `USER_STATEMENT`; remove the internal `statement_quote` wire field. Hosts can explicitly
@@ -103,7 +103,7 @@ Changes for version `0.3.0`.
 - Keep stream interpretations in a distinct `model_interpretation` content part, excluding them
   from original-source replay and host-statement authorization. Cross-location event summaries
   remain whole-event metadata instead of being asserted as facts of every local part.
-- Accept only continuous-event checkpoint format v3. Finish earlier checkpoints with their original
+- Accept only continuous-event checkpoint format v5. Finish v1–v4 checkpoints with their original
   runtime before upgrading; the new interpretation and context-aware event identities have no migration.
 - Version OpenAI formation and consolidation recipes with `source-parts-v2`; current input,
   read-only history and consolidation retain derived content roles in their wire payloads.

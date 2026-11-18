@@ -645,9 +645,10 @@ content construction reuses that value. Model and plugin outputs cross a separat
 and require structural and semantic validation before affecting durable state. Checks that depend
 on current storage state belong in the write transaction.
 
-Supported SDK values are imported from `sensemem`. The `Memory` SDK exposes 33 product operations.
-REST exposes thirteen `/v1` routes: add, batch add, list, search, reinforce, get,
-delete, answer, streamed answer, compile context, capture, settle, and pending captures. Nine more -- perception,
+Supported SDK values are imported from `sensemem`; the [SDK reference](api/python-sdk.md)
+describes the supported operations. REST exposes fourteen `/v1` routes: add, batch add, list,
+search, reinforce, get, read asset, delete, answer, streamed answer, compile context, capture,
+settle, and pending captures. Nine more -- perception,
 register identity, get identity, unlink identity, forget identity, record consent, read consent,
 export a subject, and apply retention -- exist only when the host
 enables the matching `identity_operations` or `embodied_operations` switch on `create_app`,
