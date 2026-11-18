@@ -186,28 +186,28 @@ def operation_from_row(row: sqlite3.Row) -> StoredOperation:
             model_id=optional_row_text(row, "model_id"),
             recipe=optional_row_text(row, "recipe"),
             operation_json=row_text(row, "operation_json"),
-            created_ids=tuple(effects.get("created_ids") or ()),
-            changed_ids=tuple(effects.get("changed_ids") or ()),
-            activated_ids=tuple(effects.get("activated_ids") or ()),
-            forgotten_ids=tuple(effects.get("forgotten_ids") or ()),
-            linked=tuple((pair[0], pair[1]) for pair in effects.get("linked") or ()),
+            created_ids=tuple(effects["created_ids"]),
+            changed_ids=tuple(effects["changed_ids"]),
+            activated_ids=tuple(effects["activated_ids"]),
+            forgotten_ids=tuple(effects["forgotten_ids"]),
+            linked=tuple((pair[0], pair[1]) for pair in effects["linked"]),
             clause_changes=tuple(
                 StoredEvidenceClauseChange(
                     memory_id=change["memory_id"],
                     clause_id=change["clause_id"],
                     previous_active=change["previous_active"],
-                    previous_confidence=change.get("previous_confidence"),
+                    previous_confidence=change["previous_confidence"],
                     applied_confidence=change["applied_confidence"],
                     applied_recorded_at=parse_datetime(change["applied_recorded_at"]),
                     applied_version=int(change["applied_version"]),
                 )
-                for change in effects.get("clause_changes") or ()
+                for change in effects["clause_changes"]
             ),
-            superseded=tuple((pair[0], int(pair[1])) for pair in effects.get("superseded") or ()),
+            superseded=tuple((pair[0], int(pair[1])) for pair in effects["superseded"]),
             applied_at=parse_datetime(row_text(row, "applied_at")),
             rolled_back_at=optional_datetime_from_row(row, "rolled_back_at"),
             outcome=optional_row_text(row, "outcome"),
             outcome_note=optional_row_text(row, "outcome_note"),
         )
-    except ValueError as error:
+    except (KeyError, TypeError, ValueError) as error:
         raise StoredDataError("stored memory operation is invalid") from error

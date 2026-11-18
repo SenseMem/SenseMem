@@ -187,7 +187,8 @@ VisionAnalysisBackend.describe_analysis(
 `SpeakerName` refers to local `speaker_N` labels. Plain strings have no naming authority. The kernel
 validates typed names and logs sourced, reversible `MODEL_INFERENCE` identity operations. One
 recording cannot confirm a name; independent support controls visibility, and only host
-registration makes `IdentityProfile.confirmed` true. Typed caches recompute old formats.
+registration makes `IdentityProfile.confirmed` true. Typed caches use the current
+`VisualDescription` representation.
 
 ## EventSegmentationBackend
 

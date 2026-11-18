@@ -188,6 +188,8 @@ Changes for version `0.3.0`.
 
 ### Fixed
 
+- Reject incomplete operation-log payloads instead of filling missing effects with defaults.
+  The current schema and payload fields are unchanged. See [operations](docs/operations.md#changing-the-runtime-or-stored-representations).
 - Align control-plane benchmark fixtures with model-inferred state provenance and identify
   derived claims through their source evidence instead of retrieval ranking.
 - Upgrade Zvec to 0.8.1 for corrected RaBitQ graph-query scoring and reduced memory on eligible

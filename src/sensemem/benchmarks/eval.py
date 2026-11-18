@@ -145,9 +145,6 @@ from sensemem.configuration import (
 )
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
 
-# Mirror the fixed per-instance SDK admission contract documented in docs/operations.md.
-
-
 # Called once per task, the moment that task has answered every question, and returns the samples
 # to keep. It is what lets a run persist and report a finished task without waiting for the rest.
 _TaskCompletion = Callable[

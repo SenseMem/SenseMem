@@ -40,7 +40,7 @@ from sensemem.infrastructure.local import (
     StoredOperation,
     UnsupportedSchemaError,
 )
-from sensemem.infrastructure.local.store import SCHEMA_VERSION
+from sensemem.infrastructure.local.store import SCHEMA_VERSION, StoredDataError
 
 _PARAMETER_BATCH_MODULES = (
     "_codec",
@@ -2836,6 +2836,44 @@ def test_equal_valued_later_clause_update_does_not_bypass_rollback_order(
             rolled_back_at=recorded_at + timedelta(minutes=6),
             reverse_clause_changes=first.clause_changes,
         )[0]
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "created_ids",
+        "changed_ids",
+        "activated_ids",
+        "forgotten_ids",
+        "linked",
+        "clause_changes",
+        "superseded",
+        "clause_changes[0].previous_confidence",
+    ),
+)
+def test_operation_log_rejects_missing_current_effect_fields(tmp_path: Path, field: str) -> None:
+    recorded_at = datetime(2026, 9, 8, 13, tzinfo=timezone.utc)
+    members = ("source-a", "source-b")
+    derived = _joint_state_memory("derived", members, confidence=0.7, recorded_at=recorded_at)
+    with LocalStore(tmp_path) as store:
+        store.records.write_memories((_memory("source-a"), _memory("source-b")))
+        operation = _apply_joint_clause_operation(
+            store,
+            derived,
+            members,
+            confidence=0.7,
+            applied_at=recorded_at + timedelta(minutes=1),
+            key="complete-operation-effects",
+        )
+        with closing(sqlite3.connect(store.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE memory_operations SET effects_json = json_remove(effects_json, ?) "
+                "WHERE operation_id = ?",
+                (f"$.{field}", operation.operation_id),
+            )
+
+        with pytest.raises(StoredDataError, match="stored memory operation is invalid"):
+            store.control.read_operations(operation_id=operation.operation_id)
 
 
 def test_clause_snapshots_round_trip_and_rollback_preserves_the_version_history(
