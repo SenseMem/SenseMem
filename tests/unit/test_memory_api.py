@@ -2445,7 +2445,7 @@ def test_memory_rejects_invalid_composition_values(tmp_path: Path) -> None:
     plugins = MemoryPlugins(embedder=_FakeModels())
     with pytest.raises(ValidationError, match="plugins"):
         Memory.from_plugins(tmp_path, plugins=object())  # type: ignore[arg-type]
-    with pytest.raises(ValidationError, match="config"):
+    with pytest.raises(ValidationError, match="settings"):
         Memory.from_plugins(tmp_path, plugins=plugins, settings=object())  # type: ignore[arg-type]
 
 

@@ -100,13 +100,15 @@ def test_a_serving_process_consumes_the_query_failures_its_routes_recorded(
             caplog.at_level(logging.INFO, logger=_LOOP_LOGGER),
             TestClient(app) as client,
         ):
-            # Two near-equal empty recalls against an empty store: that is the whole of the
-            # QUERY_FAILURE signal, and it is written by the route rather than by the SDK.
+            assert client.post("/v1/memories", json={"content": _ANSWER}).status_code == 201
+            # The episodic source cannot satisfy procedural recall, but is available before
+            # the periodic loop weighs the route's repeated query-failure signal.
             for _attempt in range(2):
-                response = client.post("/v1/memories/search", json={"query": _QUERY})
+                response = client.post(
+                    "/v1/memories/search", json={"query": _QUERY, "memory_type": "procedural"}
+                )
                 assert response.status_code == 200
                 assert response.json()["hits"] == []
-            assert client.post("/v1/memories", json={"content": _ANSWER}).status_code == 201
 
             # Both, and inside the same deadline: exiting on the applied operation alone races
             # the line the round logs after it.
@@ -156,10 +158,13 @@ def test_shutdown_lets_the_round_it_interrupts_finish_and_report(
     with _memory(tmp_path, consolidator) as memory:
         app = create_app(memory=memory, deliberate_every=0.01)
         with caplog.at_level(logging.INFO, logger=_LOOP_LOGGER), TestClient(app) as client:
-            for _attempt in range(2):
-                found = client.post("/v1/memories/search", json={"query": _QUERY})
-                assert found.status_code == 200
             assert client.post("/v1/memories", json={"content": _ANSWER}).status_code == 201
+            for _attempt in range(2):
+                found = client.post(
+                    "/v1/memories/search", json={"query": _QUERY, "memory_type": "procedural"}
+                )
+                assert found.status_code == 200
+                assert found.json()["hits"] == []
 
             deadline = time.monotonic() + 30.0
             while not consolidator.started and time.monotonic() < deadline:
@@ -238,10 +243,12 @@ async def test_a_serving_mcp_process_consumes_the_query_failures_its_tools_recor
         server = build_mcp_server(memory, deliberate_every=0.01)
         with caplog.at_level(logging.INFO, logger=_LOOP_LOGGER):
             async with Client(server) as client:
-                for _attempt in range(2):
-                    found = await client.call_tool("search_memories", {"query": _QUERY})
-                    assert found.structured_content == {"hits": [], "trace": None}
                 await client.call_tool("add_memory", {"content": _ANSWER})
+                for _attempt in range(2):
+                    found = await client.call_tool(
+                        "search_memories", {"query": _QUERY, "memory_type": "procedural"}
+                    )
+                    assert found.structured_content == {"hits": [], "trace": None}
 
                 # Counted rather than timed only because ASYNC110 refuses an awaited sleep in a
                 # `while`; 600 * 0.05s is the same 30s deadline the REST test waits.

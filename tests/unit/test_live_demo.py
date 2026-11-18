@@ -636,7 +636,7 @@ def test_failed_processing_is_visible_without_provider_exception_bodies(tmp_path
     with TestClient(
         create_app(_config(tmp_path), memory_factory=lambda _config: (observed, Segmenter()))
     ) as client:
-        assert client.post("/api/session").status_code == 200
+        # Startup schedules one attempt; starting a call would schedule another retry.
         assert observed.finished.wait(5)
         response = client.get("/api/memories")
         card = response.json()["items"][0]

@@ -153,23 +153,28 @@ def test_state_revision_requires_sufficient_evidence(
     january = datetime(2026, 1, 1, tzinfo=timezone.utc)
     february = datetime(2026, 2, 1, tzinfo=timezone.utc)
     march = datetime(2026, 3, 1, tzinfo=timezone.utc)
-    former = ScriptedStateFormer(
-        _drink_state("tea", confidence=old_confidence, basis=old_basis, valid_from=january),
-        _drink_state("coffee", confidence=new_confidence, basis=new_basis, valid_from=february),
-    )
     with Memory(
         tmp_path,
         embedder=TinyEmbedder(),
-        former=former,
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         tea_source = memory.add("I prefer tea")
+        _derive(
+            memory,
+            (tea_source.id,),
+            _drink_state("tea", confidence=old_confidence, basis=old_basis, valid_from=january),
+        )
         before = datetime.now(timezone.utc)
         coffee_source = memory.add(
             "Maybe coffee",
             context=ObservationContext(
                 basis=EvidenceBasis.USER_STATEMENT,
             ),
+        )
+        _derive(
+            memory,
+            (coffee_source.id,),
+            _drink_state("coffee", confidence=new_confidence, basis=new_basis, valid_from=february),
         )
 
         assert _state_values(memory, RetrievalScope(valid_at=march)) == expected

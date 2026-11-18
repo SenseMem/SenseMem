@@ -17,6 +17,8 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
+    MemoryIntent,
+    MemoryOperation,
     MemorySettings,
     Modality,
     ModelInput,
@@ -53,6 +55,30 @@ def _add_claim(memory: Memory, predicate: str, value: str, **fields: object) -> 
         for record in memory.list().items
         if record.context is not None and source.id in record.context.evidence_ids
     )
+
+
+def _confirm_trait(memory: Memory, predicate: str, value: str) -> str:
+    content = json.dumps(
+        {"kind": "trait", "subject": "Ana", "predicate": predicate, "value": value},
+        ensure_ascii=False,
+    )
+    source = memory.add(content)
+    operation = memory.apply(
+        MemoryOperation(
+            intent=MemoryIntent.CONSOLIDATE,
+            evidence_ids=(source.id,),
+            proposal=FormationProposal(
+                kind=RecordKind.TRAIT,
+                content=content,
+                subject="Ana",
+                predicate=predicate,
+                value=value,
+                basis=EvidenceBasis.USER_STATEMENT,
+            ),
+        )
+    )
+    (claim_id,) = operation.created_ids
+    return claim_id
 
 
 _FULLWIDTH_ALIAS = " " + "".join(chr(ord(c) + 0xFEE0) for c in "FAVORITE_BEVERAGE") + " "
@@ -251,9 +277,7 @@ def test_user_stated_alias_overrides_an_inferred_trait(tmp_path: Path) -> None:
     with Memory(tmp_path, embedder=TinyEmbedder(), former=PredicateFormer()) as memory:
         inferred = _add_claim(memory, "preferred_drink", "tea", kind="trait", confidence=0.8)
         _add_claim(memory, "preferred_drink", "tea", kind="trait", confidence=0.9)
-        stated = _add_claim(
-            memory, "favorite_beverage", "coffee", kind="trait", basis="user_statement"
-        )
+        stated = _confirm_trait(memory, "favorite_beverage", "coffee")
         old, new = memory.get(inferred).context, memory.get(stated).context
         assert old is not None and new is not None
         assert old.lineage_id == new.lineage_id
@@ -292,16 +316,10 @@ def test_removing_a_correction_restores_the_previous_alias_claim(
     tmp_path: Path, kind: str, delete_source: bool
 ) -> None:
     with Memory(tmp_path, embedder=TinyEmbedder(), former=PredicateFormer()) as memory:
-        fields = {"kind": kind, "basis": "user_statement" if kind == "trait" else "model_inference"}
-        first = _add_claim(memory, "preferred_drink", "tea", **fields)
-        second = _add_claim(memory, "favorite_beverage", "coffee", **fields)
-        correction = _add_claim(
-            memory,
-            "喜欢的饮料",
-            "water",
-            kind=kind,
-            basis="user_statement" if kind == "trait" else "model_inference",
-        )
+        add_claim = _confirm_trait if kind == "trait" else _add_claim
+        first = add_claim(memory, "preferred_drink", "tea")
+        second = add_claim(memory, "favorite_beverage", "coffee")
+        correction = add_claim(memory, "喜欢的饮料", "water")
         context = memory.get(correction).context
         assert context is not None
         assert memory.delete(context.evidence_ids[0] if delete_source else correction)

@@ -41,11 +41,6 @@ class InteractionFormer:
                         FormationProposal(
                             kind=RecordKind.TRAIT,
                             content=f"The user tends to prefer {style} responses",
-                            basis=(
-                                item.context.basis
-                                if item.content.text.startswith("trait:")
-                                else EvidenceBasis.MODEL_INFERENCE
-                            ),
                             subject="user",
                             predicate="response_style",
                             value=style,
@@ -122,6 +117,29 @@ def _cue_memory(root: Path) -> Memory:
         former=InteractionFormer(),
         consolidator=CueConsolidator(),
         settings=MemorySettings(minimum_relevance=0),
+    )
+
+
+def _confirm_trait(memory: Memory, value: str, *, occurred_at: datetime | None = None) -> None:
+    source = memory.add(
+        f"trait: I prefer {value} responses",
+        occurred_at=occurred_at,
+        context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
+    )
+    memory.apply(
+        MemoryOperation(
+            intent=MemoryIntent.CONSOLIDATE,
+            evidence_ids=(source.id,),
+            proposal=FormationProposal(
+                kind=RecordKind.TRAIT,
+                basis=EvidenceBasis.USER_STATEMENT,
+                content=f"The user tends to prefer {value} responses",
+                subject="user",
+                predicate="response_style",
+                value=value,
+                confidence=0.7,
+            ),
+        )
     )
 
 
@@ -224,10 +242,7 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         former=InteractionFormer(),
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
-        memory.add(
-            "trait: I prefer concise responses",
-            context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
-        )
+        _confirm_trait(memory, "concise")
         assert any(
             hit.context and hit.context.kind is RecordKind.TRAIT
             for hit in memory.search("concise responses", limit=10).hits
@@ -291,10 +306,7 @@ def test_explicit_typed_trait_statement_supersedes_inferred_trait(tmp_path: Path
     ) as memory:
         memory.add("trait evidence one")
         memory.add("trait evidence two")
-        memory.add(
-            "trait: I prefer detailed responses",
-            context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
-        )
+        _confirm_trait(memory, "detailed")
 
         values = {
             hit.context.value
@@ -312,10 +324,7 @@ def test_explicit_trait_precedence_is_insertion_order_independent(tmp_path: Path
         former=InteractionFormer(),
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
-        memory.add(
-            "trait: I prefer concise responses",
-            context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
-        )
+        _confirm_trait(memory, "concise")
         memory.add("trait detailed evidence one")
         memory.add("trait detailed evidence two")
 
@@ -333,17 +342,15 @@ def test_explicit_trait_can_evolve_back_to_an_earlier_value(tmp_path: Path) -> N
     february = datetime(2026, 2, 1, tzinfo=timezone.utc)
     march = datetime(2026, 3, 1, tzinfo=timezone.utc)
     april = datetime(2026, 4, 1, tzinfo=timezone.utc)
-    statement = ObservationContext(basis=EvidenceBasis.USER_STATEMENT)
-
     with Memory(
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
-        memory.add("trait: concise", occurred_at=january, context=statement)
-        memory.add("trait: detailed", occurred_at=february, context=statement)
-        memory.add("trait: concise", occurred_at=march, context=statement)
+        _confirm_trait(memory, "concise", occurred_at=january)
+        _confirm_trait(memory, "detailed", occurred_at=february)
+        _confirm_trait(memory, "concise", occurred_at=march)
 
         traits = {
             hit.context.value

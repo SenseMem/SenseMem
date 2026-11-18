@@ -177,6 +177,7 @@ def _probe_server_surface() -> None:
         "/v1/memories/reinforce",
         "/v1/memories/search",
         "/v1/memories/{memory_id}",
+        "/v1/memories/{memory_id}/assets/{asset_id}",
         "/v1/pending_captures",
         "/v1/settle",
     }

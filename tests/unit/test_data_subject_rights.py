@@ -28,6 +28,7 @@ from sensemem import (
     FaceEmbedding,
     FormationInput,
     FormationProposal,
+    IdentityChange,
     IdentityNotFoundError,
     Memory,
     MemoryCategory,
@@ -274,18 +275,33 @@ def _enrolled(memory: Memory, identity_id: str) -> tuple[int, int]:
     return erasure.face_exemplars, erasure.voice_exemplars
 
 
+def _confirm_identity(memory: Memory, clip: MemoryRecord) -> str:
+    """Let the host confirm that this fixture's sole face produced its sole voice."""
+    observed = memory.perceive(clip.id)
+    face_id = observed.faces[0].identity_id
+    voice_id = observed.speech[0].speaker_id
+    assert voice_id is not None and voice_id != face_id
+    memory.apply(
+        MemoryOperation(
+            intent=MemoryIntent.MERGE,
+            identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+        )
+    )
+    return face_id
+
+
 def test_withdrawn_consent_stops_enrolment_but_not_recognition(tmp_path: Path) -> None:
     """A second observation adds no exemplar, yet still resolves to the same person."""
     with _memory(tmp_path / "consented") as memory:
         first = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, first)
         second = memory.add(Blob(b"a-2 returns", "video/mp4", "a-2.mp4"))
         assert memory.perceive(second.id).faces[0].identity_id == identity_id
         assert _enrolled(memory, identity_id) == (2, 2)
 
     with _memory(tmp_path / "withdrawn") as memory:
         first = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, first)
         assert memory.record_consent(identity_id, ConsentState.WITHDRAWN) is not None
 
         second = memory.add(Blob(b"a-2 returns", "video/mp4", "a-2.mp4"))
@@ -300,7 +316,7 @@ def test_withdrawn_consent_stops_enrolment_but_not_recognition(tmp_path: Path) -
 
 
 def test_withheld_consent_stops_the_cross_modal_merge(tmp_path: Path) -> None:
-    """A voice and a face that would corroborate stay two identities while a refusal stands."""
+    """Even host-confirmed voice/face binding is refused while consent is withheld."""
     with _memory(tmp_path / "merged") as memory:
         voice = memory.add(Blob(b"a-1 speaking", "audio/wav", "a-1.wav"))
         face = memory.add(Blob(b"a-2 seen", "image/png", "a-2.png"))
@@ -310,6 +326,17 @@ def test_withheld_consent_stops_the_cross_modal_merge(tmp_path: Path) -> None:
 
         both = memory.add(Blob(b"a-3 seen and heard", "video/mp4", "a-3.mp4"))
         memory.perceive(both.id)
+        assert not [
+            record
+            for record in memory.operations()
+            if record.operation.intent is MemoryIntent.MERGE
+        ]
+        memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.MERGE,
+                identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+            )
+        )
         merged = [
             record
             for record in memory.operations()
@@ -327,6 +354,14 @@ def test_withheld_consent_stops_the_cross_modal_merge(tmp_path: Path) -> None:
 
         both = memory.add(Blob(b"a-3 seen and heard", "video/mp4", "a-3.mp4"))
         memory.perceive(both.id)
+        with pytest.raises(ValidationError) as refused:
+            memory.apply(
+                MemoryOperation(
+                    intent=MemoryIntent.MERGE,
+                    identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+                )
+            )
+        assert refused.value.reason == "unauthorized"
         assert not [
             record
             for record in memory.operations()
@@ -381,7 +416,7 @@ def test_compile_names_an_observed_person_only_as_of_the_requested_knowledge_tim
 ) -> None:
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        identity_id = memory.perceive(clip.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, clip)
         before_naming = datetime.now(timezone.utc)
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
 
@@ -422,7 +457,7 @@ def test_a_withheld_person_is_not_named_by_a_clip_alone(tmp_path: Path) -> None:
             memory_type=MemoryCategory.EPISODIC,
             occurred_at=OCCURRED,
         )
-        identity_id = memory.perceive(clip.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, clip)
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
         # Episodic evidence only, so the naming assertion -- a semantic `ENTITY` -- is never
         # retrieved, and the clip's face edge is the only thing that can name her.
@@ -455,7 +490,7 @@ def test_an_export_carries_the_whole_subject_and_nobody_else(tmp_path: Path) -> 
     """Naming assertion, episodes including a forgotten one, and every log row that moved them."""
     with _memory(tmp_path) as memory:
         first = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
-        subject_id = memory.perceive(first.id).faces[0].identity_id
+        subject_id = _confirm_identity(memory, first)
         memory.register_identity(subject_id, "Ann", relationship="neighbour")
         second = memory.add(Blob(b"a-2 returns", "video/mp4", "a-2.mp4"))
         assert memory.perceive(second.id).faces[0].identity_id == subject_id
@@ -463,7 +498,7 @@ def test_an_export_carries_the_whole_subject_and_nobody_else(tmp_path: Path) -> 
         assert forgotten is not None
 
         other = memory.add(Blob(b"b-1 arrives", "video/mp4", "b-1.mp4"))
-        other_id = memory.perceive(other.id).faces[0].identity_id
+        other_id = _confirm_identity(memory, other)
         assert other_id != subject_id
 
         bundle = memory.export(identity_id=subject_id)
@@ -801,8 +836,10 @@ class ScriptedFormer:
         pass
 
 
+@pytest.mark.parametrize("basis", [EvidenceBasis.USER_STATEMENT, EvidenceBasis.MODEL_INFERENCE])
 def test_formation_cannot_manufacture_consent_through_an_ordinary_proposal(
     tmp_path: Path,
+    basis: EvidenceBasis,
 ) -> None:
     """The predicate is reserved: a model's STATE claim about it binds to nobody.
 
@@ -819,10 +856,9 @@ def test_formation_cannot_manufacture_consent_through_an_ordinary_proposal(
     forged = FormationProposal(
         kind=RecordKind.STATE,
         content="Alice withdrew her consent",
-        # The basis a model may claim, and the one `record_consent` writes: neither the state
-        # nor the paperwork can be told apart by looking, which is why the predicate is what
-        # is reserved.
-        basis=EvidenceBasis.USER_STATEMENT,
+        # Claiming statement authority is refused; a model inference may be retained only as
+        # an ordinary unbound claim, never as the host's own consent statement.
+        basis=basis,
         subject="Alice",
         predicate="consent",
         value="withdrawn",
@@ -833,17 +869,16 @@ def test_formation_cannot_manufacture_consent_through_an_ordinary_proposal(
 
         assert memory.consent(identity_id) is ConsentState.GRANTED
         assert len(memory.operations()) == logged_before
-        # The claim is kept, as an ordinary STATE bound to nobody: a model's inference is
-        # evidence of what the model thought, not of what the person said.
+        # Only a model inference is retained. Claiming user-statement authority cannot make
+        # an automatic proposal admissible, including when its predicate is consent.
         formed = [
             record
             for record in memory.list(limit=100).items
             if record.context is not None and record.context.predicate == "consent"
         ]
-        assert [record.context.identity_id for record in formed if record.context] == [
-            None,
-            identity_id,
-        ]
+        assert [record.context.identity_id for record in formed if record.context] == (
+            [None, identity_id] if basis is EvidenceBasis.MODEL_INFERENCE else [identity_id]
+        )
 
     # The consolidation path binds through the same guard, so replaying a hand-written
     # operation carrying the same proposal cannot reach the identity either.
