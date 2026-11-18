@@ -25,8 +25,11 @@ from sensemem import (
     EmbedTask,
     FaceAnalysis,
     FaceEmbedding,
+    IdentityChange,
     Memory,
-    MemoryConfig,
+    MemoryIntent,
+    MemoryOperation,
+    MemorySettings,
     Modality,
     ModelInput,
     RetrievalScope,
@@ -108,7 +111,7 @@ def test_identity_scope_selects_only_the_memories_that_person_is_in(tmp_path: Pa
         tmp_path,
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "image/png", "alice.png"))
         second = memory.add(Blob(b"two", "image/png", "alice.png"))
@@ -138,7 +141,7 @@ def test_identity_scope_includes_the_person_a_claim_is_about(tmp_path: Path) -> 
         tmp_path,
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.add(Blob(b"one", "image/png", "alice.png"))
         alice = memory.perceive(record.id).faces[0].identity_id
@@ -158,7 +161,7 @@ def test_identity_scope_follows_a_merge_to_the_surviving_person(tmp_path: Path) 
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         transcriber=_Speech(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "video/mp4", "alice.mp4"))
         face_id = memory.perceive(first.id).faces[0].identity_id
@@ -167,6 +170,12 @@ def test_identity_scope_follows_a_merge_to_the_surviving_person(tmp_path: Path) 
 
         second = memory.add(Blob(b"two", "video/mp4", "alice.mp4"))
         memory.perceive(second.id)
+        memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.MERGE,
+                identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+            )
+        )
         survivor = memory.perceive(first.id).faces[0].identity_id
         retired = face_id if survivor == voice_id else voice_id
         assert survivor != retired
@@ -199,14 +208,14 @@ def test_a_merge_reprojects_a_memory_that_carried_only_the_retired_identity(
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         transcriber=_Speech(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "video/mp4", "alice.mp4"))
         voice_id = memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         assert voice_id is not None
         # A link plan keeps the named identity, so naming the voice retires the face.
         memory.register_identity(voice_id, "Alice")
-        # Face analysis is lazy, and the link needs the pair corroborated on two assets.
+        # Face analysis is lazy and never binds the pair without host confirmation.
         assert memory.perceive(first.id).faces[0].identity_id != voice_id
 
         # Seen and never heard: its projection is the face alone.
@@ -216,6 +225,12 @@ def test_a_merge_reprojects_a_memory_that_carried_only_the_retired_identity(
 
         second = memory.add(Blob(b"three", "video/mp4", "alice.mp4"))
         memory.perceive(second.id)
+        memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.MERGE,
+                identity=IdentityChange(identity_id=voice_id, moved_ids=(face_id,)),
+            )
+        )
         assert memory.perceive(seen.id).faces[0].identity_id == voice_id
 
         scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=voice_id)).hits
@@ -224,7 +239,9 @@ def test_a_merge_reprojects_a_memory_that_carried_only_the_retired_identity(
 
 
 def test_an_unknown_identity_scopes_to_nothing(tmp_path: Path) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=_Embedder(), settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         memory.add("a kettle on a worktop")
 
         assert memory.search("kettle", scope=RetrievalScope(identity_id="nobody")).hits == ()
@@ -270,7 +287,9 @@ def test_entity_plan_intersects_the_callers_identity_scope(tmp_path: Path, perso
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         answerer=_EntityAnswerer(),
-        config=MemoryConfig(recall_planning=True, minimum_relevance=0, reinforce_on_answer=False),
+        settings=MemorySettings(
+            recall_planning=True, minimum_relevance=0, reinforce_on_answer=False
+        ),
     ) as memory:
         alice_record = memory.add(("Alice's red kettle", alice_image))
         bob_record = memory.add(("Bob's blue kettle", bob_image))
@@ -302,7 +321,7 @@ def test_entity_name_requires_disambiguation_instead_of_choosing_an_id(tmp_path:
         tmp_path,
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"one", "image/png", "alice.png"))
         second = memory.add(Blob(b"two", "image/png", "bob.png"))
@@ -337,7 +356,7 @@ def test_ambiguous_entity_plan_preserves_ranking_until_the_caller_disambiguates(
         embedder=_TextFirstEmbedder(),
         face_analyzer=_PerAssetFace(),
         answerer=answerer,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             minimum_relevance=0,
             evidence_budget_chars=None,
@@ -377,7 +396,7 @@ def test_identity_membership_sql_agrees_in_both_directions(tmp_path: Path) -> No
         embedder=_Embedder(),
         face_analyzer=_PerAssetFace(),
         transcriber=_Speech(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         clip = memory.add(Blob(b"one", "video/mp4", "alice.mp4"))
         memory.add(Blob(b"two", "image/png", "bob.png"))

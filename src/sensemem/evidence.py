@@ -7,13 +7,85 @@ unbounded provenance graph into the model's answer context.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import cast
+from typing import TypeAlias, cast
 from unicodedata import normalize
 
-from sensemem.types import MemoryContext, MemoryKind, SearchHit
+from sensemem.records import SearchHit
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, RecordKind
 
 _MAX_EXACT_OMITTED_SOURCES = 64
+AffectLinkKey: TypeAlias = tuple[str, str, str | None, str | None]
+
+
+def evidence_aliases(hits: Sequence[SearchHit]) -> dict[str, str]:
+    """Assign one answer-local E label to each record in first-occurrence order."""
+    aliases: dict[str, str] = {}
+    for hit in hits:
+        if hit.id not in aliases:
+            aliases[hit.id] = f"E{len(aliases) + 1}"
+    return aliases
+
+
+def evidence_identity_ids(content: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return the speaker and face identity IDs one memory's stored evidence names.
+
+    Speech and face evidence is stored as a labelled JSON section of the memory's own content,
+    so the identifiers a naming claim may cite are already in what the adapter is shown; there
+    is nothing to plumb through and nothing to invent.
+    """
+    speakers: dict[str, None] = {}
+    faces: dict[str, None] = {}
+    for section in content.split("\n\n"):
+        marker, separator, body = section.partition("\n")
+        if not separator:
+            continue
+        if marker.startswith("[speech identities:"):
+            found, group, field = speakers, "segments", "speaker_id"
+        elif marker.startswith("[face identities:"):
+            found, group, field = faces, "identities", "identity_id"
+        else:
+            continue
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, RecursionError):
+            continue
+        items = parsed.get(group) if isinstance(parsed, dict) else None
+        for item in items if isinstance(items, list) else ():
+            value = item.get(field) if isinstance(item, dict) else None
+            if isinstance(value, str) and value.strip():
+                found[value] = None
+    return tuple(speakers), tuple(faces)
+
+
+def functional_lineage(context: RecordSemantics | None) -> tuple[str, str] | None:
+    """Return the claim key whose competing values make delivery non-affirmative.
+
+    This matches the compiler and slow-loop contract: relations and inferred traits can
+    accumulate values, while STATE and a user-stated TRAIT have one functional value at a scoped
+    point in time.
+    """
+    if (
+        context is None
+        or context.lineage_id is None
+        or context.value is None
+        or not (
+            context.kind is RecordKind.STATE
+            or (context.kind is RecordKind.TRAIT and context.basis is EvidenceBasis.USER_STATEMENT)
+        )
+    ):
+        return None
+    return context.lineage_id, context.value
+
+
+def affect_link_key(hit: SearchHit) -> AffectLinkKey | None:
+    """Identify the attribution whose affirmations and denials must travel together."""
+    link = None if hit.context is None else hit.context.affect_link
+    if link is None:
+        return None
+    return link.affect_id, link.role, link.object_ref.memory_id, link.object_ref.identity_id
 
 
 def retain_source_complete_hits(
@@ -35,11 +107,19 @@ def retain_source_complete_hits(
             unavailable.add(hit.id)
     withheld: set[str] = set()
     while True:
+        unavailable_attributions = {
+            key
+            for memory_id, hit in original.items()
+            if memory_id in unavailable and (key := affect_link_key(hit)) is not None
+        }
         rejected = {
             hit.id
             for hit in hits
-            if hit.context is not None
-            and any(source_id in unavailable for source_id in hit.context.evidence_ids)
+            if (
+                hit.context is not None
+                and any(source_id in unavailable for source_id in hit.context.evidence_ids)
+            )
+            or affect_link_key(hit) in unavailable_attributions
         } - withheld
         if not rejected:
             break
@@ -59,12 +139,12 @@ def answer_constraint_payloads(
     """
     if len(hits) != len(payloads):
         raise ValueError("constraint payloads must align with selected evidence")
-    selected: list[tuple[MemoryContext, dict[str, object]]] = []
+    selected: list[tuple[RecordSemantics, dict[str, object]]] = []
     for hit, payload in zip(hits, payloads, strict=True):
         context = hit.context
         if (
             context is None
-            or context.kind not in {MemoryKind.STATE, MemoryKind.TRAIT, MemoryKind.RESPONSE_POLICY}
+            or context.kind not in {RecordKind.STATE, RecordKind.TRAIT, RecordKind.RESPONSE_POLICY}
             or context.subject is None
             or context.predicate is None
         ):
@@ -76,7 +156,7 @@ def answer_constraint_payloads(
             "conditions_and_exceptions": "read the referenced evidence text",
         }
         selected.append((context, candidate))
-    by_key: dict[tuple[str, str], list[tuple[MemoryContext, dict[str, object]]]] = {}
+    by_key: dict[tuple[str, str], list[tuple[RecordSemantics, dict[str, object]]]] = {}
     for context, candidate in selected:
         key = tuple(
             normalize("NFKC", value).strip().casefold()
@@ -129,10 +209,7 @@ def answer_evidence_payloads(
     input, not missing information in the record's retained text.
     """
     qualified = any(hit.context is not None for hit in hits)
-    selected: dict[str, str] = {}
-    for hit in hits:
-        if hit.id not in selected:
-            selected[hit.id] = f"E{len(selected) + 1}"
+    selected = evidence_aliases(hits)
     external_labels: dict[str, str] = {}
 
     def source_label(source_id: str) -> str:
@@ -167,9 +244,46 @@ def answer_evidence_payloads(
                     shared=shared_sources.get(hit.id, ()),
                 )
             )
+            details.update(_affect_payload(hit.context, selected, source_label))
             payload["context"] = details
         payloads.append(payload)
     return payloads
+
+
+def _affect_payload(
+    context: RecordSemantics,
+    selected: Mapping[str, str],
+    source_label: Callable[[str], str],
+) -> dict[str, object]:
+    """Alias attribution endpoints and reporting witnesses without claiming omitted content."""
+    details: dict[str, object] = {}
+    link = context.affect_link
+    if link is not None:
+        object_ref: dict[str, object] = {}
+        if link.object_ref.memory_id is not None:
+            object_ref["memory_label"] = source_label(link.object_ref.memory_id)
+            if link.object_ref.memory_id not in selected:
+                object_ref["not_in_context"] = True
+        else:
+            object_ref["identity_id"] = link.object_ref.identity_id
+        details["affect_link"] = {
+            "affect_label": source_label(link.affect_id),
+            "role": link.role,
+            "object_ref": object_ref,
+            "polarity": link.polarity,
+            **({"affect_not_in_context": True} if link.affect_id not in selected else {}),
+        }
+    if context.affect_witnesses:
+        details["affect_witnesses"] = [
+            {
+                "source_label": source_label(witness.source_id),
+                "reporter": witness.reporter,
+                "quote": witness.quote,
+                **({"source_not_in_context": True} if witness.source_id not in selected else {}),
+            }
+            for witness in context.affect_witnesses
+        ]
+    return details
 
 
 def _record_payload(hit: SearchHit, label: str | None) -> dict[str, object]:
@@ -193,7 +307,7 @@ def _record_payload(hit: SearchHit, label: str | None) -> dict[str, object]:
     return payload
 
 
-def _context_payload(context: MemoryContext) -> dict[str, object]:
+def _context_payload(context: RecordSemantics) -> dict[str, object]:
     details: dict[str, object] = {
         "kind": context.kind.value,
         "basis": context.basis.value,
@@ -213,11 +327,17 @@ def _context_payload(context: MemoryContext) -> dict[str, object]:
     ):
         if value is not None:
             details[key] = value
+    if context.cue_modality is not None:
+        details["cue_modality"] = context.cue_modality.value
+    if context.valence is not None:
+        details["valence"] = context.valence
+    if context.arousal is not None:
+        details["arousal"] = context.arousal
     return details
 
 
 def _source_payload(
-    context: MemoryContext,
+    context: RecordSemantics,
     selected: Mapping[str, str],
     source_label: Callable[[str], str],
     *,

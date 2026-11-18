@@ -20,7 +20,6 @@ _GITHUB_REPOSITORIES = frozenset(
         "mem-eval-suite/LoCoMo_refined",
         "ByteDance-Seed/m3-agent",
         "google-research-datasets/egotempo",
-        "slptongji/ES-MemEval",
     }
 )
 

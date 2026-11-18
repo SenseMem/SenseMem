@@ -63,10 +63,9 @@ one `image` record; text, a photo, and a voice recording form one `omni` record.
 
 `ObservationContext` is caller input for provenance, confidence, world-time validity, metric pose,
 and symbolic `place_id`. The returned `MemoryRecord` exposes the authoritative stored
-`MemoryContext` and place separately. Its stable ID covers ordered canonical content, media
-digests, metadata, event time, memory type, and optional observation context. Repeating the same
-logical add returns the existing record without another model call. Media bytes are independently
-de-duplicated by SHA-256, so records can share one immutable asset.
+`RecordSemantics` and place separately. Repeating the same logical add returns the existing record
+without another model call. Media bytes are independently deduplicated, so records can share one
+immutable asset.
 
 `delete()` removes the authoritative record and queues removal from the search projection. Shared
 media remains until no record or active lease references it. API deletion is not secure erasure
@@ -119,7 +118,7 @@ instead of being discarded.
 
 Formation is opt-in. The declarative `formation: openai` provider or an injected
 `FormationBackend` may propose finer typed records only after the source observation commits; it
-never replaces the caller's raw record or its `MemoryType`.
+never replaces the caller's raw record or its `MemoryCategory`.
 
 Use `Memory.from_config()` for bundled adapters, `Memory.from_plugins()` for an explicit capability
 bundle, or `Memory(...)` for direct injection. `Memory` closes backend objects it receives; an

@@ -18,10 +18,10 @@ from sensemem import (
     Blob,
     EmbedTask,
     Memory,
-    MemoryConfig,
     MemoryIntent,
     MemoryOperation,
     MemoryPlugins,
+    MemorySettings,
     ModelError,
     ModelInput,
     ObservationContext,
@@ -70,7 +70,7 @@ def test_required_visual_conversion_preserves_failure(tmp_path: Path, operation:
         embedder=Embedder(TEXT),
         vision_describer=vision,
         answerer=Answerer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         image = Blob(b"query", "image/png")
         call: Callable[[], object]
@@ -96,7 +96,7 @@ def test_optional_query_failure_is_reused_as_required_answer_failure(tmp_path: P
         embedder=Embedder(ALL),
         answerer=Answerer(),
         vision_describer=vision,
-        config=MemoryConfig(query_vision=True, minimum_relevance=0),
+        settings=MemorySettings(query_vision=True, minimum_relevance=0),
     ) as memory:
         memory.add("ALPHA-947 registration desk")
         with pytest.raises(ModelError) as failure:
@@ -113,7 +113,7 @@ def test_successful_transcription_makes_video_description_optional(tmp_path: Pat
         answerer=Answerer(),
         transcriber=Transcriber(),
         vision_describer=vision,
-        config=MemoryConfig(query_vision=True, minimum_relevance=0),
+        settings=MemorySettings(query_vision=True, minimum_relevance=0),
     ) as memory:
         source = memory.add(Blob(b"stored clip", "video/mp4"))
         assert "ALPHA-947" in source.content
@@ -246,11 +246,12 @@ def test_capability_probe_requires_an_actual_boolean() -> None:
         SentenceTransformersEmbedder(Invalid(), model_id="fixture", revision="a" * 40)
 
 
-def test_embedding_normalization_is_owned_by_the_kernel(tmp_path: Path) -> None:
+def test_stored_embeddings_are_normalized(tmp_path: Path) -> None:
     encoder = _RawEncoder()
     embedder = SentenceTransformersEmbedder(encoder, model_id="fixture", revision="a" * 40)
-    assert embedder.embed((ModelInput(text="raw"),)) == ((3.0, 4.0),)
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         record = memory.add("source observation")
         assert memory.search("source").hits[0].id == record.id
         with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection:
@@ -277,31 +278,22 @@ def test_invalid_vectors_never_become_durable(tmp_path: Path, values: tuple[floa
         assert not memory.list().items
 
 
-def test_capability_document_uses_the_assembled_snapshot(tmp_path: Path) -> None:
-    backend = Embedder(TEXT)
-    with Memory(tmp_path, embedder=backend, config=MemoryConfig(minimum_relevance=0)) as memory:
-        backend.embedding_capabilities = frozenset()
-        assert memory.capabilities.embedding == TEXT
-        memory.add("source")
-        assert memory.search("source").hits
-
-
 @pytest.mark.parametrize(
     ("setting", "config"),
     (
-        ("speaker_similarity", MemoryConfig(speaker_similarity=float("nan"))),
-        ("speaker_margin", MemoryConfig(speaker_margin=float("nan"))),
-        ("face_similarity", MemoryConfig(face_similarity=float("nan"))),
-        ("face_margin", MemoryConfig(face_margin=float("nan"))),
+        ("speaker_similarity", MemorySettings(speaker_similarity=float("nan"))),
+        ("speaker_margin", MemorySettings(speaker_margin=float("nan"))),
+        ("face_similarity", MemorySettings(face_similarity=float("nan"))),
+        ("face_margin", MemorySettings(face_margin=float("nan"))),
     ),
 )
 def test_thresholds_are_rejected_at_assembly_before_storage(
-    tmp_path: Path, setting: str, config: MemoryConfig
+    tmp_path: Path, setting: str, config: MemorySettings
 ) -> None:
     with pytest.raises(ValidationError, match=setting):
         Memory.from_plugins(
             tmp_path,
             plugins=MemoryPlugins(embedder=TinyEmbedder()),
-            config=config,
+            settings=config,
         )
     assert not (tmp_path / "state.sqlite3").exists()

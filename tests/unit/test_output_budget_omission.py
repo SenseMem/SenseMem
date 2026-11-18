@@ -4,9 +4,10 @@ import json
 
 import httpx2 as httpx
 import pytest
-from test_openai_sdk import NOW, _sdk_client, _search_hit
+from test_openai_adapters import NOW, _sdk_client, _search_hit
 
-from sensemem import ModelInput, OpenAIModels
+from sensemem import ModelInput
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 @pytest.mark.parametrize("maximum_effort", [False, True])
@@ -38,7 +39,7 @@ def test_deepseek_default_budget_is_omitted_for_planning_and_answering(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_model="deepseek-v4.1-flash",
             generation_extra_body=(

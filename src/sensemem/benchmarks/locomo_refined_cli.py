@@ -5,16 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import os
 import platform
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
-from sensemem.benchmarks.eval import _BackendPool
-from sensemem.benchmarks.eval_artifacts import _jsonl_bytes
+from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
+from sensemem.benchmarks.eval_backends import _BackendPool
 from sensemem.benchmarks.eval_config import (
     _evaluation_memory_config,
     _load_memory_config,
@@ -126,7 +124,7 @@ def _write_artifacts(
         raise RuntimeError("benchmark results do not match the loaded conversations")
     _require_writable(arguments.output, overwrite=arguments.overwrite)
 
-    rows = _jsonl_bytes(prediction.model_dump(mode="json") for prediction in predictions)
+    rows = encode_jsonl_bytes(prediction.model_dump(mode="json") for prediction in predictions)
     memory_config, _overrides = _load_memory_config(arguments.config)
     assert memory_config is not None
     embedding = memory_config.embedding.model_dump(mode="json")
@@ -162,8 +160,9 @@ def _write_artifacts(
         "unit_concurrency": arguments.unit_concurrency,
         "zvec_version": metadata.version("zvec"),
     }
-    manifest_bytes = _jsonl_bytes((manifest,))
-    _atomic_replace(
+    manifest_bytes = encode_jsonl_bytes((manifest,))
+    arguments.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    replace_artifact_files(
         (
             (arguments.output, rows),
             (_manifest_path(arguments.output), manifest_bytes),
@@ -210,28 +209,6 @@ def _require_writable(output: Path, *, overwrite: bool) -> None:
 
 def _manifest_path(output: Path) -> Path:
     return output.with_suffix(output.suffix + ".manifest.jsonl")
-
-
-def _atomic_replace(files: tuple[tuple[Path, bytes], ...]) -> None:
-    files[0][0].parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary: list[tuple[Path, Path]] = []
-    try:
-        for target, content in files:
-            with NamedTemporaryFile(
-                mode="wb",
-                dir=target.parent,
-                prefix=f".{target.name}.",
-                delete=False,
-            ) as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-                temporary.append((Path(stream.name), target))
-        for source, target in temporary:
-            os.replace(source, target)
-    finally:
-        for source, _target in temporary:
-            source.unlink(missing_ok=True)
 
 
 def _sha256_file(path: Path) -> str:

@@ -61,3 +61,6 @@ review-receipts/
 
 # Codex CLI reads its MCP server list from here; the entries are per-contributor tooling.
 /.codex/
+
+# Local design contracts, renders, and review measurements.
+/.impeccable/

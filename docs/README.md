@@ -18,15 +18,17 @@ These guides describe SenseMem 0.3.0; the [changelog](../CHANGELOG.md#unreleased
 
 | I want to… | Read |
 | --- | --- |
+| Replay timed audio/video, form events, and play recalled media | [Best practices notebook](../examples/best_practices.ipynb) |
 | Give an agent useful context within a prompt budget | [Context compilation](context-compilation.md) |
 | Remember events, preferences, and changing facts | [Memory types, time, and decay](memory-types-time-and-decay.md) · [Typed memory](typed-memory.md) |
 | Consolidate, correct, forget, or undo a change | [Memory management](memory-management.md) |
 | Capture live audio, vision, or interaction | [Streaming and interaction memory](omni-streaming-and-interaction-memory.md) |
+| Try a continuous webcam and voice conversation | [Local audio/video demo](live-demo.md) |
+| Share capabilities between a pipeline and a tool-using agent | [Tools](api/python-tools.md) · [Agents](api/python-agents.md) · [Plugin composition](plugin-architecture.md) |
 | Connect a local WeMM endpoint | [Local WeMM integration](use-local-wemm.md) |
 | Serve EmbeddingGemma 2 through vLLM | [Model server](deployment.md#embeddinggemma-2-model-server) · [Client configuration](configuration/models.md#embeddinggemma-2-through-vllm) |
 | Add text or multimodal reranking | [Semantic reranking](configuration/models.md#semantic-reranking) |
 | Choose a working evaluation configuration | [Example catalog](examples/README.md) |
-| Run the three promotional demos and prepare English videos | [Promotional demos](examples/promo-demos.md) |
 | See measured results or evaluate my own setup | [Benchmark results](benchmarks/results.md) · [Benchmarking](benchmarking.md) |
 | Deploy, back up, or recover memory | [Deployment](deployment.md) · [Operations](operations.md) |
 | Diagnose an error or empty search | [Troubleshooting](troubleshooting.md) |
@@ -53,11 +55,16 @@ These guides describe SenseMem 0.3.0; the [changelog](../CHANGELOG.md#unreleased
   Detailed references: [provider fields](configuration/providers.md),
   [model setup](configuration/models.md), [runtime settings](configuration/settings.md), and
   [formation, consolidation, and retention](configuration/lifecycle.md).
+- [Application plugin factories](configuration/plugins.md) — configure third-party backends and tools.
+- [Computation plugins](api/python-policies.md) — replace retrieval scoring and context selection,
+  and compose ordered ingestion stages around the consistency kernel.
 - [SDK reference](api/python-sdk.md) — construction, lifecycle, content, errors, and API navigation.
   Detailed references: [memory operations](api/python-memory.md),
   [identity and data lifecycle](api/python-identity.md), [control operations](api/python-control.md),
   [async and streams](api/python-streams.md), [public values](api/python-values.md),
   [backend protocols](api/python-backends.md), and [bundled adapters](api/python-adapters.md).
+- [Python tools](api/python-tools.md) — register typed computations and reuse existing perception.
+- [Optional agents](api/python-agents.md) — choose a core model and compose tool calls with async context.
 - [REST API](api/rest.md) — routes under `/v1`, request/response shapes, SSE, errors, and limits.
 - [MCP tools](api/mcp.md) — thirteen tools, authority switches, schemas, and transport behavior.
 - [Command line](api/cli.md) — local and remote operations, JSON input/output, diagnostics, and exit codes.
@@ -88,7 +95,10 @@ These guides describe SenseMem 0.3.0; the [changelog](../CHANGELOG.md#unreleased
 
 ## Understand and extend the design
 
+- [Maintainer map](maintaining.md) — reading route, vocabulary, ownership and focused verification.
 - [Architecture](architecture.md) — code layout, storage authority, write/retrieval paths, and concurrency.
+- [Maintain prompts](prompts.md) — runtime components, official benchmark wording, and validation.
+- [Documentation figures](assets/README.md) — static originals and reproducible GIF animations.
 - [Design principles](design-principles.md) — Smarter / Swifter / Stronger and the criteria behind the design.
 - [Context OS direction](context-os.md) — the lifecycle connecting capture, memory management,
   and context compilation.

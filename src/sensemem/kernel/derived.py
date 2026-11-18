@@ -11,18 +11,16 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import cast
-
-from pydantic import TypeAdapter
-from pydantic import ValidationError as SchemaError
+from typing import Literal, cast
 
 from sensemem.exceptions import ModelError, ValidationError
+from sensemem.identity import FaceObservation, SpeakerSegment
 from sensemem.infrastructure.local.store import IndexDocument, StoredAsset, StoredMemory
 from sensemem.kernel.content import PreparedContent, PreparedMemory
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS, validated_text
 from sensemem.models.base import ModelInput
 from sensemem.perception import VisualDescription
-from sensemem.types import FaceObservation, MemoryType, Modality, SpeakerSegment
+from sensemem.types import MemoryCategory, Modality
 
 # A describer is shown this write's own transcript as context, under the same labels the index
 # prints (`speaker_prose`), so a fact naming a speaker resolves to the same person. Uncapped,
@@ -39,14 +37,14 @@ def prepared_from_stored(memory: StoredMemory) -> PreparedMemory:
             text=memory.content,
             assets=memory.assets,
             modality=Modality(memory.modality),
-            canonical_parts=stored_canonical_parts(memory.content, memory.assets),
+            canonical_parts=tuple((part.kind, part.value) for part in memory.parts),
             audio_transcript=has_stream_transcript(memory.content, memory.assets),
             visual_description=has_stream_description(memory.content, memory.assets),
         ),
         metadata_json=memory.metadata_json,
         occurred_at=memory.occurred_at,
         occurred_end=memory.occurred_end,
-        memory_type=MemoryType(memory.memory_type),
+        memory_type=MemoryCategory(memory.memory_type),
         place_id=memory.place_id,
     )
 
@@ -60,19 +58,7 @@ def with_stream_transcript(
         raise ValidationError("stream transcript requires exactly one audio asset")
     text = validated_text(transcript, "stream transcript")
     section = f"[transcript:{audio[0].asset_id}]\n{text}"
-    content = (
-        prepared.text
-        if section in prepared.text
-        else "\n\n".join(value for value in (prepared.text, section) if value)
-    )
-    if len(content) > MAX_TEXT_CHARACTERS:
-        raise ValidationError(f"content text must not exceed {MAX_TEXT_CHARACTERS} characters")
-    return replace(
-        prepared,
-        text=content,
-        canonical_parts=(*prepared.canonical_parts, ("audio_transcript", section)),
-        audio_transcript=True,
-    )
+    return _with_stream_section(prepared, section, "audio_transcript")
 
 
 def with_stream_description(
@@ -88,9 +74,27 @@ def with_stream_description(
         raise ValidationError("stream description requires exactly one visual asset")
     text = validated_text(description, "stream description")
     section = f"[visual description:{visual[0].asset_id}]\n{text}"
+    return _with_stream_section(prepared, section, "visual_description")
+
+
+def with_stream_interpretation(
+    prepared: PreparedContent,
+    interpretation: str,
+) -> PreparedContent:
+    """Keep a stream model's lossy interpretation separate from original source text."""
+    text = validated_text(interpretation, "stream interpretation")
+    section = f"[model interpretation: not original evidence]\n{text}"
+    return _with_stream_section(prepared, section, "model_interpretation")
+
+
+def _with_stream_section(
+    prepared: PreparedContent,
+    section: str,
+    kind: Literal["audio_transcript", "visual_description", "model_interpretation"],
+) -> PreparedContent:
     content = (
         prepared.text
-        if section in prepared.text
+        if kind != "model_interpretation" and section in prepared.text
         else "\n\n".join(value for value in (prepared.text, section) if value)
     )
     if len(content) > MAX_TEXT_CHARACTERS:
@@ -98,51 +102,43 @@ def with_stream_description(
     return replace(
         prepared,
         text=content,
-        canonical_parts=(*prepared.canonical_parts, ("visual_description", section)),
-        visual_description=True,
+        canonical_parts=(*prepared.canonical_parts, (kind, section)),
+        audio_transcript=prepared.audio_transcript or kind == "audio_transcript",
+        visual_description=prepared.visual_description or kind == "visual_description",
     )
 
 
-def stored_canonical_parts(
-    text: str,
-    assets: Sequence[StoredAsset],
-) -> tuple[tuple[str, str], ...]:
-    """Split stored content back into the parts the strong `add` path embedded separately.
-
-    A `StreamInput` folds its transcript and description into `content` before the row is
-    written, so a capture arrives here already flattened. Recovering each derived section keys
-    the same way `add()` did instead of hashing one merged text. Content with no marker for one
-    of its own assets is left as the single text part the caller wrote.
-    """
-    cuts: dict[int, str] = {}
-    for asset in assets:
-        markers: tuple[tuple[str, str], ...]
-        if asset.modality == Modality.AUDIO.value:
-            markers = (("audio_transcript", f"[transcript:{asset.asset_id}]\n"),)
-        elif asset.modality in {Modality.IMAGE.value, Modality.VIDEO.value}:
-            # Both derived visual sections cut, and both under the kind that reaches the text
-            # keys: a facts section folded into the description part would key differently on
-            # the settle path than the same content did on the add path.
-            markers = (
-                ("visual_description", f"[visual description:{asset.asset_id}]\n"),
-                ("visual_description", f"[facts:{asset.asset_id}]\n"),
-            )
-        else:
-            continue
-        for kind, marker in markers:
-            found = text.find(f"\n\n{marker}")
-            start = found + 2 if found >= 0 else (0 if text.startswith(marker) else -1)
-            if start >= 0:
-                cuts[start] = kind
-    if not cuts:
-        return (("text", text),) if text else ()
-    ordered = sorted(cuts.items())
-    # Each section was joined with "\n\n", so a cut ends two characters before the next one.
-    ends = [start - 2 for start, _ in ordered[1:]] + [len(text)]
-    head = text[: max(ordered[0][0] - 2, 0)]
-    return (
-        *((("text", head),) if head else ()),
-        *((kind, text[start:end]) for (start, kind), end in zip(ordered, ends, strict=True)),
+def refresh_stream_content(existing: PreparedContent, supplied: PreparedContent) -> PreparedContent:
+    """Replace explicitly supplied derived kinds without discarding other enrichment."""
+    replacements = tuple(
+        (kind, value) for kind, value in supplied.canonical_parts if kind not in {"text", "asset"}
+    )
+    if not replacements or all(part in existing.canonical_parts for part in replacements):
+        return existing
+    kinds = {kind for kind, _value in replacements}
+    original = "\n\n".join(value for kind, value in existing.canonical_parts if kind == "text")
+    # Enrichment follows the original words. Restrict replacement to that suffix so an
+    # original quote equal to a derived section can never be edited as a side effect.
+    suffix = existing.text[len(original) :] if original else f"\n\n{existing.text}"
+    for kind, value in existing.canonical_parts:
+        if kind in kinds:
+            suffix = suffix.replace(f"\n\n{value}", "", 1)
+    text = "\n\n".join(
+        value
+        for value in (original, suffix.strip(), *(value for _kind, value in replacements))
+        if value
+    )
+    if len(text) > MAX_TEXT_CHARACTERS:
+        raise ValidationError(f"content text must not exceed {MAX_TEXT_CHARACTERS} characters")
+    return replace(
+        existing,
+        text=text,
+        canonical_parts=(
+            *(part for part in existing.canonical_parts if part[0] not in kinds),
+            *replacements,
+        ),
+        audio_transcript=existing.audio_transcript or supplied.audio_transcript,
+        visual_description=existing.visual_description or supplied.visual_description,
     )
 
 
@@ -203,24 +199,13 @@ def project_fact_labels(facts: str, names: Mapping[str, str]) -> str:
     return facts
 
 
-_VISUAL_DESCRIPTION = TypeAdapter(VisualDescription)
-
-
-def encode_description(value: VisualDescription) -> str:
-    return _VISUAL_DESCRIPTION.dump_json(value).decode("utf-8")
-
-
-def decode_description(value: str) -> VisualDescription:
-    try:
-        return _VISUAL_DESCRIPTION.validate_json(value, strict=True)
-    except (SchemaError, ValidationError) as error:
-        raise ModelError(
-            "cached visual description is invalid", reason="response_invalid"
-        ) from error
-
-
 def derived_text(text: str, assets: Sequence[StoredAsset]) -> str:
-    sections = [text] if text else []
+    return "\n\n".join((*((text,) if text else ()), *transcript_sections(text, assets)))
+
+
+def transcript_sections(text: str, assets: Sequence[StoredAsset]) -> tuple[str, ...]:
+    """Build only transcript sections absent from this record's representation."""
+    sections: list[str] = []
     seen: set[str] = set()
     for asset in assets:
         # A transcript is only ever cached for an asset the transcriber declared, so its presence
@@ -239,7 +224,7 @@ def derived_text(text: str, assets: Sequence[StoredAsset]) -> str:
         identity_marker = f"[speech identities:{asset.asset_id}]\n"
         if marker not in text and identity_marker not in text:
             sections.append(f"{marker}\n{transcript}")
-    return "\n\n".join(sections)
+    return tuple(sections)
 
 
 def speech_identity_text(

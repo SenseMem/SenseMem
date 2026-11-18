@@ -25,7 +25,7 @@ source = memory.add(
 )
 ```
 
-The persisted record exposes `MemoryContext` and `MemoryRecord.place_id`. Sources are
+The persisted record exposes `RecordSemantics` and `MemoryRecord.place_id`. Sources are
 `OBSERVATION` records; `add()` cannot directly write a derived kind.
 
 ## Derived kinds
@@ -51,6 +51,15 @@ A capture group is `ObservationContext.source_id`, falling back to the raw recor
 Text/audio observations of the same capture, and all their derived cues, count as one group.
 Dependent confidence and visibility recompute transactionally when support changes.
 
+An affect's object and eliciting event use separate typed `RELATION` records. `affect_target`
+and `affect_elicitor` require an `AffectLink` identifying the cue, role, object reference, and
+`affirmed`/`denied` polarity. Targets may use a recognized identity or entity/event record;
+elicitors require an event record. The focal cue and a record-valued object enter the relation's
+required evidence closure, without becoming independent corroboration. A missing link expresses
+unknown attribution, and a denied link rejects only its particular cue/role/object association.
+Reporting witnesses retain original source IDs, reporter names, and exact quotations. See
+[affective memory](affective-memory.md#emotional-targets-and-elicitors).
+
 ## Support clauses
 
 ```text
@@ -70,10 +79,24 @@ assessment cannot corroborate that assessment itself.
 | `REINFORCE` and general context evidence | Independent singleton alternatives |
 
 Formation tuples reject empty, duplicate, foreign, or out-of-batch IDs before derived commits.
-`MemoryContext.evidence_ids` is the ordered audit union of complete active clauses. A joint
+`RecordSemantics.evidence_ids` is the ordered audit union of complete active clauses. A joint
 proposal contributes one assessment; the default confidence is the greater of the joint-assessment
 maximum and the capture-group singleton noisy-OR projection. These are operational support scores,
 not calibrated truth probabilities or proof of semantic entailment.
+
+For a `MODEL_INFERENCE` claim bound to a stable identity, a host-confirmed naming assertion
+(`ENTITY`, predicate `identity`, `USER_STATEMENT`, matching `identity_id`) is a condition of
+attribution, not an observation of that claim. It stays in every complete AND assessment and
+its audit union, and retracting it withdraws those assessments. It does not supply an experience
+vote or make distinct observations dependent merely because both use that name. Naming alone
+supplies no experience count or confidence. This exception does not apply to inferred names,
+other identities, an `ENTITY` target, or host-confirmed claims.
+
+The default projection excludes these conditions only when counting each complete clause:
+one remaining member uses its existing capture group; multiple remaining members retain the
+joint-assessment maximum. Other joint clauses and the all-group singleton noisy-OR stay unchanged.
+The independent projection instead compares complete observation paths. Naming ancestors that
+also appear through an observation or summary path still count as shared evidence.
 
 A non-observation whose basis is neither `USER_STATEMENT` nor `RESPONSE_FEEDBACK` needs an active
 grounded clause to remain visible. Observations and host assertions are roots. Deleting evidence
@@ -106,6 +129,21 @@ and evidence links, not their own media assets.
 ## State replacement
 
 Functional state lineages use kind, normalized subject, predicate, and spatial frame/anchor.
+For a claim bound to a stable identity, that identity replaces its display name in the claim ID,
+so renaming a person does not split an otherwise identical trait or relation. ENTITY naming
+assertions still distinguish names and preserve their separate naming history.
+Formation and consolidation bind a claim only through its cited, visible, current `ENTITY`
+naming assertion. A matching registry display name grants no binding. Citing names for two
+different identities rejects the proposal; two people with the same display name keep separate
+claims. The naming assertion remains a required member of that assessment's evidence clause.
+Original text that explicitly names a label can support an unbound claim without citing a
+historical name, including when history contains a stable identity with that display name.
+The claim keeps `identity_id=None` and a separate claim key; it does not join that person's
+profile or gain a naming dependency. Transcripts, descriptions, model interpretations, and
+pronouns do not grant this exception. A proposal that does cite the historical name keeps that
+dependency; competing cited identities are still refused. Sharing a naming record does not
+create independent support. Retaining an unbound report does not satisfy a requirement to
+bind its subject to a registered identity.
 A later `STATE` replaces overlapping validity only when its proposal's authority and evidence
 are sufficient:
 
@@ -113,9 +151,43 @@ are sufficient:
 2. Within one authority tier, new confidence must meet the standing evidence confidence.
 3. A higher-authority claim can replace an inference with a lower scalar score.
 
-A raw user statement does not promote a model proposal's basis. A weaker alternative remains
-supported conflict; filtering it out cannot make compilation assert the other value alone.
-Use explicit correction and replacement for a wrong inference.
+Automatic formation and consolidation proposals must use `MODEL_INFERENCE`. Marking a source
+`ObservationContext(basis=EvidenceBasis.USER_STATEMENT)` preserves the source's provenance;
+it does not confirm the model's interpretation of its subject, attribution, polarity, or value.
+Copying an exact quote cannot establish those meanings. The bundled wire schema accepts neither
+`statement_quote` nor a model-selected `basis`, and the kernel also rejects elevated authority
+from custom automatic backends.
+
+The host can confirm a specific typed claim through `apply()`:
+
+```python
+from sensemem import FormationProposal, MemoryIntent, RecordKind, MemoryOperation
+
+source = memory.add("Rava says she has been patient for years.")
+confirmation = memory.apply(
+    MemoryOperation(
+        intent=MemoryIntent.CONSOLIDATE,
+        evidence_ids=(source.id,),
+        proposal=FormationProposal(
+            kind=RecordKind.TRAIT,
+            basis=EvidenceBasis.USER_STATEMENT,
+            content="Rava is patient.",
+            subject="Rava",
+            predicate="disposition",
+            value="patient",
+        ),
+    )
+)
+```
+
+This explicit host assertion can make a trait immediately visible. An automatically extracted
+current `STATE` can also be visible after one source, with inference authority; a later model
+inference cannot replace a stronger host-confirmed value merely by quoting its own source.
+Host assertions are roots: withdrawing the supporting source does not revoke the host's
+confirmation. Use `rollback(confirmation.operation_id)` or an explicit correction to withdraw it.
+
+A weaker alternative remains supported conflict; filtering it out cannot make compilation
+assert the other value alone. Use explicit correction and replacement for a wrong inference.
 
 Accepted replacement preserves unaffected validity segments, including backfill and A → B → A.
 Independent assertions in one SQLite batch remain conflicting; separate transactions are ordered
@@ -126,6 +198,23 @@ creating a new validity interval or revision order.
 User-stated traits also have one standing value per lineage. Relations and model-inferred traits
 accumulate values. Registered scalar predicate aliases share claim keys across languages, while
 unknown predicates keep literal keys; subject identity, kind, and spatial scope still separate claims.
+Reviewed aliases use the same stored claim ID as their canonical predicate, so independent
+sources accumulate support on one claim rather than creating separate hidden copies.
+
+Explicit `CORRECT` withdraws the complete evidence assessments that depend on the corrected
+claim. If an intermediate claim loses eligibility, withdrawal continues to its dependents;
+independent surviving assessments remain. This includes a summary retained as evidence after
+consolidation. Only the host can correct such a retained target. Rollback restores the withdrawn
+assessments. A historical state interval or ordinary consolidation retirement does not itself
+withdraw its evidence.
+
+The bundled former uses `STATE` for a current single-valued preference and keeps the same
+kind/predicate when its value changes. It uses the reviewed `preferred_drink`, `home_city`, and
+`current_location` keys for those properties; words such as “current,” “only,” and “changed”
+do not create a separate property. Predicate registry `sensemem-predicates-v2` additionally maps
+the observed `current_preferred_drink` and `only_current_preferred_drink` aliases to
+`preferred_drink`. Other unknown strings remain literal, and different kinds remain separate.
+Unsupported on-disk predicate provenance is refused rather than silently reinterpreted.
 
 ## Naming a person
 
@@ -136,20 +225,27 @@ a lineage, so renaming retires the earlier assertion.
 
 The registry name/relationship and indexed transcript text project the current visible assertion
 in one commit. Naming logs a manual `IDENTIFY`; rollback restores its predecessor and both
-projections. Repeating a standing name changes nothing. Model-proposed identification instead
-needs observed identity evidence and two independent groups. See
+projections. It also withdraws complete downstream assessments that depend on the retracted
+naming assertion. Repeating a standing name changes nothing. Model-proposed identification, including
+typed `speaker_names` returned by a vision model, instead carries `MODEL_INFERENCE`, the producing
+model and recipe, and the original source-memory IDs. It requires two independent groups before
+the name is projected; `IdentityProfile.confirmed` remains false until the host registers a name.
+Removing its support retracts the inferred projection without changing a host-confirmed name. See
 [the identity API](api/python-identity.md) for recognition, consent, linking, and erasure.
 
 ## Experimental independent evidence
 
-`settings.independent_evidence: true`, or `MemoryConfig(independent_evidence=True)`, selects an
-experimental support projection. It is off by default and pins `independent-v1` instead of
-`complete-v1` in `evidence.projection_recipe`. Changing policy requires a fresh directory and
-replay; mismatches or missing markers on nonempty stores raise `StorageError`. Open never rewrites
-historical evidence.
+`settings.independent_evidence: true`, or `MemorySettings(independent_evidence=True)`, selects an
+experimental support projection. It is off by default and pins `independent-v2` instead of
+`complete-v2` in `evidence.projection_recipe`. Version 2 separates matching host naming conditions
+from experience support in both policies. Earlier projection recipes are refused without migration;
+Evidence projection policy is separate from the SQLite schema. Changing policy requires a fresh
+directory and replay; mismatches or missing markers on nonempty stores raise `StorageError`. Open
+never rewrites historical evidence.
 
 Proofs trace AND/OR ancestry through original captures and intermediate assertions. Two assessments
-corroborate only when their proofs share neither captures nor intermediate claims; alternatives of
+corroborate only when their observation paths share neither captures nor intermediate claims;
+matching host naming conditions retain their complete proof but supply no observation path. Alternatives of
 one assessment still count once. Capture-disjointness alone does not establish statistical independence.
 
 Support count saturates at two. Proof confidence is its minimum path confidence; reported confidence

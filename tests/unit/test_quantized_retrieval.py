@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from sensemem import IndexQuantization, Memory, MemoryConfig, Modality, RetrievalMode
+from sensemem import IndexQuantization, Memory, MemorySettings, Modality, RetrievalMode
 from sensemem.infrastructure.local.zvec_index import IndexHit
 from sensemem.models.base import EmbedTask, ModelInput
-from sensemem.types import RetrievalRejection
+from sensemem.records import RetrievalRejection
 
 
 class _Embedder:
@@ -54,7 +54,7 @@ def test_quantized_candidates_use_fp32_before_relevance_gating(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(
+        settings=MemorySettings(
             index_quantization=quantization,
             retrieval_mode=RetrievalMode.DENSE,
             minimum_relevance=0.85,
@@ -88,7 +88,7 @@ def test_quantized_retrieval_can_recover_a_parent_beyond_the_approximate_top_hun
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             index_quantization=IndexQuantization.INT8,
             retrieval_mode=RetrievalMode.DENSE,
             minimum_relevance=0,
@@ -116,7 +116,7 @@ def test_traced_candidates_report_final_rank_and_rejection(tmp_path: Path) -> No
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0.85, ambiguity_margin=0
         ),
     ) as memory:

@@ -14,26 +14,46 @@ from __future__ import annotations
 
 import argparse
 import base64
-import binascii
 import inspect
 import json
 import math
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import Field, asdict
 from datetime import datetime, timedelta
 from importlib import import_module
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import ClassVar, Protocol, TextIO, TypeAlias, cast
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from sensemem import MemoryConfig, recipes
+from sensemem import MemorySettings, recipes
+from sensemem._resources import Closable, close_quietly
+from sensemem.api.client import JsonDocument as _Document
+from sensemem.api.client import RemoteFailure, request_json
+from sensemem.api.responses import (
+    AffectCueResponse,
+    MemoryResponse,
+    SearchHitResponse,
+    _bundle_response,
+)
+from sensemem.content import AssetRef, Blob, ContentAtom, ContentInput
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_values import (
+    AffectCue,
+    ContextBudget,
+)
 from sensemem.control import dump_operation, load_operation
+from sensemem.control_values import (
+    ExportBundle,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryOutcome,
+    MemoryTrigger,
+    RetentionReport,
+)
 from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
@@ -44,6 +64,7 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
+from sensemem.identity import ConsentState
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
 from sensemem.kernel.contracts import declared_capabilities
 from sensemem.memory import Memory
@@ -57,37 +78,10 @@ from sensemem.models.base import (
     TranscriptionBackend,
     VisionDescriptionBackend,
 )
-from sensemem.types import (
-    AffectCue,
-    AssetRef,
-    Blob,
-    ConsentState,
-    ContentAtom,
-    ContentInput,
-    ContextBudget,
-    ContextConflict,
-    ContextExcerpt,
-    ContextUnknown,
-    EvidenceBasis,
-    ExportBundle,
-    MemoryContext,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryOutcome,
-    MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
-    Modality,
-    NamedActor,
-    ObservationContext,
-    ProvisionalActor,
-    RetentionReport,
-    RetrievalScope,
-    SearchHit,
-    SpatialAnchor,
-    SpatialContext,
-    StreamInput,
-)
+from sensemem.records import MemoryRecord, SearchHit
+from sensemem.spatial import ObservationContext, RetrievalScope, SpatialContext
+from sensemem.stream_values import StreamInput
+from sensemem.types import EvidenceBasis, MemoryCategory, Modality, SpatialAnchor
 
 
 class _DataclassInstance(Protocol):
@@ -113,43 +107,7 @@ EXIT_CODES: Mapping[str, int] = {
 # The one exit selected by `reason` rather than `code`. It is the CLI's single transport decision:
 # an agent that cannot tell "busy, retry with --url" from "the disk broke" cannot be scripted.
 DATA_DIR_IN_USE_EXIT_CODE = 9
-# Operations `Memory` publishes, in SDK order. Commands are these names kebab-cased, plus `doctor`.
-OPERATIONS: tuple[str, ...] = (
-    "add",
-    "add_many",
-    "add_stream",
-    "capture",
-    "settle",
-    "pending_captures",
-    "search",
-    "ask",
-    "compile",
-    "get",
-    "perceive",
-    "register_identity",
-    "identity",
-    "record_consent",
-    "consent",
-    "forget_identity",
-    "unlink_identity",
-    "reinforce",
-    "consolidation_candidates",
-    "consolidate",
-    "consolidate_pending",
-    "apply",
-    "record_outcome",
-    "forget",
-    "rollback",
-    "operations",
-    "export",
-    "apply_retention",
-    "list",
-    "delete",
-    "reindex",
-    "optimize",
-)
 DOCTOR = "doctor"
-COMMANDS: tuple[str, ...] = (*(name.replace("_", "-") for name in OPERATIONS), DOCTOR)
 _QUERY_METAVAR: Mapping[str, str] = {
     "add": "TEXT",
     "capture": "TEXT",
@@ -170,7 +128,7 @@ _SLOTS: tuple[str, ...] = (
     "vision",
 )
 _OPTIONAL_SLOTS: tuple[str, ...] = _SLOTS[1:]
-# The one slot whose `Memory` keyword is not its name. `SenseMemConfig` and the flag call the
+# The one slot whose `Memory` keyword is not its name. `MemorySpec` and the flag call the
 # slot `vision`; the object it holds is a describer, which is what `Memory` names its parameter.
 _MEMORY_KEYWORDS: Mapping[str, str] = {"vision": "vision_describer"}
 _TUNING: tuple[str, ...] = (
@@ -181,7 +139,6 @@ _TUNING: tuple[str, ...] = (
 )
 _STDIN = "-"
 
-_Document: TypeAlias = dict[str, object]
 _Atom: TypeAlias = tuple[str, str]
 _stdin_consumed = False
 
@@ -199,14 +156,6 @@ class _CompositionError(Exception):
         self.subject = subject
 
 
-class _RemoteFailure(Exception):
-    """An error envelope a running owner already produced; forwarded, never re-derived."""
-
-    def __init__(self, envelope: _Document) -> None:
-        super().__init__(str(envelope.get("message", "")))
-        self.envelope = envelope
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one command and return its exit status."""
     global _stdin_consumed
@@ -217,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         print(f"{PROGRAM}: interrupted", file=sys.stderr)
         return INTERRUPT_EXIT_CODE
-    except _RemoteFailure as error:
+    except RemoteFailure as error:
         return _forward(error.envelope)
     except _CompositionError as error:
         return _fail(CONFIGURATION_ERROR, str(error), reason=error.reason, subject=error.subject)
@@ -240,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _dispatch(arguments: argparse.Namespace) -> _Document:
     _reject_duplicate_content(arguments)
-    composition = _resolve(arguments)
+    composition = _describe_composition(arguments)
     if arguments.explain_composition:
         return composition
     if not arguments.quiet:
@@ -257,8 +206,8 @@ def _dispatch(arguments: argparse.Namespace) -> _Document:
 # Composition
 
 
-def _resolve(arguments: argparse.Namespace) -> _Document:
-    """Report the resolved composition without running the operation it selects."""
+def _describe_composition(arguments: argparse.Namespace) -> _Document:
+    """Validate composition options and describe the selected runtime before opening it."""
     if arguments.url is None and arguments.timeout is not None:
         raise _CompositionError(
             "--timeout applies only to --url compositions",
@@ -326,20 +275,14 @@ def _reject_embedder_only_options(arguments: argparse.Namespace) -> None:
 def _open_memory(arguments: argparse.Namespace) -> Memory:
     if arguments.app is not None:
         return _application_memory(arguments.app)
-    backends: dict[str, object] = {}
-    with _composing():
-        backends["embedder"] = recipes.embedder(arguments.embedder)
-        if arguments.answerer is not None:
-            backends["answerer"] = recipes.answerer(arguments.answerer)
-        if arguments.former is not None:
-            backends["former"] = recipes.former(arguments.former)
-        if arguments.consolidator is not None:
-            backends["consolidator"] = recipes.consolidator(arguments.consolidator)
-        if arguments.transcriber is not None:
-            backends["transcriber"] = recipes.transcriber(arguments.transcriber)
-        if arguments.vision is not None:
-            backends["vision"] = recipes.vision(arguments.vision)
+    backends: dict[str, Closable] = {}
     try:
+        with _composing():
+            for slot in _SLOTS:
+                name = getattr(arguments, slot)
+                if name is not None:
+                    build = cast(Callable[[str], Closable], getattr(recipes, slot))
+                    backends[slot] = build(name)
         # `Memory` closes the backends it accepted, but it opens the store before it accepts them,
         # so a busy data directory would otherwise leak whatever this process just constructed.
         return Memory(
@@ -350,7 +293,7 @@ def _open_memory(arguments: argparse.Namespace) -> Memory:
             consolidator=backends.get("consolidator"),  # type: ignore[arg-type]
             transcriber=backends.get("transcriber"),  # type: ignore[arg-type]
             vision_describer=backends.get("vision"),  # type: ignore[arg-type]
-            config=MemoryConfig(
+            settings=MemorySettings(
                 index_speech=arguments.index_speech,
                 minimum_relevance=arguments.minimum_relevance,
                 ambiguity_margin=arguments.ambiguity_margin,
@@ -358,10 +301,7 @@ def _open_memory(arguments: argparse.Namespace) -> Memory:
             ),
         )
     except BaseException:
-        for backend in backends.values():
-            close = getattr(backend, "close", None)
-            if callable(close):
-                close()
+        close_quietly(*backends.values())
         raise
 
 
@@ -406,7 +346,7 @@ def _composing(subject: str | None = None) -> Iterator[None]:
     """Report every composition failure as exit 10, whatever raised it underneath."""
     try:
         yield
-    except (KeyboardInterrupt, SystemExit, _CompositionError):
+    except _CompositionError:
         raise
     except StorageError:
         # A busy or unreadable data directory describes the store, not the composition, and it is
@@ -435,7 +375,7 @@ def _doctor(arguments: argparse.Namespace, composition: _Document) -> _Document:
     report: _Document = {"source": composition["source"]}
     data_dir: Path | None = None
     state = "owned by the application"
-    loaded: dict[str, object] = {}
+    loaded: dict[str, Closable] = {}
     # `--app` owns its own backends and doctor never calls the factory, so there is nothing to
     # declare there; a local composition declares what its probed backends can do.
     capabilities: _Document | None = None
@@ -453,13 +393,7 @@ def _doctor(arguments: argparse.Namespace, composition: _Document) -> _Document:
                 report[slot] = None if name is None else _probe(name, slot, loaded)
             capabilities = _doctor_capabilities(loaded)
         finally:
-            for backend in loaded.values():
-                close = getattr(backend, "close", None)
-                if callable(close):
-                    # One slot that fails to shut down must not strand the weights of the rest.
-                    # doctor already reports what each slot could load; a close is pure cleanup.
-                    with suppress(Exception):
-                        close()
+            close_quietly(*loaded.values())
     return {
         "version": _installed_version(),
         "python": ".".join(str(part) for part in sys.version_info[:3]),
@@ -508,11 +442,11 @@ def _application_target_exists(spec: str) -> None:
         getattr(import_module(module_name), attribute)
 
 
-def _probe(name: str, slot: str, loaded: dict[str, object]) -> _Document:
+def _probe(name: str, slot: str, loaded: dict[str, Closable]) -> _Document:
     """Construct one recipe with its loader exercised, keeping it for the capability summary."""
     document: _Document = dict(recipes.describe(name))
     document["probe"] = recipes.probe(name)
-    build: Callable[..., object] = getattr(recipes, slot)
+    build: Callable[..., Closable] = getattr(recipes, slot)
     try:
         backend = build(name, load=True)
     except ImportError as error:
@@ -528,12 +462,12 @@ def _probe(name: str, slot: str, loaded: dict[str, object]) -> _Document:
         return document
     loaded[slot] = backend
     document["loader"] = "ok"
-    document.update(_identity(backend))
+    document.update(_backend_identity(backend))
     return document
 
 
-def _identity(backend: object) -> _Document:
-    """Read the identity a loaded backend publishes; a property it does not have is skipped."""
+def _backend_identity(backend: object) -> _Document:
+    """Read a backend's model, representation space and supported modalities."""
     document: _Document = {
         name: getattr(backend, name)
         for name in (
@@ -581,7 +515,7 @@ def _add(memory: Memory, arguments: argparse.Namespace) -> _Document:
             occurred_at=_optional_time(arguments.occurred_at, "occurred_at"),
             occurred_end=_optional_time(arguments.occurred_end, "occurred_end"),
             metadata=_metadata_value(_json_source(arguments.metadata)),
-            memory_type=MemoryType(arguments.memory_type),
+            memory_type=MemoryCategory(arguments.memory_type),
             context=_observation_context(_json_source(arguments.context)),
         )
     )
@@ -594,7 +528,7 @@ def _capture(memory: Memory, arguments: argparse.Namespace) -> _Document:
             occurred_at=_optional_time(arguments.occurred_at, "occurred_at"),
             occurred_end=_optional_time(arguments.occurred_end, "occurred_end"),
             metadata=_metadata_value(_json_source(arguments.metadata)),
-            memory_type=MemoryType(arguments.memory_type),
+            memory_type=MemoryCategory(arguments.memory_type),
             context=_observation_context(_json_source(arguments.context)),
         )
     )
@@ -614,7 +548,7 @@ def _add_many(memory: Memory, arguments: argparse.Namespace) -> _Document:
                     _optional_time(item.get("occurred_end"), "occurred_end") for item in items
                 ],
                 metadata=[_metadata_value(item.get("metadata")) for item in items],
-                memory_type=MemoryType(arguments.memory_type),
+                memory_type=MemoryCategory(arguments.memory_type),
                 context=[_observation_context(item.get("context")) for item in items],
             )
         ]
@@ -622,7 +556,7 @@ def _add_many(memory: Memory, arguments: argparse.Namespace) -> _Document:
 
 
 def _add_stream(memory: Memory, arguments: argparse.Namespace) -> _Document:
-    memory_type = MemoryType(arguments.memory_type)
+    memory_type = MemoryCategory(arguments.memory_type)
     inputs = (
         StreamInput(
             _parts_input(item["content"]),
@@ -667,8 +601,7 @@ def _ask(memory: Memory, arguments: argparse.Namespace) -> _Document:
         limit=arguments.limit,
         memory_type=_optional_memory_type(arguments),
         reference_at=_optional_time(arguments.reference_at, "reference_at"),
-        scope=_retrieval_scope(_json_source(getattr(arguments, "scope", None))),
-        link_identities=getattr(arguments, "link_identities", True),
+        scope=_retrieval_scope(_json_source(arguments.scope)),
     )
     return {
         "answer": result.answer,
@@ -688,7 +621,7 @@ def _budget(arguments: argparse.Namespace) -> ContextBudget:
         memory_types=(
             None
             if arguments.memory_type is None
-            else frozenset(MemoryType(value) for value in arguments.memory_type)
+            else frozenset(MemoryCategory(value) for value in arguments.memory_type)
         ),
         min_confidence=arguments.min_confidence,
         freshness=_freshness_delta(arguments.freshness_seconds),
@@ -718,34 +651,12 @@ def _compile(memory: Memory, arguments: argparse.Namespace) -> _Document:
     )
     # `ContextBundle.document()` is the projection REST and MCP publish too, so a section added
     # to the bundle reaches this document without being spelled here a third time.
-    return {name: _bundle_value(value) for name, value in bundle.document().items()}
+    return _bundle_document(bundle)
 
 
-def _bundle_value(value: object) -> object:
-    """Encode one bundle field as JSON; the budget already arrives as a document."""
-    if isinstance(value, datetime):
-        return _encode_time(value)
-    if isinstance(value, tuple):
-        return [_bundle_entry(entry) for entry in value]
-    return value
-
-
-def _bundle_entry(entry: object) -> object:
-    """Encode one entry of one section; `frames` and `places` carry plain strings.
-
-    A hit needs shaping: its assets publish six of `AssetRef`'s seven fields, because the seventh
-    is a local filesystem path. The rest are exactly their own fields. The list is closed rather
-    than "any dataclass" for that same reason -- an entry type that later nests an `AssetRef`
-    must fail here instead of quietly publishing the path -- and an unrecognized entry travels
-    on to fail in `json.dump`.
-    """
-    if isinstance(entry, SearchHit):
-        return _memory_document(entry)
-    if isinstance(
-        entry, ContextConflict | ContextExcerpt | ContextUnknown | NamedActor | ProvisionalActor
-    ):
-        return _document(entry)
-    return entry
+def _bundle_document(bundle: ContextBundle) -> _Document:
+    """Publish the shared safe response projection, including nested media and proofs."""
+    return cast("_Document", _bundle_response(bundle).model_dump(mode="json"))
 
 
 def _get(memory: Memory, arguments: argparse.Namespace) -> _Document:
@@ -1045,9 +956,9 @@ _LOCAL: Mapping[str, Callable[[Memory, argparse.Namespace], _Document]] = {
 }
 
 
-def _optional_memory_type(arguments: argparse.Namespace) -> MemoryType | None:
+def _optional_memory_type(arguments: argparse.Namespace) -> MemoryCategory | None:
     value = arguments.memory_type
-    return None if value is None else MemoryType(value)
+    return None if value is None else MemoryCategory(value)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1067,13 +978,13 @@ def _run_remote(arguments: argparse.Namespace) -> _Document:
         )
     method, path, body = _REMOTE[command](arguments)
     try:
-        document = _request(arguments.url, method, path, body, _remote_timeout(arguments))
-    except _RemoteFailure as failure:
+        document = request_json(arguments.url, method, path, body, _remote_timeout(arguments))
+    except RemoteFailure as failure:
         raise _remote_switch_off(command, arguments.url, failure) from failure
     return _REMOTE_RESULT[command](document) if command in _REMOTE_RESULT else document
 
 
-def _remote_switch_off(command: str, url: str, failure: _RemoteFailure) -> Exception:
+def _remote_switch_off(command: str, url: str, failure: RemoteFailure) -> Exception:
     """Report a gated route the owner never registered as the configuration condition it is.
 
     `create_app` leaves the identity and embodied routes unregistered when the host did not opt
@@ -1178,9 +1089,7 @@ def _remote_query(field: str, arguments: argparse.Namespace) -> _Document:
     _put(
         body,
         "scope",
-        _retrieval_scope_document(
-            _retrieval_scope(_json_source(getattr(arguments, "scope", None)))
-        ),
+        _retrieval_scope_document(_retrieval_scope(_json_source(arguments.scope))),
     )
     return body
 
@@ -1259,7 +1168,12 @@ _REMOTE_SWITCH: Mapping[str, str] = {
 # one shape per command whichever transport ran it, so the transport translates back rather than
 # printing a second vocabulary under `--url`.
 _REMOTE_RESULT: Mapping[str, Callable[[_Document], _Document]] = {
-    "pending-captures": lambda document: {"pending": document["items"]},
+    "pending-captures": lambda document: {
+        "pending": [
+            {key: value for key, value in item.items() if key != "cursor"}
+            for item in cast(list[_Document], document["items"])
+        ]
+    },
     "forget-identity": lambda document: cast(_Document, document["erasure"]),
     "register-identity": lambda _document: {},
     "identity": lambda document: {"identity": _remote_profile(document["identity"])},
@@ -1278,7 +1192,7 @@ def _remote_doctor(arguments: argparse.Namespace) -> _Document:
         "version": _installed_version(),
         "python": ".".join(str(part) for part in sys.version_info[:3]),
         "url": arguments.url,
-        "health": _request(arguments.url, "GET", "/healthz", None, _remote_timeout(arguments)),
+        "health": request_json(arguments.url, "GET", "/healthz", None, _remote_timeout(arguments)),
         "composition": {"source": f"--url {arguments.url}", "owner": "remote"},
     }
 
@@ -1287,57 +1201,6 @@ def _remote_timeout(arguments: argparse.Namespace) -> float:
     return (
         _DEFAULT_REMOTE_TIMEOUT_SECONDS if arguments.timeout is None else float(arguments.timeout)
     )
-
-
-def _request(url: str, method: str, path: str, body: _Document | None, timeout: float) -> _Document:
-    payload = None if body is None else json.dumps(body).encode("utf-8")
-    headers = {"Accept": "application/json"}
-    if payload is not None:
-        headers["Content-Type"] = "application/json"
-    request = Request(f"{url.rstrip('/')}{path}", data=payload, headers=headers, method=method)
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return _response(response.read())
-    except HTTPError as error:
-        # An error response is still an open response: `HTTPError` wraps the body file, so leaving
-        # it unclosed leaks the socket and raises in the deallocator.
-        try:
-            envelope = _response(error.read())
-        finally:
-            error.close()
-        raise _RemoteFailure(envelope) from error
-    except (TimeoutError, URLError) as error:
-        cause = error.reason if isinstance(error, URLError) else error
-        if isinstance(cause, TimeoutError):
-            raise StorageError(
-                f"request to the SenseMem owner at {url} timed out after {timeout:g} seconds",
-                reason="timeout",
-                stage="request",
-            ) from error
-        raise StorageError(
-            f"cannot reach the SenseMem owner at {url}",
-            reason="connection_failed",
-            stage="request",
-            subject=str(cause),
-        ) from error
-
-
-def _response(raw: bytes) -> _Document:
-    try:
-        document = json.loads(raw or b"{}")
-    except ValueError as error:
-        raise StorageError(
-            "the SenseMem owner returned a body that is not JSON",
-            reason="response_invalid",
-            stage="request",
-        ) from error
-    if not isinstance(document, dict):
-        raise StorageError(
-            "the SenseMem owner returned a body that is not a JSON object",
-            reason="response_invalid",
-            stage="request",
-        )
-    return document
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1507,7 +1370,7 @@ def _data_blob(value: str, *, name: str | None, expected: str | None) -> Blob:
 def _decode_base64(value: str) -> bytes:
     try:
         return base64.b64decode(value, validate=True)
-    except (binascii.Error, ValueError) as error:
+    except ValueError as error:
         raise ValidationError("media bytes must be valid base64") from error
 
 
@@ -1701,51 +1564,19 @@ def _put(body: _Document, name: str, value: object) -> None:
 # ---------------------------------------------------------------------------------------------
 # Output
 #
-# These are the REST response shapes, projected from the same dataclasses REST projects them from,
-# so one field vocabulary covers three surfaces. `tests/unit/test_cli.py` compares every document
-# against `MemoryResponse`, `SearchHitResponse`, `PageResponse`, `AnswerResponse`,
-# `MemoryBatchResponse`, and `DeleteResponse`, so a drifting field fails a gate. The models are not
-# imported: they live in the FastAPI adapter, and the CLI must run on an install with no web
-# framework present -- including `--url` mode, whose whole point is that the server is elsewhere.
+# Shared response models live in api.responses without importing FastAPI, so local and --url
+# commands use the same field vocabulary on installations without a web framework.
 
 
 def _memory_document(record: MemoryRecord | SearchHit) -> _Document:
-    document: _Document = {
-        "id": record.id,
-        "content": record.content,
-        "modality": record.modality.value,
-        "memory_type": record.memory_type.value,
-        "assets": [_asset_document(asset) for asset in record.assets],
-        "created_at": _encode_time(record.created_at),
-        "occurred_at": _encode_optional_time(record.occurred_at),
-        "occurred_end": _encode_optional_time(record.occurred_end),
-        "metadata": dict(record.metadata),
-        "context": _context_document(record.context),
-        "forgotten_at": _encode_optional_time(record.forgotten_at),
-        "place_id": record.place_id,
-    }
-    if isinstance(record, SearchHit):
-        document["score"] = record.score
-    if isinstance(record, AffectCue):
-        # The compiled affect entry's evidence hop, on the same line the transports publish it.
-        # The observations it cites are already inside `context`.
-        document["event_ids"] = list(record.event_ids)
-    return document
-
-
-def _context_document(context: MemoryContext | None) -> _Document | None:
-    return None if context is None else _document(context)
-
-
-def _asset_document(asset: AssetRef) -> _Document:
-    return {
-        "id": asset.id,
-        "modality": None if asset.modality is None else asset.modality.value,
-        "media_type": asset.media_type,
-        "size_bytes": asset.size_bytes,
-        "sha256": asset.sha256,
-        "name": asset.name,
-    }
+    schema = (
+        AffectCueResponse
+        if isinstance(record, AffectCue)
+        else SearchHitResponse
+        if isinstance(record, SearchHit)
+        else MemoryResponse
+    )
+    return cast("_Document", schema.model_validate(record).model_dump(mode="json"))
 
 
 def _encode_time(value: datetime) -> str:
@@ -1834,7 +1665,7 @@ def _default(operation: str, parameter: str) -> object:
 
 _MEMORY_DEFAULTS: Mapping[str, object] = {
     name: (
-        getattr(MemoryConfig(), _MEMORY_KEYWORDS.get(name, name))
+        getattr(MemorySettings(), _MEMORY_KEYWORDS.get(name, name))
         if name in _TUNING
         else _default("__init__", _MEMORY_KEYWORDS.get(name, name))
     )
@@ -1855,7 +1686,7 @@ def _parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="local memory directory (default: %(default)s)",
     )
-    # Not `required=True`: a missing composition is reported by `_resolve` as exit 10, because an
+    # Not `required=True`: a missing composition is reported by `_describe_composition` as exit 10, because an
     # agent has to tell "you never said which backend" from "you typed the flag wrong".
     composition = parser.add_mutually_exclusive_group()
     composition.add_argument("--app", metavar="MODULE:ATTR", help="an application-composed Memory")
@@ -1975,16 +1806,6 @@ def _commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> 
             )
             command.add_argument("--occurred-from", metavar="TIME", help="event overlap start")
             command.add_argument("--occurred-until", metavar="TIME", help="event overlap end")
-        else:
-            command.add_argument(
-                "--link-identities",
-                action=argparse.BooleanOptionalAction,
-                default=_default(operation, "link_identities"),
-                help=(
-                    "commit a corroborated cross-modal identity merge while answering "
-                    "(default: %(default)s)"
-                ),
-            )
     _compile_command(commands)
     for name, help_text in (
         ("get", "read one memory"),
@@ -2185,7 +2006,7 @@ def _compile_command(
     command.add_argument(
         "--memory-type",
         action="append",
-        choices=[item.value for item in MemoryType],
+        choices=[item.value for item in MemoryCategory],
         help="repeatable; keep only these memory types",
     )
     command.add_argument(
@@ -2238,8 +2059,8 @@ def _memory_type_option(command: argparse.ArgumentParser, operation: str) -> Non
     default = _default(operation, "memory_type")
     command.add_argument(
         "--memory-type",
-        choices=[item.value for item in MemoryType],
-        default=None if default is None else MemoryType(default).value,
+        choices=[item.value for item in MemoryCategory],
+        default=None if default is None else MemoryCategory(default).value,
     )
 
 
@@ -2250,7 +2071,7 @@ def _recipes() -> str:
 def _version() -> str:
     try:
         return _installed_version()
-    except Exception:
+    except PackageNotFoundError:
         return "unknown"
 
 

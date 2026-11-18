@@ -18,14 +18,15 @@ from sensemem import (
     FaceAnalysis,
     IdentityNotFoundError,
     Memory,
-    MemoryConfig,
     MemoryOperation,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
     Modality,
     ModelError,
     PerceptionKind,
     PerceptionResult,
+    QueryFailure,
     SearchResult,
     SpeechAnalysis,
     ValidationError,
@@ -34,7 +35,7 @@ from sensemem import (
 
 def test_search_has_one_return_type_and_diagnostics_preserve_hits(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         memory.add_many(("blue toolbox", "spare key"))
         reference = datetime.now(timezone.utc)
@@ -55,7 +56,7 @@ async def test_async_search_and_perception_preserve_the_same_values(tmp_path: Pa
             tmp_path,
             embedder=TinyEmbedder(),
             transcriber=_FakeSpeech(),
-            config=MemoryConfig(minimum_relevance=0),
+            settings=MemorySettings(minimum_relevance=0),
         )
     ) as memory:
         record = await memory.add("blue toolbox")
@@ -147,7 +148,11 @@ class _SilentConsolidator:
     consolidation_recipe = "unified-api-fixture:v1"
 
     def consolidate(
-        self, evidence: Sequence[MemoryRecord], *, trigger: MemoryTrigger
+        self,
+        evidence: Sequence[MemoryRecord],
+        *,
+        trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         return ()
 

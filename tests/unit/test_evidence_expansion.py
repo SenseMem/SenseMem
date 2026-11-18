@@ -22,15 +22,16 @@ from sensemem import (
     AssetRef,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
+    MemorySettings,
     Modality,
     ModelInput,
     ObservationContext,
     SearchHit,
 )
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.store import RECALL_MAX_ROWS
 from sensemem.kernel.grounding import pack_grounding
+from sensemem.recall import RECALL_MAX_ROWS
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
 
@@ -112,7 +113,7 @@ def _memory(
         tmp_path / "store",
         embedder=embedder or TinyEmbedder(),  # type: ignore[arg-type]
         answerer=answerer,
-        config=MemoryConfig(
+        settings=MemorySettings(
             minimum_relevance=0.0,
             ambiguity_margin=0.0,
             reinforce_on_answer=False,
@@ -137,6 +138,54 @@ def _capture(memory: Memory, source: str, *texts: str, minute: int = 0) -> tuple
 
 def _grounded_ids(answerer: _RecordingAnswerer) -> tuple[str, ...]:
     return tuple(hit.id for hit in answerer.grounded[-1])
+
+
+@pytest.mark.parametrize("route", ("neighbors", "related"))
+def test_supplemental_recall_preserves_requested_memory_type(tmp_path: Path, route: str) -> None:
+    class NeighborAnswerer(_RecordingAnswerer):
+        def plan_recall(
+            self,
+            question: str,
+            *,
+            reference_at: datetime,
+            corpus_digest: str,
+            attempted: str = "",
+        ) -> str:
+            return (
+                '{"shape":"sequence","steps":[{"op":"match","terms":["anchor"]},'
+                '{"op":"neighbors","of":"step:0","before":0,"after":2}]}'
+            )
+
+    answerer = NeighborAnswerer()
+    with Memory(
+        tmp_path,
+        embedder=_ScriptedEmbedder({"anchor": 0, "excluded": math.pi, "partner": math.pi / 2}),
+        answerer=answerer,
+        settings=MemorySettings(
+            recall_planning=route == "neighbors",
+            evidence_expansion=route == "related",
+            minimum_relevance=0.1,
+            ambiguity_margin=0,
+            evidence_budget_chars=None,
+        ),
+    ) as memory:
+        context = ObservationContext(source_id="capture")
+        anchor = memory.add("anchor fact", context=context, occurred_at=NOW)
+        excluded = memory.add(
+            "excluded episode",
+            memory_type=MemoryCategory.EPISODIC,
+            context=context,
+            occurred_at=NOW + timedelta(minutes=1),
+        )
+        partner = memory.add(
+            "partner fact", context=context, occurred_at=NOW + timedelta(minutes=2)
+        )
+
+        result = memory.ask("What follows anchor?", limit=1, memory_type=MemoryCategory.SEMANTIC)
+
+        assert set(_grounded_ids(answerer)) == {anchor.id, partner.id}
+        assert {hit.id for hit in result.hits} == {anchor.id, partner.id}
+        assert excluded.id not in _grounded_ids(answerer)
 
 
 def test_expansion_recovers_the_partner_record_similarity_left_behind(tmp_path: Path) -> None:
@@ -287,7 +336,7 @@ def test_evidence_expansion_max_rows_must_be_positive(tmp_path: Path) -> None:
         Memory(
             tmp_path / "store",
             embedder=TinyEmbedder(),
-            config=MemoryConfig(evidence_expansion=True, evidence_expansion_max_rows=0),
+            settings=MemorySettings(evidence_expansion=True, evidence_expansion_max_rows=0),
         )
 
 
@@ -303,7 +352,7 @@ def test_evidence_expansion_max_rows_is_bounded_by_the_store_read_it_becomes(
         Memory(
             tmp_path / "store",
             embedder=TinyEmbedder(),
-            config=MemoryConfig(
+            settings=MemorySettings(
                 evidence_expansion=True, evidence_expansion_max_rows=RECALL_MAX_ROWS + 1
             ),
         )

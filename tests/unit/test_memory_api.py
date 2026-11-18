@@ -27,7 +27,17 @@ from opentelemetry.trace import StatusCode, Tracer
 import sensemem.configuration as configuration_module
 import sensemem.kernel.projection as projection_module
 import sensemem.memory as memory_module
-from sensemem import MemoryConfig, MemoryPlugins, RetrievalRejection
+from sensemem import (
+    FaceAnalysis,
+    FaceEmbedding,
+    MemoryPlugins,
+    MemorySettings,
+    QueryFailure,
+    RetrievalRejection,
+    SpeakerEmbedding,
+    SpeechAnalysis,
+    SpeechTurn,
+)
 from sensemem._telemetry import (
     ASYNC_QUEUE_TIME,
     EMBEDDING_TASK,
@@ -51,7 +61,15 @@ from sensemem._telemetry import (
     record_model_usage,
     record_unmetered_model_usage,
 )
+from sensemem.content import AssetRef, Blob, ContentInput
+from sensemem.context_values import ContextBudget, ProvisionalActor
 from sensemem.control import dump_operation
+from sensemem.control_values import (
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryTrigger,
+)
 from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
@@ -60,6 +78,7 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
+from sensemem.identity import IdentityChange, IdentityProfile
 from sensemem.infrastructure.local.assets import AssetStore
 from sensemem.infrastructure.local.store import (
     IndexDocument,
@@ -74,58 +93,29 @@ from sensemem.infrastructure.local.store.media import MediaAnalyses
 from sensemem.infrastructure.local.store.records import MemoryRecords
 from sensemem.infrastructure.local.zvec_index import IndexHit
 from sensemem.kernel.derived import derived_text
-from sensemem.kernel.ranking import (
-    LEXICAL_FULL_COVERAGE_RELEVANCE,
-    merge_index_hits,
-    ranking_signals,
-)
+from sensemem.kernel.ranking import ranking_factors
 from sensemem.kernel.runtime import translate_index_errors
 from sensemem.kernel.temporal import parse_temporal_range
 from sensemem.memory import AsyncMemory, Memory
-from sensemem.models.base import (
-    EmbedTask,
-    FaceAnalysis,
-    FaceEmbedding,
-    FormationInput,
-    ModelInput,
-    SpeakerEmbedding,
-    SpeechAnalysis,
-    SpeechTurn,
-    StreamingGenerationBackend,
-)
-from sensemem.models.openai_sdk import OpenAIModels
-from sensemem.recall import fallback_plan
+from sensemem.models.base import EmbedTask, FormationInput, ModelInput, StreamingGenerationBackend
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.ranking_policy import LEXICAL_FULL_COVERAGE_RELEVANCE
+from sensemem.recall import fallback_recall_program
+from sensemem.records import AnswerResult, MemoryRecord, SearchHit, SearchResult
+from sensemem.semantics import FormationProposal
+from sensemem.spatial import ObservationContext, RetrievalScope, SpatialContext
+from sensemem.stream_values import StreamInput
 from sensemem.streams import AsyncOmniPrefetch
 from sensemem.types import (
     AbstentionReason,
     AnswerPolicy,
-    AnswerResult,
-    AssetRef,
-    Blob,
-    ContentInput,
-    ContextBudget,
     EvidenceBasis,
-    FormationProposal,
-    IdentityChange,
-    IdentityProfile,
     IndexQuantization,
-    MemoryIntent,
-    MemoryKind,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
+    MemoryCategory,
     Modality,
-    ObservationContext,
-    ProvisionalActor,
+    RecordKind,
     RetrievalMode,
-    RetrievalScope,
-    SearchHit,
-    SearchResult,
     SpatialAnchor,
-    SpatialContext,
-    StreamInput,
 )
 
 ALL_INPUT_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
@@ -547,18 +537,18 @@ def _memory(
     transcriber: _FakeSpeech | None = None,
     decay_half_life_days: float | None = None,
     evidence_budget_chars: int | None = None,
-    minimum_relevance: float = MemoryConfig().minimum_relevance,
-    ambiguity_margin: float = MemoryConfig().ambiguity_margin,
-    index_speech: bool = MemoryConfig().index_speech,
+    minimum_relevance: float = MemorySettings().minimum_relevance,
+    ambiguity_margin: float = MemorySettings().ambiguity_margin,
+    index_speech: bool = MemorySettings().index_speech,
     index_quantization: IndexQuantization = IndexQuantization.NONE,
     retrieval_mode: RetrievalMode = RetrievalMode.HYBRID,
     reinforce_on_answer: bool = True,
-    recall_planning: bool = MemoryConfig().recall_planning,
+    recall_planning: bool = MemorySettings().recall_planning,
     recall_query_expansion: bool = False,
-    recall_max_queries: int = MemoryConfig().recall_max_queries,
-    recall_set_budget_chars: int = MemoryConfig().recall_set_budget_chars,
-    recall_set_max_rows: int = MemoryConfig().recall_set_max_rows,
-    recall_rounds: int = MemoryConfig().recall_rounds,
+    recall_max_queries: int = MemorySettings().recall_max_queries,
+    recall_set_budget_chars: int = MemorySettings().recall_set_budget_chars,
+    recall_set_max_rows: int = MemorySettings().recall_set_max_rows,
+    recall_rounds: int = MemorySettings().recall_rounds,
     tracer: Tracer | None = None,
 ) -> Memory:
     models = models or _FakeModels()
@@ -567,7 +557,7 @@ def _memory(
         embedder=models if embedder is None else embedder,
         answerer=models,
         transcriber=models if transcriber is None else transcriber,
-        config=MemoryConfig(
+        settings=MemorySettings(
             decay_half_life_days=decay_half_life_days,
             evidence_budget_chars=evidence_budget_chars,
             minimum_relevance=minimum_relevance,
@@ -748,7 +738,7 @@ def test_lexical_mode_trace_preserves_native_relevance_for_a_stale_candidate(
     assert stale.gate_relevance == pytest.approx(0.4)
 
 
-def test_ask_observes_the_pre_grounding_ranking_without_affecting_answers(
+def test_ask_observes_the_pre_grounding_ranking(
     tmp_path: Path,
 ) -> None:
     models = _FakeModels()
@@ -761,17 +751,19 @@ def test_ask_observes_the_pre_grounding_ranking_without_affecting_answers(
         memory.add_many(tuple(f"red evidence {index}" for index in range(9)))
         with _observe_retrieval_results(observed.append):
             result = memory.ask("red", limit=3)
-        with _observe_retrieval_results(broken_observer):
-            unaffected = memory.ask("red", limit=3)
+        with (
+            _observe_retrieval_results(broken_observer),
+            pytest.raises(RuntimeError, match="observer failure"),
+        ):
+            memory.ask("red", limit=3)
 
     assert len(observed) == 1
     ranking = cast(tuple[SearchHit, ...], observed[0])
     assert len(ranking) == 9
     assert result.hits == ranking[:3]
-    assert unaffected == result
 
 
-def test_generation_observer_sees_selected_evidence_and_cannot_change_the_answer(
+def test_generation_observer_sees_selected_evidence_and_reports_observer_errors(
     tmp_path: Path,
 ) -> None:
     from sensemem._telemetry import _observe_generation_inputs
@@ -785,13 +777,15 @@ def test_generation_observer_sees_selected_evidence_and_cannot_change_the_answer
         memory.add_many(tuple(f"red evidence {index}" for index in range(9)))
         with _observe_generation_inputs(observed.append):
             result = memory.ask("red", limit=3)
-        with _observe_generation_inputs(broken_observer):
-            unaffected = memory.ask("red", limit=3)
+        with (
+            _observe_generation_inputs(broken_observer),
+            pytest.raises(RuntimeError, match="observer failure"),
+        ):
+            memory.ask("red", limit=3)
         memory.ask("red", limit=3)
 
     assert observed == [result.hits]
     assert len(result.hits) == 3
-    assert unaffected == result
 
 
 def test_ask_observes_ranking_before_parallel_speech_failure(tmp_path: Path) -> None:
@@ -1019,6 +1013,7 @@ def test_formation_and_consolidation_report_unmetered_requests_as_incomplete(
             evidence: Sequence[MemoryRecord],
             *,
             trigger: MemoryTrigger,
+            query_failure: QueryFailure | None = None,
         ) -> tuple[MemoryOperation, ...]:
             del evidence, trigger
             return ()
@@ -1227,7 +1222,7 @@ def test_openai_stream_marks_an_empty_retrieval_as_no_evidence(tmp_path: Path) -
     with Memory(
         tmp_path,
         embedder=_FakeModels(),
-        answerer=OpenAIModels(),
+        answerer=OpenAICompletion(),
     ) as memory:
         result = memory.ask("unknown")
 
@@ -1239,20 +1234,23 @@ def test_openai_stream_marks_an_empty_retrieval_as_no_evidence(tmp_path: Path) -
 def test_memory_types_are_stable_and_filterable(tmp_path: Path) -> None:
     with _memory(tmp_path, _FakeModels()) as memory:
         semantic = memory.add("shared instruction")
-        assert memory.add("shared instruction", memory_type=MemoryType.SEMANTIC) == semantic
-        episodic = memory.add("shared instruction", memory_type=MemoryType.EPISODIC)
-        procedural = memory.add("shared instruction", memory_type=MemoryType.PROCEDURAL)
+        assert memory.add("shared instruction", memory_type=MemoryCategory.SEMANTIC) == semantic
+        episodic = memory.add("shared instruction", memory_type=MemoryCategory.EPISODIC)
+        procedural = memory.add("shared instruction", memory_type=MemoryCategory.PROCEDURAL)
         _FakeIndex.instances[-1].hits_override = tuple(
             IndexHit(id=record.id, relevance=1.0) for record in (semantic, procedural, episodic)
         )
 
         assert len({semantic.id, episodic.id, procedural.id}) == 3
-        assert semantic.memory_type is MemoryType.SEMANTIC
-        assert memory.search("shared", memory_type=MemoryType.EPISODIC).hits[0].id == episodic.id
+        assert semantic.memory_type is MemoryCategory.SEMANTIC
         assert (
-            memory.search("shared", memory_type=MemoryType.PROCEDURAL).hits[0].id == procedural.id
+            memory.search("shared", memory_type=MemoryCategory.EPISODIC).hits[0].id == episodic.id
         )
-        with pytest.raises(ValidationError, match="MemoryType"):
+        assert (
+            memory.search("shared", memory_type=MemoryCategory.PROCEDURAL).hits[0].id
+            == procedural.id
+        )
+        with pytest.raises(ValidationError, match="MemoryCategory"):
             memory.add("invalid type", memory_type="episodic")  # type: ignore[arg-type]
 
 
@@ -1363,7 +1361,7 @@ def test_search_explain_reports_bounded_candidates_without_evidence_content(
     with Memory(
         tmp_path,
         embedder=models,
-        config=MemoryConfig(minimum_relevance=0.55, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0.55, ambiguity_margin=0),
     ) as memory:
         first = memory.add(
             ("private-alpha", "atomic child"),
@@ -1424,7 +1422,7 @@ def test_search_explain_exposes_every_lexical_ranking_input(tmp_path: Path) -> N
     with Memory(
         tmp_path,
         embedder=_FakeModels(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         # The fake maps "red" documents onto the first axis and this query onto the second.
         # Score completion therefore observes exact cosine zero while the test remains focused
@@ -1498,7 +1496,7 @@ def test_search_explain_reports_temporal_and_retention_factors(tmp_path: Path) -
     with Memory(
         tmp_path,
         embedder=models,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0, decay_half_life_days=7),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0, decay_half_life_days=7),
     ) as memory:
         record = memory.add(
             "project review happened",
@@ -1551,18 +1549,18 @@ def test_relative_time_prefers_event_time_and_routes_the_reference(tmp_path: Pat
         previous = memory.add(
             "项目评审发生了",
             occurred_at=datetime(2026, 8, 20, 9, tzinfo=timezone.utc),
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         )
         memory.add(
             "项目评审发生了",
             occurred_at=datetime(2026, 8, 26, 9, tzinfo=timezone.utc),
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         )
 
         answer = memory.ask(
             "上周发生了什么?",
             limit=1,
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             reference_at=reference,
         )
 
@@ -1582,7 +1580,7 @@ def test_duration_question_routes_the_reference_without_a_parsable_phrase(
         memory.add(
             "grandpa visited",
             occurred_at=datetime(2026, 8, 20, 9, tzinfo=timezone.utc),
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         )
         # The note carries seconds, so the lower bound is compared at that resolution.
         before = datetime.now(timezone.utc).replace(microsecond=0)
@@ -1620,7 +1618,7 @@ def test_a_transcribed_question_ends_with_the_reference_time(tmp_path: Path) -> 
     )
     prefix = "Reference time for relative dates: "
     with _memory(tmp_path, models) as memory:
-        memory.add("red wrench in the shed", memory_type=MemoryType.EPISODIC)
+        memory.add("red wrench in the shed", memory_type=MemoryCategory.EPISODIC)
         memory.ask(Blob(b"spoken question", "audio/wav", "question.wav"), limit=1)
         memory.ask("How long ago was the red wrench seen?", limit=1)
 
@@ -1776,48 +1774,29 @@ def test_decay_reranks_softly_and_requires_explicit_reinforcement(tmp_path: Path
         assert stored.access_count == 1
         assert stored.last_accessed_at is not None
         assert (
-            ranking_signals(
+            ranking_factors(
                 stored,
-                0.5,
                 reference_at=stored.last_accessed_at,
                 temporal_range=None,
                 decay_half_life=None,
             )[0]
-            > 0.5
+            > 1.0
         )
         assert (
-            ranking_signals(
+            ranking_factors(
                 stored,
-                0.5,
                 reference_at=reference,
                 temporal_range=None,
                 decay_half_life=None,
             )[0]
-            == 0.5
+            == 1.0
         )
-
-
-def test_settings_report_the_first_invalid_field_in_declaration_order(tmp_path: Path) -> None:
-    # `retention` is checked after every other setting, as it was before the kernel split, so
-    # a caller with two bad fields keeps seeing the same message.
-    with pytest.raises(ValidationError, match="speaker_similarity"):
-        Memory(
-            tmp_path,
-            embedder=_FakeModels(),
-            config=MemoryConfig(speaker_similarity=2.0, retention="forever"),  # type: ignore[arg-type]
-        )
-
-
-def test_close_is_a_no_op_before_the_constructor_has_wired_anything() -> None:
-    memory = Memory.__new__(Memory)
-    memory.close()
-    memory.close()
 
 
 @pytest.mark.parametrize("days", [True, 0, -1, float("nan"), float("inf"), "7"])
 def test_decay_half_life_rejects_invalid_values(tmp_path: Path, days: object) -> None:
     with pytest.raises(ValidationError, match="positive finite number"):
-        Memory(tmp_path, embedder=_FakeModels(), config=MemoryConfig(decay_half_life_days=days))  # type: ignore[arg-type]
+        Memory(tmp_path, embedder=_FakeModels(), settings=MemorySettings(decay_half_life_days=days))  # type: ignore[arg-type]
 
 
 def test_temporal_proximity_is_a_soft_score_not_a_hard_sort_key(tmp_path: Path) -> None:
@@ -2125,10 +2104,12 @@ def test_evidence_budget_rejects_values_that_cannot_bound_anything(tmp_path: Pat
     for value in (0, -1, True):
         with pytest.raises(ValidationError, match="evidence_budget_chars"):
             Memory(
-                tmp_path, embedder=_FakeModels(), config=MemoryConfig(evidence_budget_chars=value)
+                tmp_path,
+                embedder=_FakeModels(),
+                settings=MemorySettings(evidence_budget_chars=value),
             )
     with Memory(
-        tmp_path, embedder=_FakeModels(), config=MemoryConfig(evidence_budget_chars=None)
+        tmp_path, embedder=_FakeModels(), settings=MemorySettings(evidence_budget_chars=None)
     ) as memory:
         assert memory._settings.evidence_budget is None
 
@@ -2149,15 +2130,6 @@ def test_event_span_overlapping_query_day_is_temporally_exact(tmp_path: Path) ->
 
     assert hit.id == spanning.id
     assert hit.occurred_end == datetime(2026, 8, 20, 1, tzinfo=timezone.utc)
-
-
-def test_temporal_candidate_merge_keeps_the_best_vector_score() -> None:
-    merged = merge_index_hits(
-        (IndexHit(id="shared", relevance=0.2),),
-        (IndexHit(id="shared", relevance=0.9),),
-    )
-
-    assert merged == (IndexHit(id="shared", relevance=0.9),)
 
 
 def test_ambiguity_gate_only_rejects_single_result_retrieval(tmp_path: Path) -> None:
@@ -2223,7 +2195,7 @@ def test_ask_without_answerer_fails_before_retrieval_or_reinforcement(tmp_path: 
     with Memory(
         tmp_path,
         embedder=models,
-        config=MemoryConfig(decay_half_life_days=7),
+        settings=MemorySettings(decay_half_life_days=7),
     ) as memory:
         record = memory.add("red target")
         index = _FakeIndex.instances[-1]
@@ -2324,7 +2296,7 @@ def test_memory_composes_explicit_plugins_and_local_policy(tmp_path: Path) -> No
         transcriber=models,
         face_analyzer=faces,
     )
-    config = MemoryConfig(
+    config = MemorySettings(
         index_speech=True,
         index_quantization=IndexQuantization.FP16,
         minimum_relevance=0,
@@ -2336,7 +2308,7 @@ def test_memory_composes_explicit_plugins_and_local_policy(tmp_path: Path) -> No
         face_margin=0.03,
     )
 
-    with Memory.from_plugins(tmp_path, plugins=plugins, config=config) as memory:
+    with Memory.from_plugins(tmp_path, plugins=plugins, settings=config) as memory:
         assert memory.add("red plugin-composed memory")
         assert memory._backends.embedder is models
         assert memory._backends.answerer is models
@@ -2474,7 +2446,7 @@ def test_memory_rejects_invalid_composition_values(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="plugins"):
         Memory.from_plugins(tmp_path, plugins=object())  # type: ignore[arg-type]
     with pytest.raises(ValidationError, match="config"):
-        Memory.from_plugins(tmp_path, plugins=plugins, config=object())  # type: ignore[arg-type]
+        Memory.from_plugins(tmp_path, plugins=plugins, settings=object())  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -2548,7 +2520,7 @@ def test_plugin_composition_stays_in_constructor_parity() -> None:
             key: value.replace(annotation=inspect.Parameter.empty)
             for key, value in asynchronous_parameters.items()
         }, name
-        if name not in {"add_stream", "ask_stream"}:
+        if name not in {"add_stream", "ask_stream", "replay_sources"}:
             assert (
                 inspect.signature(method).return_annotation
                 == inspect.signature(asynchronous).return_annotation
@@ -2558,7 +2530,7 @@ def test_plugin_composition_stays_in_constructor_parity() -> None:
     assert {field.name for field in composition_fields} == set(parameters) - {
         "data_dir",
         "tracer",
-        "config",
+        "settings",
     }
     for field in composition_fields:
         default = inspect.Parameter.empty if field.default is MISSING else field.default
@@ -2577,7 +2549,7 @@ def test_explicit_speech_is_lazy_and_recognizes_a_speaker_across_recordings(
         tmp_path,
         embedder=embedder,
         transcriber=transcriber,
-        config=MemoryConfig(index_speech=False),
+        settings=MemorySettings(index_speech=False),
     ) as memory:
         first = memory.add(Blob(b"first recording", "audio/wav", "first.wav"))
         second = memory.add(Blob(b"second recording", "audio/wav", "second.wav"))
@@ -2621,20 +2593,20 @@ def test_face_and_voice_recognition_share_one_durable_identity(tmp_path: Path) -
         first = memory.add(Blob(b"first video", "video/mp4", "first.mp4"))
         second = memory.add(Blob(b"second video", "video/mp4", "second.mp4"))
 
-        # One asset's co-occurrence does not yet claim one person.
+        # Observing both modalities does not claim one person.
         assert (
             memory.perceive(first.id).faces[0].identity_id
             != memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         )
 
-        # The second asset corroborates the same pair, so the two identities become one.
-        memory.perceive(second.id)
+        # The host explicitly confirms the pairing on the second observation.
+        _confirm_identity(memory, second.id)
         identity_id = memory.perceive(first.id).faces[0].identity_id
         assert (
             identity_id
             == memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id
         )
-        assert memory.perceive(second.id).faces[0].identity_id == identity_id
+        assert _confirm_identity(memory, second.id) == identity_id
         assert (
             memory.perceive(second.id, kinds=frozenset({"speech"})).speech[0].speaker_id
             == identity_id
@@ -2653,10 +2625,27 @@ def test_face_and_voice_recognition_share_one_durable_identity(tmp_path: Path) -
     assert speech.closed is True
 
 
+def _confirm_identity(memory: Memory, memory_id: str) -> str:
+    """The host confirms a face-and-voice binding, choosing the face ID as survivor."""
+    perceived = memory.perceive(memory_id)
+    face_id = perceived.faces[0].identity_id
+    voice_id = perceived.speech[0].speaker_id
+    assert voice_id is not None
+    if face_id != voice_id:
+        memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.MERGE,
+                identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+                rationale="the host confirmed that this face produced this voice",
+            )
+        )
+    return face_id
+
+
 def _linked_identity(memory: Memory) -> str:
-    """Drive one corroborated face-and-voice merge and return the surviving identity ID."""
+    """Confirm one face-and-voice merge and return the surviving identity ID."""
     record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-    identity_id = memory.perceive(record.id).faces[0].identity_id
+    identity_id = _confirm_identity(memory, record.id)
     assert (
         identity_id == memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0].speaker_id
     )
@@ -2669,7 +2658,7 @@ def test_identity_registration_round_trips_a_relationship(tmp_path: Path) -> Non
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1),
+        settings=MemorySettings(),
     ) as memory:
         identity_id = _linked_identity(memory)
         assert memory.identity(identity_id) == IdentityProfile(identity_id=identity_id)
@@ -2702,7 +2691,7 @@ def test_identity_resolves_a_merged_away_id_to_the_surviving_person(tmp_path: Pa
         assert voice_id is not None and face_id != voice_id
 
         second = memory.add(Blob(b"second video", "video/mp4", "second.mp4"))
-        memory.perceive(second.id)
+        _confirm_identity(memory, second.id)
         survivor = memory.perceive(first.id).faces[0].identity_id
         merged_away = face_id if survivor == voice_id else voice_id
 
@@ -2725,7 +2714,7 @@ def test_unlink_identity_reverses_a_corroborated_merge(tmp_path: Path) -> None:
         assert voice_id is not None
 
         second = memory.add(Blob(b"second video", "video/mp4", "second.mp4"))
-        memory.perceive(second.id)
+        _confirm_identity(memory, second.id)
         survivor = memory.perceive(first.id).faces[0].identity_id
         merged_away = face_id if survivor == voice_id else voice_id
         memory.register_identity(survivor, "Alice", relationship="sister")
@@ -2744,6 +2733,15 @@ def test_unlink_identity_reverses_a_corroborated_merge(tmp_path: Path) -> None:
         assert memory.identity(merged_away) == IdentityProfile(identity_id=merged_away)
 
         assert memory.unlink_identity("identity_missing") is None
+        memory.perceive(first.id)
+        memory.perceive(second.id)
+        assert memory._store.identities.identity_link_plan(survivor, merged_away) is None
+        assert _confirm_identity(memory, first.id) == survivor
+        bindings = [
+            row for row in memory.operations() if row.operation.intent is MemoryIntent.MERGE
+        ]
+        assert len(bindings) == 2
+        assert bindings[0].operation_id != bindings[1].operation_id
 
 
 def test_naming_a_person_records_a_typed_assertion_bound_to_the_identity(tmp_path: Path) -> None:
@@ -2757,7 +2755,7 @@ def test_naming_a_person_records_a_typed_assertion_bound_to_the_identity(tmp_pat
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1),
+        settings=MemorySettings(),
     ) as memory:
         identity_id = _linked_identity(memory)
         memory.register_identity(identity_id, "Alice", relationship="sister")
@@ -2765,7 +2763,7 @@ def test_naming_a_person_records_a_typed_assertion_bound_to_the_identity(tmp_pat
         assertions = [
             record
             for record in memory.list().items
-            if record.context is not None and record.context.kind is MemoryKind.ENTITY
+            if record.context is not None and record.context.kind is RecordKind.ENTITY
         ]
         assert len(assertions) == 1
         context = assertions[0].context
@@ -2799,21 +2797,20 @@ def test_naming_is_auditable_and_rollback_restores_the_previous_name(
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1, index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        identity_id = memory.perceive(record.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, record.id)
 
         memory.register_identity(identity_id, "Li", relationship="neighbour")
         memory.register_identity(identity_id, "Li Hua")
 
         logged = memory.operations()
-        # Two host namings, and behind them the cross-modal merge the recognizers corroborated
-        # on this one video: the kernel commits that from evidence, so it logs as EVIDENCE.
+        # Two host namings and the host-confirmed binding all carry manual authority.
         assert [entry.trigger for entry in logged] == [
             MemoryTrigger.MANUAL,
             MemoryTrigger.MANUAL,
-            MemoryTrigger.EVIDENCE,
+            MemoryTrigger.MANUAL,
         ]
         assert memory.identity(identity_id) == IdentityProfile(
             identity_id=identity_id, name="Li Hua", relationship="neighbour", confirmed=True
@@ -2850,10 +2847,10 @@ def test_failed_rollback_embedding_preserves_names_and_is_retryable(
         embedder=embedder,
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1, index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        identity_id = memory.perceive(record.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, record.id)
         memory.register_identity(identity_id, "Li")
         memory.register_identity(identity_id, "Li Hua")
         operation_id = memory.operations()[0].operation_id
@@ -2890,10 +2887,10 @@ def test_deleting_the_standing_assertion_does_not_resurrect_a_retracted_name(
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1, index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        identity_id = memory.perceive(record.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, record.id)
 
         memory.register_identity(identity_id, "Li")
         memory.register_identity(identity_id, "Li Hua")
@@ -2908,7 +2905,7 @@ def test_deleting_the_standing_assertion_does_not_resurrect_a_retracted_name(
             item.id
             for item in memory.list().items
             if item.context is not None
-            and item.context.kind is MemoryKind.ENTITY
+            and item.context.kind is RecordKind.ENTITY
             and item.context.identity_id == identity_id
             and item.context.subject == "Li"
         )
@@ -2934,10 +2931,10 @@ def test_naming_rollbacks_happen_newest_standing_first(tmp_path: Path) -> None:
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1, index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        identity_id = memory.perceive(record.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, record.id)
 
         memory.register_identity(identity_id, "Li")
         memory.register_identity(identity_id, "Li Hua")
@@ -2989,7 +2986,7 @@ def test_unlink_identity_stops_the_index_quoting_the_other_persons_name(
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         first = memory.add(Blob(b"first video", "video/mp4", "first.mp4"))
         face_id = memory.perceive(first.id).faces[0].identity_id
@@ -3000,7 +2997,7 @@ def test_unlink_identity_stops_the_index_quoting_the_other_persons_name(
         # merged away and later restored -- the direction in which a name is burned in.
         memory.register_identity(face_id, "Bob")
         second = memory.add(Blob(b"second video", "video/mp4", "second.mp4"))
-        memory.perceive(second.id)
+        _confirm_identity(memory, second.id)
         assert (
             memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id == face_id
         )
@@ -3054,38 +3051,11 @@ def test_identity_relationship_rejects_unusable_text(tmp_path: Path, value: str)
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1),
+        settings=MemorySettings(),
     ) as memory:
         identity_id = _linked_identity(memory)
         with pytest.raises(ValidationError):
             memory.register_identity(identity_id, "Alice", relationship=value)
-
-
-def test_a_merged_pair_stops_accumulating_link_evidence(tmp_path: Path) -> None:
-    """An identity co-occurring with itself is not evidence and must not accumulate.
-
-    Without a guard every later asset of an already-merged person writes one more row that no
-    plan can ever consume, so the table grows for the lifetime of the store.
-    """
-    with Memory(
-        tmp_path,
-        embedder=_FakeEmbedder(),
-        transcriber=_FakeSpeech(),
-        face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=2),
-    ) as memory:
-        for index in range(5):
-            record = memory.add(Blob(f"video {index}".encode(), "video/mp4", f"v{index}.mp4"))
-            memory.perceive(record.id)
-
-    with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection:
-        total = connection.execute("SELECT COUNT(*) FROM identity_link_evidence").fetchone()[0]
-        self_pairs = connection.execute(
-            "SELECT COUNT(*) FROM identity_link_evidence WHERE voice_id = face_id"
-        ).fetchone()[0]
-
-    assert self_pairs == 0
-    assert total == 0
 
 
 def test_new_identity_operations_refuse_a_closed_memory(tmp_path: Path) -> None:
@@ -3099,46 +3069,19 @@ def test_new_identity_operations_refuse_a_closed_memory(tmp_path: Path) -> None:
         memory.unlink_identity("identity_missing")
 
 
-def test_cross_modal_identity_link_requires_corroboration_across_assets(tmp_path: Path) -> None:
-    """A voice and a face merge only once the same pair recurs in another asset.
-
-    A single clip cannot separate "this face spoke" from "this face was listening to an
-    off-camera speaker", which is the ordinary case in egocentric capture: the wearer talks
-    while someone else fills the frame. Binding on one asset therefore attaches the wearer's
-    voice to whoever happens to be visible, permanently and invisibly.
-    """
-
-    def bound_per_asset(threshold: int) -> list[bool]:
-        with Memory(
-            tmp_path / f"threshold{threshold}",
-            embedder=_FakeEmbedder(),
-            transcriber=_FakeSpeech(),
-            face_analyzer=_FakeFace(),
-            config=MemoryConfig(identity_link_min_assets=threshold),
-        ) as memory:
-            bound = []
-            for index in range(3):
-                record = memory.add(Blob(f"video {index}".encode(), "video/mp4", f"v{index}.mp4"))
-                face = memory.perceive(record.id).faces[0].identity_id
-                voice = memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0].speaker_id
-                bound.append(face == voice)
-            return bound
-
-    assert bound_per_asset(1) == [True, True, True]
-    assert bound_per_asset(2) == [False, True, True]
-    assert bound_per_asset(3) == [False, False, True]
-
-
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "2", None])
-def test_identity_link_min_assets_rejects_non_positive_integers(
-    tmp_path: Path, value: object
-) -> None:
-    with pytest.raises(ValidationError):
-        Memory(
-            tmp_path,
-            embedder=_FakeEmbedder(),
-            config=MemoryConfig(identity_link_min_assets=cast(int, value)),
-        )
+def test_repeated_cross_modal_co_occurrence_never_establishes_a_binding(tmp_path: Path) -> None:
+    """Repeated wearer speech beside a listener's face is still no speaking-face evidence."""
+    with Memory(
+        tmp_path,
+        embedder=_FakeEmbedder(),
+        transcriber=_FakeSpeech(),
+        face_analyzer=_FakeFace(),
+    ) as memory:
+        for index in range(5):
+            record = memory.add(Blob(f"video {index}".encode(), "video/mp4", f"v{index}.mp4"))
+            perceived = memory.perceive(record.id)
+            assert perceived.faces[0].identity_id != perceived.speech[0].speaker_id
+        assert memory.operations() == ()
 
 
 def test_face_voice_merge_atomically_refreshes_speech_index_and_keeps_alias(
@@ -3162,7 +3105,7 @@ def test_face_voice_merge_atomically_refreshes_speech_index_and_keeps_alias(
         embedder=embedder,
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(index_speech=True, identity_link_min_assets=1),
+        settings=MemorySettings(index_speech=True),
         # Exercises merge mechanics, not the corroboration policy: bind on the first asset
         # so this test's own subject stays the only variable.
     ) as memory:
@@ -3175,7 +3118,7 @@ def test_face_voice_merge_atomically_refreshes_speech_index_and_keeps_alias(
 
         embedder.fail_documents = True
         with pytest.raises(ModelError, match="embed"):
-            memory.perceive(video.id)
+            _confirm_identity(memory, video.id)
         assert memory._store.identities.resolve_identity_id(voice_id) == voice_id
         assert (
             memory.perceive(video.id, kinds=frozenset({"speech"})).speech[0].speaker_id == voice_id
@@ -3183,7 +3126,7 @@ def test_face_voice_merge_atomically_refreshes_speech_index_and_keeps_alias(
         assert voice_id in memory.get(video.id).content
 
         embedder.fail_documents = False
-        assert memory.perceive(video.id).faces[0].identity_id == face_id
+        assert _confirm_identity(memory, video.id) == face_id
         assert memory._store.identities.resolve_identity_id(voice_id) == face_id
         assert (
             memory.perceive(video.id, kinds=frozenset({"speech"})).speech[0].speaker_id == face_id
@@ -3426,7 +3369,7 @@ def test_speaker_recognition_records_new_then_matched_identity_counts(tmp_path: 
         # emitted. With `index_speech` on, `add` recognizes and `speech()` re-reports the stored
         # result with `cached=True`, so the same two yields arrive as four spans and this
         # assertion cannot address the pair it is about.
-        config=MemoryConfig(index_speech=False),
+        settings=MemorySettings(index_speech=False),
     ) as memory:
         first = memory.add(Blob(b"first speech", "audio/wav", "first.wav"))
         second = memory.add(Blob(b"second speech", "audio/wav", "second.wav"))
@@ -3467,7 +3410,7 @@ def test_identity_instrumentation_leaves_recognition_results_unchanged(tmp_path:
             face_analyzer=_FakeFace(),
             tracer=tracer,
             # Compares against pre-instrumentation behavior, which bound on one asset.
-            config=MemoryConfig(identity_link_min_assets=1),
+            settings=MemorySettings(),
         ) as memory:
             record = memory.add(Blob(b"one person speaking", "video/mp4", "person.mp4"))
             faces = memory.perceive(record.id).faces
@@ -3501,7 +3444,7 @@ def test_identity_instrumentation_leaves_recognition_results_unchanged(tmp_path:
     provider.shutdown()
 
     assert traced == untraced
-    assert untraced[3] is True
+    assert untraced[3] is False
 
 
 def test_answer_generation_receives_linked_face_and_voice_identity_evidence(
@@ -3515,10 +3458,10 @@ def test_answer_generation_receives_linked_face_and_voice_identity_evidence(
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
         # Subject is the answer prompt's evidence, not the corroboration policy.
-        config=MemoryConfig(identity_link_min_assets=1),
+        settings=MemorySettings(),
     ) as memory:
         record = memory.add(Blob(b"red person video", "video/mp4", "person.mp4"))
-        identity_id = memory.perceive(record.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, record.id)
         memory.register_identity(identity_id, "Alice")
 
         memory.ask("where is red?")
@@ -3540,7 +3483,7 @@ def test_opt_in_speech_indexing_makes_registered_names_retrievable(
         embedder=models,
         answerer=models,
         transcriber=speech,
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         first = memory.add(Blob(b"first speech", "audio/wav", "first.wav"))
         first_segments = memory.perceive(first.id, kinds=frozenset({"speech"})).speech
@@ -3585,7 +3528,7 @@ def test_retrieval_projection_is_stable_across_opaque_speaker_ids(tmp_path: Path
             tmp_path / name,
             embedder=models,
             transcriber=_FakeSpeech(),
-            config=MemoryConfig(index_speech=True),
+            settings=MemorySettings(index_speech=True),
         ) as memory:
             record = memory.add(Blob(b"same speech", "audio/wav", "speech.wav"))
             stored.append(record.content)
@@ -3631,7 +3574,7 @@ def test_generation_deduplicates_indexed_speech_evidence(tmp_path: Path) -> None
         embedder=models,
         answerer=models,
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"red speech", "audio/wav", "speech.wav"))
 
@@ -3650,7 +3593,7 @@ def test_speech_indexing_batches_add_many_recognition(tmp_path: Path) -> None:
         tmp_path,
         embedder=_FakeModels(),
         transcriber=speech,
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         memory.add_many(
             (
@@ -3671,7 +3614,7 @@ def test_failed_speech_index_add_rolls_back_identity_state(tmp_path: Path) -> No
         tmp_path,
         embedder=models,
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         with pytest.raises(ModelError, match="embed memory input"):
             memory.add(Blob(b"failed speech", "audio/wav", "failed.wav"))
@@ -3697,7 +3640,7 @@ def test_failed_speech_index_add_restores_matched_identity(tmp_path: Path) -> No
         tmp_path,
         embedder=models,
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         memory.add(Blob(b"first speech", "audio/wav", "first.wav"))
         with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection:
@@ -3746,7 +3689,7 @@ def test_speaker_rename_refreshes_indexed_memory_after_reopen(tmp_path: Path) ->
         tmp_path,
         embedder=_FakeModels(),
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"speech", "audio/wav", "speech.wav"))
         speaker_id = memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0].speaker_id
@@ -3778,7 +3721,7 @@ def test_speaker_registration_rolls_back_when_refresh_embedding_fails(tmp_path: 
         tmp_path,
         embedder=models,
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"speech", "audio/wav", "speech.wav"))
         speaker_id = memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0].speaker_id
@@ -3813,6 +3756,11 @@ def test_naming_commit_waits_for_the_speech_projection_embedding(tmp_path: Path)
                 self.calls_after_arm += 1
                 self.attempted_batches.append(tuple(value.text for value in inputs))
                 if self.calls_after_arm == 2:
+                    # Model preparation must happen after the candidate mutation rolls back.
+                    # A second writer would fail immediately if SQLite still held that write.
+                    with closing(sqlite3.connect(tmp_path / "state.sqlite3", timeout=0)) as probe:
+                        probe.execute("BEGIN IMMEDIATE")
+                        probe.rollback()
                     raise RuntimeError("simulated projection embedding failure")
             return super().embed(inputs, task)
 
@@ -3821,7 +3769,7 @@ def test_naming_commit_waits_for_the_speech_projection_embedding(tmp_path: Path)
         tmp_path,
         embedder=models,
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         record = memory.add(Blob(b"speech", "audio/wav", "speech.wav"))
         speaker_id = memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0].speaker_id
@@ -4085,7 +4033,7 @@ def test_search_does_not_serialize_callers(
 def test_equal_scores_use_memory_id_as_a_stable_tiebreaker(tmp_path: Path) -> None:
     models = _FakeModels()
     with Memory(
-        tmp_path, embedder=models, answerer=models, config=MemoryConfig(ambiguity_margin=0)
+        tmp_path, embedder=models, answerer=models, settings=MemorySettings(ambiguity_margin=0)
     ) as memory:
         records = memory.add_many(("first evidence", "second evidence"))
         _FakeIndex.instances[-1].hits_override = tuple(
@@ -4106,7 +4054,7 @@ def test_search_expands_candidates_until_it_has_distinct_parent_memories(
         embedder=models,
         answerer=models,
         transcriber=models,
-        config=MemoryConfig(ambiguity_margin=0),
+        settings=MemorySettings(ambiguity_margin=0),
     ) as memory:
         crowded = memory.add(tuple(f"crowded part {index}" for index in range(110)))
         other = memory.add("other parent")
@@ -4164,6 +4112,7 @@ def test_add_many_deduplicates_one_model_and_store_batch(
         *,
         formation_pending_at: datetime | None = None,
         speech_plans: Sequence[SpeechPlan] = (),
+        replace_embeddings: bool = False,
     ) -> tuple[bool, ...]:
         batch = tuple(memories)
         store_batches.append(tuple(memory.memory_id for memory in batch))
@@ -4173,6 +4122,7 @@ def test_add_many_deduplicates_one_model_and_store_batch(
             embeddings,
             formation_pending_at=formation_pending_at,
             speech_plans=speech_plans,
+            replace_embeddings=replace_embeddings,
         )
         return result
 
@@ -4226,7 +4176,7 @@ def test_add_stream_commits_each_input_before_pulling_the_next(tmp_path: Path) -
                 content,
                 occurred_at=occurred,
                 metadata={"source": "camera"},
-                memory_type=MemoryType.EPISODIC,
+                memory_type=MemoryCategory.EPISODIC,
             )
             if content.strip()
             else content
@@ -4238,7 +4188,7 @@ def test_add_stream_commits_each_input_before_pulling_the_next(tmp_path: Path) -
         assert memory.get(first.id) == first
         assert first.occurred_at == occurred
         assert first.metadata == {"source": "camera"}
-        assert first.memory_type is MemoryType.EPISODIC
+        assert first.memory_type is MemoryCategory.EPISODIC
 
         second = next(stream)
         with pytest.raises(ValidationError) as failure:
@@ -4264,7 +4214,7 @@ def test_add_stream_commits_each_omni_observation_before_pulling_the_next(
             ),
             occurred_at=occurred,
             metadata={"source": "robot"},
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         )
         pulled.append("invalid")
         yield "   "
@@ -4278,7 +4228,7 @@ def test_add_stream_commits_each_omni_observation_before_pulling_the_next(
         assert first.modality is Modality.OMNI
         assert first.occurred_at == occurred
         assert first.metadata == {"source": "robot"}
-        assert first.memory_type is MemoryType.EPISODIC
+        assert first.memory_type is MemoryCategory.EPISODIC
         with pytest.raises(ValidationError) as failure:
             next(stream)
 
@@ -4292,18 +4242,18 @@ def test_existing_memory_types_form_evidence_separated_interaction_memory(tmp_pa
         StreamInput(
             "The user explicitly says they prefer calm red explanations.",
             metadata={"basis": "user_statement", "evidence_ids": ["turn-1"]},
-            memory_type=MemoryType.SEMANTIC,
+            memory_type=MemoryCategory.SEMANTIC,
         ),
         StreamInput(
             "The user became tense while discussing the red deadline.",
             occurred_at=occurred,
             metadata={"basis": "observed_episode", "evidence_ids": ["turn-2"]},
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         ),
         StreamInput(
             "When a red deadline is discussed, acknowledge pressure before proposing steps.",
             metadata={"basis": "response_feedback", "evidence_ids": ["turn-2"]},
-            memory_type=MemoryType.PROCEDURAL,
+            memory_type=MemoryCategory.PROCEDURAL,
         ),
     )
 
@@ -4311,12 +4261,12 @@ def test_existing_memory_types_form_evidence_separated_interaction_memory(tmp_pa
         records = tuple(memory.add_stream(items))
         recalled = {
             memory_type: memory.search("red deadline", memory_type=memory_type, limit=1).hits[0]
-            for memory_type in MemoryType
+            for memory_type in MemoryCategory
         }
 
-    assert {record.memory_type for record in records} == set(MemoryType)
+    assert {record.memory_type for record in records} == set(MemoryCategory)
     assert {memory_type: hit.memory_type for memory_type, hit in recalled.items()} == {
-        memory_type: memory_type for memory_type in MemoryType
+        memory_type: memory_type for memory_type in MemoryCategory
     }
     assert all(hit.metadata["evidence_ids"] for hit in recalled.values())
 
@@ -4481,6 +4431,7 @@ def test_concurrent_adds_share_one_index_apply(
         *,
         speech_plans: Sequence[SpeechPlan] = (),
         formation_pending_at: datetime | None = None,
+        replace_embeddings: bool = False,
     ) -> tuple[bool, ...]:
         result = original(
             store,
@@ -4488,6 +4439,7 @@ def test_concurrent_adds_share_one_index_apply(
             embeddings,
             speech_plans=speech_plans,
             formation_pending_at=formation_pending_at,
+            replace_embeddings=replace_embeddings,
         )
         committed.wait(timeout=3)
         return result
@@ -4537,6 +4489,7 @@ def test_reindex_replays_an_add_committed_after_its_sqlite_scan(
         *,
         speech_plans: Sequence[SpeechPlan] = (),
         formation_pending_at: datetime | None = None,
+        replace_embeddings: bool = False,
     ) -> tuple[bool, ...]:
         result = original_write(
             store,
@@ -4544,6 +4497,7 @@ def test_reindex_replays_an_add_committed_after_its_sqlite_scan(
             embeddings,
             speech_plans=speech_plans,
             formation_pending_at=formation_pending_at,
+            replace_embeddings=replace_embeddings,
         )
         add_committed.set()
         return result
@@ -4629,7 +4583,7 @@ def test_index_quantization_change_rebuilds_without_reembedding(tmp_path: Path) 
     with Memory(
         tmp_path,
         embedder=reopened_models,
-        config=MemoryConfig(index_quantization=IndexQuantization.INT8),
+        settings=MemorySettings(index_quantization=IndexQuantization.INT8),
     ):
         index = _FakeIndex.instances[-1]
         assert index.quantization is IndexQuantization.INT8
@@ -4683,7 +4637,7 @@ def test_index_quantization_requires_the_public_enum(tmp_path: Path) -> None:
         Memory(
             tmp_path,
             embedder=_FakeModels(),
-            config=MemoryConfig(index_quantization="int8"),  # type: ignore[arg-type]
+            settings=MemorySettings(index_quantization="int8"),  # type: ignore[arg-type]
         )
 
 
@@ -4701,7 +4655,7 @@ def test_invalid_rabitq_dimension_does_not_mutate_the_current_index_recipe(
         Memory(
             tmp_path,
             embedder=_FakeModels(),
-            config=MemoryConfig(index_quantization=IndexQuantization.RABITQ),
+            settings=MemorySettings(index_quantization=IndexQuantization.RABITQ),
         )
 
     assert sentinel.read_text(encoding="utf-8") == "still here"
@@ -4758,7 +4712,7 @@ def test_formation_marker_commits_with_derived_sqlite_before_index_flush(
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="The lamp is on",
                         subject="lamp",
                         predicate="power",
@@ -4779,7 +4733,7 @@ def test_formation_marker_commits_with_derived_sqlite_before_index_flush(
         tmp_path,
         embedder=_FakeModels(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         with pytest.raises(IndexUnavailableError):
             memory.add("the lamp is on", occurred_at=occurred, context=context)
@@ -4788,7 +4742,7 @@ def test_formation_marker_commits_with_derived_sqlite_before_index_flush(
         states = [
             hit
             for hit in memory.search("lamp power", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         ]
 
         assert former.calls == 1
@@ -4915,7 +4869,7 @@ def test_delete_leaves_no_trace_of_the_record_in_any_table_or_blob(tmp_path: Pat
         embedder=_FakeModels(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(index_speech=True),
+        settings=MemorySettings(index_speech=True),
     ) as memory:
         heard = memory.add(("red note one", audio))
         echoed = memory.add(("red note two", audio))
@@ -5386,7 +5340,7 @@ def test_answering_reinforces_only_the_evidence_the_model_cited(tmp_path: Path) 
 
     `reinforce` was reachable from the public operation and the CLI and from nowhere else, so an
     agent driving SenseMem over MCP or REST left every memory at zero for ever: the
-    reinforcement factor in `_ranking_signals` was pinned at 1.0, and turning on
+    reinforcement factor was pinned at 1.0, and turning on
     `decay_half_life_days` degraded memories purely by age with no usage signal to hold up the
     ones that keep answering questions. The set reinforced is the answer's own citations, so a
     candidate that was retrieved and then not used earns nothing.
@@ -5604,7 +5558,7 @@ def test_the_transcript_marker_names_no_modality(tmp_path: Path) -> None:
     # floor, so every word of the marker is a term that makes this memory visible to any query
     # containing it. A marker naming a modality both mislabels a video transcript as audio and
     # hands each media memory a free match on an ordinary English word.
-    assert MemoryConfig().minimum_relevance < LEXICAL_FULL_COVERAGE_RELEVANCE
+    assert MemorySettings().minimum_relevance < LEXICAL_FULL_COVERAGE_RELEVANCE
     assert "spoken red wrench" in indexed
     assert not {"audio", "video"} & set(re.findall(r"\w+", indexed.casefold()))
 
@@ -6658,20 +6612,8 @@ def _one_hot(members: Sequence[str], member: str) -> tuple[float, ...]:
     return tuple(1.0 if other == member else 0.0 for other in members)
 
 
-def test_a_wearer_voice_binding_one_face_does_not_cascade_to_everybody(tmp_path: Path) -> None:
-    """One unavoidable cross-modal mistake must not consume every other person.
-
-    Egocentric footage puts an off-camera wearer's voice in the same clip as whoever is in
-    frame, and `identity_link_min_assets` cannot separate the two, because the wearer talks
-    to the same person across many clips and that wrong pair accumulates exactly as fast as
-    a genuine speaker's. What is avoidable is the cascade that follows: the moment the
-    wearer's voice owns an interlocutor's face, that identity holds both modalities, and
-    permitting fragments to rejoin it hands it the interlocutor's own voice and then the
-    next interlocutor's face, until one identity is everybody.
-
-    The script below runs the wearer talking to A and then to B, with each of them also
-    speaking on camera. The wearer will bind to A's face; B must survive it intact.
-    """
+def test_egocentric_capture_keeps_the_wearer_and_visible_listeners_separate(tmp_path: Path) -> None:
+    """Neither repeated co-occurrence nor incidental timing identifies the speaking face."""
     script = {
         "wearer-a-0.mp4": ("wearer", "a"),
         "a-speaks-0.mp4": ("a", "a"),
@@ -6702,14 +6644,11 @@ def test_a_wearer_voice_binding_one_face_does_not_cascade_to_everybody(tmp_path:
         voices = {person: resolve(value) for person, value in voice_ids.items()}
         faces = {person: resolve(value) for person, value in face_ids.items()}
 
-    # B speaks on camera twice, so B's own voice and face still merge.
-    assert faces["b"] == voices["b"]
-    # The wearer took A's face, and that is where it stops: B is not swallowed, and A's own
-    # voice is left orphaned rather than folded into the identity that already owns A's face.
-    assert faces["a"] == voices["wearer"]
+    assert faces["b"] != voices["b"]
+    assert faces["a"] != voices["wearer"]
     assert faces["b"] != faces["a"]
     assert voices["a"] != faces["a"]
-    assert len(set(voices.values()) | set(faces.values())) == 3
+    assert len(set(voices.values()) | set(faces.values())) == 5
 
 
 def test_scoped_survivor_count_returns_the_hits_the_discarded_hydration_did(
@@ -6785,10 +6724,15 @@ def _stream_log(memory: Memory, index: _FakeIndex) -> list[tuple[str, tuple[str,
         *,
         formation_pending_at: datetime | None = None,
         speech_plans: Sequence[SpeechPlan] = (),
+        replace_embeddings: bool = False,
     ) -> tuple[bool, ...]:
         batch = tuple(memories)
         written: tuple[bool, ...] = write_memories(
-            batch, embeddings, formation_pending_at=formation_pending_at, speech_plans=speech_plans
+            batch,
+            embeddings,
+            formation_pending_at=formation_pending_at,
+            speech_plans=speech_plans,
+            replace_embeddings=replace_embeddings,
         )
         log.append(("commit", tuple(memory.memory_id for memory in batch)))
         return written
@@ -7021,15 +6965,15 @@ def test_deleting_a_naming_assertion_takes_the_name_out_of_the_registry_and_the_
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=1, index_speech=True, minimum_relevance=0),
+        settings=MemorySettings(index_speech=True, minimum_relevance=0),
     ) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        identity_id = memory.perceive(record.id).faces[0].identity_id
+        identity_id = _confirm_identity(memory, record.id)
         memory.register_identity(identity_id, "Li", relationship="neighbour")
         assertion = next(
             item.id
             for item in memory.list().items
-            if item.context is not None and item.context.kind is MemoryKind.ENTITY
+            if item.context is not None and item.context.kind is RecordKind.ENTITY
         )
         assert '"speaker_name":"Li"' in memory.get(record.id).content
 
@@ -7043,7 +6987,7 @@ def test_deleting_a_naming_assertion_takes_the_name_out_of_the_registry_and_the_
 
 
 class _SubjectFormer:
-    """Proposes one STATE claim per source, with the subject spelled as the text asks."""
+    """Proposes a state with the source's spelling and a cited historical naming premise."""
 
     formation_capabilities = frozenset({Modality.TEXT})
     formation_model = "formation-test"
@@ -7056,12 +7000,23 @@ class _SubjectFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content=f"{value.content.text} recorded",
                     subject=value.content.text.split(" prefers ")[0],
                     predicate="preferred_drink",
                     value=value.content.text.split(" prefers ")[1],
                     confidence=0.9,
+                    evidence_ids=(
+                        value.memory_id,
+                        *(
+                            record.id
+                            for record in value.history
+                            if record.context is not None
+                            and record.context.kind is RecordKind.ENTITY
+                            and (record.context.subject or "").strip().casefold()
+                            == value.content.text.split(" prefers ")[0].strip().casefold()
+                        ),
+                    ),
                 ),
             )
             if " prefers " in value.content.text
@@ -7087,7 +7042,7 @@ def test_a_claim_about_a_named_person_binds_to_them_and_converges_on_one_lineage
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
         former=_SubjectFormer(),
-        config=MemoryConfig(identity_link_min_assets=1, minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
         identity_id = memory.perceive(record.id).faces[0].identity_id
@@ -7099,7 +7054,7 @@ def test_a_claim_about_a_named_person_binds_to_them_and_converges_on_one_lineage
         claims = [
             item
             for item in memory.list().items
-            if item.context is not None and item.context.kind is MemoryKind.STATE
+            if item.context is not None and item.context.kind is RecordKind.STATE
         ]
         contexts = [item.context for item in claims]
         assert claims and all(context is not None for context in contexts)
@@ -7111,7 +7066,7 @@ def test_a_claim_about_a_named_person_binds_to_them_and_converges_on_one_lineage
             item.context
             for item in memory.list().items
             if item.context is not None
-            and item.context.kind is MemoryKind.STATE
+            and item.context.kind is RecordKind.STATE
             and item.context.subject == "Mei"
         ]
         assert unbound and unbound[0] is not None and unbound[0].identity_id is None
@@ -7124,7 +7079,7 @@ def test_compiled_context_reports_a_person_who_is_present_but_unnamed(tmp_path: 
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.add(Blob(b"red stranger video", "video/mp4", "stranger.mp4"))
         identity_id = memory.perceive(record.id).faces[0].identity_id
@@ -7154,13 +7109,13 @@ def _merge_row(memory: Memory) -> MemoryOperationRecord:
     return rows[0]
 
 
-def _linking_memory(tmp_path: Path, *, min_assets: int = 1) -> Memory:
+def _linking_memory(tmp_path: Path) -> Memory:
     return Memory(
         tmp_path,
         embedder=_FakeEmbedder(),
         transcriber=_FakeSpeech(),
         face_analyzer=_FakeFace(),
-        config=MemoryConfig(identity_link_min_assets=min_assets, index_speech=True),
+        settings=MemorySettings(index_speech=True),
     )
 
 
@@ -7174,10 +7129,7 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
     state, or `operations()` cannot answer what fused two people and `rollback()` cannot undo
     it.
     """
-    # `min_assets=2` holds the merge off the first asset, so both identities exist -- and can be
-    # read back by their own `created_at` -- before anything fuses them. `faces()` on a single
-    # asset commits enrolment and the merge in the same call, leaving nothing to read.
-    with _linking_memory(tmp_path, min_assets=2) as memory:
+    with _linking_memory(tmp_path) as memory:
         seed = memory.add(Blob(b"seed video", "video/mp4", "seed.mp4"))
         face_id = memory.perceive(seed.id).faces[0].identity_id
         voice_id = memory.perceive(seed.id, kinds=frozenset({"speech"})).speech[0].speaker_id
@@ -7192,6 +7144,13 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
         assert set(pre_merge_created_at) == {face_id, voice_id}
 
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
+        assert voice_id is not None
+        memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.MERGE,
+                identity=IdentityChange(identity_id=voice_id, moved_ids=(face_id,)),
+            )
+        )
         survivor = memory.perceive(record.id).faces[0].identity_id
         assert (
             memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0].speaker_id == survivor
@@ -7205,9 +7164,9 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
         absorbed = change.moved_ids[0]
         assert absorbed != survivor
         # Lineage: which recognizer produced the templates, and which kernel rule bound them.
-        assert merged.model_id == _FakeFace.face_model
-        assert merged.recipe == "sensemem-identity-link-v1"
-        assert merged.trigger is MemoryTrigger.EVIDENCE
+        assert merged.model_id is None
+        assert merged.recipe == "sensemem-identity-host-binding-v1"
+        assert merged.trigger is MemoryTrigger.MANUAL
         # Before the reversal the absorbed ID is an alias, so it resolves to the named person.
         assert memory.identity(absorbed) == IdentityProfile(
             identity_id=survivor, name="Li", confirmed=True
@@ -7239,71 +7198,43 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
             ).fetchone()[0]
         assert restored_created_at == pre_merge_created_at[absorbed]
 
-        # Reversing a merge resets the pair's evidence rather than suppressing the pair, so
-        # continued ingestion corroborates and merges them again -- and logs that second bind as
-        # its own row. `min_assets=2` needs both assets reprocessed to recorroborate; `faces()`
-        # on `record.id` is called last on purpose, so its return value is the fresh merge.
+        # Old observations cannot override the host's correction.
         memory.perceive(seed.id)
-        assert memory.perceive(record.id).faces[0].identity_id == survivor
+        assert memory.perceive(record.id).faces[0].identity_id == absorbed
         standing = [
             row
             for row in memory.operations()
             if row.operation.intent is MemoryIntent.MERGE and row.rolled_back_at is None
         ]
-        assert [row.operation_id for row in standing] != [merged.operation_id]
-        assert len(standing) == 1
+        assert standing == []
+        assert memory._store.identities.identity_link_plan(survivor, absorbed) is None
 
 
-def test_ask_link_identities_false_recognizes_faces_without_committing_a_merge(
-    tmp_path: Path,
-) -> None:
-    """`ask` can identify who is in a photo or video without gaining merge authority.
-
-    `_route_generation_hits` reaches the same face recognition `faces()` uses, and by default
-    commits the same corroborated cross-modal `MERGE` -- an agent with recall access alone would
-    otherwise acquire it merely by asking a question over a photo or video.
-    `link_identities=False` keeps recognition running so the question still gets answered, but
-    the bind itself is never committed: no `MERGE` row, and the two identities stay apart. This
-    is the mechanism `build_mcp_server(embodied_operations=False)` relies on for `ask_memory`.
-    """
-
-    def _identity_row_count(data_dir: Path) -> int:
-        with closing(sqlite3.connect(data_dir / "state.sqlite3")) as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM identities").fetchone()[0])
-
-    def _ask_over_a_face(data_dir: Path, *, link_identities: bool) -> bool:
-        with Memory(
-            data_dir,
-            embedder=_FakeEmbedder(),
-            answerer=_FakeModels(),
-            transcriber=_FakeSpeech(),
-            face_analyzer=_FakeFace(),
-            config=MemoryConfig(identity_link_min_assets=1),
-        ) as memory:
-            record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-
-            result = memory.ask("who is in the video?", link_identities=link_identities)
-
-            assert result.hits and result.hits[0].id == record.id
-            merged = any(row.operation.intent is MemoryIntent.MERGE for row in memory.operations())
-        return merged
-
-    withheld = tmp_path / "withheld"
-    assert _ask_over_a_face(withheld, link_identities=False) is False
-    # Face and voice recognition still ran -- evidence exists -- but neither identity absorbed
-    # the other, so the store still holds both of them separately.
-    assert _identity_row_count(withheld) == 2
-
-    granted = tmp_path / "granted"
-    assert _ask_over_a_face(granted, link_identities=True) is True
-    assert _identity_row_count(granted) == 1
+def test_answer_recognition_never_implicitly_binds_face_and_voice(tmp_path: Path) -> None:
+    """Buffered and streamed answers recognize the evidence while identities remain separate."""
+    with Memory(
+        tmp_path,
+        embedder=_FakeEmbedder(),
+        answerer=_FakeModels(),
+        transcriber=_FakeSpeech(),
+        face_analyzer=_FakeFace(),
+    ) as memory:
+        record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
+        result = memory.ask("who is in the video?")
+        assert result.hits and result.hits[0].id == record.id
+        assert tuple(memory.ask_stream("who is in the video?"))[-1].result is not None
+        perceived = memory.perceive(record.id)
+        assert perceived.faces[0].identity_id != perceived.speech[0].speaker_id
+        assert memory.operations() == ()
+        assert "link_identities" not in inspect.signature(Memory.ask).parameters
+        assert "link_identities" not in inspect.signature(Memory.ask_stream).parameters
 
 
 def test_unlinking_a_merge_is_logged_as_a_split_and_rollback_re_links_it(tmp_path: Path) -> None:
     """`unlink_identity` is the split half of "correct or split", so it logs like one."""
     with _linking_memory(tmp_path) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        survivor = memory.perceive(record.id).faces[0].identity_id
+        survivor = _confirm_identity(memory, record.id)
         memory.register_identity(survivor, "Li")
         absorbed = _merge_row(memory).operation.identity.moved_ids[0]  # type: ignore[union-attr]
 
@@ -7339,7 +7270,7 @@ def test_erasing_a_person_leaves_an_irreversible_log_row_holding_no_content(
     """
     with _linking_memory(tmp_path) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
-        survivor = memory.perceive(record.id).faces[0].identity_id
+        survivor = _confirm_identity(memory, record.id)
         memory.register_identity(survivor, "Li Hua")
         absorbed = _merge_row(memory).operation.identity.moved_ids[0]  # type: ignore[union-attr]
 
@@ -7479,7 +7410,7 @@ def test_the_planner_is_told_the_clock_and_what_the_corpus_holds(tmp_path: Path)
         memory.add("a red wrench", occurred_at=datetime(2024, 9, 1, tzinfo=timezone.utc))
         memory.add("a blue crate", occurred_at=datetime(2024, 9, 3, tzinfo=timezone.utc))
 
-        memory._answering._recall_plan("what happened?", reference_at=reference, k=12)
+        memory._recall.plan("what happened?", reference_at=reference, k=12)
 
         question, clock, digest, attempted = models.plan_calls[0]
         assert (question, clock, attempted) == ("what happened?", reference, "")
@@ -7493,12 +7424,12 @@ def test_the_corpus_digest_is_recomputed_after_a_write_and_not_before(tmp_path: 
     """It is cached on the store's commit counter, so it cannot go stale behind an ingest."""
     models = _FakeModels()
     with _memory(tmp_path, models) as memory:
-        assert memory._answering._corpus_digest() == "empty"
-        unchanged = memory._answering._corpus_digest()
+        assert memory._recall.corpus_digest() == "empty"
+        unchanged = memory._recall.corpus_digest()
         memory.add("a red wrench", occurred_at=datetime(2024, 9, 1, tzinfo=timezone.utc))
 
         assert unchanged == "empty"
-        assert memory._answering._corpus_digest().startswith("1 records; ")
+        assert memory._recall.corpus_digest().startswith("1 records; ")
 
 
 @pytest.mark.parametrize("query_expansion", [False, True])
@@ -7537,13 +7468,13 @@ def test_a_backend_that_cannot_plan_keeps_todays_single_search(tmp_path: Path) -
     models = _FakeModels()
     answerer = _PlannerlessAnswerer()
     with Memory(tmp_path, embedder=models, answerer=answerer) as memory:
-        plan = memory._answering._recall_plan(
+        plan = memory._recall.plan(
             "who signed?",
             reference_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
             k=9,
         )
 
-    assert plan == fallback_plan("who signed?", k=9)
+    assert plan == fallback_recall_program("who signed?", k=9)
 
 
 def test_a_planner_failure_leaves_the_question_running(tmp_path: Path) -> None:
@@ -7551,13 +7482,13 @@ def test_a_planner_failure_leaves_the_question_running(tmp_path: Path) -> None:
     models = _FakeModels()
     models.plan_error = ModelError("planner unavailable", reason="model_failed", stage="plan")
     with _memory(tmp_path, models) as memory:
-        plan = memory._answering._recall_plan(
+        plan = memory._recall.plan(
             "how many times?",
             reference_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
             k=12,
         )
 
-    assert plan == fallback_plan("how many times?", k=12)
+    assert plan == fallback_recall_program("how many times?", k=12)
 
 
 @pytest.mark.parametrize(
@@ -7575,13 +7506,13 @@ def test_a_plan_the_kernel_will_not_run_falls_back(tmp_path: Path, payload: str 
     models = _FakeModels()
     models.recall_plan = payload
     with _memory(tmp_path, models) as memory:
-        plan = memory._answering._recall_plan(
+        plan = memory._recall.plan(
             "how many times?",
             reference_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
             k=12,
         )
 
-    assert plan == fallback_plan("how many times?", k=12)
+    assert plan == fallback_recall_program("how many times?", k=12)
 
 
 def test_a_usable_plan_is_the_plan_that_runs(tmp_path: Path) -> None:
@@ -7601,7 +7532,7 @@ def test_a_usable_plan_is_the_plan_that_runs(tmp_path: Path) -> None:
         }
     )
     with _memory(tmp_path, models) as memory:
-        plan = memory._answering._recall_plan(
+        plan = memory._recall.plan(
             "how many wrenches did I mention?",
             reference_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
             k=12,
@@ -7695,7 +7626,7 @@ def test_planning_with_an_answerer_that_cannot_plan_is_said_once_and_keeps_the_f
             tmp_path / "unplanned",
             embedder=_FakeEmbedder(),
             answerer=Unplanning(),
-            config=MemoryConfig(recall_planning=True),
+            settings=MemorySettings(recall_planning=True),
         ) as memory,
     ):
         _dated_corpus(memory)
@@ -7812,9 +7743,9 @@ def test_semantic_recall_keeps_the_callers_memory_type(tmp_path: Path) -> None:
         index_quantization=IndexQuantization.INT8,
         retrieval_mode=RetrievalMode.DENSE,
     ) as memory:
-        memory.add("a blue crate", memory_type=MemoryType.EPISODIC)
+        memory.add("a blue crate", memory_type=MemoryCategory.EPISODIC)
         memory.add("a red private wrench")
-        result = memory.ask("which tool?", memory_type=MemoryType.EPISODIC, limit=1)
+        result = memory.ask("which tool?", memory_type=MemoryCategory.EPISODIC, limit=1)
 
     assert [hit.content for hit in result.hits] == ["a blue crate"]
 
@@ -7865,7 +7796,7 @@ def test_semantic_recall_can_deepen_the_original_query_for_structured_anchors(
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             recall_query_expansion=True,
             evidence_budget_chars=None,
@@ -8787,10 +8718,10 @@ def test_an_exhaustive_read_keeps_the_callers_own_scope(tmp_path: Path) -> None:
     models = _FakeModels()
     models.recall_plan = _plan("set", {"op": "match", "terms": ["wrench"]})
     with _memory(tmp_path, models, recall_planning=True) as memory:
-        memory.add("a red wrench", occurred_at=DAY, memory_type=MemoryType.EPISODIC)
+        memory.add("a red wrench", occurred_at=DAY, memory_type=MemoryCategory.EPISODIC)
         memory.add("a blue wrench", occurred_at=DAY + timedelta(days=1))
 
-        memory.ask("how many wrenches?", memory_type=MemoryType.EPISODIC)
+        memory.ask("how many wrenches?", memory_type=MemoryCategory.EPISODIC)
 
     _question, grounded = models.answer_calls[-1]
     assert [hit.content for hit in grounded] == ["a red wrench"]
@@ -8917,7 +8848,7 @@ def test_planning_and_the_reads_it_names_happen_inside_a_span(tmp_path: Path) ->
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(recall_planning=True),
+        settings=MemorySettings(recall_planning=True),
         tracer=provider.get_tracer("test"),
     ) as memory:
         _dated_corpus(memory)
@@ -8956,7 +8887,7 @@ def test_the_recall_settings_are_validated_at_open(
     error: str,
 ) -> None:
     with pytest.raises(ValidationError, match=error):
-        Memory(tmp_path, embedder=_FakeModels(), config=MemoryConfig(**{setting: value}))  # type: ignore[arg-type]
+        Memory(tmp_path, embedder=_FakeModels(), settings=MemorySettings(**{setting: value}))  # type: ignore[arg-type]
 
 
 def test_ask_reports_hits_in_rank_order_whatever_order_the_answerer_read_them_in(

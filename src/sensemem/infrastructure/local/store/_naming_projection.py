@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
+from sensemem.identity import SpeakerSegment
 from sensemem.infrastructure.local.store._codec import (
     memory_from_row,
     optional_row_text,
@@ -22,12 +23,32 @@ from sensemem.infrastructure.local.store.records import (
     replace_memory_embeddings,
 )
 from sensemem.infrastructure.local.store.rows import StoredEmbedding, StoredMemory
-from sensemem.types import SpeakerSegment
 
-NamingProjectionFactory = Callable[
-    [Mapping[str, str | None], Sequence[StoredMemory], Mapping[str, tuple[SpeakerSegment, ...]]],
-    tuple[tuple[StoredMemory, ...], tuple[StoredEmbedding, ...]],
-]
+
+@dataclass(frozen=True, slots=True)
+class NamingDocuments:
+    """Exact candidate names, documents and cached speech needed for a naming update."""
+
+    names: tuple[tuple[str, str | None], ...]
+    memories: tuple[StoredMemory, ...]
+    speech: tuple[tuple[str, tuple[SpeakerSegment, ...]], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NamingProjection:
+    """Model-prepared text and vectors, conditional on the same candidate mutation."""
+
+    source: NamingDocuments
+    memories: tuple[StoredMemory, ...]
+    embeddings: tuple[StoredEmbedding, ...]
+
+
+class NamingPreparationRequired(Exception):
+    """Roll back a candidate mutation so the kernel can prepare its model-dependent documents."""
+
+    def __init__(self, documents: NamingDocuments) -> None:
+        super().__init__("naming changes require prepared speech documents")
+        self.documents = documents
 
 
 def validate_speech_projection(
@@ -96,25 +117,21 @@ def _names(connection: sqlite3.Connection, identity_ids: Sequence[str]) -> dict[
 def refresh_naming_documents(
     connection: sqlite3.Connection,
     before: Mapping[str, str | None],
-    factory: NamingProjectionFactory | None,
+    projection: NamingProjection | None,
     *,
     force_ids: Sequence[str] = (),
 ) -> None:
-    """Rebuild changed names inside their authoritative mutation transaction.
+    """Apply prepared vectors, or return preparation inputs by rolling the candidate back.
 
-    The callback does read/model preparation only. Candidate naming changes hold
-    this transaction during embedding so a model failure rolls back evidence,
-    registry names, speech documents, embeddings, and outbox rows together.
+    No callback or model runs in this transaction. The kernel handles the preparation request
+    outside SQLite, then repeats the mutation with a projection checked against its candidate
+    names, source documents and cached speech. Both passes use the same authoritative write.
     """
-    if factory is None or not before:
-        return
     changed = {
         identity_id: name
         for identity_id, name in _names(connection, tuple(before)).items()
         if name != before[identity_id] or identity_id in force_ids
     }
-    if not changed:
-        return
     memory_ids = sorted(
         {
             row_text(row, "memory_id")
@@ -124,7 +141,7 @@ def refresh_naming_documents(
                 SELECT DISTINCT ma.memory_id FROM speech_segments AS s
                 JOIN memory_assets AS ma ON ma.asset_id = s.asset_id
                 JOIN memory_records AS m ON m.memory_id = ma.memory_id
-                WHERE s.speaker_id = ?
+                WHERE s.speaker_id = ? AND instr(m.content, '[speech identities:') > 0
                 """,
                 (identity_id,),
             ).fetchall()
@@ -151,8 +168,19 @@ def refresh_naming_documents(
         ).fetchone()
         is not None
     }
-    memories, embeddings = factory(changed, tuple(current.values()), speech)
-    # Only text and vectors belong to this callback. The transaction may already
+    source = NamingDocuments(
+        names=tuple(sorted(changed.items())),
+        memories=tuple(current.values()),
+        speech=tuple(sorted(speech.items())),
+    )
+    if projection is not None and source != projection.source:
+        raise StaleOperationError("naming projection inputs changed during preparation")
+    if not current:
+        return
+    if projection is None:
+        raise NamingPreparationRequired(source)
+    memories, embeddings = projection.memories, projection.embeddings
+    # Only text and vectors belong to the prepared projection. The transaction may already
     # have retired, forgotten, or narrowed a row: never reapply old semantics.
     updated = tuple(
         replace(current[memory.memory_id], content=memory.content, updated_at=memory.updated_at)

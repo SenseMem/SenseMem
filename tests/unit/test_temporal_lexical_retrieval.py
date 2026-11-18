@@ -14,8 +14,8 @@ from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
-    MemoryConfig,
-    MemoryType,
+    MemoryCategory,
+    MemorySettings,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -66,7 +66,7 @@ def test_temporal_lexical_discovery_keeps_topk_bounded_beyond_global_window(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=mode, index_quantization=quantization, minimum_relevance=0.4
         ),
     ) as memory:
@@ -226,14 +226,14 @@ def test_temporal_lexical_routes_preserve_hard_filters_and_global_fallback(
     with Memory(
         tmp_path,
         embedder=_OrthogonalEmbedder(),
-        config=MemoryConfig(retrieval_mode=mode, minimum_relevance=0.4),
+        settings=MemorySettings(retrieval_mode=mode, minimum_relevance=0.4),
     ) as memory:
         target = memory.add("common witness", occurred_at=_TARGET_TIME)
         outside = memory.add("global fallback in 2024", occurred_at=_REFERENCE)
         episodic = memory.add(
             "common witness episodic",
             occurred_at=_TARGET_TIME,
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         )
         # A preferred date is soft: a disjoint explicit hard window wins, and its fallback
         # must still run even though the preferred intersection is empty.
@@ -250,7 +250,9 @@ def test_temporal_lexical_routes_preserve_hard_filters_and_global_fallback(
         }
         assert [
             hit.id
-            for hit in memory.search("common witness in 2024", memory_type=MemoryType.EPISODIC).hits
+            for hit in memory.search(
+                "common witness in 2024", memory_type=MemoryCategory.EPISODIC
+            ).hits
         ] == [episodic.id]
         assert (
             memory.search("common witness in 2024", scope=RetrievalScope(place_id="missing")).hits
@@ -261,7 +263,7 @@ def test_temporal_lexical_routes_preserve_hard_filters_and_global_fallback(
 
 def test_temporal_lexical_scores_do_not_depend_on_requested_result_count(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=_OrthogonalEmbedder(), config=MemoryConfig(minimum_relevance=0.4)
+        tmp_path, embedder=_OrthogonalEmbedder(), settings=MemorySettings(minimum_relevance=0.4)
     ) as memory:
         memory.add_many(
             tuple(f"common witness outside {number}" for number in range(140)),
@@ -288,7 +290,7 @@ def test_weak_temporal_lexical_match_does_not_displace_exact_global_match(
     with Memory(
         tmp_path,
         embedder=_OrthogonalEmbedder(),
-        config=MemoryConfig(retrieval_mode=RetrievalMode.LEXICAL, minimum_relevance=0.4),
+        settings=MemorySettings(retrieval_mode=RetrievalMode.LEXICAL, minimum_relevance=0.4),
     ) as memory:
         exact = memory.add(query, occurred_at=_REFERENCE)
         memory.add("Alice coffee", occurred_at=_TARGET_TIME)

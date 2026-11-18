@@ -1,34 +1,42 @@
 """Shared values and result fixtures for REST and MCP adapter tests."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sensemem.types import (
+from sensemem.content import AssetRef, ContentInput
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_values import (
     AffectCue,
-    AssetRef,
     ContextBudget,
-    ContextBundle,
     ContextConflict,
+    ContextSupplement,
     ContextUnknown,
     ContextUnknownKind,
-    EvidenceBasis,
+    NamedActor,
+    ProvisionalActor,
+)
+from sensemem.identity import (
     FaceObservation,
     IdentityErasure,
     IdentityProfile,
-    MemoryContext,
-    MemoryKind,
+    PerceptionKind,
+    PerceptionResult,
+    SpeakerSegment,
+)
+from sensemem.records import (
+    AnswerResult,
     MemoryRecord,
-    MemoryType,
-    Modality,
-    NamedActor,
-    ProvisionalActor,
     RetrievalCandidateTrace,
     RetrievalRejection,
     RetrievalTrace,
     SearchHit,
-    SpeakerSegment,
+    SearchResult,
 )
+from sensemem.semantics import RecordSemantics
+from sensemem.spatial import RetrievalScope
+from sensemem.types import AnswerPolicy, EvidenceBasis, MemoryCategory, Modality, RecordKind
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
 OCCURRED_FROM = datetime(2026, 8, 27, tzinfo=timezone.utc)
@@ -53,8 +61,8 @@ ASSET = AssetRef(
     path=Path("/private/sensemem/assets/frame.png"),
 )
 PROVISIONAL = ProvisionalActor(identity_id="identity_2", memory_ids=("memory_2",))
-AFFECT_CONTEXT = MemoryContext(
-    kind=MemoryKind.AFFECT,
+AFFECT_CONTEXT = RecordSemantics(
+    kind=RecordKind.AFFECT,
     basis=EvidenceBasis.MODEL_INFERENCE,
     confidence=0.72,
     valid_from=None,
@@ -120,6 +128,118 @@ PROFILE = IdentityProfile(
 )
 
 
+class MemoryStub:
+    """Record SDK calls shared by the REST and MCP transport fixtures."""
+
+    def __init__(self, failure: Exception | None = None, *, restored: str = "identity_2") -> None:
+        self.calls: list[tuple[object, ...]] = []
+        self.close_count = 0
+        self.failure = failure
+        self.profile: IdentityProfile | None = PROFILE
+        self.restored: str | None = restored
+
+    def search(
+        self,
+        query: ContentInput,
+        *,
+        limit: int = 10,
+        memory_type: MemoryCategory | None = None,
+        reference_at: datetime | None = None,
+        occurred_from: datetime | None = None,
+        occurred_until: datetime | None = None,
+        scope: RetrievalScope | None = None,
+        explain: bool = False,
+    ) -> SearchResult:
+        self._fail()
+        self.calls.append(
+            (
+                "search",
+                query,
+                limit,
+                memory_type,
+                reference_at,
+                occurred_from,
+                occurred_until,
+            )
+        )
+        return SearchResult(hits=() if explain else (_hit(),), trace=_trace() if explain else None)
+
+    def compile(
+        self,
+        goal: ContentInput,
+        *,
+        budget: ContextBudget | None = None,
+        reference_at: datetime | None = None,
+        scope: RetrievalScope | None = None,
+        allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
+    ) -> ContextBundle:
+        self._fail()
+        call = ("compile", goal, budget, reference_at, scope, allow_partial_sources)
+        self.calls.append((*call, supplements) if supplements else call)
+        return replace(
+            _bundle(budget or ContextBudget(), reference_at or NOW), supplements=tuple(supplements)
+        )
+
+    def reinforce(self, memory_ids: Sequence[str]) -> int:
+        self._fail()
+        self.calls.append(("reinforce", tuple(memory_ids)))
+        return len(tuple(dict.fromkeys(memory_ids)))
+
+    def ask(
+        self,
+        question: ContentInput,
+        *,
+        limit: int = 5,
+        memory_type: MemoryCategory | None = None,
+        reference_at: datetime | None = None,
+        scope: RetrievalScope | None = None,
+        answer_policy: AnswerPolicy = "strict",
+    ) -> AnswerResult:
+        self._fail()
+        self.calls.append(("ask", question, limit, memory_type, reference_at, answer_policy))
+        return AnswerResult(answer="The toolbox is blue.", hits=(_hit(),))
+
+    def perceive(
+        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+    ) -> PerceptionResult:
+        self._fail()
+        self.calls.append(("perceive", memory_id, kinds))
+        return PerceptionResult(speech=(SEGMENT,), faces=(FACE,))
+
+    def register_identity(
+        self,
+        identity_id: str,
+        name: str,
+        *,
+        relationship: str | None = None,
+    ) -> None:
+        self._fail()
+        self.calls.append(("register_identity", identity_id, name, relationship))
+
+    def identity(self, identity_id: str) -> IdentityProfile | None:
+        self._fail()
+        self.calls.append(("identity", identity_id))
+        return self.profile
+
+    def unlink_identity(self, alias_id: str) -> str | None:
+        self._fail()
+        self.calls.append(("unlink_identity", alias_id))
+        return self.restored
+
+    def forget_identity(self, identity_id: str) -> IdentityErasure:
+        self._fail()
+        self.calls.append(("forget_identity", identity_id))
+        return ERASURE
+
+    def close(self) -> None:
+        self.close_count += 1
+
+    def _fail(self) -> None:
+        if self.failure is not None:
+            raise self.failure
+
+
 def _record(
     memory_id: str = "memory_1",
     content: str = "The toolbox is blue.",
@@ -129,7 +249,7 @@ def _record(
     metadata: Mapping[str, object] | None = None,
     assets: tuple[AssetRef, ...] = (),
     modality: Modality = Modality.TEXT,
-    memory_type: MemoryType = MemoryType.SEMANTIC,
+    memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
 ) -> MemoryRecord:
     return MemoryRecord(
         id=memory_id,
@@ -177,7 +297,7 @@ def _affect_cue() -> AffectCue:
         id="memory_3",
         content="The user sounded tense.",
         score=0.6,
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
         created_at=NOW,
         context=AFFECT_CONTEXT,
         event_ids=("memory_9",),
@@ -191,7 +311,7 @@ def _media_hit() -> SearchHit:
         content="The toolbox is blue.",
         score=0.7,
         modality=Modality.IMAGE,
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
         assets=(ASSET,),
         created_at=NOW,
     )

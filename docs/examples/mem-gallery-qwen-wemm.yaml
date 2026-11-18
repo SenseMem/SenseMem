@@ -56,7 +56,6 @@ settings:
   face_similarity: 0.363
   formation_history_budget_chars: 6000
   formation_history_max_rows: 0
-  identity_link_min_assets: 2
   independent_evidence: false
   index_quantization: none
   index_speech: true

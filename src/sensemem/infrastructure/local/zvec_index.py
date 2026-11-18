@@ -256,25 +256,6 @@ class IndexHit:
     """The pushed memory type, or None for the unfiltered lexical route."""
 
     def __post_init__(self) -> None:
-        if not self.id or self.id != self.id.strip():
-            raise ValueError("index hit ID must be non-empty and trimmed")
-        for value, name in ((self.relevance, "relevance"), (self.confidence, "confidence")):
-            if value is not None and (
-                isinstance(value, bool) or not math.isfinite(value) or not 0.0 <= value <= 1.0
-            ):
-                raise ValueError(f"index hit {name} must be between zero and one")
-        if not isinstance(self.lexical_match, bool):
-            raise ValueError("index hit lexical_match must be a boolean")
-        if self.lexical_score is not None and (
-            isinstance(self.lexical_score, bool)
-            or not math.isfinite(self.lexical_score)
-            or self.lexical_score < 0.0
-        ):
-            raise ValueError("index hit lexical_score must be finite and nonnegative")
-        if self.lexical_route is not None and (
-            not self.lexical_route or self.lexical_route != self.lexical_route.strip()
-        ):
-            raise ValueError("index hit lexical_route must be non-empty and trimmed")
         if self.confidence is None:
             object.__setattr__(self, "confidence", self.relevance)
 
@@ -321,7 +302,8 @@ class ZvecIndex:
                     option=option,
                 )
         try:
-            self._validate_schema(self._require_collection().schema)
+            if inherited:
+                self._validate_schema(self._require_collection().schema)
             self._optimization_watermark = _indexed_document_count(self._require_collection().stats)
             persisted_segments = _persisted_segment_count(self.path)
             self._flushes_since_optimization = persisted_segments
@@ -654,8 +636,6 @@ class ZvecIndex:
         backup: Path,
     ) -> None:
         with self._gate.write():
-            if self._collection is not source:
-                raise RuntimeError("Zvec collection changed during compaction")
             cast("Collection", source).close()
             self._collection = None
             # If the process stops between renames, the missing canonical path makes the
@@ -683,7 +663,6 @@ class ZvecIndex:
                     str(self.path),
                     option=self._zvec.CollectionOption(read_only=False, enable_mmap=True),
                 )
-                self._validate_schema(replacement.schema)
                 replacement_watermark = _indexed_document_count(replacement.stats)
             except BaseException:
                 if replacement is not None:
@@ -729,20 +708,6 @@ class ZvecIndex:
             raise ValueError("optimize_concurrency must be a non-negative integer")
 
         with _INDEX_MAINTENANCE_LOCK, self._gate.write():
-            return self._rebuild(
-                documents,
-                batch_size=batch_size,
-                optimize_concurrency=optimize_concurrency,
-            )
-
-    def _rebuild(
-        self,
-        documents: Iterable[IndexDocument],
-        *,
-        batch_size: int,
-        optimize_concurrency: int,
-    ) -> int:
-        with _INDEX_MAINTENANCE_LOCK:
             collection = self._require_collection()
             collection.destroy()
             self._collection = None
@@ -751,25 +716,25 @@ class ZvecIndex:
                 schema=self._schema,
                 option=self._zvec.CollectionOption(read_only=False, enable_mmap=True),
             )
-        self._optimization_watermark = 0
-        self._flushes_since_optimization = 0
-        self._flushes_since_compaction = 0
+            self._optimization_watermark = 0
+            self._flushes_since_optimization = 0
+            self._flushes_since_compaction = 0
 
-        count = 0
-        batch: list[IndexDocument] = []
-        for document in documents:
-            batch.append(document)
-            if len(batch) == batch_size:
+            count = 0
+            batch: list[IndexDocument] = []
+            for document in documents:
+                batch.append(document)
+                if len(batch) == batch_size:
+                    self.upsert(batch)
+                    count += len(batch)
+                    batch.clear()
+            if batch:
                 self.upsert(batch)
                 count += len(batch)
-                batch.clear()
-        if batch:
-            self.upsert(batch)
-            count += len(batch)
-        if count:
-            self.optimize(concurrency=optimize_concurrency)
-        self.flush()
-        return count
+            if count:
+                self.optimize(concurrency=optimize_concurrency)
+            self.flush()
+            return count
 
     def close(self) -> None:
         """Close and release Zvec's native file lock; repeated calls are safe."""
@@ -1129,7 +1094,7 @@ class ZvecIndex:
                 f"Zvec {action} returned {len(statuses)} statuses for {len(ids)} documents"
             )
         failures = []
-        for document_id, status in zip(ids, statuses, strict=True):
+        for document_id, status in zip(ids, statuses, strict=False):
             native_status = cast("Status", status)
             if native_status.ok() or (
                 allow_not_found and native_status.code() == self._zvec.StatusCode.NOT_FOUND
@@ -1168,17 +1133,6 @@ def _require_file_descriptor_headroom(required: int = 0) -> None:
     opened, soft_limit = usage
     if opened + required + _FILE_DESCRIPTOR_RESERVE <= soft_limit:
         return
-    # Optimize and collection replacement have a short FD peak before old segments close. A
-    # concurrent writer that lands in that peak must wait for the process-wide maintenance owner
-    # and measure again; failing immediately turns successful recovery in another isolated store
-    # into an unrelated index error. RLock keeps the same check safe inside compaction itself.
-    with _INDEX_MAINTENANCE_LOCK:
-        usage = _file_descriptor_usage()
-        if usage is None:
-            return
-        opened, soft_limit = usage
-        if opened + required + _FILE_DESCRIPTOR_RESERVE <= soft_limit:
-            return
     raise OSError(
         errno.EMFILE,
         "Zvec operation refused before file descriptor exhaustion: "

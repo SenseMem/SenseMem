@@ -3,46 +3,31 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import (
-    AsyncGenerator,
     AsyncIterator,
-    Awaitable,
     Callable,
     Generator,
     Mapping,
     Sequence,
 )
-from concurrent.futures import Executor
 from contextlib import asynccontextmanager, suppress
-from contextvars import Context, copy_context
+from contextvars import copy_context
 from datetime import datetime
 from time import monotonic, perf_counter_ns
-from typing import Annotated, Literal, Protocol, TypeVar, cast
+from typing import Annotated, Protocol
 
 from fastapi import APIRouter, FastAPI, Query, Request, Response, status
 from fastapi import Path as PathParameter
 from fastapi.responses import StreamingResponse
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, StatusCode, Tracer
-from pydantic import (
-    AwareDatetime,
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    StringConstraints,
-    model_validator,
-)
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from sensemem._capacity import Capacity
 from sensemem.api.content import (
-    Content,
-    ContextBudgetInput,
-    Limit,
-    StrictModel,
     content_input,
     context_budget,
+    context_supplements,
 )
 from sensemem.api.deliberation import deliberation_lifespan
 from sensemem.api.errors import (
@@ -52,529 +37,83 @@ from sensemem.api.errors import (
     exception_response,
     register_error_handlers,
 )
-from sensemem.control import dump_operation
+from sensemem.api.responses import (
+    AnswerResponse,
+    ConsentResponse,
+    ContextBundleResponse,
+    DeleteResponse,
+    ExportResponse,
+    ForgetResponse,
+    HealthResponse,
+    IdentityResponse,
+    MemoryBatchResponse,
+    MemoryResponse,
+    PageResponse,
+    PendingCapturesResponse,
+    PerceptionResponse,
+    RecordConsentResponse,
+    RegisterResponse,
+    ReinforceResponse,
+    RetentionResponse,
+    SearchResponse,
+    SettleResponse,
+    UnlinkResponse,
+    _bundle_response,
+    _capabilities_response,
+    _export_response,
+    _operation_response,
+)
+from sensemem.api.schemas import (
+    AnswerRequest,
+    ConsentRequest,
+    ContextRequest,
+    IdentityRegisterRequest,
+    MemoryBatchCreate,
+    MemoryCreate,
+    PerceptionRequest,
+    QueryRequest,
+    ReinforceRequest,
+    RetentionRequest,
+    SettleRequest,
+)
+from sensemem.api.streaming import (
+    _STREAM_EXHAUSTED,
+    _AnswerStreamingResponse,
+    _first_chunk_or_disconnect,
+)
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.content import Blob, ContentInput
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_values import ContextBudget, ContextSupplement
+from sensemem.control_values import ExportBundle, MemoryOperationRecord, RetentionReport
 from sensemem.exceptions import StorageError
-from sensemem.infrastructure.local._capacity import Capacity
-from sensemem.kernel.execution import StreamWorker, StreamWorkers
-from sensemem.memory import Memory
-from sensemem.types import (
-    AbstentionReason,
-    AnswerChunk,
-    AnswerPolicy,
-    AnswerResult,
+from sensemem.identity import (
     ConsentState,
-    ContentInput,
-    ContextBudget,
-    ContextBundle,
-    ContextProof,
-    ContextUnknownKind,
-    ExportBundle,
-    FaceObservation,
     IdentityErasure,
     IdentityProfile,
-    MemoryCapabilities,
-    MemoryContext,
-    MemoryIntent,
-    MemoryOperationRecord,
-    MemoryOutcome,
-    MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
-    Modality,
-    ObservationContext,
-    Page,
-    PendingCapture,
     PerceptionKind,
     PerceptionResult,
-    RetentionReport,
-    RetrievalScope,
-    RetrievalTrace,
-    SearchResult,
-    SpeakerSegment,
 )
+from sensemem.kernel.execution import StreamWorkers
+from sensemem.memory import Memory
+from sensemem.records import (
+    AnswerChunk,
+    AnswerResult,
+    MemoryRecord,
+    Page,
+    PendingCapture,
+    SearchResult,
+)
+from sensemem.spatial import ObservationContext, RetrievalScope
+from sensemem.types import AnswerPolicy, MemoryCategory
 
 _MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 _REQUEST_BODY_TIMEOUT_SECONDS = 30.0
 _RESPONSE_SEND_TIMEOUT_SECONDS = 30.0
 _MemoryId = Annotated[str, PathParameter(min_length=1)]
-# The same identifier inside a request body, where `PathParameter` does not apply. Constrained
-# here rather than only in the SDK so a malformed ID fails validation on every route alike.
-_BodyMemoryId = Annotated[str, StringConstraints(min_length=1, pattern=r"^\S(?:.*\S)?$")]
-# A bounded plain string for person-facing text -- a name or relationship label -- the same shape
-# the MCP `register_identity` tool's `name`/`relationship` arguments use. Named separately from
-# `_BodyMemoryId` so a future ID-specific tightening of that type cannot silently start rejecting
-# names too.
-_PersonText = _BodyMemoryId
 _HTTP_TTFH = "sensemem.transport.server_time_to_headers_ms"
 _HTTP_TTFB = "sensemem.transport.server_time_to_first_body_byte_ms"
 _HTTP_TOTAL = "sensemem.transport.server_total_ms"
-_STREAM_EXHAUSTED = object()
-_FutureResult = TypeVar("_FutureResult")
-
-
-class MemoryCreate(StrictModel):
-    content: Content
-    occurred_at: AwareDatetime | None = None
-    occurred_end: AwareDatetime | None = None
-    metadata: dict[str, JsonValue] | None = None
-    memory_type: MemoryType = MemoryType.SEMANTIC
-    context: ObservationContext | None = None
-
-
-class MemoryBatchCreate(StrictModel):
-    contents: Annotated[list[Content], Field(min_length=1, max_length=100)]
-    occurred_at: list[AwareDatetime | None] | None = None
-    occurred_end: list[AwareDatetime | None] | None = None
-    metadata: list[dict[str, JsonValue] | None] | None = None
-    memory_type: MemoryType = MemoryType.SEMANTIC
-    context: list[ObservationContext | None] | None = None
-
-
-class QueryRequest(StrictModel):
-    query: Content
-    limit: Limit = 10
-    memory_type: MemoryType | None = None
-    reference_at: AwareDatetime | None = None
-    occurred_from: AwareDatetime | None = None
-    occurred_until: AwareDatetime | None = None
-    scope: RetrievalScope | None = None
-    explain: bool = False
-
-    @model_validator(mode="after")
-    def validate_occurrence_range(self) -> QueryRequest:
-        if (
-            self.occurred_from is not None
-            and self.occurred_until is not None
-            and self.occurred_until <= self.occurred_from
-        ):
-            raise ValueError("occurred_until must be later than occurred_from")
-        return self
-
-
-class ReinforceRequest(StrictModel):
-    memory_ids: Annotated[list[_BodyMemoryId], Field(min_length=1, max_length=100)]
-
-
-class AnswerRequest(StrictModel):
-    question: Content
-    limit: Limit = 5
-    memory_type: MemoryType | None = None
-    reference_at: AwareDatetime | None = None
-    scope: RetrievalScope | None = None
-    # Abstention is the caller's policy, not the server's: `best_effort` commits to the most
-    # likely answer and still reports `abstained`. The default keeps the refusal behaviour.
-    answer_policy: AnswerPolicy = "strict"
-
-
-# The shared bounds under the name FastAPI publishes as the OpenAPI component; no fields and no
-# docstring of its own, so the schema stays what it was.
-class ContextBudgetRequest(ContextBudgetInput):
-    pass
-
-
-class ContextRequest(StrictModel):
-    goal: Content
-    budget: ContextBudgetRequest | None = None
-    reference_at: AwareDatetime | None = None
-    scope: RetrievalScope | None = None
-    allow_partial_sources: Annotated[bool, Field(strict=True)] = False
-
-
-class SettleRequest(StrictModel):
-    limit: Limit = 100
-    max_attempts: Annotated[int, Field(strict=True, ge=1)] = 3
-    memory_ids: Annotated[list[_BodyMemoryId], Field(min_length=1, max_length=100)] | None = None
-
-
-class PerceptionRequest(StrictModel):
-    memory_id: _BodyMemoryId
-    kinds: Annotated[frozenset[PerceptionKind], Field(min_length=1)] | None = None
-
-
-class IdentityRegisterRequest(StrictModel):
-    identity_id: _BodyMemoryId
-    name: _PersonText
-    relationship: _PersonText | None = None
-
-
-class ConsentRequest(StrictModel):
-    state: ConsentState
-    note: _PersonText | None = None
-
-
-class RetentionRequest(StrictModel):
-    dry_run: bool = False
-
-
-class _ResponseModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-
-class AssetResponse(_ResponseModel):
-    id: str
-    modality: Modality
-    media_type: str
-    size_bytes: int
-    sha256: str
-    name: str | None = None
-
-
-class MemoryResponse(_ResponseModel):
-    id: str
-    content: str
-    modality: Modality
-    memory_type: MemoryType
-    assets: tuple[AssetResponse, ...] = ()
-    created_at: AwareDatetime
-    occurred_at: AwareDatetime | None = None
-    occurred_end: AwareDatetime | None = None
-    metadata: dict[str, JsonValue]
-    context: MemoryContext | None = None
-    place_id: str | None = None
-    forgotten_at: AwareDatetime | None = None
-
-
-class SearchHitResponse(MemoryResponse):
-    score: Annotated[float, Field(ge=0.0, le=1.0)]
-
-
-class AffectCueResponse(SearchHitResponse):
-    """One affect entry of a compiled bundle, with the evidence hop the cue hangs on.
-
-    The observations the cue cites are its own `context.evidence_ids`. `event_ids` are the
-    events formed from those same observations: co-occurrence inside one capture, never an
-    attributed cause.
-    """
-
-    event_ids: tuple[str, ...] = ()
-
-
-class MemoryBatchResponse(_ResponseModel):
-    memories: tuple[MemoryResponse, ...]
-
-
-class SearchResponse(_ResponseModel):
-    hits: tuple[SearchHitResponse, ...]
-    # Null unless the request asked for it, so the default response keeps the shape clients read.
-    trace: RetrievalTrace | None = None
-
-
-class AnswerResponse(_ResponseModel):
-    answer: str
-    hits: tuple[SearchHitResponse, ...]
-    abstained: bool
-    abstention_reason: AbstentionReason | None
-
-
-class DeleteResponse(_ResponseModel):
-    deleted: bool
-
-
-class ReinforceResponse(_ResponseModel):
-    reinforced: int
-
-
-class SettleResponse(_ResponseModel):
-    settled: int
-
-
-class PendingCaptureResponse(_ResponseModel):
-    memory_id: str
-    enqueued_at: AwareDatetime
-    attempts: int
-    last_error: str | None = None
-    awaiting: Literal["enrichment", "formation"]
-
-
-class PendingCapturesResponse(_ResponseModel):
-    items: tuple[PendingCaptureResponse, ...]
-
-
-class PerceptionResponse(_ResponseModel):
-    speech: tuple[SpeakerSegment, ...]
-    faces: tuple[FaceObservation, ...]
-
-
-class IdentityResponse(_ResponseModel):
-    identity: IdentityProfile | None
-
-
-class RegisterResponse(_ResponseModel):
-    registered: bool
-
-
-class UnlinkResponse(_ResponseModel):
-    restored_identity_id: str | None
-
-
-class ForgetResponse(_ResponseModel):
-    erasure: IdentityErasure
-
-
-class ConsentResponse(_ResponseModel):
-    consent: ConsentState | None
-
-
-class IdentityClaimResponse(_ResponseModel):
-    identity_id: str
-    name: str
-    relationship: str | None
-
-
-class ConsentClaimResponse(_ResponseModel):
-    identity_id: str
-    state: ConsentState
-    note: str | None
-
-
-class IdentityChangeResponse(_ResponseModel):
-    identity_id: str
-    moved_ids: tuple[str, ...]
-
-
-class MemoryOperationResponse(_ResponseModel):
-    """One control-plane log row, flattened exactly as `sensemem operations` prints it.
-
-    The operation's own fields are lifted beside the log row's because a reader wants one
-    record of what was proposed and what it did, not two nested objects to join.
-    """
-
-    operation_id: int
-    intent: MemoryIntent
-    trigger: MemoryTrigger
-    evidence_ids: tuple[str, ...]
-    target_ids: tuple[str, ...]
-    claim: IdentityClaimResponse | None
-    consent: ConsentClaimResponse | None
-    identity: IdentityChangeResponse | None
-    # The canonical logged payload, exactly as `sensemem operations` prints it: a
-    # consolidation's subject is what it proposed, so a row without this reported an intent and
-    # no statement, and the replay path had to read the proposal from the SDK instead.
-    proposal: dict[str, object] | None
-    rationale: str | None
-    model_id: str | None
-    recipe: str | None
-    created_ids: tuple[str, ...]
-    changed_ids: tuple[str, ...]
-    forgotten_ids: tuple[str, ...]
-    superseded: tuple[tuple[str, int], ...]
-    applied_at: datetime
-    rolled_back_at: datetime | None
-    outcome: MemoryOutcome | None
-    outcome_note: str | None
-
-
-class RecordConsentResponse(_ResponseModel):
-    operation: MemoryOperationResponse | None
-
-
-class ExportResponse(_ResponseModel):
-    exported_at: datetime
-    identity_id: str | None
-    identities: tuple[IdentityProfile, ...]
-    records: tuple[MemoryResponse, ...]
-    operations: tuple[MemoryOperationResponse, ...]
-
-
-class RetentionResponse(_ResponseModel):
-    dry_run: bool
-    media_memory_ids: tuple[str, ...]
-    forgotten_memory_ids: tuple[str, ...]
-    cascade_memory_ids: tuple[str, ...]
-    asset_ids: tuple[str, ...]
-    capture_memory_ids: tuple[str, ...]
-    deleted: int
-
-
-def _operation_response(record: MemoryOperationRecord) -> MemoryOperationResponse:
-    operation = record.operation
-    # Read back from the canonical logged payload rather than re-derived from the value type, so
-    # the row REST serves and the row the CLI prints are one document -- and `apply` accepts it.
-    logged = cast(dict[str, object], json.loads(dump_operation(operation)))
-    return MemoryOperationResponse(
-        operation_id=record.operation_id,
-        intent=operation.intent,
-        trigger=record.trigger,
-        evidence_ids=operation.evidence_ids,
-        target_ids=operation.target_ids,
-        claim=(
-            None
-            if operation.claim is None
-            else IdentityClaimResponse.model_validate(operation.claim)
-        ),
-        consent=(
-            None
-            if operation.consent is None
-            else ConsentClaimResponse.model_validate(operation.consent)
-        ),
-        identity=(
-            None
-            if operation.identity is None
-            else IdentityChangeResponse.model_validate(operation.identity)
-        ),
-        proposal=cast("dict[str, object] | None", logged["proposal"]),
-        rationale=operation.rationale,
-        model_id=record.model_id,
-        recipe=record.recipe,
-        created_ids=record.created_ids,
-        changed_ids=record.changed_ids,
-        forgotten_ids=record.forgotten_ids,
-        superseded=record.superseded,
-        applied_at=record.applied_at,
-        rolled_back_at=record.rolled_back_at,
-        outcome=record.outcome,
-        outcome_note=record.outcome_note,
-    )
-
-
-def _export_response(bundle: ExportBundle) -> ExportResponse:
-    return ExportResponse(
-        exported_at=bundle.exported_at,
-        identity_id=bundle.identity_id,
-        identities=bundle.identities,
-        records=tuple(MemoryResponse.model_validate(record) for record in bundle.records),
-        operations=tuple(_operation_response(record) for record in bundle.operations),
-    )
-
-
-class ContextBudgetResponse(_ResponseModel):
-    max_chars: int
-    max_items: int
-    max_media_items: int | None
-    memory_types: tuple[MemoryType, ...] | None
-    min_confidence: float
-    freshness_seconds: float | None
-    max_latency_ms: int | None
-    selected_proofs: bool
-
-
-class ContextConflictResponse(_ResponseModel):
-    lineage_id: str
-    subject: str | None
-    predicate: str | None
-    values: tuple[str, ...]
-    memory_ids: tuple[str, ...]
-
-
-class ProvisionalActorResponse(_ResponseModel):
-    identity_id: str
-    memory_ids: tuple[str, ...]
-
-
-class NamedActorResponse(_ResponseModel):
-    identity_id: str
-    name: str
-    memory_ids: tuple[str, ...]
-    naming_assertion_id: str | None
-
-
-class ContextUnknownResponse(_ResponseModel):
-    kind: ContextUnknownKind
-    detail: str
-
-
-class TextSpanPieceResponse(_ResponseModel):
-    role: Literal["context", "body"]
-    start_codepoint: int
-    end_codepoint: int
-    source_text: str
-    sha256: str
-
-
-class TextSpanSelectorResponse(_ResponseModel):
-    parent_content_sha256: str
-    embedding_input_sha256: str
-    recipe_version: str
-    pieces: tuple[TextSpanPieceResponse, ...]
-
-
-class ContextExcerptResponse(_ResponseModel):
-    source_memory_id: str
-    matched_index_id: str
-    content: str
-    selector: TextSpanSelectorResponse
-    score: Annotated[float, Field(ge=0.0, le=1.0)]
-    created_at: AwareDatetime
-    occurred_at: AwareDatetime | None
-    occurred_end: AwareDatetime | None
-    memory_type: MemoryType
-    context: MemoryContext | None
-    place_id: str | None
-
-
-class ContextBundleResponse(_ResponseModel):
-    goal: str
-    reference_at: AwareDatetime
-    budget: ContextBudgetResponse
-    # Beside the ranked entity hits: a person a naming assertion names, reached through
-    # other evidence, and a recognized person no visible assertion names -- reported rather
-    # than omitted either way.
-    actors: tuple[SearchHitResponse | NamedActorResponse | ProvisionalActorResponse, ...]
-    relationships: tuple[SearchHitResponse, ...]
-    scene: tuple[SearchHitResponse, ...]
-    episodes: tuple[SearchHitResponse, ...]
-    facts: tuple[SearchHitResponse, ...]
-    procedures: tuple[SearchHitResponse, ...]
-    affect: tuple[AffectCueResponse, ...]
-    traits: tuple[SearchHitResponse, ...]
-    conflicts: tuple[ContextConflictResponse, ...]
-    unknowns: tuple[ContextUnknownResponse, ...]
-    occurred_from: AwareDatetime | None
-    occurred_until: AwareDatetime | None
-    frames: tuple[str, ...]
-    places: tuple[str, ...]
-    omitted: int
-    chars: int
-    elapsed_ms: int
-    deadline_exceeded: bool
-    excerpts: tuple[ContextExcerptResponse, ...] = ()
-    proofs: tuple[ContextProof, ...] = ()
-    # The deterministic text of `ContextBundle.render()`, so a caller need not re-derive it.
-    rendered: str
-
-
-class PageResponse(_ResponseModel):
-    items: tuple[MemoryResponse, ...]
-    next_cursor: str | None = None
-
-
-class EmbeddingRouteResponse(_ResponseModel):
-    modalities: tuple[Modality, ...]
-    max_assets_per_modality: int | None
-
-
-class CapabilitiesResponse(_ResponseModel):
-    """What the composition behind this process can actually do."""
-
-    embedding: tuple[Modality, ...]
-    embedding_model: str
-    embedding_space: str
-    embedding_dimension: int
-    embedding_routes: tuple[EmbeddingRouteResponse, ...]
-    generation: tuple[Modality, ...]
-    generation_routes: tuple[tuple[Modality, ...], ...]
-    transcription: tuple[Modality, ...]
-    vision: tuple[Modality, ...]
-    face: tuple[Modality, ...]
-    formation: tuple[Modality, ...]
-    reranking: tuple[Modality, ...]
-    reranking_model: str | None
-    generation_model: str | None
-    transcription_space: str | None
-    vision_model: str | None
-    face_model: str | None
-    formation_model: str | None
-    consolidation_model: str | None
-    speaker_recognition: bool
-    # Derived from the backends above, not declared: which optional operations this composition
-    # can serve *and this app routes to*. `MemoryCapabilities.document()` is the one place that
-    # derivation happens; `_ROUTED_OPERATIONS` is what `/healthz` may promise of it.
-    operations: tuple[str, ...]
-
-
-class HealthResponse(BaseModel):
-    status: Literal["ok"] = "ok"
-    capabilities: CapabilitiesResponse
 
 
 class _Memory(Protocol):
@@ -588,7 +127,7 @@ class _Memory(Protocol):
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord: ...
 
@@ -599,7 +138,7 @@ class _Memory(Protocol):
         occurred_at: Sequence[datetime | None] | None = None,
         occurred_end: Sequence[datetime | None] | None = None,
         metadata: Sequence[Mapping[str, object] | None] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: Sequence[ObservationContext | None] | None = None,
     ) -> tuple[MemoryRecord, ...]: ...
 
@@ -608,7 +147,7 @@ class _Memory(Protocol):
         query: ContentInput,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
@@ -621,10 +160,9 @@ class _Memory(Protocol):
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> AnswerResult: ...
 
@@ -633,10 +171,9 @@ class _Memory(Protocol):
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> Generator[AnswerChunk, None, AnswerResult]: ...
 
@@ -648,11 +185,14 @@ class _Memory(Protocol):
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
         allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
     ) -> ContextBundle: ...
 
     def reinforce(self, memory_ids: Sequence[str]) -> int: ...
 
     def get(self, memory_id: str) -> MemoryRecord: ...
+
+    def read_asset(self, memory_id: str, asset_id: str) -> Blob: ...
 
     def list(self, *, limit: int = 100, cursor: str | None = None) -> Page: ...
 
@@ -665,7 +205,7 @@ class _Memory(Protocol):
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord: ...
 
@@ -682,6 +222,7 @@ class _Memory(Protocol):
         *,
         limit: int = 100,
         memory_ids: Sequence[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[PendingCapture, ...]: ...
 
     def perceive(
@@ -783,8 +324,7 @@ class _RequestBodyLimit:
             await self.app(scope, receive, send)
             return
 
-        headers = _headers(scope)
-        content_length = _content_length(headers)
+        content_length = _content_length(scope.get("headers", []))
         if content_length is not None and content_length > _MAX_REQUEST_BODY_BYTES:
             await _request_too_large()(scope, receive, send)
             return
@@ -916,7 +456,8 @@ def create_app(
     served = _ROUTED_OPERATIONS | (
         _EMBODIED_ROUTED_OPERATIONS if embodied_operations else frozenset()
     )
-    stream_workers = memory._execution.streams if isinstance(memory, Memory) else StreamWorkers()
+    execution = memory._execution if isinstance(memory, Memory) else None
+    stream_workers = execution.streams if execution is not None else StreamWorkers()
     background_lifespan = (
         None if deliberate_every is None else deliberation_lifespan(memory, deliberate_every)
     )
@@ -930,7 +471,7 @@ def create_app(
                 async with background_lifespan(app):
                     yield
         finally:
-            if not isinstance(memory, Memory):
+            if execution is None:
                 await asyncio.to_thread(stream_workers.close)
 
     app = FastAPI(
@@ -942,7 +483,7 @@ def create_app(
     app.add_middleware(_RequestBodyLimit)
     app.add_middleware(
         _RequestCapacity,
-        capacity=memory._execution.requests if isinstance(memory, Memory) else Capacity(32),
+        capacity=execution.requests if execution is not None else Capacity(32),
     )
     app.add_middleware(
         _RequestTelemetry,
@@ -1085,6 +626,16 @@ def _v1_router(  # noqa: C901 - one literal public route registry
     def get_memory(memory_id: _MemoryId) -> MemoryResponse:
         return MemoryResponse.model_validate(current_service().get(memory_id))
 
+    @router.get(
+        "/memories/{memory_id}/assets/{asset_id}",
+        operation_id="readAsset",
+        response_class=Response,
+        responses=not_found_errors,
+    )
+    def read_asset(memory_id: _MemoryId, asset_id: _MemoryId) -> Response:
+        blob = current_service().read_asset(memory_id, asset_id)
+        return Response(content=blob.data, media_type=blob.media_type)
+
     @router.delete(
         "/memories/{memory_id}",
         response_model=DeleteResponse,
@@ -1109,11 +660,6 @@ def _v1_router(  # noqa: C901 - one literal public route registry
                 reference_at=request.reference_at,
                 scope=request.scope,
                 answer_policy=request.answer_policy,
-                # Mirrors MCP's own `embodied_operations` switch (`docs/context-os.md`): a
-                # caller with recall access alone must not acquire cross-modal merge authority
-                # through `ask`, so REST only lets an answer commit that bind when the host has
-                # opted in to embodied operations.
-                link_identities=embodied_operations,
             )
         )
 
@@ -1132,7 +678,6 @@ def _v1_router(  # noqa: C901 - one literal public route registry
                 reference_at=request.reference_at,
                 scope=request.scope,
                 answer_policy=request.answer_policy,
-                link_identities=embodied_operations,
             )
         )
         worker = stream_workers.borrow()
@@ -1261,14 +806,13 @@ def _add_capture_routes(
     def pending_captures_route(
         limit: Annotated[int, Query(ge=1, le=100)] = 100,
         memory_ids: Annotated[list[str] | None, Query(min_length=1, max_length=100)] = None,
+        cursor: str | None = None,
     ) -> PendingCapturesResponse:
+        items = current_service().pending_captures(
+            limit=limit, memory_ids=memory_ids, cursor=cursor
+        )
         return PendingCapturesResponse.model_validate(
-            {
-                "items": current_service().pending_captures(
-                    limit=limit,
-                    memory_ids=memory_ids,
-                )
-            }
+            {"items": items, "next_cursor": items[-1].cursor if len(items) == limit else None}
         )
 
 
@@ -1396,164 +940,6 @@ def _add_identity_routes(
         )
 
 
-async def _first_chunk_or_disconnect(
-    stream: Generator[AnswerChunk, None, AnswerResult],
-    *,
-    connection: Request,
-    worker: Executor,
-    context: Context,
-) -> object:
-    loop = asyncio.get_running_loop()
-
-    def first_chunk() -> object:
-        return next(stream, _STREAM_EXHAUSTED)
-
-    async def wait_for_disconnect() -> None:
-        while (await connection.receive()).get("type") != "http.disconnect":
-            pass
-
-    pending_chunk = loop.run_in_executor(worker, context.run, first_chunk)
-    disconnected = asyncio.create_task(wait_for_disconnect())
-    try:
-        done, _pending = await asyncio.wait(
-            (pending_chunk, disconnected),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if disconnected not in done:
-            return pending_chunk.result()
-        raise asyncio.CancelledError
-    except BaseException:
-        # A running synchronous provider call cannot be interrupted safely. Queue close on its
-        # pinned worker so disconnects and task cancellation release the response after it returns.
-        pending_chunk.add_done_callback(_discard_future_result)
-        closing = loop.run_in_executor(worker, context.run, stream.close)
-        closing.add_done_callback(_discard_future_result)
-        raise
-    finally:
-        disconnected.cancel()
-        with suppress(asyncio.CancelledError):
-            await disconnected
-
-
-def _discard_future_result(future: asyncio.Future[_FutureResult]) -> None:
-    with suppress(BaseException):
-        future.result()
-
-
-async def _answer_events(
-    first: object,
-    rest: Generator[AnswerChunk, None, AnswerResult],
-    *,
-    worker: Executor,
-    context: Context,
-    close: Callable[[], Awaitable[None]],
-) -> AsyncGenerator[bytes, None]:
-    loop = asyncio.get_running_loop()
-    chunk = first
-
-    def next_chunk() -> object:
-        return next(rest, _STREAM_EXHAUSTED)
-
-    terminal = False
-    try:
-        while chunk is not _STREAM_EXHAUSTED:
-            answer_chunk = cast(AnswerChunk, chunk)
-            terminal = answer_chunk.result is not None
-            if terminal:
-                await close()
-            yield _answer_event(answer_chunk)
-            if terminal:
-                return
-            chunk = await loop.run_in_executor(worker, context.run, next_chunk)
-        if not terminal:
-            raise RuntimeError("answer stream ended without a terminal result")
-    except Exception as error:
-        trace.get_current_span().set_status(StatusCode.ERROR)
-        response = exception_response(error)
-        yield _sse_event("error", json.loads(bytes(response.body)))
-
-
-class _AnswerStreamingResponse(StreamingResponse):
-    """Own the prefetched synchronous stream for the complete ASGI send lifecycle."""
-
-    def __init__(
-        self,
-        first: object,
-        rest: Generator[AnswerChunk, None, AnswerResult],
-        *,
-        worker: Executor,
-        context: Context,
-    ) -> None:
-        self._rest = rest
-        self._worker = worker
-        self._context = context
-        self._closed = False
-        self._events = _answer_events(
-            first, rest, worker=worker, context=context, close=self._close_stream
-        )
-        super().__init__(
-            self._events,
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            # Starlette sends `http.response.start` before it enters the body iterator. Closing only
-            # in `_answer_events` therefore leaks the already-prefetched Memory operation whenever
-            # headers or the first body frame cannot be sent.
-            try:
-                await self._events.aclose()
-            finally:
-                await self._close_stream()
-
-    async def _close_stream(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        await _close_answer_stream(self._rest, worker=self._worker, context=self._context)
-
-
-async def _close_answer_stream(
-    stream: Generator[AnswerChunk, None, AnswerResult],
-    *,
-    worker: Executor,
-    context: Context,
-) -> None:
-    loop = asyncio.get_running_loop()
-    try:
-        closing = loop.run_in_executor(worker, context.run, stream.close)
-        closing.add_done_callback(_discard_future_result)
-        with suppress(asyncio.CancelledError):
-            await asyncio.shield(closing)
-    finally:
-        if isinstance(worker, StreamWorker):
-            with suppress(asyncio.CancelledError):
-                await asyncio.shield(asyncio.wrap_future(worker.release()))
-        else:
-            worker.shutdown(wait=False)
-
-
-def _answer_event(chunk: AnswerChunk) -> bytes:
-    if chunk.result is None:
-        payload: dict[str, object] = {"text": chunk.text}
-        event = "delta"
-    else:
-        payload = AnswerResponse.model_validate(chunk.result).model_dump(mode="json")
-        event = "result"
-    return _sse_event(event, payload)
-
-
-def _sse_event(event: str, payload: object) -> bytes:
-    return (
-        f"event: {event}\ndata: "
-        + json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-        + "\n\n"
-    ).encode("utf-8")
-
-
 def _add_context_route(
     router: APIRouter,
     current_service: Callable[[], _Memory],
@@ -1576,13 +962,9 @@ def _add_context_route(
                 reference_at=request.reference_at,
                 scope=request.scope,
                 allow_partial_sources=request.allow_partial_sources,
+                supplements=context_supplements(request.supplements),
             )
         )
-
-
-def _bundle_response(bundle: ContextBundle) -> ContextBundleResponse:
-    """Publish `ContextBundle.document()`, the same projection MCP and the CLI publish."""
-    return ContextBundleResponse.model_validate(bundle.document())
 
 
 def _search(service: _Memory, request: QueryRequest) -> SearchResponse:
@@ -1599,28 +981,12 @@ def _search(service: _Memory, request: QueryRequest) -> SearchResponse:
     return SearchResponse.model_validate(result)
 
 
-def _capabilities_response(
-    capabilities: MemoryCapabilities, *, served: frozenset[str]
-) -> CapabilitiesResponse:
-    """Serialize the one capability document MCP and the CLI publish too, minus what has no route."""
-    return CapabilitiesResponse.model_validate(capabilities.document(served=served))
-
-
-def _headers(scope: Scope) -> list[tuple[bytes, bytes]]:
-    return list(scope.get("headers", []))
-
-
-def _one_header(headers: Sequence[tuple[bytes, bytes]], name: bytes) -> bytes | None:
-    values = [value for key, value in headers if key.lower() == name]
-    return values[0] if len(values) == 1 else None
-
-
 def _content_length(headers: Sequence[tuple[bytes, bytes]]) -> int | None:
-    raw = _one_header(headers, b"content-length")
-    if raw is None:
+    values = [value for key, value in headers if key.lower() == b"content-length"]
+    if len(values) != 1:
         return None
     try:
-        value = int(raw)
+        value = int(values[0])
     except ValueError:
         return None
     return value if value >= 0 else None

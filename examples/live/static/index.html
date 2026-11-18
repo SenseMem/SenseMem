@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f6f2">
+    <title>SenseMem · 实时对话</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="icon-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 10.5V12a6.5 6.5 0 0 0 13 0v-1.5M12 18.5v3M9 21.5h6"/></symbol>
+      <symbol id="icon-camera" viewBox="0 0 24 24"><rect x="3" y="5.5" width="12.5" height="13" rx="3"/><path d="m15.5 10 5.5-3.5v11L15.5 14"/></symbol>
+      <symbol id="icon-memory" viewBox="0 0 24 24"><path d="m12 3-9 5 9 5 9-5-9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></symbol>
+      <symbol id="icon-phone" viewBox="0 0 24 24"><path d="M8.4 3.5H5.6a2.1 2.1 0 0 0-2.1 2.3 16 16 0 0 0 14.7 14.7 2.1 2.1 0 0 0 2.3-2.1v-2.8l-4.4-2.2-2.2 2.2a12.1 12.1 0 0 1-5.5-5.5l2.2-2.2-2.2-4.4Z"/></symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+      <symbol id="icon-wave" viewBox="0 0 24 24"><path d="M3 10v4M7 6v12M12 2v20M17 6v12M21 10v4"/></symbol>
+      <symbol id="icon-frame" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="3"/><circle cx="8" cy="8" r="1"/><path d="m2 17 6-6 5 5 4-3 5 5"/></symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+      <symbol id="icon-history" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6M12 7v5l3 2"/></symbol>
+    </svg>
+    <div class="app-shell">
+      <header class="app-header">
+        <a class="wordmark" href="/" aria-label="SenseMem 首页"><img src="/wordmark.svg" width="194" height="44" alt="SenseMem"></a>
+        <div class="header-actions">
+          <span class="connection" aria-live="polite"><i id="connection-dot"></i><span id="connection-state">未连接</span></span>
+          <span class="capture-paused" id="capture-paused" hidden role="status">记忆录制暂停</span>
+          <button class="text-button" id="show-help">帮助</button>
+        </div>
+      </header>
+
+      <main class="workspace" id="workspace">
+        <section class="call-stage" aria-label="连续音视频通话">
+          <h1 class="sr-only">SenseMem 连续音视频通话</h1>
+          <div class="camera-widget">
+            <div class="camera-preview">
+              <video id="local-video" autoplay muted playsinline aria-label="实时摄像头画面"></video>
+              <div class="camera-empty" id="camera-empty">
+                <svg class="icon" aria-hidden="true"><use href="#icon-camera"/></svg>
+                <span>摄像头未开启</span>
+              </div>
+            </div>
+          </div>
+          <div class="presence-wrap"><canvas id="presence" aria-hidden="true"></canvas></div>
+          <div class="captions" aria-live="polite" aria-atomic="true">
+            <span id="caption-role" class="caption-role" hidden></span>
+            <p id="caption-text"></p>
+          </div>
+          <div class="recall-space">
+            <button class="recall-strip" id="recall-strip" hidden aria-controls="memory-rail">
+              <svg class="icon" aria-hidden="true"><use href="#icon-search"/></svg>
+              <span class="recall-copy"><span id="recall-label"></span><span id="recall-query"></span></span>
+              <span id="recall-count"></span>
+              <svg class="icon recall-chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
+            </button>
+            <span class="sr-only" id="recall-announcement" role="status"></span>
+          </div>
+          <div class="call-toolbar" aria-label="通话控制">
+            <button class="device-button" id="toggle-mic" aria-pressed="true" disabled>
+              <span class="round-icon"><svg class="icon" aria-hidden="true"><use href="#icon-mic"/></svg></span><span>麦克风</span>
+            </button>
+            <button class="device-button" id="toggle-camera" aria-pressed="true" disabled>
+              <span class="round-icon"><svg class="icon" aria-hidden="true"><use href="#icon-camera"/></svg></span><span>摄像头</span>
+            </button>
+            <button class="device-button call-button" id="toggle-call">
+              <span class="round-icon"><svg class="icon" aria-hidden="true"><use href="#icon-phone"/></svg></span><span id="call-label">开始通话</span>
+            </button>
+            <button class="device-button" id="toggle-memory" aria-expanded="true" aria-controls="memory-rail">
+              <span class="round-icon"><svg class="icon" aria-hidden="true"><use href="#icon-memory"/></svg></span><span>记忆</span>
+            </button>
+          </div>
+        </section>
+
+        <aside class="memory-rail" id="memory-rail" aria-label="本地记忆与检索证据">
+          <header class="memory-header"><h2>记忆 <span id="memory-count">0</span></h2><span id="memory-progress" class="memory-progress" role="status"></span><button class="rail-close icon-button" id="close-memory" aria-label="收起记忆"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></header>
+          <section id="live-observation" class="live-observation" hidden aria-labelledby="observation-title">
+            <div><h3 id="observation-title">画面观察</h3><time id="observation-time"></time></div>
+            <p id="observation-summary"></p>
+            <span id="observation-memory-state">持续观察中</span>
+          </section>
+          <div class="memory-tabs" role="tablist" aria-label="记忆视图">
+            <button id="timeline-tab" role="tab" aria-selected="true" aria-controls="memory-content" tabindex="0">经历</button>
+            <button id="profile-tab" role="tab" aria-selected="false" aria-controls="memory-content" tabindex="-1">了解你</button>
+            <button id="retrieval-tab" role="tab" aria-selected="false" aria-controls="memory-content" tabindex="-1">召回</button>
+            <button id="history-tab" role="tab" aria-selected="false" aria-controls="memory-content" tabindex="-1">历史</button>
+          </div>
+          <div class="view-context" id="view-context" hidden></div>
+          <div id="memory-content" class="memory-content" role="tabpanel" aria-labelledby="timeline-tab" tabindex="0">
+            <div class="memory-empty"><svg class="icon" aria-hidden="true"><use href="#icon-memory"/></svg><p>暂无记忆</p></div>
+          </div>
+          <footer class="memory-footer"><span class="recording-indicator" id="recording-indicator" hidden><i></i><span id="recording-label"></span></span><span>本地保存 · 原始证据可回看</span></footer>
+        </aside>
+      </main>
+    </div>
+    <div class="notice" id="notice" role="alert" hidden><p id="notice-text"></p><button class="notice-action" id="notice-action" hidden></button><button id="dismiss-notice" aria-label="关闭提示"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></div>
+    <audio id="remote-audio" autoplay></audio>
+    <dialog id="help-dialog" aria-labelledby="help-title">
+      <div class="dialog-heading"><h2 id="help-title">和 SenseMem 自然对话</h2><button id="close-help" aria-label="关闭使用说明"><svg class="icon" aria-hidden="true"><use href="#icon-close"/></svg></button></div>
+      <p>点击「开始通话」，允许使用麦克风和摄像头。试着与它一起经历一件小事。</p>
+      <ol><li><strong>让它记住眼前。</strong> 展示钥匙放在哪里，在「经历」中查看新记忆与原片。</li><li><strong>让理解随你更新。</strong> 在「了解你」中查看来源、纠正理解，或暂时遗忘。历史中可以撤销。</li><li><strong>边说边回忆。</strong> SenseMem 持续听取声音、观察画面并提前检索；s2s 读取这些上下文后生成语音。你可以随时开口打断。</li></ol>
+      <p>SenseMem 会异步寻找相关经历，将带来源与时间的历史证据送入当前通话。记忆、画面或声音中的有用变化可触发回应；你开口时优先聆听。「记忆已送入通话」表示模型收到证据，回答仍需以原片核对。</p>
+      <p>字幕显示语音转写与 Agent 回复。你的原始音视频和 Agent 已播放的语音分别保留。首次画面观察与之后的画面变化会异步保存原图，形成可检索的记忆。</p>
+      <p>麦克风与摄像头 → SenseMem 感知与提前召回 → s2s 读取上下文并回答。s2s 使用 Paraformer 识别、Qwen 回答、Aiden 发声；画面由 SenseMem 处理，不是 s2s 的原生视频输入。</p>
+      <p>音视频持续保存，记忆在后台理解；停止通话后仍会继续处理。模型推断与原始经历分开呈现，证据不足的推断不会参与召回。</p>
+      <p>模型配置：<code>examples/live/config.example.json</code>。在启动服务的环境中使用已有的模型凭据；完整说明见 <code>docs/live-demo.md</code>。</p>
+      <p class="help-note">音频、抽样画面及片段会交给你配置的模型服务处理。建议佩戴耳机；回放原片时可先静音麦克风。</p>
+    </dialog>
+    <noscript>请启用 JavaScript，以使用实时摄像头、语音和记忆交互。</noscript>
+  </body>
+</html>

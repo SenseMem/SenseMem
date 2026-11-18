@@ -3,11 +3,17 @@
 from typing import Literal
 
 SchemaName = Literal[
-    "formation", "vision", "consolidation", "recall_plan", "media_selection", "answer"
+    "formation",
+    "vision",
+    "consolidation",
+    "recall_plan",
+    "media_selection",
+    "answer",
+    "event_segmentation",
 ]
 
 
-def _object(properties: dict[str, object]) -> dict[str, object]:
+def _object_schema(properties: dict[str, object]) -> dict[str, object]:
     return {
         "type": "object",
         "properties": properties,
@@ -16,15 +22,15 @@ def _object(properties: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _array(items: dict[str, object]) -> dict[str, object]:
+def _array_schema(items: dict[str, object]) -> dict[str, object]:
     return {"type": "array", "items": items}
 
 
-def _nullable(schema: dict[str, object]) -> dict[str, object]:
+def _nullable_schema(schema: dict[str, object]) -> dict[str, object]:
     return {"anyOf": [schema, {"type": "null"}]}
 
 
-def _proposal(*, witnessed: bool) -> dict[str, object]:
+def _formation_proposal_schema(*, witnessed: bool) -> dict[str, object]:
     fields: dict[str, object] = {
         "kind": {
             "type": "string",
@@ -37,15 +43,15 @@ def _proposal(*, witnessed: bool) -> dict[str, object]:
         "value": {"type": ["string", "null"]},
         "valid_from": {"type": ["string", "null"]},
         "valid_until": {"type": ["string", "null"]},
-        "spatial": _nullable(
-            _object(
+        "spatial": _nullable_schema(
+            _object_schema(
                 {
                     "frame_id": {"type": "string"},
                     "anchor": {"type": "string", "enum": ["observer", "subject"]},
                     "x": {"type": "number"},
                     "y": {"type": "number"},
                     "z": {"type": "number"},
-                    "orientation_xyzw": _nullable(_array({"type": "number"})),
+                    "orientation_xyzw": _nullable_schema(_array_schema({"type": "number"})),
                     "position_uncertainty_m": {"type": ["number", "null"]},
                 }
             )
@@ -58,7 +64,8 @@ def _proposal(*, witnessed: bool) -> dict[str, object]:
         "arousal": {"type": ["number", "null"]},
     }
     if witnessed:
-        fields["evidence_observation_ids"] = _array({"type": "string"})
+        fields["evidence_observation_ids"] = _array_schema({"type": "string"})
+        fields["local_id"] = {"type": ["string", "null"]}
     variants = []
     for kind in (
         ["event", "entity", "affect", "state", "relation", "trait"]
@@ -67,6 +74,32 @@ def _proposal(*, witnessed: bool) -> dict[str, object]:
     ):
         properties = dict(fields)
         properties["kind"] = {"type": "string", "enum": [kind]}
+        if witnessed and kind in {"affect", "relation"}:
+            properties["affect_witnesses"] = _array_schema(
+                _object_schema(
+                    {
+                        "source_id": {"type": "string"},
+                        "reporter": {"type": "string"},
+                        "quote": {"type": "string"},
+                    }
+                )
+            )
+        if witnessed and kind == "relation":
+            properties["affect_link"] = _nullable_schema(
+                _object_schema(
+                    {
+                        "affect_id": {"type": "string"},
+                        "role": {"type": "string", "enum": ["target", "elicitor"]},
+                        "object_ref": _object_schema(
+                            {
+                                "memory_id": {"type": ["string", "null"]},
+                                "identity_id": {"type": ["string", "null"]},
+                            }
+                        ),
+                        "polarity": {"type": "string", "enum": ["affirmed", "denied"]},
+                    }
+                )
+            )
         if kind != "affect":
             for key in ("cue_modality", "valence", "arousal"):
                 del properties[key]
@@ -83,34 +116,48 @@ def _proposal(*, witnessed: bool) -> dict[str, object]:
             + (("value",) if kind == "affect" else ())
         ):
             properties[key] = {"type": "string"}
-        variants.append(_object(properties))
+        variants.append(_object_schema(properties))
     return {"anyOf": variants}
 
 
 def response_schema(name: SchemaName) -> dict[str, object]:
     """Return a fresh schema so callers cannot mutate another request's contract."""
     if name == "formation":
-        return _object(
+        return _object_schema(
             {
-                "items": _array(
-                    _object(
+                "items": _array_schema(
+                    _object_schema(
                         {
                             "observation_id": {"type": "string"},
-                            "proposals": _array(_proposal(witnessed=True)),
+                            "proposals": _array_schema(_formation_proposal_schema(witnessed=True)),
                         }
                     )
                 )
             }
         )
     if name == "vision":
-        return _object({"descriptions": _array({"type": "string"})})
+        return _object_schema({"descriptions": _array_schema({"type": "string"})})
+    if name == "event_segmentation":
+        return _object_schema(
+            {
+                "events": _array_schema(
+                    _object_schema(
+                        {
+                            "end_chunk": {"type": "integer", "minimum": 1},
+                            "summary": {"type": "string", "minLength": 1, "maxLength": 16_384},
+                            "complete": {"type": "boolean"},
+                        }
+                    )
+                )
+            }
+        )
     if name == "answer":
         return _answer_schema()
     if name == "media_selection":
-        return _object(
+        return _object_schema(
             {
-                "requests": _array(
-                    _object(
+                "requests": _array_schema(
+                    _object_schema(
                         {
                             "media_index": {"type": "integer"},
                             "reason": {
@@ -123,10 +170,10 @@ def response_schema(name: SchemaName) -> dict[str, object]:
             }
         )
     if name == "consolidation":
-        return _object(
+        return _object_schema(
             {
-                "operations": _array(
-                    _object(
+                "operations": _array_schema(
+                    _object_schema(
                         {
                             "intent": {
                                 "type": "string",
@@ -139,11 +186,13 @@ def response_schema(name: SchemaName) -> dict[str, object]:
                                 ],
                             },
                             "rationale": {"type": "string"},
-                            "targets": _array({"type": "integer"}),
-                            "evidence": _array({"type": "integer"}),
-                            "proposal": _nullable(_proposal(witnessed=False)),
-                            "claim": _nullable(
-                                _object(
+                            "targets": _array_schema({"type": "integer"}),
+                            "evidence": _array_schema({"type": "integer"}),
+                            "proposal": _nullable_schema(
+                                _formation_proposal_schema(witnessed=False)
+                            ),
+                            "claim": _nullable_schema(
+                                _object_schema(
                                     {
                                         "identity_id": {"type": "string"},
                                         "name": {"type": ["string", "null"]},
@@ -156,23 +205,23 @@ def response_schema(name: SchemaName) -> dict[str, object]:
                 )
             }
         )
-    return _object(
+    return _object_schema(
         {
             "shape": {
                 "type": "string",
                 "enum": ["point", "set", "sequence", "entity", "composite"],
             },
-            "steps": _array(_recall_steps()),
+            "steps": _array_schema(_recall_steps()),
         }
     )
 
 
 def _answer_schema() -> dict[str, object]:
     label: dict[str, object] = {"type": "string", "pattern": "^E[1-9][0-9]*$"}
-    labels = {**_array(label), "maxItems": 128}
+    labels = {**_array_schema(label), "maxItems": 128}
     quote: dict[str, object] = {"type": "string", "minLength": 1, "maxLength": 1_000}
     quoted = {"evidence_label": label, "quote": quote}
-    operand = _object(
+    operand = _object_schema(
         {
             **quoted,
             "value": {
@@ -182,11 +231,11 @@ def _answer_schema() -> dict[str, object]:
             "unit": {"type": "string", "minLength": 1, "maxLength": 64},
         }
     )
-    return _object(
+    return _object_schema(
         {
             "draft": {
                 "anyOf": [
-                    _object(
+                    _object_schema(
                         {
                             "kind": {"type": "string", "enum": ["text"]},
                             "answer": {"type": "string", "minLength": 1},
@@ -194,13 +243,13 @@ def _answer_schema() -> dict[str, object]:
                             "abstained": {"type": "boolean"},
                         }
                     ),
-                    _object(
+                    _object_schema(
                         {
                             "kind": {"type": "string", "enum": ["source_ids"]},
                             "evidence_labels": {**labels, "minItems": 1},
                         }
                     ),
-                    _object(
+                    _object_schema(
                         {
                             "kind": {"type": "string", "enum": ["date"]},
                             "source_value": {"type": "string", "minLength": 1},
@@ -209,10 +258,10 @@ def _answer_schema() -> dict[str, object]:
                                 "type": "string",
                                 "enum": ["year", "month", "day", "minute", "second"],
                             },
-                            "evidence": _object(
+                            "evidence": _object_schema(
                                 {
                                     "evidence_label": label,
-                                    "quote": _nullable(quote),
+                                    "quote": _nullable_schema(quote),
                                     "timestamp_field": {
                                         "type": ["string", "null"],
                                         "enum": ["occurred_at", "occurred_end", "created_at", None],
@@ -221,7 +270,7 @@ def _answer_schema() -> dict[str, object]:
                             ),
                         }
                     ),
-                    _object(
+                    _object_schema(
                         {
                             "kind": {"type": "string", "enum": ["calculation"]},
                             "operation": {
@@ -229,16 +278,16 @@ def _answer_schema() -> dict[str, object]:
                                 "enum": ["scalar", "sum", "difference"],
                             },
                             "format": {"type": "string", "enum": ["with_unit", "number"]},
-                            "operands": {**_array(operand), "minItems": 1, "maxItems": 128},
+                            "operands": {**_array_schema(operand), "minItems": 1, "maxItems": 128},
                         }
                     ),
-                    _object(
+                    _object_schema(
                         {
                             "kind": {"type": "string", "enum": ["calculation"]},
                             "operation": {"type": "string", "enum": ["count_distinct"]},
                             "members": {
-                                **_array(
-                                    _object(
+                                **_array_schema(
+                                    _object_schema(
                                         {
                                             **quoted,
                                             "key": {
@@ -254,7 +303,7 @@ def _answer_schema() -> dict[str, object]:
                             },
                         }
                     ),
-                    _object(
+                    _object_schema(
                         {
                             "kind": {"type": "string", "enum": ["calculation"]},
                             "operation": {"type": "string", "enum": ["duration_days"]},
@@ -264,8 +313,8 @@ def _answer_schema() -> dict[str, object]:
                                 "enum": ["half_open", "closed"],
                             },
                             "intervals": {
-                                **_array(
-                                    _object(
+                                **_array_schema(
+                                    _object_schema(
                                         {
                                             **quoted,
                                             "start_date": {"type": "string", "minLength": 1},
@@ -285,9 +334,11 @@ def _answer_schema() -> dict[str, object]:
 
 
 def _recall_steps() -> dict[str, object]:
-    time: dict[str, object] = {"anyOf": [{"type": "string"}, _array({"type": ["string", "null"]})]}
+    time: dict[str, object] = {
+        "anyOf": [{"type": "string"}, _array_schema({"type": ["string", "null"]})]
+    }
     filters = {
-        "time": _nullable(time),
+        "time": _nullable_schema(time),
         "modality": {"type": ["string", "null"], "enum": ["text", "image", "video", "audio", None]},
         "memory_type": {
             "type": ["string", "null"],
@@ -299,7 +350,7 @@ def _recall_steps() -> dict[str, object]:
         "similar": {"query": {"type": "string"}, "k": {"type": ["integer", "null"]}},
         "match": {
             **filters,
-            "terms": _array({"type": "string"}),
+            "terms": _array_schema({"type": "string"}),
             "any_of": {"type": "boolean"},
             "max_rows": max_rows,
         },
@@ -314,7 +365,7 @@ def _recall_steps() -> dict[str, object]:
     }
     return {
         "anyOf": [
-            _object({"op": {"type": "string", "enum": [op]}, **fields})
+            _object_schema({"op": {"type": "string", "enum": [op]}, **fields})
             for op, fields in properties.items()
         ]
     }

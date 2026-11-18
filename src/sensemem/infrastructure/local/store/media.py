@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Literal
 
+from sensemem.identity import FaceObservation, SpeakerSegment
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
     asset_from_row,
@@ -20,11 +19,8 @@ from sensemem.infrastructure.local.store._connections import Connections
 from sensemem.infrastructure.local.store._identity import (
     FACE_EXEMPLAR_LIMIT,
     VOICE_EXEMPLAR_LIMIT,
-    _ExemplarBank,
     delete_unobserved_identities,
-    resolve_identity_id,
-    restrained_identities,
-    write_identity_exemplars,
+    match_identities,
 )
 from sensemem.infrastructure.local.store._outbox import queue_asset_identity_projection
 from sensemem.infrastructure.local.store.errors import StaleOperationError
@@ -35,8 +31,7 @@ from sensemem.infrastructure.local.store.rows import (
     require_identifier,
     validated_sha256,
 )
-from sensemem.models.base import FaceAnalysis, SpeechAnalysis
-from sensemem.types import FaceObservation, SpeakerSegment
+from sensemem.perception import FaceAnalysis, SpeechAnalysis
 
 
 def write_asset(connection: sqlite3.Connection, asset: StoredAsset) -> None:
@@ -198,7 +193,7 @@ def _match_speakers(
 ) -> dict[str, tuple[str, float | None]]:
     observations = {label: (vector,) for label, vector in speakers.items()}
     claim_groups = dict.fromkeys(observations, 0)
-    return _match_identities(
+    return match_identities(
         connection,
         observations,
         claim_groups=claim_groups,
@@ -212,120 +207,6 @@ def _match_speakers(
         preferred_identity=preferred_identity,
         new_identities=new_identities,
     )
-
-
-def _match_identities(
-    connection: sqlite3.Connection,
-    observations: Mapping[str, tuple[tuple[float, ...], ...]],
-    *,
-    claim_groups: Mapping[str, int | None],
-    modality: Literal["face", "voice"],
-    model_id: str,
-    space_id: str,
-    minimum_similarity: float,
-    minimum_margin: float,
-    exemplar_limit: int,
-    now: datetime,
-    preferred_identity: str | None = None,
-    new_identities: Mapping[str, str] | None = None,
-) -> dict[str, tuple[str, float | None]]:
-    if not observations:
-        return {}
-    dimension = len(next(iter(observations.values()))[0])
-    rows = connection.execute(
-        """
-        SELECT identity_id, position, vector, created_at
-        FROM identity_exemplars
-        WHERE modality = ? AND space_id = ? AND dimension = ?
-        ORDER BY identity_id, position
-        """,
-        (modality, space_id, dimension),
-    ).fetchall()
-    # ponytail: the bank is rebuilt from a full-table read on every recognised asset (about
-    # 60 ms at 46k rows); cache it per (modality, space, dimension) and invalidate at every
-    # `identity_exemplars` writer -- including the `identities` cascades -- if that matters.
-    bank = _ExemplarBank(rows, dimension=dimension, modality=modality)
-    preferred_identity = (
-        None if preferred_identity is None else resolve_identity_id(connection, preferred_identity)
-    )
-    preferred_exists = preferred_identity is not None
-    preferred_missing_modality = (
-        preferred_identity is not None
-        and connection.execute(
-            """
-            SELECT 1 FROM identity_exemplars
-            WHERE identity_id = ? AND modality = ?
-            LIMIT 1
-            """,
-            (preferred_identity, modality),
-        ).fetchone()
-        is None
-    )
-    known_identities = bank.identity_ids
-    if preferred_exists and preferred_identity is not None:
-        known_identities.add(preferred_identity)
-    # Consent restrains enrolment, not recognition. A person who withheld or withdrew it
-    # still matches the exemplars already held -- destroying those is `forget_identity` --
-    # but this observation adds nothing to their template, so the bank stops growing from
-    # the moment they said so.
-    restrained = restrained_identities(connection)
-    claimed: dict[int | None, set[str]] = {}
-    matches: dict[str, tuple[str, float | None]] = {}
-    now_text = datetime_text(now)
-    for label, vectors in observations.items():
-        group_claims = claimed.setdefault(claim_groups[label], set())
-        accepted = bank.best(
-            vectors,
-            claimed=group_claims,
-            minimum_similarity=minimum_similarity,
-            minimum_margin=minimum_margin,
-        )
-        if accepted is not None:
-            identity_id, score = accepted
-        elif (
-            preferred_exists
-            and preferred_missing_modality
-            and preferred_identity is not None
-            and len(observations) == 1
-            and preferred_identity not in group_claims
-        ):
-            identity_id, score = preferred_identity, None
-        else:
-            identity_id = (new_identities or {}).get(label) or f"identity_{uuid.uuid4().hex}"
-            score = None
-        if identity_id in restrained:
-            # Recognized, reported, and nothing written: no exemplar, no `identities` row
-            # update, and so nothing for a rollback to undo either.
-            matches[label] = (
-                identity_id,
-                None if score is None else max(0.0, min(1.0, score)),
-            )
-            group_claims.add(identity_id)
-            continue
-        identity_exists = identity_id in known_identities
-        bank.replace(
-            identity_id,
-            write_identity_exemplars(
-                connection,
-                identity_id,
-                bank.stored(identity_id),
-                vectors,
-                modality=modality,
-                model_id=model_id,
-                space_id=space_id,
-                dimension=dimension,
-                exemplar_limit=exemplar_limit,
-                identity_exists=identity_exists,
-                now_text=now_text,
-            ),
-        )
-        known_identities.add(identity_id)
-        matches[label] = (
-            identity_id,
-            None if score is None else max(0.0, min(1.0, score)),
-        )
-        group_claims.add(identity_id)
-    return matches
 
 
 def _write_speech(
@@ -494,8 +375,6 @@ class MediaAnalyses:
 
     def write_asset(self, asset: StoredAsset) -> None:
         """Persist one media descriptor without attaching it to a memory."""
-        if not isinstance(asset, StoredAsset):
-            raise ValueError("asset must be a StoredAsset value")
         with self._connections.transaction() as connection:
             write_asset(connection, asset)
 
@@ -624,7 +503,7 @@ class MediaAnalyses:
         *,
         model_id: str,
         space_id: str,
-        # Provenance and calibration live on MemoryConfig.speaker_similarity/speaker_margin in
+        # Provenance and calibration live on MemorySettings.speaker_similarity/speaker_margin in
         # plugins.py; every product call site passes them, so treat these literals as a test
         # convenience and not as a settled threshold.
         minimum_similarity: float = 0.78,
@@ -737,7 +616,7 @@ class MediaAnalyses:
         model_id: str,
         space_id: str,
         analysis_space_id: str | None = None,
-        # See write_speech: MemoryConfig.face_similarity/face_margin own these values.
+        # See write_speech: MemorySettings.face_similarity/face_margin own these values.
         minimum_similarity: float = 0.363,
         minimum_margin: float = 0.05,
         preferred_identity: str | None = None,
@@ -781,7 +660,7 @@ class MediaAnalyses:
                 is None
             ):
                 raise ValueError("face analysis requires a stored media asset")
-            matches = _match_identities(
+            matches = match_identities(
                 connection,
                 observations,
                 claim_groups=claim_groups,

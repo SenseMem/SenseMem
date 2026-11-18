@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import Lock
@@ -90,19 +90,11 @@ GROUNDING_MEDIA_FALLBACK = "sensemem.grounding.media_fallback"
 FORMATION_PROPOSALS_DROPPED = "sensemem.formation.dropped_proposals"
 FORMATION_PROPOSALS_REFUSED = "sensemem.formation.refused_proposals"
 VISION_BATCHES_FAILED = "sensemem.vision.failed_batches"
-# A batch that failed but was still inside its retry budget when it did: it did not lose
-# its caption, only pay another attempt for it. Counted apart from `VISION_BATCHES_FAILED`,
-# which answers "how many memories lost their caption" -- an attempt on the way to success
-# is not one, and summing both into one counter could not tell a provider that throttled an
-# ingest from one that ate it.
 IDENTITY_OBSERVATIONS = "sensemem.identity.observations"
 IDENTITY_MATCHED = "sensemem.identity.matched_existing"
 IDENTITY_IDENTITIES = "sensemem.identity.identities"
 IDENTITY_CREATED = "sensemem.identity.created"
 IDENTITY_CACHED = "sensemem.identity.cached"
-IDENTITY_EVIDENCE_ASSETS = "sensemem.identity.evidence_assets"
-IDENTITY_EVIDENCE_REQUIRED = "sensemem.identity.evidence_required"
-IDENTITY_LINKED = "sensemem.identity.linked"
 # Names a distillation read out of a clip's dialogue: how many were registered against a person
 # who had none, and how many were refused because that person already had a different one. The
 # refusals are the interesting half -- a name is what the index keys a person under, so a wrong
@@ -279,8 +271,7 @@ def _observe_generation_inputs(observer: Callable[[object], None]) -> Iterator[N
 def _record_generation_inputs(hits: object) -> None:
     observer = _GENERATION_OBSERVER.get()
     if observer is not None:
-        with suppress(Exception):
-            observer(hits)
+        observer(hits)
 
 
 @contextmanager
@@ -295,10 +286,7 @@ def _observe_retrieval_results(observer: Callable[[object], None]) -> Iterator[N
 
 def _record_retrieval_results(results: object) -> None:
     observer = _RETRIEVAL_OBSERVER.get()
-    if observer is None:
-        return
-    # Observability must not change a product answer; the harness marks the missing list.
-    with suppress(Exception):
+    if observer is not None:
         observer(results)
 
 

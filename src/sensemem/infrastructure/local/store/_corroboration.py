@@ -24,7 +24,7 @@ def independent_evidence_enabled(connection: sqlite3.Connection) -> bool:
     row = connection.execute(
         "SELECT value FROM store_metadata WHERE key = 'evidence.projection_recipe'"
     ).fetchone()
-    return row is not None and row_text(row, "value") == "independent-v1"
+    return row is not None and row_text(row, "value") == "independent-v2"
 
 
 def evidence_support(
@@ -111,7 +111,14 @@ def _read_node(
 ) -> tuple[EvidenceNode | None, int, bool]:
     row = connection.execute(
         """
-            SELECT s.kind, s.basis, s.source_id,
+            SELECT s.kind, s.basis, s.source_id, s.predicate, s.identity_id,
+                   COALESCE(
+                       (SELECT MIN(e.source_group_id) FROM memory_evidence AS e
+                        WHERE e.memory_id = r.memory_id AND e.retired_at IS NULL
+                        HAVING MIN(e.source_group_id) = MAX(e.source_group_id)),
+                       CASE WHEN s.kind = 'observation' THEN s.source_id END,
+                       r.memory_id
+                   ) AS source_group_id,
                    COALESCE((SELECT confidence FROM memory_versions AS v
                              WHERE v.memory_id = r.memory_id ORDER BY version LIMIT 1), 1.0)
                        AS confidence,
@@ -127,11 +134,20 @@ def _read_node(
         return None, 0, False
     kind = optional_row_text(row, "kind")
     basis = optional_row_text(row, "basis")
+    node = EvidenceNode(
+        root_group=None,
+        kind=kind,
+        basis=basis,
+        predicate=optional_row_text(row, "predicate"),
+        identity_id=optional_row_text(row, "identity_id"),
+        source_group_id=row_text(row, "source_group_id"),
+    )
     if not row["has_ancestry"] and (
         kind is None or kind == "observation" or basis in {"user_statement", "response_feedback"}
     ):
         return (
-            EvidenceNode(
+            replace(
+                node,
                 root_group=optional_row_text(row, "source_id") or memory_id,
                 confidence=float(row["confidence"]),
             ),
@@ -146,7 +162,7 @@ def _read_node(
             FROM memory_evidence_clauses AS c
             JOIN memory_evidence_clause_members AS m
               ON m.memory_id = c.memory_id AND m.clause_id = c.clause_id
-            WHERE c.memory_id = ? AND c.retired_at IS NULL
+            WHERE c.memory_id = ? AND c.retired_at IS NULL AND c.confidence > 0
             ORDER BY c.clause_id, m.position
             LIMIT ?
             """,
@@ -154,7 +170,7 @@ def _read_node(
     ).fetchall()
     selected = rows[:remaining]
     return (
-        EvidenceNode(root_group=None, assessments=_complete_assessments(selected)),
+        replace(node, assessments=_complete_assessments(selected)),
         len(selected),
         len(rows) > remaining,
     )

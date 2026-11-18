@@ -12,8 +12,9 @@ import httpx2 as httpx
 import pytest
 from openai import OpenAI
 
-from sensemem import Modality, OpenAIModels
+from sensemem import Modality
 from sensemem.benchmarks import workflow_quality
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 def _consolidation_reply(content: str, broken: str | None) -> str:
@@ -25,14 +26,14 @@ def _consolidation_reply(content: str, broken: str | None) -> str:
         older = [
             row["index"]
             for row in evidence
-            if row.get("context", {}).get("kind") == "trait"
+            if row.get("context", {}).get("kind") == "state"
             and " says their only seat" in row["content"]
             and " now says " not in row["content"]
         ]
         newer = [
             row["index"]
             for row in evidence
-            if row.get("context", {}).get("kind") == "trait"
+            if row.get("context", {}).get("kind") == "state"
             and " now says their only seat" in row["content"]
         ]
         if older and newer:
@@ -56,11 +57,8 @@ def _consolidation_reply(content: str, broken: str | None) -> str:
                     "evidence": drinks,
                     "targets": drinks,
                     "proposal": {
-                        "kind": "trait",
-                        "content": "Ana drinks the same thing each morning.",
-                        "subject": "Ana",
-                        "predicate": "routine",
-                        "value": "same morning drink",
+                        "kind": "event",
+                        "content": "Ana reported the same morning drink twice.",
                         "confidence": 0.9,
                     },
                 }
@@ -172,12 +170,12 @@ def test_workflow_gate_checks_all_stages_in_distinct_physical_stores(
         httpx.Client(transport=httpx.MockTransport(_responder(None))) as transport,
         OpenAI(api_key="test", http_client=transport, max_retries=0) as client,
     ):
-        models = OpenAIModels(
+        models = OpenAICompletion(
             client,
             generation_model="fixture-snapshot",
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
         )
-        vision = OpenAIModels(
+        vision = OpenAICompletion(
             client,
             generation_model="fixture-snapshot",
             generation_capabilities=frozenset({Modality.IMAGE}),
@@ -204,12 +202,12 @@ def test_workflow_gate_rejects_wrong_dates_planning_fallback_and_ungrounded_answ
         httpx.Client(transport=httpx.MockTransport(_responder(broken))) as transport,
         OpenAI(api_key="test", http_client=transport, max_retries=0) as client,
     ):
-        models = OpenAIModels(
+        models = OpenAICompletion(
             client,
             generation_model="fixture-snapshot",
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
         )
-        vision = OpenAIModels(
+        vision = OpenAICompletion(
             client,
             generation_model="fixture-snapshot",
             generation_capabilities=frozenset({Modality.IMAGE}),
@@ -231,7 +229,9 @@ def test_workflow_gate_rejects_wrong_dates_planning_fallback_and_ungrounded_answ
 @pytest.mark.parametrize("repeats", [0, 11, True])
 def test_workflow_gate_bounds_repeat_counts(repeats: int) -> None:
     with pytest.raises(ValueError, match="repeats"):
-        workflow_quality.run_workflow_quality_eval(OpenAIModels(), OpenAIModels(), repeats=repeats)
+        workflow_quality.run_workflow_quality_eval(
+            OpenAICompletion(), OpenAICompletion(), repeats=repeats
+        )
 
 
 def test_workflow_command_without_credentials_makes_no_request(

@@ -12,6 +12,7 @@ import pytest
 import sensemem.models.qwen3_vl_reranking as reranking
 from sensemem import AssetRef, Modality, ModelInput, Qwen3VLReranker, RerankingBackend
 from sensemem.exceptions import ModelError, ValidationError
+from sensemem.prompts import reranking as reranking_prompts
 
 REVISION = "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
 
@@ -121,7 +122,7 @@ def test_gpu_memory_utilization_is_bounded(value: object) -> None:
 
 
 def test_official_template_keeps_query_document_and_assistant_boundaries() -> None:
-    assert reranking._prompt("question", "source") == (
+    assert reranking_prompts.qwen3_vl_prompt("question", "source") == (
         "<|im_start|>system\nJudge whether the Document meets the requirements based on the Query "
         'and the Instruct provided. Note that the answer can only be "yes" or "no".'
         "<|im_end|>\n<|im_start|>user\n<Instruct>: Given a search query, retrieve relevant candidates "
@@ -215,11 +216,11 @@ def test_vllm_batches_native_media_in_order_reuses_query_and_closes_images(
     video_marker = "<|vision_start|><|video_pad|><|vision_end|>"
     first_batch = [
         {
-            "prompt": reranking._prompt(marker + "question", "source"),
+            "prompt": reranking_prompts.qwen3_vl_prompt(marker + "question", "source"),
             "multi_modal_data": {"image": [image]},
         },
         {
-            "prompt": reranking._prompt(marker + "question", video_marker + marker),
+            "prompt": reranking_prompts.qwen3_vl_prompt(marker + "question", video_marker + marker),
             "multi_modal_data": {"image": [image, image], "video": [frames]},
         },
     ]
@@ -228,7 +229,7 @@ def test_vllm_batches_native_media_in_order_reuses_query_and_closes_images(
         (
             [
                 {
-                    "prompt": reranking._prompt(marker + "question", "中文"),
+                    "prompt": reranking_prompts.qwen3_vl_prompt(marker + "question", "中文"),
                     "multi_modal_data": {"image": [image]},
                 }
             ],

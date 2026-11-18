@@ -12,9 +12,9 @@ assertions; [memory management](memory-management.md) covers deliberate changes.
 
 | Type | Use for |
 | --- | --- |
-| `MemoryType.SEMANTIC` | Facts and stable knowledge; the default |
-| `MemoryType.EPISODIC` | Events and observations, usually with event time |
-| `MemoryType.PROCEDURAL` | Instructions and routines, returned as evidence and never executed |
+| `MemoryCategory.SEMANTIC` | Facts and stable knowledge; the default |
+| `MemoryCategory.EPISODIC` | Events and observations, usually with event time |
+| `MemoryCategory.PROCEDURAL` | Instructions and routines, returned as evidence and never executed |
 
 The caller chooses the role. Optional formation adds separate typed records rather than rewriting
 the source role. Memory type participates in stable identity, so identical content with different
@@ -25,20 +25,20 @@ The snippets below assume an open `memory`:
 ```python
 from datetime import datetime, timezone
 
-from sensemem import MemoryType
+from sensemem import MemoryCategory
 
 memory.add(
     "The deployment failed because the token expired.",
-    memory_type=MemoryType.EPISODIC,
+    memory_type=MemoryCategory.EPISODIC,
     occurred_at=datetime(2026, 8, 20, 9, tzinfo=timezone.utc),
 )
 memory.add(
     "Refresh the token, retry once, then escalate.",
-    memory_type=MemoryType.PROCEDURAL,
+    memory_type=MemoryCategory.PROCEDURAL,
 )
 episodes = memory.search(
     "What failed last week?",
-    memory_type=MemoryType.EPISODIC,
+    memory_type=MemoryCategory.EPISODIC,
     reference_at=datetime(2026, 8, 27, 12, tzinfo=timezone.utc),
 ).hits
 ```
@@ -150,13 +150,14 @@ with a nonzero floor. Its anchor is the latest eligible explicit reinforcement, 
 event start, or last update. Confirmations slow decay and add a small ranking boost even without
 decay. Public scores stay in [0,1]; no record, media, embedding, or outbox row is rewritten.
 
-Search never reinforces. By default a non-abstained answer reinforces the canonical records the
+Search never reinforces. Automatic answer reinforcement defaults to `False`. When the host opts
+into `reinforce_on_answer=True`, a non-abstained answer reinforces the canonical records the
 backend lists in `AnswerResult.hits`. This is declared use, not verified support or user feedback.
 Abstention records a query-failure signal without reinforcement. Both buffered and streamed answers
 follow the rule.
 
-Set `reinforce_on_answer=False` for independent evaluation questions or explicit-feedback-only
-applications. Then confirm observed positive use:
+Keep the default for independent evaluation questions or explicit-feedback-only applications.
+Confirm observed positive use:
 
 ```python
 used = memory.search("How should I recover the deployment?", limit=1).hits
@@ -178,6 +179,7 @@ Confirmations later than the query's ranking reference are ignored.
 | `delete()` | Removes the record and orphaned media | No; remnants/backups need separate erasure policy |
 
 `forget()` is all-or-nothing and host-authorized. An unknown ID raises `MemoryNotFoundError`;
-empty input or an already-forgotten target changes nothing. Re-adding the same content does not
+empty input or an already-forgotten target changes nothing, except that explicitly forgetting a
+consolidation-retired source withdraws its retained proof permission. Re-adding the same content does not
 restore recall: use rollback. See [control operations](api/python-control.md) and
 [physical deletion](api/python-memory.md#delete) for exact results and cascading effects.

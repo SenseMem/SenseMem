@@ -6,8 +6,10 @@ from heapq import heappop, heappush
 from itertools import combinations
 from math import isfinite
 
+from sensemem._naming_conditions import is_naming_condition
+
 _Footprint = frozenset[tuple[str, str]]
-_ProofKey = tuple[tuple[str, ...], _Footprint]
+_ProofKey = tuple[tuple[str, ...], _Footprint, _Footprint]
 
 
 def _validate_confidence(confidence: float) -> None:
@@ -33,6 +35,11 @@ class EvidenceNode:
     root_group: str | None
     confidence: float = 1.0
     assessments: tuple[Assessment, ...] = ()
+    kind: str | None = None
+    predicate: str | None = None
+    basis: str | None = None
+    identity_id: str | None = None
+    source_group_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_confidence(self.confidence)
@@ -50,6 +57,24 @@ class SupportSummary:
     count: int
     confidence: float
     truncated: bool
+
+
+def naming_conditions(nodes: Mapping[str, EvidenceNode], memory_id: str) -> frozenset[str]:
+    target = nodes.get(memory_id)
+    return frozenset(
+        source_id
+        for source_id, source in nodes.items()
+        if target is not None
+        and is_naming_condition(
+            source.kind,
+            source.predicate,
+            source.basis,
+            source.identity_id,
+            target.kind,
+            target.identity_id,
+            target.basis,
+        )
+    )
 
 
 @dataclass
@@ -138,13 +163,18 @@ def _join(
     budget: _Budget,
 ) -> _ProofCache:
     joined = _ProofCache()
-    for (_, footprint), confidence in partials.entries.items():
-        for (_, other), other_confidence in antecedents.entries.items():
+    for (_, footprint, experience), confidence in partials.entries.items():
+        for (_, other, other_experience), other_confidence in antecedents.entries.items():
             if not budget.spend():
                 return joined
             if ("node", node_id) in other:
                 continue
-            _retain(joined, ((), footprint | other), min(confidence, other_confidence), budget)
+            _retain(
+                joined,
+                ((), footprint | other, experience | other_experience),
+                min(confidence, other_confidence),
+                budget,
+            )
     return joined
 
 
@@ -153,6 +183,7 @@ def _derive(
     clauses: dict[tuple[str, ...], float],
     proofs: dict[str, _ProofCache],
     budget: _Budget,
+    conditions: frozenset[str],
 ) -> bool:
     changed = False
     for sources, confidence in clauses.items():
@@ -165,22 +196,31 @@ def _derive(
         ):
             continue
         partials = _ProofCache()
-        _retain(partials, ((), frozenset({("node", node_id)})), confidence, budget)
+        own = frozenset({("node", node_id)})
+        _retain(partials, ((), own, own), confidence, budget)
         for source in sources:
             partials = _join(partials, proofs[source], node_id, budget)
             if not partials.entries:
                 break
-        for (_, footprint), score in partials.entries.items():
-            changed |= _retain(proofs[node_id], (sources, footprint), score, budget)
+        for (_, footprint, experience), score in partials.entries.items():
+            changed |= _retain(
+                proofs[node_id],
+                (sources, footprint, frozenset() if node_id in conditions else experience),
+                score,
+                budget,
+            )
     return changed
 
 
 def _summarize(proofs: _ProofCache, memory_id: str, budget: _Budget) -> SupportSummary:
-    count = int(bool(proofs.entries))
-    confidence = max(proofs.entries.values(), default=0.0)
+    count = 0
+    confidence = 0.0
     groups: dict[tuple[str, ...], list[tuple[_Footprint, float]]] = {}
-    for (sources, footprint), score in proofs.entries.items():
-        groups.setdefault(sources, []).append((footprint - {("node", memory_id)}, score))
+    for (sources, _full, experience), score in proofs.entries.items():
+        if any(kind == "capture" for kind, _ in experience):
+            count = 1
+            confidence = max(confidence, score)
+            groups.setdefault(sources, []).append((experience - {("node", memory_id)}, score))
     # Alternative proofs of the same top-level AND clause can never corroborate it. Group
     # first, so they neither spend the pair budget nor hide a different clause behind it.
     for group, other_group in combinations(groups.values(), 2):
@@ -220,6 +260,7 @@ def independent_support(
     if max_proofs < 1 or max_steps < 1:
         raise ValueError("proof and work limits must be positive")
     budget = _Budget(max_steps, max_proofs)
+    conditions = naming_conditions(nodes, memory_id)
     clauses, parents = _graph(nodes, memory_id)
     proofs: dict[str, _ProofCache] = {node_id: _ProofCache() for node_id in clauses}
     pending: list[str] = []
@@ -229,7 +270,13 @@ def independent_support(
         if node.root_group is not None and not node.assessments and node.confidence > 0.0:
             _retain(
                 proofs[node_id],
-                ((), frozenset({("capture", node.root_group)})),
+                (
+                    (),
+                    frozenset({("capture", node.root_group)}),
+                    frozenset()
+                    if node_id in conditions
+                    else frozenset({("capture", node.root_group)}),
+                ),
                 node.confidence,
                 budget,
             )
@@ -239,7 +286,7 @@ def independent_support(
     while pending:
         node_id = heappop(pending)
         queued.remove(node_id)
-        if _derive(node_id, clauses[node_id], proofs, budget):
+        if _derive(node_id, clauses[node_id], proofs, budget, conditions):
             for parent in sorted(parents.get(node_id, ())):
                 if parent not in queued:
                     heappush(pending, parent)

@@ -14,10 +14,11 @@ import numpy as np
 import pytest
 
 import sensemem.models.sentence_transformers as sentence_transformers
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models.base import EmbeddingBackend, EmbedTask, ModelInput
 from sensemem.models.sentence_transformers import SentenceTransformersEmbedder
-from sensemem.types import AssetRef, Modality
+from sensemem.types import Modality
 
 REVISION = "a" * 40
 

@@ -12,64 +12,6 @@ from sensemem.kernel.predicates import (
 )
 
 
-def _validate_semantic_columns(connection: sqlite3.Connection) -> None:
-    names = (
-        "memory_id",
-        "lineage_id",
-        "kind",
-        "basis",
-        "source_id",
-        "subject",
-        "predicate",
-        "value",
-        "model_id",
-        "recipe",
-        "identity_id",
-        "cue_modality",
-        "valence",
-        "arousal",
-        "spatial_frame_id",
-        "spatial_anchor",
-        "spatial_x",
-        "spatial_y",
-        "spatial_z",
-        "spatial_qx",
-        "spatial_qy",
-        "spatial_qz",
-        "spatial_qw",
-        "spatial_uncertainty_m",
-        "predicate_key",
-        "predicate_registry",
-        "predicate_match",
-    )
-    reals = {
-        "valence",
-        "arousal",
-        "spatial_x",
-        "spatial_y",
-        "spatial_z",
-        "spatial_qx",
-        "spatial_qy",
-        "spatial_qz",
-        "spatial_qw",
-        "spatial_uncertainty_m",
-    }
-    expected = {
-        name: (
-            "REAL" if name in reals else "TEXT",
-            int(name in {"lineage_id", "kind", "basis"}),
-            int(name == "memory_id"),
-        )
-        for name in names
-    }
-    actual = {
-        str(row[1]): (str(row[2]).upper(), int(row[3]), int(row[5]))
-        for row in connection.execute("PRAGMA table_info(memory_semantics)")
-    }
-    if actual != expected:
-        raise UnsupportedSchemaError("local schema has invalid predicate semantics columns")
-
-
 def predicate_binding(
     lineage_id: str,
     *,
@@ -99,8 +41,7 @@ def predicate_binding(
     return resolution.key, resolution.match
 
 
-def validate_predicate_schema(connection: sqlite3.Connection) -> None:
-    _validate_semantic_columns(connection)
+def validate_predicate_provenance(connection: sqlite3.Connection) -> None:
     if connection.execute(
         "SELECT 1 FROM memory_semantics WHERE predicate_registry IS NULL OR predicate_registry <> ? "
         "OR predicate_match IS NULL OR predicate_match NOT IN "

@@ -11,7 +11,9 @@ development. Use the [SDK](api/python-sdk.md), [configuration](configuration.md)
 
 ## Product boundary
 
-![ContextOS connects finalized multimodal capture, model capabilities, supported memory, and bounded task context.](assets/tech-report/contextos-overview.png)
+![ContextOS connects finalized multimodal capture, model capabilities, supported memory, and bounded task context.](assets/tech-report/contextos-overview.gif)
+
+[View the static figure.](assets/tech-report/contextos-overview.png)
 
 *From the SenseMem technical report, Figure 1: finalized observations, revisable assertions, and
 their support share authoritative SQLite state and native assets; Zvec supplies rebuildable
@@ -21,8 +23,8 @@ control of goals, scheduling, and actions.*
 
 | Layer | Responsibility |
 | --- | --- |
-| Source integration | Normalize application or device events into immutable observations with explicit finality. |
-| Capture | Separate changing working input, speculative recall, and durable observations. |
+| Source integration | Capture and encode immutable media chunks or supply application events with explicit finality. |
+| Capture | Understand continuous media and close complete semantic events, or accept explicit finals; separate speculative recall and durable observations. |
 | Kernel | Enforce evidence, identity, time, space, version, and durability rules. |
 | Memory management | Propose reinforcement, consolidation, correction, and cognitive forgetting within a bounded evidence window. |
 | Context compiler | Select evidence for a goal within item, character, media, freshness, and confidence bounds. |
@@ -79,9 +81,12 @@ instead acknowledges the SQLite commit before any model call; the host later cal
 enrich and index it. `pending_captures()` reports readiness and failures. A row awaiting only
 formation can already be searchable.
 
-Streaming helpers distinguish speculative `UPDATE`, durable `FINAL`, and discarded `CANCEL`
-events. Capture mode keeps query-model work off the acknowledgement path. The host still owns
-segmentation and settlement scheduling. See [streaming](omni-streaming-and-interaction-memory.md).
+`AsyncEventStream` understands successive audio/video chunks and chooses complete semantic
+events while preserving all original media. Other streaming helpers distinguish speculative
+`UPDATE`, durable `FINAL`, and discarded `CANCEL` events. Capture mode defers write enrichment
+and skips automatic query-model work; automatic event segmentation still runs before commit.
+The host owns capture, encoding, and settlement scheduling. See
+[streaming](omni-streaming-and-interaction-memory.md).
 
 Measure acknowledgement, time to searchable, search latency, speculative first-hit latency, and
 formation lag separately. A latency claim must identify payload, model, hardware, warm or cold
@@ -123,7 +128,8 @@ procedures, affect, and traits. It reports conflicts and unknowns rather than re
 Derived assertions require eligible supporting evidence to fit the delivery budget.
 
 Compilation uses retrieval and can invoke its configured query preparation and reranking backends;
-it makes no answer-generation call. Query caches and empty-recall signals can persist, while no
+configured recall planning can add one bounded read program for the goal. It makes no
+answer-generation call. Query caches and empty-recall signals can persist, while no
 memory record is created. The agent chooses the final prompt, response, and action.
 See [context compilation](context-compilation.md) for budget and evidence-closure rules.
 

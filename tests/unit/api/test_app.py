@@ -18,18 +18,14 @@ import pytest
 from _api_support import (
     ASSET,
     ENVELOPE_FIELDS,
-    ERASURE,
-    FACE,
     NAMED,
     NOW,
     OCCURRED_FROM,
     OCCURRED_UNTIL,
     PROFILE,
-    SEGMENT,
-    _bundle,
+    MemoryStub,
     _hit,
     _record,
-    _trace,
 )
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
@@ -41,8 +37,21 @@ from starlette.requests import Request
 from starlette.types import Message, Scope
 
 import sensemem
-from sensemem.api import app as app_module
+from sensemem.api import streaming as streaming_module
 from sensemem.api.app import create_app
+from sensemem.api.schemas import AnswerRequest
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.content import AssetRef, Blob, ContentInput
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_values import ContextBudget, ContextSupplement
+from sensemem.control_values import (
+    ExportBundle,
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryTrigger,
+    RetentionReport,
+)
 from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
@@ -52,37 +61,16 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
-from sensemem.types import (
-    AnswerChunk,
-    AnswerPolicy,
-    AnswerResult,
-    AssetRef,
-    Blob,
+from sensemem.identity import (
     ConsentClaim,
     ConsentState,
-    ContentInput,
-    ContextBudget,
-    ContextBundle,
-    ExportBundle,
-    IdentityErasure,
-    IdentityProfile,
-    MemoryCapabilities,
-    MemoryIntent,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
-    Modality,
-    ObservationContext,
-    Page,
-    PendingCapture,
+    PerceptionCoverage,
     PerceptionKind,
     PerceptionResult,
-    RetentionReport,
-    RetrievalScope,
-    SearchResult,
 )
+from sensemem.records import AnswerChunk, AnswerResult, MemoryRecord, Page, PendingCapture
+from sensemem.spatial import ObservationContext, RetrievalScope
+from sensemem.types import AnswerPolicy, MemoryCategory, Modality
 
 # Atomic modalities and native combinations must serialize deterministically.
 CAPABILITIES = MemoryCapabilities(
@@ -119,15 +107,11 @@ PENDING = PendingCapture(
 )
 
 
-class FakeMemory:
+class FakeMemory(MemoryStub):
     def __init__(self, failure: Exception | None = None) -> None:
-        self.calls: list[tuple[object, ...]] = []
-        self.close_count = 0
-        self.failure = failure
+        super().__init__(failure)
         self.deleted = True
         self.declared = CAPABILITIES
-        self.profile: IdentityProfile | None = PROFILE
-        self.restored: str | None = "identity_2"
 
     @property
     def capabilities(self) -> MemoryCapabilities:
@@ -140,7 +124,7 @@ class FakeMemory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         self._fail()
@@ -164,7 +148,7 @@ class FakeMemory:
         occurred_at: Sequence[datetime | None] | None = None,
         occurred_end: Sequence[datetime | None] | None = None,
         metadata: Sequence[Mapping[str, object] | None] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: Sequence[ObservationContext | None] | None = None,
     ) -> tuple[MemoryRecord, ...]:
         self._fail()
@@ -194,76 +178,14 @@ class FakeMemory:
             for index, content in enumerate(copied)
         )
 
-    def search(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-        explain: bool = False,
-    ) -> SearchResult:
-        self._fail()
-        self.calls.append(
-            (
-                "search",
-                query,
-                limit,
-                memory_type,
-                reference_at,
-                occurred_from,
-                occurred_until,
-            )
-        )
-        return SearchResult(hits=() if explain else (_hit(),), trace=_trace() if explain else None)
-
-    def compile(
-        self,
-        goal: ContentInput,
-        *,
-        budget: ContextBudget | None = None,
-        reference_at: datetime | None = None,
-        scope: RetrievalScope | None = None,
-        allow_partial_sources: bool = False,
-    ) -> ContextBundle:
-        self._fail()
-        self.calls.append(("compile", goal, budget, reference_at, scope, allow_partial_sources))
-        return _bundle(budget or ContextBudget(), reference_at or NOW)
-
-    def reinforce(self, memory_ids: Sequence[str]) -> int:
-        self._fail()
-        self.calls.append(("reinforce", tuple(memory_ids)))
-        return len(tuple(dict.fromkeys(memory_ids)))
-
-    def ask(
-        self,
-        question: ContentInput,
-        *,
-        limit: int = 5,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        scope: RetrievalScope | None = None,
-        link_identities: bool = True,
-        answer_policy: AnswerPolicy = "strict",
-    ) -> AnswerResult:
-        self._fail()
-        self.calls.append(
-            ("ask", question, limit, memory_type, reference_at, link_identities, answer_policy)
-        )
-        return AnswerResult(answer="The toolbox is blue.", hits=(_hit(),))
-
     def ask_stream(
         self,
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> Generator[AnswerChunk, None, AnswerResult]:
         self._fail()
@@ -274,7 +196,6 @@ class FakeMemory:
                 limit,
                 memory_type,
                 reference_at,
-                link_identities,
                 answer_policy,
             )
         )
@@ -288,6 +209,10 @@ class FakeMemory:
         self._fail()
         self.calls.append(("get", memory_id))
         return _record(memory_id, "The toolbox is blue.")
+
+    def read_asset(self, memory_id: str, asset_id: str) -> Blob:
+        self._fail()
+        return Blob(b"source", "image/png", "frame.png")
 
     def list(self, *, limit: int = 100, cursor: str | None = None) -> Page:
         self._fail()
@@ -306,7 +231,7 @@ class FakeMemory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         self._fail()
@@ -341,42 +266,11 @@ class FakeMemory:
         *,
         limit: int = 100,
         memory_ids: Sequence[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[PendingCapture, ...]:
         self._fail()
         self.calls.append(("pending_captures", limit, tuple(memory_ids) if memory_ids else None))
         return (PENDING,)
-
-    def perceive(
-        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
-    ) -> PerceptionResult:
-        self._fail()
-        self.calls.append(("perceive", memory_id, kinds))
-        return PerceptionResult(speech=(SEGMENT,), faces=(FACE,))
-
-    def register_identity(
-        self,
-        identity_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        self._fail()
-        self.calls.append(("register_identity", identity_id, name, relationship))
-
-    def identity(self, identity_id: str) -> IdentityProfile | None:
-        self._fail()
-        self.calls.append(("identity", identity_id))
-        return self.profile
-
-    def unlink_identity(self, alias_id: str) -> str | None:
-        self._fail()
-        self.calls.append(("unlink_identity", alias_id))
-        return self.restored
-
-    def forget_identity(self, identity_id: str) -> IdentityErasure:
-        self._fail()
-        self.calls.append(("forget_identity", identity_id))
-        return ERASURE
 
     def record_consent(
         self,
@@ -416,13 +310,6 @@ class FakeMemory:
         self._fail()
         self.calls.append(("apply_retention", dry_run))
         return RetentionReport(dry_run=dry_run, forgotten_memory_ids=("mem_1",))
-
-    def close(self) -> None:
-        self.close_count += 1
-
-    def _fail(self) -> None:
-        if self.failure is not None:
-            raise self.failure
 
 
 def test_resource_routes_map_the_public_memory_values() -> None:
@@ -497,7 +384,7 @@ def test_resource_routes_map_the_public_memory_values() -> None:
             NOW,
             None,
             {"room": "workshop"},
-            MemoryType.EPISODIC,
+            MemoryCategory.EPISODIC,
         ),
         (
             "add_many",
@@ -505,7 +392,7 @@ def test_resource_routes_map_the_public_memory_values() -> None:
             (NOW, None),
             (None, None),
             ({"room": "workshop"}, {}),
-            MemoryType.PROCEDURAL,
+            MemoryCategory.PROCEDURAL,
         ),
         ("list", 2, "before"),
         ("get", "memory_1"),
@@ -513,12 +400,12 @@ def test_resource_routes_map_the_public_memory_values() -> None:
             "search",
             "toolbox",
             3,
-            MemoryType.EPISODIC,
+            MemoryCategory.EPISODIC,
             NOW,
             OCCURRED_FROM,
             OCCURRED_UNTIL,
         ),
-        ("ask", "What color is it?", 4, MemoryType.PROCEDURAL, NOW, False, "strict"),
+        ("ask", "What color is it?", 4, MemoryCategory.PROCEDURAL, NOW, "strict"),
         ("delete", "memory_1"),
     ]
     assert memory.close_count == 0
@@ -545,7 +432,7 @@ def test_answer_stream_sends_deltas_then_one_grounded_result_with_transport_timi
     assert 'data: {"text":"is blue."}' in response.text
     assert response.text.count("event: result\n") == 1
     assert '"answer":"The toolbox is blue."' in response.text
-    assert memory.calls == [("ask_stream", "What color is it?", 4, None, None, False, "strict")]
+    assert memory.calls == [("ask_stream", "What color is it?", 4, None, None, "strict")]
 
     span = next(
         span for span in exporter.get_finished_spans() if span.name == "sensemem.http.request"
@@ -591,13 +478,12 @@ def test_answer_stream_failure_after_a_delta_ends_with_an_error_event() -> None:
             question: ContentInput,
             *,
             limit: int = 5,
-            memory_type: MemoryType | None = None,
+            memory_type: MemoryCategory | None = None,
             reference_at: datetime | None = None,
             scope: RetrievalScope | None = None,
-            link_identities: bool = True,
             answer_policy: AnswerPolicy = "strict",
         ) -> Generator[AnswerChunk, None, AnswerResult]:
-            del question, limit, memory_type, reference_at, scope, link_identities, answer_policy
+            del question, limit, memory_type, reference_at, scope, answer_policy
             yield AnswerChunk(text="partial answer")
             failure = ModelError(
                 "generation request failed", reason="rate_limited", stage="generate"
@@ -640,13 +526,12 @@ async def test_answer_stream_closes_after_the_transport_send_fails(
             question: ContentInput,
             *,
             limit: int = 5,
-            memory_type: MemoryType | None = None,
+            memory_type: MemoryCategory | None = None,
             reference_at: datetime | None = None,
             scope: RetrievalScope | None = None,
-            link_identities: bool = True,
             answer_policy: AnswerPolicy = "strict",
         ) -> Generator[AnswerChunk, None, AnswerResult]:
-            del question, limit, memory_type, reference_at, scope, link_identities, answer_policy
+            del question, limit, memory_type, reference_at, scope, answer_policy
             result = AnswerResult(answer="answer")
             try:
                 yield AnswerChunk(text="answer")
@@ -671,7 +556,7 @@ async def test_answer_stream_closes_after_the_transport_send_fails(
         {"type": "http", "method": "POST", "path": "/v1/answers/stream", "headers": []},
         receive,
     )
-    response = await endpoint(app_module.AnswerRequest(question="Where is it?"), request)
+    response = await endpoint(AnswerRequest(question="Where is it?"), request)
 
     async def send(message: Message) -> None:
         if message["type"] == failed_message:
@@ -720,7 +605,7 @@ async def test_answer_stream_closes_after_disconnect_while_waiting_for_first_chu
     try:
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(
-                app_module._first_chunk_or_disconnect(
+                streaming_module._first_chunk_or_disconnect(
                     stream,
                     connection=connection,
                     worker=worker,
@@ -763,7 +648,7 @@ async def test_answer_stream_closes_when_first_chunk_task_is_cancelled() -> None
     worker = ThreadPoolExecutor(max_workers=1)
     stream = delayed_stream()
     pending = asyncio.create_task(
-        app_module._first_chunk_or_disconnect(
+        streaming_module._first_chunk_or_disconnect(
             stream,
             connection=connection,
             worker=worker,
@@ -943,13 +828,13 @@ def test_memory_routes_are_sync_for_fastapi_threadpool_execution() -> None:
 def test_the_documented_v1_route_counts_are_the_real_ones() -> None:
     """`docs/api/rest.md` spells out the always-on and gated `/v1` route counts in prose.
 
-    Parses "thirteen ... or twenty-three when" from the doc and checks each number against the
+    Parses "fourteen ... or twenty-three when" from the doc and checks each number against the
     routes `create_app` actually registers, once with both opt-in switches off and once with
     both on, so a route added or removed without a doc update fails here. A tiny local map
     stands in for `test_surface_parity._COUNT_WORDS`: that module has no `__init__.py`, so
     importing it by dotted path here collides with mypy's own file-based module discovery.
     """
-    count_words = {13: "thirteen", 22: "twenty-two"}
+    count_words = {14: "fourteen", 23: "twenty-three"}
 
     def v1_route_count(
         *, identity_operations: bool = False, embodied_operations: bool = False
@@ -1250,7 +1135,7 @@ def test_batch_creation_carries_every_value_the_memory_identity_uses() -> None:
             (NOW, None),
             (None, None),
             ({"room": "workshop"}, {}),
-            MemoryType.SEMANTIC,
+            MemoryCategory.SEMANTIC,
         )
     ]
     assert response.json()["memories"][0]["occurred_at"] == "2026-08-27T12:00:00Z"
@@ -1287,7 +1172,7 @@ def test_the_context_route_returns_the_whole_bundle_without_local_asset_paths() 
                 max_chars=2_000,
                 selected_proofs=True,
                 max_items=8,
-                memory_types=frozenset({MemoryType.EPISODIC, MemoryType.SEMANTIC}),
+                memory_types=frozenset({MemoryCategory.EPISODIC, MemoryCategory.SEMANTIC}),
                 min_confidence=0.5,
                 freshness=timedelta(hours=1),
                 max_latency_ms=250,
@@ -1393,6 +1278,7 @@ def test_the_context_route_reports_a_named_actor_too() -> None:
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
         allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
     ) -> ContextBundle:
         bundle = original_compile(
             goal,
@@ -1400,6 +1286,7 @@ def test_the_context_route_reports_a_named_actor_too() -> None:
             reference_at=reference_at,
             scope=scope,
             allow_partial_sources=allow_partial_sources,
+            supplements=supplements,
         )
         return replace(bundle, actors=(NAMED,))
 
@@ -1453,7 +1340,9 @@ def test_the_context_route_rejects_an_unrepresentable_freshness(freshness: str) 
     assert memory.calls == []
 
 
-def test_unexpected_and_framework_errors_keep_the_flat_envelope() -> None:
+def test_unexpected_and_framework_errors_keep_the_flat_envelope(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     app = create_app(memory=FakeMemory(RuntimeError("private implementation detail")))
     with TestClient(app, raise_server_exceptions=False) as client:
         failed = client.get("/v1/memories/memory_1")
@@ -1462,6 +1351,11 @@ def test_unexpected_and_framework_errors_keep_the_flat_envelope() -> None:
     assert failed.status_code == 500
     assert failed.json()["code"] == "internal_error"
     assert "private implementation detail" not in failed.text
+    assert "private implementation detail" not in caplog.text
+    records = [record for record in caplog.records if record.name == "sensemem.api.errors"]
+    assert len(records) == 1
+    assert records[0].__dict__["trace_id"] == failed.json()["trace_id"]
+    assert records[0].exc_info is None
     assert missing.status_code == 404
     assert missing.json()["code"] == "not_found"
     assert set(missing.json()) == ENVELOPE_FIELDS
@@ -1576,8 +1470,10 @@ def test_capture_settle_and_pending_captures_are_always_on() -> None:
                 "attempts": 1,
                 "last_error": "model timed out",
                 "awaiting": "enrichment",
+                "cursor": PENDING.cursor,
             }
-        ]
+        ],
+        "next_cursor": None,
     }
     assert memory.calls == [
         (
@@ -1586,7 +1482,7 @@ def test_capture_settle_and_pending_captures_are_always_on() -> None:
             None,
             None,
             {"room": "hall"},
-            MemoryType.SEMANTIC,
+            MemoryCategory.SEMANTIC,
         ),
         ("settle", 10, 5, ("memory_1", "memory_2")),
         ("settle", 100, 3, None),
@@ -1655,27 +1551,42 @@ def test_embodied_routes_dispatch_to_the_sdk_when_enabled() -> None:
     ]
 
 
-def test_answers_only_link_identities_when_embodied_operations_is_enabled() -> None:
-    """Recall access alone must not acquire merge authority through either answer route.
+def test_perception_route_preserves_skipped_analysis_coverage_and_its_schema() -> None:
+    class UnconfiguredSpeech(FakeMemory):
+        def perceive(
+            self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
+        ) -> PerceptionResult:
+            return PerceptionResult(
+                coverage=(PerceptionCoverage("speech", "audio_1", "backend_not_configured"),)
+            )
 
-    `embodied_operations` gates `analyze_faces`, which commits the corroborated cross-modal
-    identity merge; `ask` reaches the same merge through its own face recognition, so REST must
-    pass the same switch through as `Memory.ask(..., link_identities=...)` rather than always
-    defaulting it on.
-    """
+    with TestClient(create_app(memory=UnconfiguredSpeech(), embodied_operations=True)) as client:
+        response = client.post("/v1/perception", json={"memory_id": "memory_1"})
+        schema = client.get("/openapi.json").json()["components"]["schemas"]
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "speech": [],
+        "faces": [],
+        "coverage": [{"kind": "speech", "asset_id": "audio_1", "reason": "backend_not_configured"}],
+    }
+    assert "coverage" in schema["PerceptionResponse"]["properties"]
+    assert set(schema["PerceptionCoverage"]["properties"]) == {"kind", "asset_id", "reason"}
+
+
+def test_answer_recognition_does_not_depend_on_perception_tool_authority() -> None:
+    """Both answer routes recognize evidence without implicitly merging identities."""
     memory = FakeMemory()
     with TestClient(create_app(memory=memory)) as client:
         client.post("/v1/answers", json={"question": "What color is it?"})
         client.post("/v1/answers/stream", json={"question": "What color is it?"})
-    assert memory.calls[-1][-2] is False
-    assert memory.calls[-2][-2] is False
+    calls = tuple(memory.calls)
 
     memory = FakeMemory()
     with TestClient(create_app(memory=memory, embodied_operations=True)) as client:
         client.post("/v1/answers", json={"question": "What color is it?"})
         client.post("/v1/answers/stream", json={"question": "What color is it?"})
-    assert memory.calls[-1][-2] is True
-    assert memory.calls[-2][-2] is True
+    assert tuple(memory.calls) == calls
 
 
 def test_embodied_routes_map_memory_not_found() -> None:

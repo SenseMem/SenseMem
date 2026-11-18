@@ -21,9 +21,10 @@ from pydantic import SecretStr
 from sensemem import (
     AnswerPolicy,
     ContextBudget,
+    MemorySpec,
     Modality,
-    SenseMemConfig,
 )
+from sensemem._validation import absolute_http_url
 from sensemem.benchmarks.eval_adapters import LoadedTask
 from sensemem.benchmarks.eval_regression import PERFORMANCE_BUDGET_NAMES
 from sensemem.benchmarks.eval_results import DEFAULT_ARM
@@ -34,7 +35,11 @@ from sensemem.benchmarks.model_config import (
     ModelConfig,
 )
 from sensemem.benchmarks.task_catalog import expand
-from sensemem.configuration import _absolute_http_url
+from sensemem.configuration import (
+    FunASRSpeechConfig,
+    OpenAIGenerationConfig,
+    SentenceTransformersEmbeddingConfig,
+)
 from sensemem.models._openai_protocol import reasoning_model, sampling_supported
 
 BASELINE_ARMS = ("blind", "full-context", "random", "compile")
@@ -169,7 +174,7 @@ class _JudgeConfig:
     def __post_init__(self) -> None:
         if not self.model.strip():
             raise ValueError("judge model must not be blank")
-        if not _absolute_http_url(self.base_url):
+        if not absolute_http_url(self.base_url):
             raise ValueError("judge base URL must be an absolute http(s) URL")
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("judge timeout must be positive")
@@ -178,7 +183,7 @@ class _JudgeConfig:
 
 
 def _memory_config_payload(
-    config: SenseMemConfig,
+    config: MemorySpec,
     *,
     exclude: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
@@ -270,7 +275,7 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
         dest="memory_config",
         type=Path,
         help=(
-            "YAML SenseMemConfig with an explicit embedding section, plus optional benchmark "
+            "YAML MemorySpec with an explicit embedding section, plus optional benchmark "
             "settings; data_dir is replaced by isolated benchmark directories"
         ),
     )
@@ -710,11 +715,11 @@ def _resolved_performance_budgets(
 
 def _load_memory_config(
     path: Path | None,
-) -> tuple[SenseMemConfig | None, HarnessOverrides]:
+) -> tuple[MemorySpec | None, HarnessOverrides]:
     """Load one harness configuration file into its product and harness halves.
 
     The `benchmark:` mapping is the harness's own: credentials, judging, and corpus
-    acquisition have no field in `SenseMemConfig` and must not gain one, because that schema is
+    acquisition have no field in `MemorySpec` and must not gain one, because that schema is
     a public contract and its credentials are deliberately kept off disk.
     """
     if path is None:
@@ -730,10 +735,10 @@ def _load_memory_config(
         values["generation"] = {"provider": "openai"}
     if values.get("embedding") is None:
         raise ValueError("benchmark config requires an explicit embedding section")
-    config = SenseMemConfig.model_validate(values)
+    config = MemorySpec.model_validate(values)
     generation = config.generation
-    if generation is None:
-        raise ValueError("benchmark config generation cannot be null")
+    if not isinstance(generation, OpenAIGenerationConfig):
+        raise ValueError("benchmark config requires bundled OpenAI generation")
     conflicts = sorted(
         {"max_tokens", "seed", "temperature", "do_sample"}.intersection(generation.extra_body or {})
     )
@@ -757,10 +762,10 @@ def _load_memory_config(
 def _model_config(
     arguments: str,
     *,
-    memory_config: SenseMemConfig | None = None,
+    memory_config: MemorySpec | None = None,
 ) -> ModelConfig:
     config = ModelConfig.from_environment()
-    if memory_config is not None and memory_config.generation is not None:
+    if memory_config is not None and isinstance(memory_config.generation, OpenAIGenerationConfig):
         generation = memory_config.generation
         # `model` and `modalities` carry non-`None` schema defaults, so an absent value cannot be
         # told apart from an explicit one by truthiness the way `base_url`/`timeout` can. Checking
@@ -850,10 +855,10 @@ def _evaluation_config(
     config: ModelConfig,
     tasks: Sequence[LoadedTask],
     *,
-    memory_config: SenseMemConfig | None = None,
+    memory_config: MemorySpec | None = None,
 ) -> ModelConfig:
     generation = None if memory_config is None else memory_config.generation
-    if generation is not None and (
+    if isinstance(generation, OpenAIGenerationConfig) and (
         "modalities" in generation.model_fields_set or generation.routes
     ):
         return config
@@ -883,13 +888,13 @@ def _evaluation_config(
 
 
 def _evaluation_memory_config(
-    config: SenseMemConfig | None,
+    config: MemorySpec | None,
     model: ModelConfig,
     *,
     gen_kwargs: str,
     seed: int,
     device: str | None,
-) -> SenseMemConfig | None:
+) -> MemorySpec | None:
     if config is None:
         return None
     # The pool pins answer-time reinforcement off for every product arm (see `_BackendPool`), so
@@ -901,7 +906,7 @@ def _evaluation_memory_config(
         update={"settings": replace(config.settings, reinforce_on_answer=False)}
     )
     generation = config.generation
-    if generation is None:
+    if not isinstance(generation, OpenAIGenerationConfig):
         return config
     options = dict(item.split("=", 1) for item in gen_kwargs.split(",") if "=" in item)
     extra_body = None if generation.extra_body is None else dict(generation.extra_body)
@@ -935,9 +940,9 @@ def _evaluation_memory_config(
     embedding = config.embedding
     speech = config.speech
     if device is not None:
-        if embedding.provider == "sentence-transformers":
+        if isinstance(embedding, SentenceTransformersEmbeddingConfig):
             embedding = embedding.model_copy(update={"device": device})
-        if speech is not None and speech.provider == "funasr":
+        if isinstance(speech, FunASRSpeechConfig):
             speech = speech.model_copy(update={"device": device})
     return config.model_copy(
         update={
@@ -965,7 +970,7 @@ def _replace_config(config: ModelConfig, key: str, value: str) -> ModelConfig:
 
 def _description_cache_path(
     arguments: _Arguments,
-    memory_config: SenseMemConfig | None,
+    memory_config: MemorySpec | None,
 ) -> Path | None:
     """Share descriptions inside one run without warming later performance repeats."""
     if memory_config is None or memory_config.vision is None:

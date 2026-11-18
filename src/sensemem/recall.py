@@ -22,16 +22,16 @@ from datetime import date, datetime, time, timezone
 from math import ceil
 from typing import Literal, NamedTuple, Protocol, TypeVar, cast
 
-# The store's own bounds on one primitive read. Imported rather than restated so a plan can never
-# ask for more rows than the read will return, nor for a term the read will refuse.
-from sensemem.infrastructure.local.store import RECALL_MAX_ROWS, RECALL_MAX_TERM_CHARS
-from sensemem.types import MemoryType, Modality, SearchHit
+from sensemem.records import SearchHit
+from sensemem.types import MemoryCategory, Modality
+
+# One primitive read hydrates at most this many rows; substring scans remain unbounded.
+RECALL_MAX_ROWS = 500
+# A match term longer than this is a paragraph rather than a recall predicate.
+RECALL_MAX_TERM_CHARS = 200
 
 RecallShape = Literal["point", "set", "sequence", "entity", "composite"]
 RecallOp = Literal["similar", "match", "window", "neighbors", "entity"]
-
-# A trusted capability line emitted by the kernel, not stored evidence or a planner request.
-SEMANTIC_QUERY_CAPABILITY = "Semantic query expansion: enabled"
 
 _SHAPES: frozenset[str] = frozenset({"point", "set", "sequence", "entity", "composite"})
 _OPS: frozenset[str] = frozenset({"similar", "match", "window", "neighbors", "entity"})
@@ -89,7 +89,7 @@ RECALL_NON_SELECTIVE_SHARE = 0.2
 # one fifth of it is a handful of rows, and a read of that size is not what flooded anything.
 RECALL_NON_SELECTIVE_MIN_ROWS = 4
 
-_EnumT = TypeVar("_EnumT", Modality, MemoryType)
+_EnumT = TypeVar("_EnumT", Modality, MemoryCategory)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +102,7 @@ class RecallStep:
     occurred_from: datetime | None = None
     occurred_until: datetime | None = None
     modality: Modality | None = None
-    memory_type: MemoryType | None = None
+    memory_type: MemoryCategory | None = None
     terms: tuple[str, ...] = ()
     any_of: bool = True
     max_rows: int = DEFAULT_MAX_ROWS
@@ -118,7 +118,7 @@ class RecallStep:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallPlan:
+class RecallProgram:
     """A question's shape and the reads that answer it."""
 
     shape: RecallShape
@@ -168,7 +168,7 @@ class RecallStepResult:
 class RecallResult:
     """The merged evidence set one plan produced."""
 
-    plan: RecallPlan
+    plan: RecallProgram
     executed: tuple[RecallStepResult, ...]
     # Chronological, from the exhaustive ops.
     exhaustive: tuple[SearchHit, ...] = ()
@@ -215,7 +215,7 @@ class RecallReader(Protocol):
         occurred_from: datetime | None,
         occurred_until: datetime | None,
         modality: Modality | None,
-        memory_type: MemoryType | None,
+        memory_type: MemoryCategory | None,
         max_rows: int,
     ) -> RecallRows: ...
 
@@ -225,7 +225,7 @@ class RecallReader(Protocol):
         occurred_from: datetime,
         occurred_until: datetime,
         modality: Modality | None,
-        memory_type: MemoryType | None,
+        memory_type: MemoryCategory | None,
         max_rows: int,
     ) -> RecallRows: ...
 
@@ -259,24 +259,24 @@ class RecallReader(Protocol):
         ...
 
 
-def fallback_plan(question: str, *, k: int = DEFAULT_SIMILAR_K) -> RecallPlan:
-    """The plan that is today's behaviour: one similarity search over the raw question.
+def fallback_recall_program(question: str, *, k: int = DEFAULT_SIMILAR_K) -> RecallProgram:
+    """Build a recall program containing one similarity search over the raw question.
 
     Every failure resolves here -- no planner, an unparseable plan, a plan that asks for an op
     that does not exist -- so a broken planner costs a call and changes no answer.
     """
-    return RecallPlan(shape="point", steps=(RecallStep(op="similar", query=question, k=k),))
+    return RecallProgram(shape="point", steps=(RecallStep(op="similar", query=question, k=k),))
 
 
-def parse_recall_plan(payload: str, *, reference_at: datetime) -> RecallPlan | None:
-    """Validate a planner's JSON into a plan, or return None to fall back.
+def parse_recall_program(payload: str, *, reference_at: datetime) -> RecallProgram | None:
+    """Validate a planner's JSON into a recall program, or return None to fall back.
 
     Strict on meaning and forgiving on magnitude: an unknown op, an unknown field, a filter the
     op cannot honour or a step referring forward is a plan SenseMem will not run, while a `k`
     of 900 or 0 is clamped. Model output is data, never an instruction, and nothing here raises:
     the caller's next line is the fallback plan either way.
     """
-    document = _document(payload)
+    document = _parse_recall_document(payload)
     if document is None:
         return None
     shape = document.get("shape")
@@ -292,7 +292,7 @@ def parse_recall_plan(payload: str, *, reference_at: datetime) -> RecallPlan | N
         return None
     steps: list[RecallStep] = []
     for index, raw_step in enumerate(raw_steps):
-        step = _step(raw_step, index=index, reference_at=reference_at)
+        step = _parse_recall_step(raw_step, index=index, reference_at=reference_at)
         if step is None:
             return None
         steps.append(step)
@@ -301,11 +301,11 @@ def parse_recall_plan(payload: str, *, reference_at: datetime) -> RecallPlan | N
     # contradicted itself, and the fallback is what a point plan would have been anyway.
     if shape == "point" and any(step.op in _EXHAUSTIVE_OPS for step in steps):
         return None
-    return RecallPlan(shape=cast(RecallShape, shape), steps=tuple(steps))
+    return RecallProgram(shape=cast(RecallShape, shape), steps=tuple(steps))
 
 
-def execute(
-    plan: RecallPlan,
+def execute_recall_program(
+    plan: RecallProgram,
     reader: RecallReader,
     *,
     limit: int,
@@ -341,7 +341,7 @@ def execute(
             # No span from a named anchor means the dependent predicate could not be evaluated.
             # It must read no rows without licensing a count or list as complete.
             unread = step.time_of is not None and span is None
-            rows, selected = _run(step, reader, by_step, span)
+            rows, selected = _execute_recall_step(step, reader, by_step, span)
         except (ValueError, OverflowError):
             # A primitive rejecting its own arguments is a read that did not happen. Every field
             # reaching one came from a model's plan text, and `ask()` raising a bare `ValueError`
@@ -377,93 +377,6 @@ def execute(
     )
 
 
-def recall_note(result: RecallResult, *, omitted: int = 0) -> str:
-    """State read completeness without deciding the question's semantic answer set.
-
-    Predicate rows, ranked anchors and neighbors can all supply answer-set members. The read's
-    row count is not their semantic count, and an omitted or bounded read still needs its
-    shortfall stated so a reader cannot silently treat partial evidence as a complete history.
-    """
-    reads = "; ".join(
-        _step_note(step, outcome, result.active_records)
-        for step, outcome in zip(result.plan.steps, result.executed, strict=True)
-    )
-    if result.complete and not omitted:
-        completeness = (
-            "All records returned by the executed predicate reads are shown below, in corpus "
-            "time order. Those reads are complete for their predicates; this does not "
-            "automatically make them the question's complete answer set. Determine which "
-            "supplied records satisfy the question and the requested counting or listing unit."
-        )
-    elif not result.exhaustive and any(step.non_selective for step in result.executed):
-        # Every predicate matched too much of the corpus to enumerate, so there is no matched set
-        # at all: the reader holds the ranking, and the closing sentence below -- which says the
-        # top-ranked records follow the matched ones -- would be describing nothing.
-        return (
-            f"Recall program ({result.plan.shape}): {reads}. Answer from the records below and "
-            "do not state a total."
-        )
-    else:
-        shortfall = (
-            f"{omitted} further matched records are not shown"
-            if omitted
-            else "some matching records were not read"
-        )
-        completeness = (
-            f"{shortfall}, so the matched records are not a complete set: answer from what is "
-            "shown and do not state a total."
-        )
-    # Read provenance does not decide answer membership. In particular, neighbors exclude their
-    # anchors, so counting only that read can miss a matching anchor retained by the ranking.
-    neighbors = (
-        " Neighbor reads exclude their anchors; supplied anchors may still satisfy the "
-        "question and belong in its answer set."
-        if any(step.op == "neighbors" for step in result.plan.steps)
-        else ""
-    )
-    ranked_position = (
-        "" if result.plan.shape == "sequence" else "Top-ranked records follow the matched records. "
-    )
-    return (
-        f"Recall program ({result.plan.shape}): {reads}. {completeness} {ranked_position}"
-        "Retrieval route does not determine answer-set membership: "
-        f"a ranked record may also satisfy the question.{neighbors}"
-    )
-
-
-def _step_note(step: RecallStep, outcome: RecallStepResult, active_records: int) -> str:
-    if step.op == "match":
-        detail = f"records containing {', '.join(step.terms)}"
-    elif step.op == "window":
-        detail = "records in the time span"
-    elif step.op == "neighbors":
-        detail = f"the {step.before} before and {step.after} after each of them"
-    elif step.op == "entity":
-        detail = f"records about {step.name}"
-    else:
-        detail = "the top-ranked records for the question"
-    if outcome.non_selective:
-        # No count of rows: there are none, and the reader has to be told why rather than shown a
-        # zero it would read as "nothing matched". What it holds instead is the ranking.
-        return (
-            f"{detail}{_span_note(outcome)} matched too many records to enumerate "
-            f"({outcome.non_selective} of {active_records}); only the top-ranked records for "
-            "the question are shown"
-        )
-    return f"{detail}{_span_note(outcome)} ({outcome.rows})"
-
-
-def _span_note(outcome: RecallStepResult) -> str:
-    start, until = outcome.occurred_from, outcome.occurred_until
-    if start is not None and until is not None:
-        return f" between {start.isoformat()} and {until.isoformat()}"
-    if start is not None:
-        return f" since {start.isoformat()}"
-    if until is not None:
-        return f" before {until.isoformat()}"
-    return ""
-
-
 def _step_span(
     step: RecallStep,
     reader: RecallReader,
@@ -493,7 +406,7 @@ def _step_span(
     return cached
 
 
-def _run(
+def _execute_recall_step(
     step: RecallStep,
     reader: RecallReader,
     by_step: Sequence[tuple[SearchHit, ...]],
@@ -543,7 +456,7 @@ def _run(
     return reader.entity(step.name, max_rows=step.max_rows)
 
 
-def _document(payload: str) -> Mapping[str, object] | None:
+def _parse_recall_document(payload: str) -> Mapping[str, object] | None:
     if not isinstance(payload, str) or not payload.strip():
         return None
     try:
@@ -553,7 +466,7 @@ def _document(payload: str) -> Mapping[str, object] | None:
     return document if isinstance(document, dict) else None
 
 
-def _fields(raw_step: object) -> Mapping[str, object] | None:
+def _validated_step_fields(raw_step: object) -> Mapping[str, object] | None:
     """Prove one step is a mapping this op may carry, honoured filters included."""
     if not isinstance(raw_step, dict):
         return None
@@ -567,55 +480,57 @@ def _fields(raw_step: object) -> Mapping[str, object] | None:
     return raw_step
 
 
-def _step(raw_step: object, *, index: int, reference_at: datetime) -> RecallStep | None:
-    values = _fields(raw_step)
+def _parse_recall_step(
+    raw_step: object, *, index: int, reference_at: datetime
+) -> RecallStep | None:
+    values = _validated_step_fields(raw_step)
     if values is None:
         return None
     time_of = None
     if isinstance(values.get("time"), str):
         # `"time": "step:N"` binds this read's span to an earlier step's rows. A forward or
         # malformed reference is not a plan, exactly as it is not for `of`.
-        time_of = _anchor(values.get("time"), index=index)
+        time_of = _parse_step_reference(values.get("time"), index=index)
         if time_of is False:
             return None
         window: tuple[datetime | None, datetime | None] | None = (None, None)
     else:
-        window = _window(values.get("time"), reference_at=reference_at)
-    modality = _enum(values.get("modality"), Modality)
-    memory_type = _enum(values.get("memory_type"), MemoryType)
-    terms = _terms(values.get("terms"))
-    anchor = _anchor(values.get("of"), index=index)
+        window = _parse_recall_window(values.get("time"), reference_at=reference_at)
+    modality = _optional_enum_value(values.get("modality"), Modality)
+    memory_type = _optional_enum_value(values.get("memory_type"), MemoryCategory)
+    terms = _parse_match_terms(values.get("terms"))
+    anchor = _parse_step_reference(values.get("of"), index=index)
     any_of = values.get("any_of", True)
     if window is None or modality is False or memory_type is False:
         return None
     if terms is None or anchor is False or not isinstance(any_of, bool):
         return None
-    return _usable(
+    return _validate_step_inputs(
         RecallStep(
             op=str(values["op"]),  # type: ignore[arg-type]
-            query=_text(values.get("query")),
-            k=_clamped(values.get("k"), default=DEFAULT_SIMILAR_K, high=100),
+            query=_optional_nonempty_text(values.get("query")),
+            k=_clamped_int(values.get("k"), default=DEFAULT_SIMILAR_K, high=100),
             occurred_from=window[0],
             occurred_until=window[1],
             modality=modality,
             memory_type=memory_type,
             terms=terms,
             any_of=any_of,
-            max_rows=_clamped(
+            max_rows=_clamped_int(
                 values.get("max_rows"),
                 default=DEFAULT_MAX_ROWS,
                 high=RECALL_MAX_ROWS,
             ),
             of=anchor,
             time_of=time_of,
-            before=_clamped(values.get("before"), default=2, low=0, high=_MAX_NEIGHBOURS),
-            after=_clamped(values.get("after"), default=2, low=0, high=_MAX_NEIGHBOURS),
-            name=_text(values.get("name")),
+            before=_clamped_int(values.get("before"), default=2, low=0, high=_MAX_NEIGHBOURS),
+            after=_clamped_int(values.get("after"), default=2, low=0, high=_MAX_NEIGHBOURS),
+            name=_optional_nonempty_text(values.get("name")),
         )
     )
 
 
-def _usable(step: RecallStep) -> RecallStep | None:
+def _validate_step_inputs(step: RecallStep) -> RecallStep | None:
     """Reject a step whose own required input is missing, which no clamp can repair."""
     if step.op == "similar" and not step.query:
         return None
@@ -636,17 +551,17 @@ def _usable(step: RecallStep) -> RecallStep | None:
     return step
 
 
-def _text(value: object) -> str | None:
+def _optional_nonempty_text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _terms(value: object) -> tuple[str, ...] | None:
+def _parse_match_terms(value: object) -> tuple[str, ...] | None:
     """Keep the terms the store will accept, dropping the rest rather than raising.
 
     The count is capped and so is the length: the store refuses a term over
     `RECALL_MAX_TERM_CHARS` with a `ValueError`, and a planner that pasted a paragraph into
     `terms` must not turn model output into an exception out of `ask()`. A `match` step left with
-    no term at all is unusable, which `_usable` turns into the fallback plan.
+    no term at all is unusable, which `_validate_step_inputs` turns into the fallback plan.
     """
     if value is None:
         return ()
@@ -662,7 +577,7 @@ def _terms(value: object) -> tuple[str, ...] | None:
     return terms[:_MAX_TERMS]
 
 
-def _anchor(value: object, *, index: int) -> int | Literal[False] | None:
+def _parse_step_reference(value: object, *, index: int) -> int | Literal[False] | None:
     """Resolve `"step:N"` to an earlier step's index; a forward reference is not a plan."""
     if value is None:
         return None
@@ -675,13 +590,13 @@ def _anchor(value: object, *, index: int) -> int | Literal[False] | None:
     return anchor if 0 <= anchor < index else False
 
 
-def _clamped(value: object, *, default: int, high: int, low: int = 1) -> int:
+def _clamped_int(value: object, *, default: int, high: int, low: int = 1) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return default
     return max(low, min(high, value))
 
 
-def _enum(value: object, kind: type[_EnumT]) -> _EnumT | Literal[False] | None:
+def _optional_enum_value(value: object, kind: type[_EnumT]) -> _EnumT | Literal[False] | None:
     if value is None:
         return None
     if not isinstance(value, str):
@@ -692,7 +607,7 @@ def _enum(value: object, kind: type[_EnumT]) -> _EnumT | Literal[False] | None:
         return False
 
 
-def _window(
+def _parse_recall_window(
     value: object,
     *,
     reference_at: datetime,
@@ -707,7 +622,7 @@ def _window(
         if bound is None:
             bounds.append(None)
             continue
-        moment = _moment(bound, reference_at=reference_at)
+        moment = _parse_recall_datetime(bound, reference_at=reference_at)
         if moment is None:
             return None
         bounds.append(moment)
@@ -717,7 +632,7 @@ def _window(
     return (start, until)
 
 
-def _moment(value: object, *, reference_at: datetime) -> datetime | None:
+def _parse_recall_datetime(value: object, *, reference_at: datetime) -> datetime | None:
     """Parse one ISO date or timestamp, placed in the reference clock's zone when it has none."""
     if not isinstance(value, str) or not value.strip():
         return None
@@ -725,13 +640,13 @@ def _moment(value: object, *, reference_at: datetime) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return _date_only(text, reference_at=reference_at)
+        return _parse_recall_date(text, reference_at=reference_at)
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=reference_at.tzinfo or timezone.utc)
     return parsed
 
 
-def _date_only(text: str, *, reference_at: datetime) -> datetime | None:
+def _parse_recall_date(text: str, *, reference_at: datetime) -> datetime | None:
     try:
         parsed = date.fromisoformat(text)
     except ValueError:

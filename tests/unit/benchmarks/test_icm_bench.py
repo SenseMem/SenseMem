@@ -9,8 +9,8 @@ import pytest
 
 from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
 from sensemem.benchmarks.download import _extract_tar, acquire_media
-from sensemem.benchmarks.eval import _prefix_end
 from sensemem.benchmarks.eval_adapters import load_task
+from sensemem.benchmarks.eval_inputs import _prefix_end
 from sensemem.benchmarks.icm_bench import ICM_NO_ASR_CLIPS, load_icm_bench
 from sensemem.benchmarks.official_scorers import JudgeMessage, judge_plan, parse_judge_response
 from sensemem.benchmarks.task_catalog import TASKS

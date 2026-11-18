@@ -11,18 +11,12 @@ import pytest
 from _api_support import (
     ASSET,
     ENVELOPE_FIELDS,
-    ERASURE,
-    FACE,
     NAMED,
     NOW,
     OCCURRED_FROM,
     OCCURRED_UNTIL,
-    PROFILE,
-    SEGMENT,
-    _bundle,
-    _hit,
+    MemoryStub,
     _record,
-    _trace,
 )
 from mcp import Client, MCPError
 from mcp.types import CallToolResult, TextContent
@@ -35,6 +29,10 @@ from sensemem import Memory
 from sensemem.api import content
 from sensemem.api import mcp as mcp_adapter
 from sensemem.api.mcp import build_mcp_server
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.content import AssetRef, Blob, ContentInput
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_values import ContextBudget, ContextSupplement
 from sensemem.exceptions import (
     IdentityNotFoundError,
     IndexUnavailableError,
@@ -44,27 +42,10 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
-from sensemem.types import (
-    AnswerPolicy,
-    AnswerResult,
-    AssetRef,
-    Blob,
-    ContentInput,
-    ContextBudget,
-    ContextBundle,
-    IdentityErasure,
-    IdentityProfile,
-    MemoryCapabilities,
-    MemoryRecord,
-    MemoryType,
-    Modality,
-    ObservationContext,
-    Page,
-    PerceptionKind,
-    PerceptionResult,
-    RetrievalScope,
-    SearchResult,
-)
+from sensemem.prompts import mcp as mcp_prompts
+from sensemem.records import MemoryRecord, Page
+from sensemem.spatial import ObservationContext, RetrievalScope
+from sensemem.types import MemoryCategory, Modality
 
 CAPABILITIES = MemoryCapabilities(
     embedding=frozenset({Modality.TEXT, Modality.IMAGE}),
@@ -77,13 +58,9 @@ CAPABILITIES = MemoryCapabilities(
 )
 
 
-class FakeMemory:
+class FakeMemory(MemoryStub):
     def __init__(self, failure: Exception | None = None) -> None:
-        self.calls: list[tuple[object, ...]] = []
-        self.close_count = 0
-        self.failure = failure
-        self.profile: IdentityProfile | None = PROFILE
-        self.restored: str | None = "identity_3"
+        super().__init__(failure, restored="identity_3")
 
     def add(
         self,
@@ -92,7 +69,7 @@ class FakeMemory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         self._fail()
@@ -108,70 +85,9 @@ class FakeMemory:
             memory_type=memory_type,
         )
 
-    def search(
-        self,
-        query: ContentInput,
-        *,
-        limit: int = 10,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        occurred_from: datetime | None = None,
-        occurred_until: datetime | None = None,
-        scope: RetrievalScope | None = None,
-        explain: bool = False,
-    ) -> SearchResult:
-        self._fail()
-        self.calls.append(
-            (
-                "search",
-                query,
-                limit,
-                memory_type,
-                reference_at,
-                occurred_from,
-                occurred_until,
-            )
-        )
-        return SearchResult(hits=() if explain else (_hit(),), trace=_trace() if explain else None)
-
     @property
     def capabilities(self) -> MemoryCapabilities:
         return CAPABILITIES
-
-    def compile(
-        self,
-        goal: ContentInput,
-        *,
-        budget: ContextBudget | None = None,
-        reference_at: datetime | None = None,
-        scope: RetrievalScope | None = None,
-        allow_partial_sources: bool = False,
-    ) -> ContextBundle:
-        self._fail()
-        self.calls.append(("compile", goal, budget, reference_at, scope, allow_partial_sources))
-        return _bundle(budget or ContextBudget(), reference_at or NOW)
-
-    def reinforce(self, memory_ids: Sequence[str]) -> int:
-        self._fail()
-        self.calls.append(("reinforce", tuple(memory_ids)))
-        return len(tuple(dict.fromkeys(memory_ids)))
-
-    def ask(
-        self,
-        question: ContentInput,
-        *,
-        limit: int = 5,
-        memory_type: MemoryType | None = None,
-        reference_at: datetime | None = None,
-        scope: RetrievalScope | None = None,
-        link_identities: bool = True,
-        answer_policy: AnswerPolicy = "strict",
-    ) -> AnswerResult:
-        self._fail()
-        self.calls.append(
-            ("ask", question, limit, memory_type, reference_at, link_identities, answer_policy)
-        )
-        return AnswerResult(answer="The toolbox is blue.", hits=(_hit(),))
 
     def get(self, memory_id: str) -> MemoryRecord:
         self._fail()
@@ -187,45 +103,6 @@ class FakeMemory:
         self._fail()
         self.calls.append(("delete", memory_id))
         return True
-
-    def perceive(
-        self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
-    ) -> PerceptionResult:
-        self._fail()
-        self.calls.append(("perceive", memory_id, kinds))
-        return PerceptionResult(speech=(SEGMENT,), faces=(FACE,))
-
-    def register_identity(
-        self,
-        identity_id: str,
-        name: str,
-        *,
-        relationship: str | None = None,
-    ) -> None:
-        self._fail()
-        self.calls.append(("register_identity", identity_id, name, relationship))
-
-    def identity(self, identity_id: str) -> IdentityProfile | None:
-        self._fail()
-        self.calls.append(("identity", identity_id))
-        return self.profile
-
-    def unlink_identity(self, alias_id: str) -> str | None:
-        self._fail()
-        self.calls.append(("unlink_identity", alias_id))
-        return self.restored
-
-    def forget_identity(self, identity_id: str) -> IdentityErasure:
-        self._fail()
-        self.calls.append(("forget_identity", identity_id))
-        return ERASURE
-
-    def close(self) -> None:
-        self.close_count += 1
-
-    def _fail(self) -> None:
-        if self.failure is not None:
-            raise self.failure
 
 
 async def test_mcp_publishes_only_the_flat_local_tools() -> None:
@@ -282,6 +159,7 @@ async def test_mcp_publishes_only_the_flat_local_tools() -> None:
             "reference_at",
             "scope",
             "allow_partial_sources",
+            "supplements",
         },
         "get_memory": {"memory_id"},
         "list_memories": {"limit", "cursor"},
@@ -374,6 +252,7 @@ async def test_mcp_returns_structured_results_and_does_not_close_injected_memory
         "modality": "text",
         "memory_type": "episodic",
         "assets": [],
+        "parts": [],
         "created_at": NOW.isoformat().replace("+00:00", "Z"),
         "occurred_at": NOW.isoformat().replace("+00:00", "Z"),
         "occurred_end": None,
@@ -401,18 +280,18 @@ async def test_mcp_returns_structured_results_and_does_not_close_injected_memory
             NOW,
             None,
             {"room": "workshop"},
-            MemoryType.EPISODIC,
+            MemoryCategory.EPISODIC,
         ),
         (
             "search",
             "toolbox",
             10,
-            MemoryType.EPISODIC,
+            MemoryCategory.EPISODIC,
             NOW,
             OCCURRED_FROM,
             OCCURRED_UNTIL,
         ),
-        ("ask", "What color?", 5, MemoryType.PROCEDURAL, NOW, True, "strict"),
+        ("ask", "What color?", 5, MemoryCategory.PROCEDURAL, NOW, "strict"),
         ("get", "memory_1"),
         ("list", 7, "cursor_1"),
         ("delete", "memory_1"),
@@ -742,6 +621,7 @@ async def test_mcp_errors_have_stable_codes_without_private_details(
     failure: Exception,
     expected_code: str,
     detail_is_public: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async with Client(build_mcp_server(cast(Memory, FakeMemory(failure)))) as client:
         result = await client.call_tool("get_memory", {"memory_id": "memory_1"})
@@ -750,6 +630,12 @@ async def test_mcp_errors_have_stable_codes_without_private_details(
     assert result.is_error is True
     assert _error_envelope(result)["code"] == expected_code
     assert (str(failure) in text) is detail_is_public
+    if not detail_is_public:
+        assert str(failure) not in caplog.text
+        records = [record for record in caplog.records if record.name == "sensemem.api.mcp"]
+        assert len(records) == 1
+        assert records[0].__dict__["trace_id"] == _error_envelope(result)["trace_id"]
+        assert records[0].exc_info is None
 
 
 async def test_mcp_envelope_reports_reason_stage_subject_and_retryability() -> None:
@@ -1069,7 +955,7 @@ async def test_the_compile_tool_returns_the_whole_bundle_without_local_asset_pat
                 max_chars=2_000,
                 selected_proofs=True,
                 max_items=8,
-                memory_types=frozenset({MemoryType.EPISODIC, MemoryType.SEMANTIC}),
+                memory_types=frozenset({MemoryCategory.EPISODIC, MemoryCategory.SEMANTIC}),
                 min_confidence=0.5,
                 freshness=timedelta(hours=1),
                 max_latency_ms=250,
@@ -1186,6 +1072,7 @@ async def test_the_compile_tool_reports_a_named_actor_too() -> None:
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
         allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
     ) -> ContextBundle:
         bundle = original_compile(
             goal,
@@ -1193,6 +1080,7 @@ async def test_the_compile_tool_reports_a_named_actor_too() -> None:
             reference_at=reference_at,
             scope=scope,
             allow_partial_sources=allow_partial_sources,
+            supplements=supplements,
         )
         return replace(bundle, actors=(NAMED,))
 
@@ -1335,21 +1223,16 @@ async def test_every_tool_belongs_to_exactly_one_withholdable_group() -> None:
     )
 
 
-async def test_ask_memory_passes_embodied_operations_as_link_identities() -> None:
-    """`ask_memory` reaches the same face recognition `analyze_faces` commits a merge from.
-
-    Withholding `embodied_operations` must also withhold the one write `ask_memory` could
-    otherwise still reach on its own: `build_mcp_server` passes
-    `link_identities=embodied_operations` into every `Memory.ask` call it makes.
-    """
+async def test_ask_memory_does_not_gain_identity_binding_authority_from_perception_tools() -> None:
+    """Recognition authority never enables implicit identity binding."""
     memory = FakeMemory()
     async with Client(build_mcp_server(cast(Memory, memory), embodied_operations=False)) as client:
         await client.call_tool("ask_memory", {"question": "who is this?"})
     async with Client(build_mcp_server(cast(Memory, memory), embodied_operations=True)) as client:
         await client.call_tool("ask_memory", {"question": "who is this?"})
 
-    link_identities_by_call = [call[-2] for call in memory.calls if call[0] == "ask"]
-    assert link_identities_by_call == [False, True]
+    calls = [call for call in memory.calls if call[0] == "ask"]
+    assert calls[0] == calls[1]
 
 
 async def test_a_withheld_group_is_announced_and_its_tools_are_unknown() -> None:
@@ -1424,7 +1307,9 @@ def _error_envelope(result: CallToolResult) -> dict[str, object]:
 def test_the_budget_tool_description_states_the_live_defaults() -> None:
     """The prose an agent sizes its window against is interpolated, so it cannot drift."""
     budget = ContextBudget()
-    description = mcp_adapter._BUDGET_DESCRIPTION
+    description = mcp_prompts.budget_description(
+        max_chars=budget.max_chars, max_items=budget.max_items
+    )
 
     assert f"which are {budget.max_chars:,} characters and {budget.max_items} items" in description
     assert "which are 6,000" not in description

@@ -15,7 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from sensemem.exceptions import StorageError, ValidationError
+from sensemem.content import Blob, ContentAtom, ContentPart
+from sensemem.context_values import ContextExcerpt, TextSpanPiece, TextSpanSelector
+from sensemem.exceptions import ValidationError
 from sensemem.infrastructure.local.store import (
     StoredAsset,
     StoredTextSelector,
@@ -24,27 +26,11 @@ from sensemem.infrastructure.local.store import (
     optional_datetime_text,
 )
 from sensemem.kernel.temporal import validated_occurred_at, validated_occurred_end
-from sensemem.kernel.validation import validated_memory_type
 from sensemem.models.base import ModelInput
-from sensemem.types import (
-    AssetRef,
-    Blob,
-    ContentAtom,
-    ContentInput,
-    ContextExcerpt,
-    MemoryContext,
-    MemoryKind,
-    MemoryRecord,
-    MemoryType,
-    Modality,
-    ObservationContext,
-    SearchHit,
-    TextSpanPiece,
-    TextSpanSelector,
-)
-
-_MAX_CONTENT_PARTS = 128
-
+from sensemem.records import MemoryRecord, SearchHit
+from sensemem.semantics import RecordSemantics
+from sensemem.spatial import ObservationContext
+from sensemem.types import MemoryCategory, Modality, RecordKind
 
 _MAX_METADATA_BYTES = 262_144
 
@@ -101,6 +87,26 @@ class PreparedContent:
     audio_transcript: bool = False
     visual_description: bool = False
 
+    @property
+    def parts(self) -> tuple[ContentPart, ...]:
+        return tuple(
+            ContentPart(
+                kind=cast(
+                    Literal[
+                        "text",
+                        "asset",
+                        "audio_transcript",
+                        "visual_description",
+                        "model_interpretation",
+                    ],
+                    kind,
+                ),
+                value=value,
+            )
+            for kind, value in self.canonical_parts
+            if value
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedMemory:
@@ -109,10 +115,10 @@ class PreparedMemory:
     metadata_json: str
     occurred_at: datetime | None
     occurred_end: datetime | None
-    memory_type: MemoryType
-    context: ObservationContext | MemoryContext | None = None
+    memory_type: MemoryCategory
+    context: ObservationContext | RecordSemantics | None = None
     # The record column, carried separately from `context` because both write paths need it and
-    # only an `ObservationContext` has one: a formed record's `MemoryContext` deliberately has no
+    # only an `ObservationContext` has one: a formed record's `RecordSemantics` deliberately has no
     # place, so formation sets this from the observation it was formed from.
     place_id: str | None = None
 
@@ -130,21 +136,6 @@ class _TextKeyDescriptor:
     spans: tuple[_TextKeySpan, ...]
 
 
-def content_atoms(content: ContentInput) -> tuple[ContentAtom, ...]:
-    if isinstance(content, (str, Path, Blob, AssetRef)):
-        return (content,)
-    if isinstance(content, bytes) or not isinstance(content, Sequence):
-        raise ValidationError("content must be text, media, or an ordered sequence of them")
-    atoms = tuple(content)
-    if not atoms:
-        raise ValidationError("content must not be empty")
-    if len(atoms) > _MAX_CONTENT_PARTS:
-        raise ValidationError(f"content must not exceed {_MAX_CONTENT_PARTS} parts")
-    if any(not isinstance(atom, (str, Path, Blob, AssetRef)) for atom in atoms):
-        raise ValidationError("content contains an unsupported input value")
-    return atoms
-
-
 def declared_atom_modality(atom: ContentAtom) -> Modality | None:
     if isinstance(atom, str):
         return Modality.TEXT
@@ -159,35 +150,30 @@ def declared_atom_modality(atom: ContentAtom) -> Modality | None:
     return None
 
 
-def snapshot_content(content: ContentInput) -> ContentInput:
-    atoms = content_atoms(content)
-    if any(isinstance(atom, Path) for atom in atoms):
-        raise ValidationError("prefetch paths are mutable; use Blob or AssetRef")
-    return atoms[0] if len(atoms) == 1 else atoms
-
-
 def prepare_memory(
     content: PreparedContent,
     *,
     occurred_at: datetime | None,
     occurred_end: datetime | None,
     metadata: Mapping[str, object] | None,
-    memory_type: MemoryType,
+    memory_type: MemoryCategory,
     context: ObservationContext | None = None,
 ) -> PreparedMemory:
+    """Build an identity from prepared content and a validated memory type."""
     normalized_occurred_at = validated_occurred_at(occurred_at)
     normalized_occurred_end = validated_occurred_end(normalized_occurred_at, occurred_end)
-    normalized_memory_type = validated_memory_type(memory_type)
     metadata_json = encode_metadata(metadata)
     identity: dict[str, object] = {
-        "parts": content.canonical_parts,
+        "parts": tuple(
+            (kind, value) for kind, value in content.canonical_parts if kind in {"text", "asset"}
+        ),
         "metadata": json.loads(metadata_json),
         "occurred_at": optional_datetime_text(normalized_occurred_at),
     }
     if normalized_occurred_end is not None:
         identity["occurred_end"] = datetime_text(normalized_occurred_end)
-    if normalized_memory_type is not MemoryType.SEMANTIC:
-        identity["memory_type"] = normalized_memory_type.value
+    if memory_type is not MemoryCategory.SEMANTIC:
+        identity["memory_type"] = memory_type.value
     if context is not None:
         if not isinstance(context, ObservationContext):
             raise ValidationError("context must be an ObservationContext")
@@ -199,7 +185,7 @@ def prepare_memory(
         metadata_json=metadata_json,
         occurred_at=normalized_occurred_at,
         occurred_end=normalized_occurred_end,
-        memory_type=normalized_memory_type,
+        memory_type=memory_type,
         context=context,
         place_id=None if context is None else context.place_id,
     )
@@ -242,12 +228,12 @@ def stored_memory_context(
     memory: PreparedMemory,
     *,
     recorded_at: datetime,
-) -> MemoryContext | None:
+) -> RecordSemantics | None:
     context = memory.context
-    if context is None or isinstance(context, MemoryContext):
+    if context is None or isinstance(context, RecordSemantics):
         return context
-    return MemoryContext(
-        kind=MemoryKind.OBSERVATION,
+    return RecordSemantics(
+        kind=RecordKind.OBSERVATION,
         basis=context.basis,
         confidence=context.confidence,
         valid_from=context.valid_from,
@@ -262,7 +248,7 @@ def stored_memory_context(
 def observation_from_record(record: MemoryRecord) -> ObservationContext:
     context = record.context
     if context is None:
-        return ObservationContext()
+        return ObservationContext(place_id=record.place_id)
     return ObservationContext(
         basis=context.basis,
         source_id=context.source_id,
@@ -270,6 +256,7 @@ def observation_from_record(record: MemoryRecord) -> ObservationContext:
         valid_from=context.valid_from,
         valid_until=context.valid_until,
         spatial=context.spatial,
+        place_id=record.place_id,
     )
 
 
@@ -311,21 +298,7 @@ def text_content(text: str) -> PreparedContent:
 
 
 def contextual_text_keys(text: str) -> tuple[str, ...]:
-    if len(text) <= _TEXT_KEY_CHARACTERS:
-        return (text,)
-    context = text.splitlines()[0][:_TEXT_KEY_CONTEXT].strip()
-    step = _TEXT_KEY_CHARACTERS - _TEXT_KEY_OVERLAP
-    keys = []
-    for start in range(0, len(text), step):
-        chunk = text[start : start + _TEXT_KEY_CHARACTERS].strip()
-        if not chunk:
-            continue
-        if context and not chunk.startswith(context):
-            chunk = f"{context}\n\n{chunk}"
-        keys.append(chunk)
-        if start + _TEXT_KEY_CHARACTERS >= len(text):
-            break
-    return tuple(keys)
+    return tuple(descriptor.key for descriptor in contextual_text_key_descriptors(text))
 
 
 _TEXT_SELECTOR_RECIPE = "sensemem-contextual-text-key-v1"
@@ -343,12 +316,7 @@ def _stripped_span(text: str, start: int, end: int) -> tuple[int, int] | None:
 
 
 def contextual_text_key_descriptors(text: str) -> tuple[_TextKeyDescriptor, ...]:
-    """Mirror `contextual_text_keys` while retaining exact source ranges.
-
-    `contextual_text_keys` remains the byte-for-byte authority for embedding inputs. Tests compare
-    these descriptors with it, and callers join a descriptor to an embedding only by exact
-    `ModelInput` equality.
-    """
+    """Compose retrieval text keys and their exact source ranges together."""
     if len(text) <= _TEXT_KEY_CHARACTERS:
         return (
             _TextKeyDescriptor(
@@ -368,9 +336,7 @@ def contextual_text_key_descriptors(text: str) -> tuple[_TextKeyDescriptor, ...]
         chunk = text[interval[0] : interval[1]]
         spans: tuple[_TextKeySpan, ...] = (_TextKeySpan("body", *interval),)
         key = chunk
-        if context and not chunk.startswith(context):
-            if context_interval is None:  # pragma: no cover - `context` proves this unreachable
-                raise AssertionError("context interval is missing")
+        if context_interval is not None and not chunk.startswith(context):
             key = f"{context}\n\n{chunk}"
             spans = (_TextKeySpan("context", *context_interval), *spans)
         descriptors.append(_TextKeyDescriptor(key=key, spans=spans))
@@ -545,13 +511,7 @@ def encode_metadata(metadata: Mapping[str, object] | None) -> str:
 
 
 def decode_metadata(value: str) -> Mapping[str, object]:
-    try:
-        decoded: object = json.loads(value)
-    except ValueError as error:
-        raise StorageError("stored memory metadata is invalid", reason="unexpected") from error
-    if not isinstance(decoded, dict) or any(not isinstance(key, str) for key in decoded):
-        raise StorageError("stored memory metadata is not an object", reason="unexpected")
-    return cast(dict[str, object], decoded)
+    return cast(dict[str, object], json.loads(value))
 
 
 def embedding_row_id(memory_id: str, object_part: int) -> str:

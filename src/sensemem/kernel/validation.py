@@ -10,9 +10,12 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 from typing import get_args
 
+from sensemem._validation import encode_page_cursor
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.store import StoredMemory, datetime_text
-from sensemem.types import AnswerPolicy, MemoryType, Modality, RetrievalMode, RetrievalScope
+from sensemem.infrastructure.local.store import StoredMemory
+from sensemem.prompts import context as context_prompts
+from sensemem.spatial import RetrievalScope
+from sensemem.types import AnswerPolicy, MemoryCategory, Modality, RetrievalMode
 
 MAX_TEXT_CHARACTERS = 65_536
 
@@ -26,12 +29,6 @@ def positive_seconds(value: object, name: str) -> timedelta:
     ):
         raise ValidationError(f"{name} must be a positive finite number")
     return timedelta(seconds=float(value))
-
-
-def positive_int(value: object, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValidationError(f"{name} must be a positive integer")
-    return value
 
 
 def validated_text(value: object, name: str) -> str:
@@ -51,21 +48,20 @@ def scope_description(scope: RetrievalScope | None) -> str | None:
     """Describe a requested scope that matched nothing, or `None` when none was requested."""
     if scope is None:
         return None
-    bounds = []
+    bounds: list[tuple[str, str, float | None]] = []
     if scope.place_id is not None:
-        bounds.append(f"place {scope.place_id}")
+        bounds.append(("place", scope.place_id, None))
     if scope.identity_id is not None:
-        bounds.append(f"identity {scope.identity_id}")
+        bounds.append(("identity", scope.identity_id, None))
     if scope.near is not None:
-        radius = "" if scope.radius_m is None else f" within {scope.radius_m} m"
-        bounds.append(f"frame {scope.near.frame_id}{radius}")
+        bounds.append(("frame", scope.near.frame_id, scope.radius_m))
     if scope.valid_at is not None:
-        bounds.append(f"valid at {scope.valid_at.isoformat()}")
+        bounds.append(("valid_at", scope.valid_at.isoformat(), None))
     if scope.known_at is not None:
-        bounds.append(f"known at {scope.known_at.isoformat()}")
+        bounds.append(("known_at", scope.known_at.isoformat(), None))
     if not bounds:
         return None
-    return f"no memory matched the requested scope: {', '.join(bounds)}"
+    return context_prompts.scope_empty(bounds)
 
 
 def validated_retrieval_scope(value: RetrievalScope | None) -> RetrievalScope | None:
@@ -80,19 +76,19 @@ def validated_retrieval_mode(value: RetrievalMode) -> RetrievalMode:
     return value
 
 
-def validated_memory_type(value: object) -> MemoryType:
-    if not isinstance(value, MemoryType):
-        raise ValidationError("memory_type must be a MemoryType value")
+def validated_memory_type(value: object) -> MemoryCategory:
+    if not isinstance(value, MemoryCategory):
+        raise ValidationError("memory_type must be a MemoryCategory value")
     return value
 
 
-def optional_memory_type(value: object) -> MemoryType | None:
+def optional_memory_type(value: object) -> MemoryCategory | None:
     return None if value is None else validated_memory_type(value)
 
 
 def pushed_memory_types(
-    requested: MemoryType | frozenset[MemoryType] | None,
-) -> frozenset[MemoryType] | None:
+    requested: MemoryCategory | frozenset[MemoryCategory] | None,
+) -> frozenset[MemoryCategory] | None:
     """Return the type filter to push into the index, or `None` when it would filter nothing.
 
     A request naming every type is the unfiltered request written out, and pushing it would buy
@@ -100,8 +96,8 @@ def pushed_memory_types(
     """
     if requested is None:
         return None
-    pushed = frozenset({requested}) if isinstance(requested, MemoryType) else requested
-    return None if pushed >= frozenset(MemoryType) else pushed
+    pushed = frozenset({requested}) if isinstance(requested, MemoryCategory) else requested
+    return None if pushed >= frozenset(MemoryCategory) else pushed
 
 
 def validated_decay_half_life(days: float | None) -> timedelta | None:
@@ -164,11 +160,7 @@ def validate_answer_policy(value: object) -> None:
 
 
 def encode_cursor(memory: StoredMemory) -> str:
-    payload = json.dumps(
-        ["v1", datetime_text(memory.created_at), memory.memory_id],
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    return encode_page_cursor(memory.created_at, memory.memory_id)
 
 
 def decode_cursor(cursor: object) -> tuple[datetime, str]:
@@ -190,6 +182,6 @@ def decode_cursor(cursor: object) -> tuple[datetime, str]:
         if created_at.tzinfo is None or created_at.utcoffset() is None:
             raise ValueError
         memory_id = validated_identifier(decoded[2], "cursor memory_id")
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+    except ValueError:
         raise ValidationError("cursor is invalid") from None
     return created_at, memory_id

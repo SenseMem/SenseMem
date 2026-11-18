@@ -31,9 +31,9 @@ from sensemem import (
     EmbedTask,
     EvidenceBasis,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
     MemoryRecord,
-    MemoryType,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
@@ -157,7 +157,7 @@ async def test_partial_snapshots_are_speculative_and_only_final_is_durable(
     tmp_path: Path,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     try:
         stream = AsyncCaptureStream(memory)
@@ -186,7 +186,7 @@ async def test_partial_snapshots_are_speculative_and_only_final_is_durable(
 @pytest.mark.asyncio
 async def test_cancel_and_eof_never_promote_a_partial_snapshot(tmp_path: Path) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     try:
         stream = AsyncCaptureStream(memory)
@@ -229,7 +229,7 @@ async def test_interleaved_stream_events_keep_prefetch_and_commits_associated(
     tmp_path: Path,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     try:
         commits = [
@@ -257,7 +257,7 @@ async def test_pcm_uses_native_audio_embedding_and_acoustic_boundary(
 ) -> None:
     embedder = RecordingEmbedder(TinyEmbedder.embedding_capabilities)
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0))
     )
     pcm = b"\x00\x00\x01\x00" * 80
     try:
@@ -285,7 +285,7 @@ async def test_asr_partial_routes_pcm_to_text_embedding_and_preserves_audio(
 ) -> None:
     embedder = RecordingEmbedder(frozenset({Modality.TEXT}))
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0))
     )
     started_at = datetime(2026, 9, 1, 10, tzinfo=timezone.utc)
     ended_at = started_at + timedelta(milliseconds=20)
@@ -329,7 +329,7 @@ async def test_vision_frames_use_native_image_embedding_and_keep_latest_keyframe
 ) -> None:
     embedder = RecordingEmbedder(frozenset({Modality.IMAGE}))
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0))
     )
     started_at = datetime(2026, 9, 1, 10, tzinfo=timezone.utc)
     ended_at = started_at + timedelta(seconds=1)
@@ -375,7 +375,7 @@ async def test_visual_partials_route_interleaved_frames_to_text_embedding(
 ) -> None:
     embedder = RecordingEmbedder(frozenset({Modality.TEXT}))
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0))
     )
     try:
         commits = [
@@ -419,7 +419,7 @@ async def test_visual_backend_describes_the_final_frame_for_text_embedding(
             tmp_path,
             embedder=embedder,
             vision_describer=describer,
-            config=MemoryConfig(minimum_relevance=0),
+            settings=MemorySettings(minimum_relevance=0),
         )
     )
     try:
@@ -448,7 +448,7 @@ async def test_visual_fallback_never_drops_an_undescribed_frame(tmp_path: Path) 
         Memory(
             tmp_path,
             embedder=RecordingEmbedder(frozenset({Modality.TEXT})),
-            config=MemoryConfig(minimum_relevance=0),
+            settings=MemorySettings(minimum_relevance=0),
         )
     )
     try:
@@ -472,7 +472,7 @@ async def test_retrieval_failure_is_visible_without_losing_the_final_observation
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
 
     async def fail_search(*_args: object, **_kwargs: object) -> object:
@@ -501,7 +501,7 @@ async def test_cancellation_during_final_retrieval_never_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     started = asyncio.Event()
     release = asyncio.Event()
@@ -540,7 +540,7 @@ async def test_cancellation_after_final_commit_starts_waits_for_the_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     started = threading.Event()
     release = threading.Event()
@@ -582,7 +582,7 @@ async def test_cancellation_wins_after_a_started_final_write_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     started = threading.Event()
     release = threading.Event()
@@ -622,7 +622,7 @@ async def test_a_rejected_final_query_still_drains_its_speculative_search(
     tmp_path: Path,
 ) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     frame = tmp_path / "frame.png"
     frame.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
@@ -673,12 +673,12 @@ async def test_streamed_observations_carry_the_pose_sampled_at_each_boundary(
     """A moving robot's pose belongs to the observation, not to the stream that outlives it.
 
     Both adapters previously built `StreamInput` from timing and text alone, so every memory a
-    microphone or camera wrote had a null pose and the default `MemoryType` regardless of what
+    microphone or camera wrote had a null pose and the default `MemoryCategory` regardless of what
     the caller asked for. The context is read once per closed observation, so the second scene
     is stamped with where the robot was when that scene ended, not where it started.
     """
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     poses = iter(
         (
@@ -697,7 +697,7 @@ async def test_streamed_observations_carry_the_pose_sampled_at_each_boundary(
             value
             async for value in AsyncVisionStream(
                 memory,
-                memory_type=MemoryType.EPISODIC,
+                memory_type=MemoryCategory.EPISODIC,
                 context=lambda: next(poses),
             ).consume(
                 _vision_packets(
@@ -711,7 +711,7 @@ async def test_streamed_observations_carry_the_pose_sampled_at_each_boundary(
 
         assert len(commits) == 2
         records = [await memory.get(commit.record.id) for commit in commits]
-        assert [record.memory_type for record in records] == [MemoryType.EPISODIC] * 2
+        assert [record.memory_type for record in records] == [MemoryCategory.EPISODIC] * 2
         spatial = [record.context.spatial for record in records if record.context is not None]
         assert [(value.x, value.y) for value in spatial if value is not None] == [
             (1.0, 2.0),
@@ -722,7 +722,7 @@ async def test_streamed_observations_carry_the_pose_sampled_at_each_boundary(
             value
             async for value in AsyncAudioStream(
                 memory,
-                memory_type=MemoryType.EPISODIC,
+                memory_type=MemoryCategory.EPISODIC,
                 context=ObservationContext(
                     spatial=SpatialContext(
                         frame_id="map", anchor=SpatialAnchor.OBSERVER, x=4.0, y=5.0
@@ -738,7 +738,7 @@ async def test_streamed_observations_carry_the_pose_sampled_at_each_boundary(
 
         assert len(heard) == 1
         spoken = await memory.get(heard[0].record.id)
-        assert spoken.memory_type is MemoryType.EPISODIC
+        assert spoken.memory_type is MemoryCategory.EPISODIC
         assert spoken.context is not None and spoken.context.spatial is not None
         assert (spoken.context.spatial.x, spoken.context.spatial.y) == (4.0, 5.0)
     finally:
@@ -759,7 +759,7 @@ def _stream_then_die(data_dir: str, sender: Connection) -> None:
     ingestion_module.STREAM_GROUP_ITEMS = 1_000
     ingestion_module.STREAM_GROUP_SECONDS = 1e9
     with Memory(
-        Path(data_dir), embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        Path(data_dir), embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         committed = []
         for record in memory.add_stream(
@@ -801,7 +801,7 @@ def test_a_stream_killed_before_its_flush_is_drained_by_the_next_open(tmp_path: 
     assert indexed == 0
 
     with Memory(
-        data_dir, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        data_dir, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         # The open replayed the rows into the index; they are acknowledged by the batched flush,
         # which `close()` takes below.
@@ -810,7 +810,7 @@ def test_a_stream_killed_before_its_flush_is_drained_by_the_next_open(tmp_path: 
         found = memory.search("streamed clip", limit=10).hits
         assert {hit.id for hit in found} == set(committed)
     with Memory(
-        data_dir, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        data_dir, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         assert memory._store.index.pending_index_operations() == ()
         assert cast(ZvecIndex, memory._index).doc_count == _KILLED_STREAM_ITEMS
@@ -823,7 +823,7 @@ async def test_a_captured_final_acknowledges_before_the_models_and_settles_later
 ) -> None:
     embedder = RecordingEmbedder(frozenset({Modality.TEXT}))
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0))
     )
     try:
         commits = [
@@ -864,7 +864,7 @@ async def test_a_captured_audio_final_settles_into_the_record_add_would_have_wri
             Memory(
                 directory,
                 embedder=RecordingEmbedder(frozenset({Modality.TEXT})),
-                config=MemoryConfig(minimum_relevance=0),
+                settings=MemorySettings(minimum_relevance=0),
             )
         )
         try:
@@ -906,7 +906,7 @@ def test_a_captured_stream_input_keys_its_folded_transcript_like_add(tmp_path: P
         with Memory(
             directory,
             embedder=RecordingEmbedder(frozenset({Modality.TEXT})),
-            config=MemoryConfig(minimum_relevance=0),
+            settings=MemorySettings(minimum_relevance=0),
         ) as memory:
             (record,) = memory.add_stream(
                 (
@@ -929,7 +929,7 @@ def test_a_captured_stream_input_keys_its_folded_transcript_like_add(tmp_path: P
 @pytest.mark.asyncio
 async def test_a_captured_vision_final_reports_its_pending_settlement(tmp_path: Path) -> None:
     memory = AsyncMemory(
-        Memory(tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0))
+        Memory(tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
     )
     try:
         commits = [
@@ -952,11 +952,54 @@ async def test_a_captured_vision_final_reports_its_pending_settlement(tmp_path: 
         await memory.close()
 
 
+@pytest.mark.asyncio
+async def test_captured_vision_keeps_original_frame_before_failed_description(
+    tmp_path: Path,
+) -> None:
+    class RetryingVisionDescriber(RecordingVisionDescriber):
+        def describe(self, inputs: Sequence[ModelInput]) -> tuple[str, ...]:
+            if not self.inputs:
+                self.inputs.extend(inputs)
+                raise ModelError("vision unavailable", reason="rate_limited")
+            return super().describe(inputs)
+
+    frame = Blob(b"original frame", "image/png")
+    describer = RetryingVisionDescriber()
+    embedder = RecordingEmbedder(frozenset({Modality.TEXT}))
+    memory = AsyncMemory(Memory(tmp_path, embedder=embedder, vision_describer=describer))
+    try:
+        commits = [
+            commit
+            async for commit in AsyncVisionStream(memory, capture=True).consume(
+                _vision_packets(VisionFrame(frame), SceneBoundary(VisionBoundary.END))
+            )
+        ]
+        (commit,) = commits
+        assert commit.pending_settlement and commit.prefetch is None
+        assert describer.inputs == embedder.inputs == []
+        asset_id = commit.record.assets[0].id
+        assert (await memory.read_asset(commit.record.id, asset_id)).data == frame.data
+
+        with pytest.raises(ModelError, match="vision unavailable"):
+            await memory.settle()
+        (pending,) = await memory.pending_captures()
+        assert pending.memory_id == commit.record.id and pending.attempts == 1
+        assert (await memory.read_asset(commit.record.id, asset_id)).data == frame.data
+
+        assert await memory.settle() == 1
+        assert await memory.pending_captures() == ()
+        assert (await memory.get(commit.record.id)).content.endswith(
+            "automatically described red toolbox"
+        )
+    finally:
+        await memory.close()
+
+
 def test_add_stream_can_capture_instead_of_adding(tmp_path: Path) -> None:
     from sensemem import Memory
 
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         records = list(
             memory.add_stream(
@@ -980,7 +1023,7 @@ def test_add_stream_can_capture_instead_of_adding(tmp_path: Path) -> None:
 def test_a_finished_stream_never_leaves_another_thread_deferring(tmp_path: Path) -> None:
     """Deferral is per thread: one stream's exit must not silence another thread's drains."""
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         first_open = threading.Event()
         second_open = threading.Event()
@@ -1033,7 +1076,7 @@ async def test_a_streamed_caption_is_cached_for_the_next_write_of_the_same_frame
             tmp_path,
             embedder=RecordingEmbedder(frozenset({Modality.TEXT})),
             vision_describer=describer,
-            config=MemoryConfig(minimum_relevance=0),
+            settings=MemorySettings(minimum_relevance=0),
         )
     )
     try:

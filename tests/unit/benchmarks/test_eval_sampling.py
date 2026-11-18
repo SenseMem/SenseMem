@@ -16,8 +16,9 @@ import openai
 import pytest
 
 import sensemem.configuration as configuration_module
-from sensemem import EmbedTask, Modality, ModelInput, SearchHit, SenseMemConfig
-from sensemem.benchmarks import eval as eval_module
+from sensemem import EmbedTask, MemorySpec, Modality, ModelInput, SearchHit
+from sensemem.benchmarks import eval_backends as eval_backends_module
+from sensemem.benchmarks import eval_report as eval_report_module
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
 from sensemem.benchmarks.eval_arms import _BaselineGenerator
 from sensemem.benchmarks.eval_config import (
@@ -29,14 +30,15 @@ from sensemem.benchmarks.eval_config import (
 )
 from sensemem.benchmarks.model_config import ModelConfig
 from sensemem.benchmarks.task_catalog import TASKS
+from sensemem.configuration import OpenAIGenerationConfig
 
 
 def test_configuration_identity_is_stable_across_process_hash_seeds() -> None:
     script = """
 import json
-from sensemem import SenseMemConfig
+from sensemem import MemorySpec
 from sensemem.benchmarks.eval_config import _memory_config_payload
-config = SenseMemConfig.model_validate({
+config = MemorySpec.model_validate({
     "embedding": {"provider": "openai", "modalities": ["text", "image", "video"]},
     "generation": {"provider": "openai", "modalities": ["text", "image"], "routes": [
         {"provider": "openai", "modalities": ["text", "image", "audio", "video"]}
@@ -67,13 +69,13 @@ def test_media_inputs_preserve_declared_generation_routes(explicit_modalities: b
     }
     if explicit_modalities:
         generation["modalities"] = ["text", "image"]
-    declared = SenseMemConfig.model_validate(
+    declared = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": generation,
         }
     )
-    assert declared.generation is not None
+    assert isinstance(declared.generation, OpenAIGenerationConfig)
     model = ModelConfig(
         generation_model="image-reader", generation_capabilities=declared.generation.modalities
     )
@@ -92,7 +94,7 @@ def test_media_inputs_preserve_declared_generation_routes(explicit_modalities: b
     effective = _evaluation_config(model, (task,), memory_config=declared)
     assert effective.generation_capabilities == declared.generation.modalities
     resolved = _evaluation_memory_config(declared, effective, gen_kwargs="", seed=0, device=None)
-    assert resolved is not None and resolved.generation is not None
+    assert resolved is not None and isinstance(resolved.generation, OpenAIGenerationConfig)
     assert resolved.generation.modalities == declared.generation.modalities
     assert resolved.generation.routes[0].modalities == frozenset({Modality.TEXT, Modality.AUDIO})
 
@@ -177,7 +179,7 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
     arguments = cast(_Arguments, SimpleNamespace(gen_kwargs=options, seed=7, device=None))
     model = ModelConfig(generation_model="qwen3.8-27b")
     declared = (
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "sentence-transformers", "model": "fixture"},
                 "generation": {
@@ -197,19 +199,21 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
         seed=arguments.seed,
         device=arguments.device,
     )
-    pool = eval_module._BackendPool(model, memory_config=effective)
+    pool = eval_backends_module._BackendPool(model, memory_config=effective)
     baseline = _BaselineGenerator(model, seed=7, gen_kwargs=options, generation=effective)
     try:
-        assert pool._answerer is not None
+        assert pool._plugins.answerer is not None
         hit = SearchHit(
             id="toolbox",
             content="The toolbox is blue",
             score=1.0,
             created_at=datetime(2026, 10, 28, tzinfo=timezone.utc),
         )
-        assert pool._answerer.answer(ModelInput(text="What colour?"), (hit,)).answer == "blue"
+        assert (
+            pool._plugins.answerer.answer(ModelInput(text="What colour?"), (hit,)).answer == "blue"
+        )
         assert asyncio.run(baseline.answer("What colour?", hit.content)) == "blue"
-        recorded = eval_module._model_result(arguments, model, effective)
+        recorded = eval_report_module._model_result(arguments, model, effective)
     finally:
         pool.close()
         asyncio.run(baseline.close())

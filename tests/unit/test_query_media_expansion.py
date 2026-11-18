@@ -16,9 +16,9 @@ from sensemem import (
     Blob,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
     MemoryRecord,
-    MemoryType,
+    MemorySettings,
     Modality,
     ModelInput,
     ObservationContext,
@@ -122,7 +122,7 @@ def _memory(
         path,
         embedder=_Embedder(),
         answerer=answerer,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             minimum_relevance=minimum_relevance,
             ambiguity_margin=0.0,
@@ -234,9 +234,13 @@ def test_scope_filters_both_exact_anchors_and_neighbor_hydration(tmp_path: Path)
 def test_neighbor_rows_do_not_escape_requested_memory_type(tmp_path: Path) -> None:
     answerer = _Answerer()
     with _memory(tmp_path, answerer) as memory:
-        code = memory.add(("code source", CODE), occurred_at=NOW, memory_type=MemoryType.EPISODIC)
-        plot = memory.add(("plot result", PLOT), occurred_at=NOW, memory_type=MemoryType.SEMANTIC)
-        memory.ask(QUERY, limit=1, memory_type=MemoryType.EPISODIC)
+        code = memory.add(
+            ("code source", CODE), occurred_at=NOW, memory_type=MemoryCategory.EPISODIC
+        )
+        plot = memory.add(
+            ("plot result", PLOT), occurred_at=NOW, memory_type=MemoryCategory.SEMANTIC
+        )
+        memory.ask(QUERY, limit=1, memory_type=MemoryCategory.EPISODIC)
         assert {hit.id for hit in answerer.calls[-1][1]} == {code.id}
         assert plot.id not in {hit.id for hit in answerer.calls[-1][1]}
 

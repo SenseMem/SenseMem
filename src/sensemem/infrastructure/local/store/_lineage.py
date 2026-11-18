@@ -13,9 +13,14 @@ import math
 import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
+from itertools import groupby
 
+from sensemem._naming_conditions import is_naming_condition
+from sensemem.evidence_policy import required_support, state_can_supersede
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
+    affect_witnesses_from_json,
+    affect_witnesses_json,
     datetime_text,
     optional_datetime_from_row,
     optional_datetime_text,
@@ -39,13 +44,70 @@ from sensemem.infrastructure.local.store.rows import (
 from sensemem.kernel.corroboration import Assessment
 from sensemem.kernel.predicates import PREDICATE_REGISTRY_VERSION
 from sensemem.kernel.temporal import intervals_overlap
-from sensemem.types import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, RecordKind
+
+
+def _merge_affect_witnesses(
+    connection: sqlite3.Connection,
+    memory_id: str,
+    existing: sqlite3.Row | None,
+    context: RecordSemantics,
+) -> None:
+    if existing is None or not context.affect_witnesses:
+        return
+    witnesses = tuple(
+        dict.fromkeys(
+            (
+                *affect_witnesses_from_json(row_text(existing, "affect_witnesses_json")),
+                *context.affect_witnesses,
+            )
+        )
+    )
+    connection.execute(
+        "UPDATE memory_semantics SET affect_witnesses_json = ? WHERE memory_id = ?",
+        (affect_witnesses_json(witnesses), memory_id),
+    )
+
+
+def _pending_state_support(
+    connection: sqlite3.Connection, memory_id: str, context: RecordSemantics
+) -> tuple[int, float]:
+    if independent_evidence_enabled(connection):
+        support = evidence_support(
+            connection,
+            memory_id,
+            pending_assessment=Assessment(context.evidence_ids, context.confidence),
+        )
+        return support.count, support.confidence
+    if context.basis is not EvidenceBasis.MODEL_INFERENCE or context.identity_id is None:
+        return 1, context.confidence
+    placeholders = ", ".join("?" for _source in context.evidence_ids)
+    named = connection.execute(
+        f"SELECT kind, predicate, basis, identity_id FROM memory_semantics "
+        f"WHERE memory_id IN ({placeholders})",
+        context.evidence_ids,
+    ).fetchall()
+    if len(named) == len(context.evidence_ids) and all(
+        is_naming_condition(
+            row_text(row, "kind"),
+            optional_row_text(row, "predicate"),
+            row_text(row, "basis"),
+            optional_row_text(row, "identity_id"),
+            context.kind,
+            context.identity_id,
+            context.basis,
+        )
+        for row in named
+    ):
+        return 0, 0.0
+    return 1, context.confidence
 
 
 def write_memory_context(
     connection: sqlite3.Connection,
     memory_id: str,
-    context: MemoryContext,
+    context: RecordSemantics,
     *,
     transaction_memory_ids: set[str] | None = None,
     superseded: list[tuple[str, int]] | None = None,
@@ -54,9 +116,10 @@ def write_memory_context(
 ) -> None:
     context_recorded_at = context.recorded_at if recorded_at is None else recorded_at
     existing = connection.execute(
-        "SELECT lineage_id FROM memory_semantics WHERE memory_id = ?",
+        "SELECT lineage_id, affect_witnesses_json FROM memory_semantics WHERE memory_id = ?",
         (memory_id,),
     ).fetchone()
+    _merge_affect_witnesses(connection, memory_id, existing, context)
     if existing is not None and write_evidence:
         for source_memory_id in context.evidence_ids:
             add_evidence_clause(
@@ -100,6 +163,7 @@ def write_memory_context(
     valid_from = context.valid_from
     valid_until = context.valid_until
     orientation = None if spatial is None else spatial.orientation_xyzw
+    link = context.affect_link
     connection.execute(
         """
         INSERT OR IGNORE INTO memory_semantics (
@@ -107,10 +171,13 @@ def write_memory_context(
             subject, predicate, value, model_id, recipe, identity_id,
             predicate_key, predicate_registry, predicate_match,
             cue_modality, valence, arousal,
+            affect_id, affect_role, affect_object_memory_id, affect_object_identity_id,
+            affect_polarity, affect_witnesses_json,
             spatial_frame_id, spatial_anchor, spatial_x, spatial_y, spatial_z,
             spatial_qx, spatial_qy, spatial_qz, spatial_qw, spatial_uncertainty_m
         ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?
         )
         """,
         (
@@ -131,6 +198,12 @@ def write_memory_context(
             None if context.cue_modality is None else context.cue_modality.value,
             context.valence,
             context.arousal,
+            None if link is None else link.affect_id,
+            None if link is None else link.role,
+            None if link is None else link.object_ref.memory_id,
+            None if link is None else link.object_ref.identity_id,
+            None if link is None else link.polarity,
+            affect_witnesses_json(context.affect_witnesses),
             None if spatial is None else spatial.frame_id,
             None if spatial is None else spatial.anchor.value,
             None if spatial is None else spatial.x,
@@ -163,21 +236,8 @@ def write_memory_context(
         if not write_evidence and context.evidence_ids
         else _evidence_summary(connection, memory_id)
     )
-    if (
-        context.kind is MemoryKind.STATE
-        and not write_evidence
-        and context.evidence_ids
-        and independent_evidence_enabled(connection)
-    ):
-        support = evidence_support(
-            connection,
-            memory_id,
-            pending_assessment=Assessment(
-                sources=context.evidence_ids,
-                confidence=context.confidence,
-            ),
-        )
-        evidence_count, confidence = support.count, support.confidence
+    if context.kind is RecordKind.STATE and not write_evidence and context.evidence_ids:
+        evidence_count, confidence = _pending_state_support(connection, memory_id, context)
     if not context.evidence_ids:
         confidence = context.confidence
     # Decided against the lineage as it stands, before this write retires anything: an assertion
@@ -201,9 +261,9 @@ def write_memory_context(
     # instead of sitting beside the current one. Everything else accumulates evidence instead,
     # as does a claim that is not visible: it waits beside the standing one for corroboration.
     reconcile_lineage = visible and (
-        context.kind is MemoryKind.STATE
-        or (context.kind is MemoryKind.TRAIT and context.basis is EvidenceBasis.USER_STATEMENT)
-        or (context.kind is MemoryKind.ENTITY and context.identity_id is not None)
+        context.kind is RecordKind.STATE
+        or (context.kind is RecordKind.TRAIT and context.basis is EvidenceBasis.USER_STATEMENT)
+        or (context.kind is RecordKind.ENTITY and context.identity_id is not None)
     )
     if reconcile_lineage:
         recorded_at, supersedes_id = _retire_displaced_lineage(
@@ -292,7 +352,7 @@ def _retire_displaced_lineage(
             and row_text(old, "memory_id") in transaction_memory_ids
         ) or not intervals_overlap(valid_from, valid_until, old_from, old_until):
             continue
-        if kind == MemoryKind.STATE.value and not _state_can_supersede(
+        if kind == RecordKind.STATE.value and not state_can_supersede(
             basis,
             confidence,
             row_text(old, "basis"),
@@ -329,30 +389,6 @@ def _retire_displaced_lineage(
             )
         supersedes_id = supersedes_id or row_text(old, "memory_id")
     return recorded_at, supersedes_id
-
-
-def _state_can_supersede(
-    basis: str,
-    confidence: float,
-    previous_basis: str,
-    previous_confidence: float,
-) -> bool:
-    """Compare proposal authority first, then support within the same authority tier.
-
-    An ambiguous alternative remains a conflict; merely arriving later cannot withdraw stronger
-    evidence. The derived claim's own basis matters, never the basis of its raw observation.
-    Confidence is an operational support score, not a calibrated probability of a state change.
-    """
-    assertions = {EvidenceBasis.USER_STATEMENT.value, EvidenceBasis.RESPONSE_FEEDBACK.value}
-    explicit = basis in assertions
-    previous_explicit = previous_basis in assertions
-    if explicit != previous_explicit:
-        return explicit
-    # A singleton noisy-OR projection can round 0.3 to 0.30000000000000004. That must not
-    # prevent an equally supported later assertion from revising it.
-    return confidence >= previous_confidence or math.isclose(
-        confidence, previous_confidence, rel_tol=1e-15, abs_tol=0.0
-    )
 
 
 def _carry_memory_version(
@@ -597,7 +633,7 @@ def _rebuild_flat_evidence_from_clauses(
         FROM memory_evidence_clauses AS c
         JOIN memory_evidence_clause_members AS m
           ON m.memory_id = c.memory_id AND m.clause_id = c.clause_id
-        WHERE c.memory_id = ? AND c.retired_at IS NULL
+        WHERE c.memory_id = ? AND c.retired_at IS NULL AND c.confidence > 0
         GROUP BY m.source_memory_id
         HAVING COUNT(*) > 0
         ORDER BY MIN(m.position), m.source_memory_id
@@ -680,6 +716,78 @@ def retire_evidence_clauses_for_source(
     return changed
 
 
+def withdraw_corrected_evidence(
+    connection: sqlite3.Connection,
+    memory_ids: Sequence[str],
+    *,
+    changed_at: datetime,
+) -> tuple[StoredEvidenceClauseChange, ...]:
+    """Withdraw complete assessments through corrected or newly hidden premises, reversibly.
+
+    Zero confidence gives a clause no proof while retaining an ordinary, reversible clause
+    version. Historical STATE segments and consolidation-forgotten sources are not corrections:
+    only the supplied targets and premises they make unavailable enter this withdrawal.
+    """
+    affected = tuple(
+        dict.fromkeys(
+            dependent_id
+            for memory_id in memory_ids
+            for dependent_id in active_evidence_dependent_closure(connection, memory_id)
+        )
+    )
+    pending = list(dict.fromkeys(memory_ids))
+    withdrawn = set(pending)
+    changes: list[StoredEvidenceClauseChange] = []
+    while pending:
+        source_id = pending.pop()
+        clauses = connection.execute(
+            """
+            SELECT c.memory_id, c.clause_id
+            FROM memory_evidence_clauses AS c
+            JOIN memory_evidence_clause_members AS m
+              ON m.memory_id = c.memory_id AND m.clause_id = c.clause_id
+            WHERE m.source_memory_id = ? AND c.retired_at IS NULL AND c.confidence > 0
+            ORDER BY c.memory_id, c.clause_id
+            """,
+            (source_id,),
+        ).fetchall()
+        for clause in clauses:
+            members = connection.execute(
+                """
+                SELECT source_memory_id FROM memory_evidence_clause_members
+                WHERE memory_id = ? AND clause_id = ? ORDER BY position
+                """,
+                (row_text(clause, "memory_id"), row_text(clause, "clause_id")),
+            ).fetchall()
+            change = add_evidence_clause(
+                connection,
+                row_text(clause, "memory_id"),
+                tuple(row_text(member, "source_memory_id") for member in members),
+                confidence=0.0,
+                recorded_at=changed_at,
+            )
+            if change is not None:
+                changes.append(change)
+        # Projection can hide a trait with a surviving singleton, or hide a more distant
+        # dependent whose shared capture group changed. Neither is a standing premise now.
+        for memory_id in affected:
+            if memory_id in withdrawn:
+                continue
+            if (
+                connection.execute(
+                    """
+                    SELECT 1 FROM memory_versions
+                    WHERE memory_id = ? AND retired_at IS NULL AND visible = 1 LIMIT 1
+                    """,
+                    (memory_id,),
+                ).fetchone()
+                is None
+            ):
+                withdrawn.add(memory_id)
+                pending.append(memory_id)
+    return tuple(changes)
+
+
 def response_policy_dependencies(connection: sqlite3.Connection) -> frozenset[str]:
     """Read standing host policies and their complete active support graph in this transaction.
 
@@ -726,7 +834,7 @@ def active_evidence_dependent_closure(
             FROM memory_evidence_clauses AS c
             JOIN memory_evidence_clause_members AS m
               ON m.memory_id = c.memory_id AND m.clause_id = c.clause_id
-            WHERE m.source_memory_id = ? AND c.retired_at IS NULL
+            WHERE m.source_memory_id = ? AND c.retired_at IS NULL AND c.confidence > 0
             ORDER BY c.memory_id
             """,
             (source_id,),
@@ -798,7 +906,7 @@ def grounded_affected_memory_ids(  # noqa: C901 - bounded support fixed point
             FROM memory_evidence_clauses AS c
             JOIN memory_evidence_clause_members AS m
               ON m.memory_id = c.memory_id AND m.clause_id = c.clause_id
-            WHERE c.memory_id = ? AND c.retired_at IS NULL
+            WHERE c.memory_id = ? AND c.retired_at IS NULL AND c.confidence > 0
             ORDER BY c.clause_id, m.position
             """,
             (memory_id,),
@@ -827,6 +935,7 @@ def grounded_affected_memory_ids(  # noqa: C901 - bounded support fixed point
                         OR EXISTS (
                             SELECT 1 FROM memory_evidence_clauses AS c
                             WHERE c.memory_id = v.memory_id AND c.retired_at IS NULL
+                              AND c.confidence > 0
                         )
                       )
                     """,
@@ -876,7 +985,7 @@ def _is_evidence_root(connection: sqlite3.Connection, memory_id: str) -> bool:
         return False
     return (
         row["kind"] is None
-        or row_text(row, "kind") == MemoryKind.OBSERVATION.value
+        or row_text(row, "kind") == RecordKind.OBSERVATION.value
         or row_text(row, "basis")
         in {EvidenceBasis.USER_STATEMENT.value, EvidenceBasis.RESPONSE_FEEDBACK.value}
     )
@@ -1547,33 +1656,52 @@ def _evidence_summary(
     # as one conservative alternative rather than inventing independent votes from its members.
     rows = connection.execute(
         """
-        SELECT MAX(c.confidence) AS confidence
-        FROM memory_evidence AS e
-        JOIN memory_evidence_clauses AS c
-          ON c.memory_id = e.memory_id AND c.retired_at IS NULL AND c.member_count = 1
+        SELECT c.clause_id, c.confidence, c.member_count, e.source_group_id,
+               source.kind, source.predicate, source.basis, source.identity_id,
+               target.kind AS target_kind, target.identity_id AS target_identity_id,
+               target.basis AS target_basis
+        FROM memory_evidence_clauses AS c
         JOIN memory_evidence_clause_members AS m
           ON m.memory_id = c.memory_id AND m.clause_id = c.clause_id
-             AND m.source_memory_id = e.source_memory_id
-        WHERE e.memory_id = ? AND e.retired_at IS NULL
-        GROUP BY e.source_group_id
+        JOIN memory_evidence AS e
+          ON e.memory_id = m.memory_id AND e.source_memory_id = m.source_memory_id
+             AND e.retired_at IS NULL
+        LEFT JOIN memory_semantics AS source ON source.memory_id = m.source_memory_id
+        LEFT JOIN memory_semantics AS target ON target.memory_id = c.memory_id
+        WHERE c.memory_id = ? AND c.retired_at IS NULL AND c.confidence > 0
+        ORDER BY c.clause_id, m.position
         """,
         (memory_id,),
     ).fetchall()
+    groups: dict[str, float] = {}
+    joint_confidence = 0.0
+    for _clause, members in groupby(rows, key=lambda row: row_text(row, "clause_id")):
+        clause = tuple(members)
+        if len(clause) != int(clause[0]["member_count"]):
+            continue
+        observations = tuple(
+            row
+            for row in clause
+            if not is_naming_condition(
+                optional_row_text(row, "kind"),
+                optional_row_text(row, "predicate"),
+                optional_row_text(row, "basis"),
+                optional_row_text(row, "identity_id"),
+                optional_row_text(row, "target_kind"),
+                optional_row_text(row, "target_identity_id"),
+                optional_row_text(row, "target_basis"),
+            )
+        )
+        score = float(clause[0]["confidence"])
+        if len(observations) == 1:
+            group = row_text(observations[0], "source_group_id")
+            groups[group] = max(groups.get(group, 0.0), score)
+        elif observations:
+            joint_confidence = max(joint_confidence, score)
     combined = 0.0
-    for row in rows:
-        combined = 1.0 - (1.0 - combined) * (1.0 - float(row["confidence"]))
-    joint = connection.execute(
-        """
-        SELECT MAX(confidence) AS confidence
-        FROM memory_evidence_clauses
-        WHERE memory_id = ? AND retired_at IS NULL AND member_count > 1
-        """,
-        (memory_id,),
-    ).fetchone()
-    joint_confidence = (
-        0.0 if joint is None or joint["confidence"] is None else float(joint["confidence"])
-    )
-    return max(len(rows), 1 if joint_confidence else 0), max(combined, joint_confidence)
+    for score in groups.values():
+        combined = 1.0 - (1.0 - combined) * (1.0 - score)
+    return max(len(groups), 1 if joint_confidence else 0), max(combined, joint_confidence)
 
 
 def semantic_visibility(
@@ -1594,16 +1722,12 @@ def semantic_visibility(
         EvidenceBasis.RESPONSE_FEEDBACK.value,
     }:
         return True
-    if kind != MemoryKind.OBSERVATION.value and evidence_count == 0:
+    if kind != RecordKind.OBSERVATION.value and evidence_count == 0:
         return False
-    # A naming assertion bound to an identity is corroborated like an inferred trait: what an
-    # agent claims somebody is called stays hidden, and so stays out of the projected
-    # `identities.name`, until two independent evidence groups support it.
-    if kind != MemoryKind.TRAIT.value and not (
-        kind == MemoryKind.ENTITY.value and identity_id is not None
-    ):
+    support = required_support(kind, basis, identity_id)
+    if support == 1:
         return True
-    if evidence_count < 2:
+    if evidence_count < support:
         return False
     if explicit_intervals is None:
         rows = connection.execute(
@@ -1656,7 +1780,7 @@ def _refresh_inherited_columns(connection: sqlite3.Connection, memory_id: str) -
               WHERE s.memory_id = e.memory_id AND s.kind = ? AND s.identity_id IS NOT NULL
           )
         """,
-        (memory_id, MemoryKind.ENTITY.value),
+        (memory_id, RecordKind.ENTITY.value),
     ).fetchall()
     if not rows:
         # Nothing supports the record any more, or nothing may reach it. The caller removes an
@@ -1665,6 +1789,16 @@ def _refresh_inherited_columns(connection: sqlite3.Connection, memory_id: str) -
     places = {optional_row_text(row, "place_id") for row in rows}
     tags = {canonical_object_json(row_text(row, "metadata_json")) for row in rows}
     place_id = places.pop() if len(places) == 1 else None
+    focal = connection.execute(
+        """
+        SELECT r.place_id FROM memory_semantics AS s
+        JOIN memory_records AS r ON r.memory_id = s.affect_id
+        WHERE s.memory_id = ? AND s.affect_id IS NOT NULL
+        """,
+        (memory_id,),
+    ).fetchone()
+    if focal is not None:
+        place_id = optional_row_text(focal, "place_id")
     current = connection.execute(
         "SELECT place_id FROM memory_records WHERE memory_id = ?",
         (memory_id,),
@@ -1831,15 +1965,15 @@ def rebuild_reconciled_lineage(  # noqa: C901 - replay order is the state contra
             offset += 1
         for cut_owner, cut_from, cut_until in group:
             if (
-                kind == MemoryKind.TRAIT.value
+                kind == RecordKind.TRAIT.value
                 and row_text(cut_owner, "basis") != EvidenceBasis.USER_STATEMENT.value
             ):
                 continue
             remaining: list[tuple[sqlite3.Row, datetime | None, datetime | None]] = []
             for owner, valid_from, valid_until in segments:
                 if not intervals_overlap(valid_from, valid_until, cut_from, cut_until) or (
-                    kind == MemoryKind.STATE.value
-                    and not _state_can_supersede(
+                    kind == RecordKind.STATE.value
+                    and not state_can_supersede(
                         row_text(cut_owner, "basis"),
                         summaries[row_text(cut_owner, "memory_id")][1],
                         row_text(owner, "basis"),

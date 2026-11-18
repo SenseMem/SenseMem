@@ -22,8 +22,7 @@ Baseline arms are always non-official.
 | `memlens` | 32K–256K dialogue, images, temporal reasoning, updates, and refusal | `accuracy` | `qwen3-235b-judge` |
 | `longmemeval-v2` | Web and enterprise trajectories with state screenshots | `accuracy` | Phrase/choice rules; `gpt-5.2` for judged types |
 | `mosaic` | Text, image, audio, and video conversation histories, including refusal | Answerable-only `judge_score` (0–1) | `qwen/qwen3.7-plus` |
-| `es-memeval` | Emotional-support dialogue QA | Adapted `llm_judge` (0–1) | `gpt-4o`; non-official adaptation |
-| `personamem-v3` | Cross-app personalization and preference changes | Per-family scores; overall headline unavailable with incomplete scorer coverage | `gpt-5.5` for judged families |
+| `personamem-v3` | Cross-app personalization, preference changes, repetition, and proactive actions | `accuracy_pct_micro` (0–100), with per-family scores | `gpt-5.5` for judged families |
 
 ### Personal media archives
 
@@ -49,15 +48,14 @@ Supported annotations and media download automatically, except for authorized Eg
 Video tasks require `ffmpeg` and `ffprobe`; M3 web also requires `yt-dlp`. Start with one task:
 the `all` group can require hundreds of gigabytes.
 
-LoCoMo-Refined, MemLens, LongMemEval-V2, ES-MemEval, and PersonaMem-v3 need no timed-media
+LoCoMo-Refined, MemLens, LongMemEval-V2, and PersonaMem-v3 need no timed-media
 preparation. Image-bearing tasks still require compatible embedding and reader
 models. Raw ATM variants need a `vision` backend to index media descriptions; without it, their
 indexed text contains only source IDs.
 
 Review each upstream license before download. In particular, LoCoMo-Refined and PersonaMem-v3
 are CC BY-NC 4.0; MM-Lifelong restricts use to academic purposes; VideoZeroBench is
-CC BY-NC-ND 4.0; ICM data is CC BY-NC-SA 4.0. ES-MemEval has no declared
-license at the pin, so verify permission before using EvoEmo. See the
+CC BY-NC-ND 4.0; ICM data is CC BY-NC-SA 4.0. See the
 [scorer notices](../../src/sensemem/benchmarks/_official/NOTICE.md) for copied code and prompts.
 
 ## Protocol notes
@@ -72,9 +70,6 @@ manifests retain exact source and protocol identities.
 - **MemLens:** `--limit` counts questions. Released images contain answers absent from captions;
   an empty `--media-root` deliberately selects a caption-only condition and must be reported.
   Answer-session labels form groups: retrieving any turn in an answer session satisfies that group.
-- **ES-MemEval:** `--limit` counts seekers and keeps every selected seeker's question. Only QA is
-  adapted. Report set-overlap `f1`, normalized `llm_judge`, and raw `judge_score_0_2`; the judge
-  prompt is a semantic transcription and carries `official_metric: false`. BERTScore is not run.
 
 ### LongMemEval-V2
 
@@ -103,6 +98,8 @@ model settings, complete run commands, and measured results.
 ### PersonaMem-v3
 
 Only events strictly before the question timestamp enter memory. `profile.json` is scorer-only.
+`--limit` and `--offset` select personas before their engagement logs are parsed. Calendar
+additions, updates, and removals retain the same entry ID so memory can link their changes.
 The product arm uses `Memory.compile` followed by a harness assistant prompt that permits general
 knowledge while requiring support for personal facts. Its `answer_policy` is `null`; it exposes
 no ranked retrieval list. This differs from the grounded-reader `compile` baseline.
@@ -110,11 +107,63 @@ no ranked retrieval list. This differs from the grounded-reader `compile` baseli
 Scored families use the released personalization rubric, four task-specific judges, and ranking
 formula recorded in the task catalog. Ranking reports `ndcg_at_5`: positive gain +2, filler +1, hard
 negative −2; historical hidden-persona slates without hard negatives use filler gain zero.
-`target_only_ndcg@5` is a local diagnostic.
+Ranking questions retain any published prior conversation.
 
-Families requiring structured actions or paired-row deltas have no official headline; threaded
-cluster tasks are excluded at load. The aggregate `accuracy_pct_micro` remains unavailable when
-coverage is incomplete, rather than averaging a favorable subset.
+Local recommendation after a location change uses the official deterministic
+`geo_shift_correctness`: current city or region earns 1, neither current nor previous location
+earns 0.5, and mentioning the previous city earns 0. Responses with fewer than 15 distinct
+ASCII tokens of at least three characters earn 0.
+
+The five proactive-action families request the official JSON decision (`should_act`,
+`action_class`, `content`, `evidence_cited`, `reasoning`). These are simulated chat decisions;
+the harness executes no actions. Generation sees causal memory and an identical instruction
+for act and restraint cases. Hidden trigger evidence, JITAI cards, and instance polarity go
+only to the `gpt-5.5` judge. The headline `proactive_action_score` combines 70% deterministic
+decision correctness with 30% judged justification, including the official hard-failure and
+message-length rules. Without a judge, only deterministic diagnostics are reported.
+
+After [configuring the embedding, reader, and judge](../benchmarking.md#2-configure-the-models),
+use `benchmark.judge.model: gpt-5.5` and start with one persona:
+
+```bash
+uv run --frozen sensemem-bench eval \
+  --config eval.yaml --tasks personamem-v3 --arms sensemem,blind --limit 1
+```
+
+Novel suggestions use the official JSON recommendation prompt, deterministic fatigue and
+recent-hashtag checks, and the 0–3 alignment judge. A fatigued-topic overlap or dominant reuse
+of recent hashtags fails the row; otherwise an alignment score of at least 2 passes.
+Unprompted moments retain their empty user query without disclosing the fatigued topic or gold.
+
+Both repetition families execute the complete released sequence, including intervening filler
+turns. Each response enters the next prompt. Generation and judging run once per cluster and arm;
+published sibling rows reuse those results. As in the pinned runner, the first selected row's
+memory snapshot is shared by the cluster. Only target turns are judged. The first
+`n_allowed_repetitions + 1` target turns are warmup; the headline is mean tail restraint on a
+0–10 scale. Empty or non-substantive responses score zero. Failed judgments retain their original
+positions and are excluded from the tail mean, with the failure reported.
+
+Lifecycle ranking uses the released location and calendar context without revealing phase,
+stop condition, or matching labels. The runner pairs pre/post answers by persona and canonical
+ID, computes `lifecycle_score = pre.match_rate_at_3 - post.match_rate_at_3`, and maps its signed
+range to 0–100, with zero delta equal to 50. Each pair contributes once to the micro score;
+both original answer rows retain the paired result.
+
+Mistake prevention keeps warn/foil polarity and expected warning terms scorer-side. The official
+warning detector, mention-coverage threshold, leak check, and substantive-foil gate produce each
+row's `correct`. The pinned aggregator uses these per-row values in the micro score; the
+`mistake_prevention` summary separately reports complete-pair correctness, warn recall, foil
+precision, and paired F1, including counts of incomplete pairs.
+
+`accuracy_pct_micro` is available when every eligible selected scoring unit has its required
+metric. Unpaired lifecycle phases remain in the answer artifacts and are explicitly excluded
+from scoring, following the upstream aggregator's missing-metric rule. The pinned release has
+349 complete lifecycle pairs and 169 unpaired phases; `score_coverage` reports excluded counts
+and reasons. Missing judges or unscored eligible rows withhold the headline and report coverage
+plus supported-subset results. Use the recorded adapter and scorer versions when comparing runs;
+this protocol uses adapter `personamem_v3_official_v3`, scorer
+`personamem_v3_ad80a3b1b322_v3`, and result schema 25. Earlier artifacts use different populations
+and protocols.
 
 ### ATM-Bench and Mem-Gallery
 
@@ -153,9 +202,9 @@ coordinates, not dates or video offsets. Character IDs, speaker labels, gold ans
 annotations stay outside model input. Clip evidence labels may be incomplete.
 
 The scorer uses the pinned user-only semantic-equivalence prompt and exact `Yes` parser,
-protocol `icm_semantic_equivalence_10f02babe3c7_user_only_v2`. Compare matching protocols or
-[rejudge saved predictions](reference.md#rejudge-icm-predictions). Report effective modalities
-and identity settings: frame conversion does not provide native audio or face/voice binding.
+protocol `icm_semantic_equivalence_10f02babe3c7_user_only_v2`. Compare runs with matching protocols.
+Report effective modalities and identity settings: frame conversion does not provide native
+audio or face/voice binding.
 After extraction, the downloaded tar may be removed for offline runs; clips and annotations must
 remain available.
 

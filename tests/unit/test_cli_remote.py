@@ -21,16 +21,14 @@ import pytest
 from _feature_support import TinyEmbedder
 from fastapi.testclient import TestClient
 
+import sensemem.api.client as api_client
 from sensemem import Memory, cli
 from sensemem.api.app import create_app
 from sensemem.cli import EXIT_CODES, main
+from sensemem.control_values import MemoryIntent, MemoryOperation
 from sensemem.exceptions import IdentityNotFoundError
-from sensemem.types import (
-    FormationProposal,
-    MemoryIntent,
-    MemoryKind,
-    MemoryOperation,
-)
+from sensemem.semantics import FormationProposal
+from sensemem.types import RecordKind
 
 URL = "http://owner:8000"
 
@@ -64,7 +62,7 @@ def _serve(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
             )
         return BytesIO(response.content)
 
-    monkeypatch.setattr(cli, "urlopen", urlopen)
+    monkeypatch.setattr(api_client, "urlopen", urlopen)
 
 
 @pytest.fixture
@@ -139,7 +137,7 @@ def test_an_operation_row_prints_the_same_keys_on_both_transports(
             intent=MemoryIntent.CONSOLIDATE,
             evidence_ids=(observation.id,),
             proposal=FormationProposal(
-                kind=MemoryKind.ENTITY,
+                kind=RecordKind.ENTITY,
                 content="Ana is a person",
                 subject="Ana",
                 confidence=0.9,

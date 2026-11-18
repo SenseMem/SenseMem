@@ -21,7 +21,7 @@ from sensemem import (
     Blob,
     IndexQuantization,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     RetrievalMode,
     SearchHit,
@@ -59,7 +59,7 @@ class _Embedder:
 
 @pytest.mark.parametrize(
     "stage",
-    ("max_cosine_part_scores", "max_cosine_scores", "lexical_relevance", "ranking_signals"),
+    ("max_cosine_part_scores", "max_cosine_scores", "lexical_relevance", "ranking_factors"),
 )
 @pytest.mark.parametrize("fail", (False, True))
 def test_delete_and_search_progress_during_ranking_while_media_remains_leased(
@@ -71,7 +71,7 @@ def test_delete_and_search_progress_during_ranking_while_media_remains_leased(
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             index_quantization=(
                 IndexQuantization.NONE if stage == "max_cosine_scores" else IndexQuantization.INT8
             ),
@@ -92,7 +92,7 @@ def test_delete_and_search_progress_during_ranking_while_media_remains_leased(
         entered, release = Event(), Event()
         owner = (
             ranking_module
-            if stage in {"lexical_relevance", "ranking_signals"}
+            if stage in {"lexical_relevance", "ranking_factors"}
             else retrieval_module
         )
         original = cast(Callable[..., object], getattr(owner, stage))
@@ -154,7 +154,9 @@ def test_embedding_stream_keeps_one_snapshot_across_sql_batches(
 def test_delete_before_authoritative_hydration_does_not_return_a_snapshot_hit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), config=MemoryConfig(ambiguity_margin=0)) as memory:
+    with Memory(
+        tmp_path, embedder=_Embedder(), settings=MemorySettings(ambiguity_margin=0)
+    ) as memory:
         target = memory.add("shared target")
         original = cast(Callable[..., object], parent_index_signals)
 
@@ -174,7 +176,7 @@ def test_media_validation_is_limited_to_selected_candidates(
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             index_quantization=IndexQuantization.INT8,
             retrieval_mode=RetrievalMode.DENSE,
             minimum_relevance=0.85,
@@ -199,7 +201,7 @@ def test_only_selected_media_remains_leased_during_hit_hydration(
     with Memory(
         tmp_path,
         embedder=_Embedder(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         target = memory.add(("shared target", Blob(b"target", "image/png")))
         decoy = memory.add(("shared neighbor", Blob(b"neighbor", "image/png")))

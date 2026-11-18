@@ -60,12 +60,16 @@ consolidate(
     query: ContentInput | None = None,
     limit: int = 32,
     trigger: MemoryTrigger = MemoryTrigger.MANUAL,
+    query_failure: QueryFailure | None = None,
 ) -> ConsolidationReport
 ```
 
 Requires a consolidator. Select evidence by explicit IDs, otherwise active search for query,
-otherwise newest limit active records. Hidden/forgotten records are not shown. Explicit host IDs
-also bound eligible hidden targets; query/default windows never widen to hidden targets.
+otherwise newest limit active records. Explicit IDs can also show hidden/retired target-only
+assertions; they cannot support proposals. Forgotten records are never shown. Query/default
+windows never widen to hidden targets. A supplied `query_failure` requires the `QUERY_FAILURE`
+trigger and reaches the backend with the failed request's constraints. Candidate callers must
+forward `candidate.query_failure`; `consolidate_pending()` does so automatically.
 
 Evidence gather and apply phases use the formation lock; the model round trip releases it.
 Identity commits use that same lock. Every proposal rechecks targets/premises in its own
@@ -86,7 +90,7 @@ the citations remain in the operation log and idempotency key. Missing citations
 `apply()` corrections may omit counterevidence because the caller supplies the authority.
 
 Standalone model `FORGET` operations require `trigger=MemoryTrigger.PRESSURE` and an explicit
-`MemoryConfig.memory_budget_records`. The SQLite transaction refuses a batch that would leave
+`MemorySettings.memory_budget_records`. The SQLite transaction refuses a batch that would leave
 fewer unforgotten records than that budget, including when another operation already relieved
 the pressure; it reports `stale` without partial changes. Other model forgetting is
 `unauthorized`. Manual `forget()` and host-authored `apply()` retain their explicit authority.
@@ -129,13 +133,13 @@ A refusal raises `ValidationError` with the kernel rejection reason.
 | `CORRECT` | Shown existing derived targets; model proposals cite shown counterevidence excluding the target | Retire current versions; rollback adds inverse versions |
 | `FORGET` | Shown existing, not-forgotten targets; model proposals require host-configured record pressure | Set `forgotten_at` within remaining record budget; rollback clears it |
 | `IDENTIFY` | Existing identity present in at least one standing cited speech/face observation | Commit naming assertion and repaint name/transcript projections; rollback restores predecessor |
-| `MERGE` | Never accepted from a backend: unauthorized | Kernel corroboration only; rollback splits |
+| `MERGE` | Explicit host confirmation of complementary voice/face identities; never accepted from a backend | Bind under the host-selected identity; rollback splits and preserves a negative pair |
 | `CONSENT` | Never accepted from a backend: unauthorized | Host statement only; rollback restores predecessor |
 
 ### Eligibility and rejection
 
-Operation keys hash canonical operation JSON plus recipe. An already-applied, standing key is
-duplicate. Named targets outside the window are `target_not_shown`. Multi-target eligibility is
+An already-applied operation with the same payload and recipe is a duplicate while it remains
+standing. Named targets outside the window are `target_not_shown`. Multi-target eligibility is
 all-or-nothing; failures include `unknown_target`, `not_derived`, and `already_forgotten`.
 Transaction rechecks return stale without writes. Hidden unretired reinforcement targets can
 still receive eligible support; hidden/retired cited premises cannot seed a new operation.

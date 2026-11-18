@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta, timezone
 
 from sensemem.exceptions import ValidationError
-from sensemem.types import SearchHit
+from sensemem.records import SearchHit
 
 _ISO_DATE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)")
 

@@ -17,7 +17,7 @@ from sensemem.infrastructure.local.store._codec import (
     row_text,
 )
 from sensemem.infrastructure.local.store.rows import StoredCandidate
-from sensemem.types import EvidenceBasis, MemoryKind
+from sensemem.types import EvidenceBasis, RecordKind
 
 # Claims whose write contract gives one lineage one standing value. Relations are accumulating,
 # as are model-inferred traits; only a person's own trait assertion has the single-value contract.
@@ -27,25 +27,10 @@ FUNCTIONAL_CLAIM_SQL = "(s.kind = ? OR (s.kind = ? AND s.basis = ?))"
 
 
 FUNCTIONAL_CLAIM_PARAMETERS = (
-    MemoryKind.STATE.value,
-    MemoryKind.TRAIT.value,
+    RecordKind.STATE.value,
+    RecordKind.TRAIT.value,
     EvidenceBasis.USER_STATEMENT.value,
 )
-
-
-def weighed_at_by_memory(connection: sqlite3.Connection) -> dict[str, datetime]:
-    """Return, per memory, when anything last weighed it: an operation or a deliberation.
-
-    Both halves are needed. An applied operation proves the record was considered *and* acted
-    on; a deliberation row proves only that it was considered, which is exactly the case an
-    operation log cannot record -- the backend proposed nothing, or the kernel refused
-    everything. Without the second half a zero-yield candidate returns every round and is paid
-    for every round.
-    """
-    return merge_weighed(
-        consumed_at_by_memory(connection),
-        deliberated_at_by_memory(connection),
-    )
 
 
 def merge_weighed(
@@ -396,7 +381,7 @@ def feedback_candidates(
 ) -> list[StoredCandidate]:
     """Records whose recall was confirmed since a standing operation last saw them.
 
-    `reinforce_memories` is one writer of `last_accessed_at`; under the default
+    `reinforce_memories` is one writer of `last_accessed_at`; with opt-in
     `reinforce_on_answer`, an `ask()` answer citing a record is the other.
     """
     rows = connection.execute(

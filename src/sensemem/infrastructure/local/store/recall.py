@@ -12,7 +12,7 @@ from sensemem.infrastructure.local.store._codec import (
     row_text,
 )
 from sensemem.infrastructure.local.store._connections import Connections
-from sensemem.infrastructure.local.store._identity import canonical_subject, resolve_identity_id
+from sensemem.infrastructure.local.store._identity import resolve_identity_id
 from sensemem.infrastructure.local.store._recall import (
     RECALL_EVENT_TIME,
     RELATED_EDGES,
@@ -38,7 +38,8 @@ from sensemem.infrastructure.local.store.rows import (
     StoredMemory,
     require_identifier,
 )
-from sensemem.types import SpatialContext
+from sensemem.kernel.predicates import normalize_label
+from sensemem.spatial import SpatialContext
 
 
 class RecallReads:
@@ -89,7 +90,7 @@ class RecallReads:
         `identity_id` scope before the row bound; a record can belong to both people.
         """
         folded = recall_terms(terms)
-        require_recall_window(occurred_from, occurred_until, require_both=False)
+        require_recall_window(occurred_from, occurred_until)
         require_recall_filters(modality, memory_type, max_rows)
         selected = self._recall_memory_ids(
             folded,
@@ -140,7 +141,8 @@ class RecallReads:
         placed by its `created_at`, the same substitution the answer prompt describes, so a
         corpus that never states event times still has a timeline.
         """
-        require_recall_window(occurred_from, occurred_until, require_both=True)
+        if occurred_from is None or occurred_until is None:
+            raise ValueError("occurred_from and occurred_until are required")
         return self.match_memories(
             (),
             occurred_from=occurred_from,
@@ -388,7 +390,7 @@ class RecallReads:
         Unknown names return None for literal text fallback. Distinct people sharing a name
         require a matching caller identity; otherwise the optional recall step cannot run.
         """
-        wanted = canonical_subject(name)
+        wanted = normalize_label(name)
         if wanted is None:
             return None
         with self._connections.connection() as connection:
@@ -404,7 +406,7 @@ class RecallReads:
             matches = {
                 row_text(row, "identity_id")
                 for row in rows
-                if canonical_subject(row_text(row, "name")) == wanted
+                if normalize_label(row_text(row, "name")) == wanted
             }
             preferred = (
                 None if identity_id is None else resolve_identity_id(connection, identity_id)

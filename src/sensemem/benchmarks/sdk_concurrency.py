@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from importlib.metadata import version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier
@@ -27,8 +28,8 @@ from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
-    MemoryConfig,
     MemoryRecord,
+    MemorySettings,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -134,7 +135,7 @@ def run_case(
         Memory(
             directory,
             embedder=embedder,
-            config=MemoryConfig(index_quantization=quantization, retrieval_mode=retrieval_mode),
+            settings=MemorySettings(index_quantization=quantization, retrieval_mode=retrieval_mode),
         ) as memory,
     ):
         records = tuple(
@@ -271,6 +272,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     with args.output.open("x", encoding="utf-8") as output:
         environment = {
             "environment": {
+                "sensemem_version": version("sensemem"),
+                "zvec_version": version("zvec"),
+                "numpy_version": version("numpy"),
                 "python": platform.python_version(),
                 "platform": platform.platform(),
                 "cpu_count": os.cpu_count(),

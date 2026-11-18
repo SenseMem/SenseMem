@@ -59,8 +59,7 @@ An optional `modalities` list omits unused encoders before weights are allocated
 keeps vision and drops audio; `["text", "audio"]` drops vision. Omission loads the full 740M
 model. Only declared modalities appear in capabilities and routes. Selecting towers preserves
 the vector space for common inputs; changing precision does not. BF16 has a distinct identity,
-and the new PyAV audio recipe requires replay of stores created with the earlier local recipe.
-When reopening on different hardware, pin
+and the local recipe identifies PyAV audio decoding. When reopening on different hardware, pin
 `dtype` to the original precision or replay into a fresh directory.
 
 Dimensions are 128/256/512/768 with renormalization after shortening. The shared context is 8192
@@ -94,6 +93,10 @@ The exact model name enables query prefix `"task: search result | query: "` and 
 `"title: none | text: "`; aliases do not. Mixed inputs retain attachment order, pure media has no
 prefix, BOS/EOS tokens are enabled, and media uses inline data URLs. Keep the checkpoint's chat
 template on the server.
+
+The automatic served recipe is `embeddinggemma2-ordered-text-prompts-special-tokens-v3`.
+Caller-supplied `embedding_space` values must identify the same ordered representation and
+retrieval prompts. Changing that representation requires source replay into a fresh directory.
 
 Messages mode validates native 768 dimensions and requests no Matryoshka truncation. Its identity
 differs from generic messages, unprompted stores, and the local recipe. Use fresh-store replay when
@@ -168,11 +171,10 @@ next batch overlaps serialized inference, with at most one batch prepared ahead 
 expanded visual input raises `payload_too_large` at reranking without truncation, media removal,
 or retry. Media counts combine query and candidate: eight images/two videos by default.
 Processed images default to 262144 pixels; videos sample 2–64 ordered frames (default eight),
-retaining timestamps without model resampling. Query decoding is reused; files stay leased.
-Decoded videos use an LRU cache keyed by content SHA-256 and sampling settings, retaining timing
-metadata. `video_cache_bytes` bounds retained frame-array bytes (default 256 MiB); zero disables
-retention. Active batches and decoder temporaries can use additional memory. Close clears the cache
-after active calls finish.
+retaining timestamps without model resampling. Decoded videos are cached with their timestamps.
+`video_cache_bytes` bounds retained frame-array bytes (default 256 MiB); zero disables retention.
+Active batches and decoder temporaries can use additional memory. Close clears the cache after
+active calls finish.
 
 The supported prebuilt runtime is Linux x86-64/CUDA with the lockfile's CUDA 13.0 PyTorch family.
 Device is omitted or `cuda`; use `CUDA_VISIBLE_DEVICES` for selection.
@@ -239,6 +241,8 @@ VAD/speaker placement accepts cpu/cuda/cuda:index and otherwise inherits ASR. Pl
 first load and preserves pinned VAD limits. CPU submodels trade accelerator memory for latency.
 Videos without an audio track produce empty speech analysis without invoking ASR; their native
 visual evidence remains available. Unreadable video still raises a model error.
+For a single input, an empty VAD result is silence and an invalid result raises `ModelError`;
+neither repeats the same inference request.
 
 Positive `ncpu` changes process-wide PyTorch/BLAS budgets; another loaded model can replace them.
 It does not enable concurrent transcriber calls: the loaded FunASR pipeline serializes inference.

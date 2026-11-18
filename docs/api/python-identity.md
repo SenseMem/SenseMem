@@ -35,7 +35,8 @@ when required capability is missing.
 Each `PerceptionCoverage` has kind, `asset_id`, and reason. Null reason means successful analysis or
 cached reuse, including zero detections; processed exposes that state. Skips are `not_requested`,
 `backend_not_configured`, or `unsupported_modality`. Text-only records return empty collections.
-Independent speech/face work overlaps before corroborated identity links apply.
+Independent speech/face work overlaps. Recognition never infers a speaking-face binding from
+co-occurrence or matching timestamps.
 
 ## identity
 
@@ -103,13 +104,25 @@ Use identity erasure for templates and host controls for access.
 
 ## Cross-modal identity binding
 
-A voice-only and face-only identity can fuse after co-occurrence in
-`identity_link_min_assets` distinct assets (default 2). Setting 1 permits first-co-occurrence
-binding. More assets reduce single-clip ambiguity but cannot establish who spoke across repeated
-clips. An identity already containing both modalities absorbs no more, limiting cascading errors.
+Voice and face recognizers produce separate identities. Repeated co-occurrence and overlapping
+timestamps do not establish which visible person spoke; the bundled backends supply no active-speaker
+evidence. The host can explicitly confirm two complementary identities through the SDK:
 
-Bindings are durable, logged `MERGE` operations, not read-time guesses. There is no arbitrary public
-merge. Recognizer yield, including zero detections, appears in identity spans.
+```python
+from sensemem import IdentityChange, MemoryIntent, MemoryOperation
+
+binding = memory.apply(
+    MemoryOperation(
+        intent=MemoryIntent.MERGE,
+        identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+        rationale="The application confirmed this face produced this voice.",
+    )
+)
+```
+
+The selected identity survives. Conflicting names, non-complementary identities, and restrained
+consent refuse the binding. The `MERGE` is logged with manual authority and is reversible through
+`rollback()`. Models, REST, and MCP cannot submit this confirmation.
 
 ## unlink_identity
 
@@ -117,8 +130,9 @@ merge. Recognizer yield, including zero detections, appears in identity spans.
 unlink_identity(alias_id: str) -> str | None
 ```
 
-Reverses one reversible face/voice merge and returns the restored ID, or `None`. It resets
-corroboration rather than blocking the pair; later co-occurrence can merge them again.
+Reverses one reversible face/voice merge and returns the restored ID, or `None`. A durable negative
+pair records the correction; rescanning old media cannot rejoin it. Only an explicit host
+confirmation or rollback of this split can override that rejection.
 The logged `CORRECT` can itself roll back to re-merge. Transcript projections rewrite in the same
 commit so search no longer attributes the reversed name.
 

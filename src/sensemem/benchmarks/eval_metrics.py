@@ -14,11 +14,11 @@ from collections.abc import (
 from pathlib import Path
 from typing import cast
 
-from sensemem import AnswerPolicy, MemoryConfig, SenseMemConfig
+from sensemem import AnswerPolicy, MemorySettings, MemorySpec
 from sensemem.benchmarks.ama_bench import result_summary as ama_result_summary
+from sensemem.benchmarks.baseline_prompts import BLIND_PROMPT_VERSION
 from sensemem.benchmarks.eval_adapters import LoadedTask
 from sensemem.benchmarks.eval_arms import (
-    BLIND_PROMPT_VERSION,
     _Arm,
 )
 from sensemem.benchmarks.eval_config import (
@@ -49,6 +49,7 @@ from sensemem.benchmarks.official_scorers import (
     task_family,
     task_primary_metric,
 )
+from sensemem.benchmarks.personamem_v3_results import complete_lifecycle, mistake_summary
 from sensemem.benchmarks.prompts import task_answer_policy
 from sensemem.benchmarks.videozerobench import VIDEOZERO_METRICS
 
@@ -85,14 +86,13 @@ _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
     "atm-bench": ("qtype",),
     "mem-gallery": ("point",),
     "longmemeval-v2": ("domain", "environment", "question_type"),
-    "es-memeval": ("capability",),
     "personamem-v3": ("task_family", "task_type"),
 }
 
 
 def _answer_retrieval_candidate_limit(
     recall_limit: int,
-    memory_config: SenseMemConfig | None,
+    memory_config: MemorySpec | None,
 ) -> int:
     """Mirror the ranked window ``Memory.ask`` requests from the retrieval kernel."""
     return (
@@ -105,6 +105,9 @@ def _answer_retrieval_candidate_limit(
 def _primary_sample(task: str, metadata: Mapping[str, object]) -> bool:
     if task == "mosaic":
         return metadata["answerability"] == "answerable"
+    if task == "personamem-v3" and metadata.get("task_type") == "short_vs_long_term_lifecycle":
+        evidence = cast(Mapping[str, object], metadata["judge_evidence"])
+        return evidence.get("phase") == "pre" and metadata.get("lifecycle_pair_complete") is True
     return task != "videozerobench" or metadata["level"] == 3
 
 
@@ -117,6 +120,8 @@ def _metrics(
     arm: str = DEFAULT_ARM,
     retrieval_candidate_limit: int | None = None,
 ) -> dict[str, object]:
+    if task.spec.name == "personamem-v3":
+        samples = complete_lifecycle(samples)
     seed = _task_seed(arguments.seed, task.spec.name)
 
     def official(metric_name: str, *, uses_judge: bool = False) -> bool:
@@ -267,12 +272,15 @@ def _metrics(
         ),
     }
     if task.spec.name == "personamem-v3":
-        from sensemem.benchmarks._official.personamem_v3_scoring import (
-            COMPLETE_HEADLINE_COVERAGE,
+        scored_rows = tuple(sample for sample in primary_samples if sample.score is not None)
+        eligible_rows = tuple(
+            sample
+            for sample in samples
+            if sample.metadata.get("lifecycle_pair_complete") is not False
         )
-
-        scored_rows = tuple(sample for sample in samples if sample.score is not None)
-        score_coverage_complete = COMPLETE_HEADLINE_COVERAGE and len(scored_rows) == len(samples)
+        score_coverage_complete = bool(primary_samples) and all(
+            sample.score is not None for sample in eligible_rows
+        )
         supported_subset_accuracy = summarize(
             tuple(
                 ScoredValue(sample.sample_id, sample.unit_id, 100.0 * cast(float, sample.score))
@@ -308,16 +316,22 @@ def _metrics(
                 "score_coverage": {
                     "complete": score_coverage_complete,
                     "scored_question_count": len(scored_rows),
-                    "unscored_question_count": len(samples) - len(scored_rows),
+                    "unscored_question_count": sum(
+                        sample.score is None for sample in eligible_rows
+                    ),
+                    "scoring_unit_count": len(primary_samples),
+                    "excluded_question_count": len(samples) - len(eligible_rows),
+                    "excluded_reasons": {"unpaired_lifecycle": len(samples) - len(eligible_rows)},
                     "supported_subset_accuracy_pct_micro": supported_subset_accuracy,
                 },
+                "mistake_prevention": mistake_summary(samples),
             }
         )
         if not score_coverage_complete:
             result["unavailable_metrics"] = {
                 "accuracy_pct_micro": (
-                    "the official PersonaMem-v3 micro score requires every selected task family; "
-                    "structured-action, threaded-cluster, and paired-row protocols are unavailable"
+                    "the official PersonaMem-v3 micro score requires every selected scoring unit; "
+                    "check missing judges and unscored eligible rows"
                 )
             }
     result.update(
@@ -642,8 +656,7 @@ def _retrieval_quality(
 def _noise_floor(scored: Sequence[ScoredValue], primary: Mapping[str, object]) -> dict[str, object]:
     """Report the smallest difference this run size can resolve."""
     values = tuple(value.value for value in scored)
-    error = primary.get("cluster_standard_error")
-    standard_error = error if isinstance(error, float) else None
+    standard_error = cast(float | None, primary["cluster_standard_error"])
     resolvable = NOISE_FLOOR
     if standard_error is not None:
         resolvable = max(NOISE_FLOOR, 1.959963984540054 * standard_error * math.sqrt(2))
@@ -678,10 +691,10 @@ def _controls(
     `controls_complete` false on every run that carried a blind arm, which hid the difference
     between a task with no gold labels and a healthy one.
     """
-    recall = retrieval.get("recall_at_k")
-    random_ranker = retrieval.get("random_ranker_recall_at_k")
-    recall_rows = recall if isinstance(recall, Mapping) else {}
-    random_rows = random_ranker if isinstance(random_ranker, Mapping) else {}
+    recall_rows = cast(Mapping[str, object], retrieval["recall_at_k"]) if retrieves else {}
+    random_rows = (
+        cast(Mapping[str, object], retrieval["random_ranker_recall_at_k"]) if retrieves else {}
+    )
     present = {
         "random_ranker": not retrieves or bool(random_rows),
         "recall_at_20": not retrieves or ("20" in recall_rows and "1" in recall_rows),
@@ -1071,14 +1084,14 @@ def _task_seed(seed: int, task: str) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
-def _evidence_budget_chars(memory_config: SenseMemConfig | None) -> int | None:
+def _evidence_budget_chars(memory_config: MemorySpec | None) -> int | None:
     """The budget the product arm grounds with, which is the product default when no file set it.
 
-    A run without a config file builds its `Memory` from `MemoryConfig()` plus the harness's own
+    A run without a config file builds its `Memory` from `MemorySettings()` plus the harness's own
     two overrides, so the default budget applies there too; reading `None` for that case made
     the reported candidate limit disagree with the window `ask` actually ranked.
     """
-    settings = MemoryConfig() if memory_config is None else memory_config.settings
+    settings = MemorySettings() if memory_config is None else memory_config.settings
     return settings.evidence_budget_chars
 
 

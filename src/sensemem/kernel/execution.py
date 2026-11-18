@@ -1,4 +1,4 @@
-"""Instance-owned workers and admission, independent of any transport or event loop."""
+"""Instance admission over process-owned workers, independent of transports and event loops."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from threading import BoundedSemaphore, Condition, Lock
 from time import perf_counter
 from typing import ParamSpec, TypeVar, cast
 
+from sensemem._capacity import Capacity
 from sensemem.exceptions import StorageError
-from sensemem.infrastructure.local._capacity import Capacity
 from sensemem.kernel.lifecycle import Lifecycle
-from sensemem.types import AnswerChunk, AnswerResult
+from sensemem.records import AnswerChunk, AnswerResult
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -28,9 +28,11 @@ ASYNC_QUEUE_TIME_MS: ContextVar[float | None] = ContextVar(
 )
 
 
-class _Workers:
+class _ProcessWorkers:
+    """Process-owned executors separated by work type to permit nested operations."""
+
     def __init__(self) -> None:
-        self.parent = ThreadPoolExecutor(max_workers=64, thread_name_prefix="sensemem-async")
+        self.async_calls = ThreadPoolExecutor(max_workers=64, thread_name_prefix="sensemem-async")
         self.index = ThreadPoolExecutor(max_workers=16, thread_name_prefix="sensemem-index")
         self.speech = ThreadPoolExecutor(max_workers=8, thread_name_prefix="sensemem-speech")
         self.perception = ThreadPoolExecutor(
@@ -55,21 +57,21 @@ class _Workers:
             self.idle.append(worker)
 
 
-_WORKER_PID = os.getpid()
-_WORKER_LOCK = Lock()
-_WORKERS: _Workers | None = None
+_PROCESS_WORKER_PID = os.getpid()
+_PROCESS_WORKER_LOCK = Lock()
+_PROCESS_WORKERS: _ProcessWorkers | None = None
 
 
-def _process_workers() -> _Workers:
-    global _WORKERS, _WORKER_PID, _WORKER_LOCK
-    if os.getpid() != _WORKER_PID:
-        _WORKERS = None
-        _WORKER_LOCK = Lock()
-        _WORKER_PID = os.getpid()
-    with _WORKER_LOCK:
-        if _WORKERS is None:
-            _WORKERS = _Workers()
-        return _WORKERS
+def _shared_process_workers() -> _ProcessWorkers:
+    global _PROCESS_WORKERS, _PROCESS_WORKER_PID, _PROCESS_WORKER_LOCK
+    if os.getpid() != _PROCESS_WORKER_PID:
+        _PROCESS_WORKERS = None
+        _PROCESS_WORKER_LOCK = Lock()
+        _PROCESS_WORKER_PID = os.getpid()
+    with _PROCESS_WORKER_LOCK:
+        if _PROCESS_WORKERS is None:
+            _PROCESS_WORKERS = _ProcessWorkers()
+        return _PROCESS_WORKERS
 
 
 def _overloaded() -> StorageError:
@@ -122,14 +124,14 @@ class StreamWorkers:
                 raise StorageError("Memory is closed", reason="instance_unusable")
             if self._borrowed >= 8:
                 raise _overloaded()
-            worker = _process_workers().borrow_stream()
+            worker = _shared_process_workers().borrow_stream()
             self._borrowed += 1
             return StreamWorker(self, worker)
 
     def release(self, worker: ThreadPoolExecutor) -> None:
         with self._lock:
             self._borrowed -= 1
-        _process_workers().release_stream(worker)
+        _shared_process_workers().release_stream(worker)
 
     def close(self) -> None:
         with self._lock:
@@ -142,8 +144,8 @@ class Execution:
     def __init__(self, *, lifecycle: Lifecycle) -> None:
         self._lifecycle = lifecycle
         self.streams = StreamWorkers(require_open=lifecycle.require_open)
-        workers = _process_workers()
-        self._index, self._speech, self._async = workers.index, workers.speech, workers.parent
+        workers = _shared_process_workers()
+        self._index, self._speech, self._async = workers.index, workers.speech, workers.async_calls
         self._perception = workers.perception
         self._perception_slots = BoundedSemaphore(4)
         self._index_slots, self._speech_slots = BoundedSemaphore(4), BoundedSemaphore(2)
@@ -153,7 +155,10 @@ class Execution:
         self._lock = Condition()
         self._closed = False
 
-    async def run(self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
+    async def run_in_worker(
+        self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T:
+        """Run a synchronous operation off-thread with admission and context propagation."""
         queued_at = perf_counter()
 
         def invoke() -> _T:

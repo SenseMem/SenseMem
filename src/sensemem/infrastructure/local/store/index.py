@@ -19,9 +19,9 @@ from sensemem.infrastructure.local.store._codec import (
     unpack_vector,
 )
 from sensemem.infrastructure.local.store._connections import Connections
+from sensemem.infrastructure.local.store._embeddings import write_embedding
 from sensemem.infrastructure.local.store._membership import identity_projections
 from sensemem.infrastructure.local.store.errors import StoredDataError
-from sensemem.infrastructure.local.store.records import write_embedding
 from sensemem.infrastructure.local.store.rows import (
     IndexCandidate,
     IndexDocument,

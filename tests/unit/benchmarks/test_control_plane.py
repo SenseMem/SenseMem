@@ -19,15 +19,16 @@ from sensemem import (
     EvidenceBasis,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryOutcome,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
     Modality,
     ModelInput,
+    QueryFailure,
+    RecordKind,
 )
 from sensemem.benchmarks import control_plane
 
@@ -83,6 +84,7 @@ class _ScriptedConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.triggers.append(trigger)
         proposals: list[MemoryOperation] = []
@@ -96,7 +98,7 @@ class _ScriptedConsolidator:
                         for record in evidence
                         if record.id != stale
                         and record.context is not None
-                        and record.context.kind is MemoryKind.TRAIT
+                        and record.context.kind is RecordKind.STATE
                     ),
                     rationale="the newer claim is the one in force",
                 )
@@ -110,11 +112,8 @@ class _ScriptedConsolidator:
                         evidence_ids=pair,
                         target_ids=pair,
                         proposal=FormationProposal(
-                            kind=MemoryKind.TRAIT,
-                            content=f"{_person(evidence, pair[0])} drinks the same thing daily",
-                            subject=_person(evidence, pair[0]),
-                            predicate="routine",
-                            value="same morning drink",
+                            kind=RecordKind.EVENT,
+                            content=f"{_person(evidence, pair[0])} reported the same morning drink twice",
                             confidence=0.7,
                         ),
                     )
@@ -145,8 +144,8 @@ def _disagreeing_claims(evidence: Sequence[MemoryRecord], *, newest: bool) -> li
         context = record.context
         if (
             context is None
-            or context.kind is not MemoryKind.TRAIT
-            or context.basis is not EvidenceBasis.USER_STATEMENT
+            or context.kind is not RecordKind.STATE
+            or context.basis is not EvidenceBasis.MODEL_INFERENCE
         ):
             continue
         by_subject.setdefault(f"{context.subject}/{context.predicate}", []).append(record)
@@ -179,7 +178,7 @@ def test_the_scenario_is_deterministic_and_declares_its_ground_truth(tmp_path: P
         tmp_path,
         embedder=_TinyEmbedder(),
         former=control_plane._PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         scenario = control_plane.build_scenario(memory, persons=3, seed=7)
 
@@ -292,7 +291,7 @@ def test_the_outcome_verdict_is_recorded_on_every_applied_operation(tmp_path: Pa
     )
 
     with Memory(
-        tmp_path, embedder=_TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=_TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         logged = memory.operations()
 

@@ -1,17 +1,6 @@
-"""The symbolic place axis: one nullable `place_id` and an indexed equality over it.
+"""Optional place IDs round-trip, filter through indexed SQL, and reproject after relabelling.
 
-SenseMem already stores metric pose -- a frame id, a position, a quaternion and an uncertainty --
-and already scopes by radius. What it cannot express is the predicate a household query actually
-uses ("in the kitchen"), which is also the only spatial label a robot can supply when it cannot
-localise metrically. That is a symbolic equality, and an equality is the one spatial predicate
-SQLite indexes cheaply.
-
-These tests pin the four things that make it worth having rather than the metric version: the
-value round-trips and stays optional, a scoped hydration filters in SQL and is planned onto
-`memory_records_place_idx` rather than degrading into the post-hoc Python filter the metric radius
-scope is forced to be, relabelling a room reprojects the memory into the search index (which now
-carries `place_id` as a pushed-down filter field), and an existing store gains the column without
-losing a memory.
+The current store schema must contain the place column and its index.
 """
 
 from __future__ import annotations

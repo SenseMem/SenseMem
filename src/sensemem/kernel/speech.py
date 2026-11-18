@@ -9,19 +9,25 @@ from typing import cast
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import mark_model_requests
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, SenseMemError
 from sensemem.infrastructure.local.store import StoredAsset
 from sensemem.kernel.content import PreparedContent
 from sensemem.kernel.contracts import Backends
-from sensemem.kernel.derived import derived_text, speech_identity_text, without_speech_identities
+from sensemem.kernel.derived import (
+    speech_identity_text,
+    transcript_sections,
+    without_speech_identities,
+)
 from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import OperationAssets
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
-from sensemem.kernel.tracing import Traced
+from sensemem.kernel.settings import ResolvedSettings
+from sensemem.kernel.tracing import Traced, record_identity_yield
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
-from sensemem.models.base import SpeechAnalysis, SpeechBackend
-from sensemem.types import AssetRef, Modality
+from sensemem.models.base import SpeechBackend, TranscriptionBackend
+from sensemem.perception import SpeechAnalysis
+from sensemem.types import Modality
 
 
 class Speech(Traced):
@@ -33,7 +39,7 @@ class Speech(Traced):
         tracer: Tracer,
         storage: Storage,
         backends: Backends,
-        settings: Settings,
+        settings: ResolvedSettings,
         hydrator: Hydrator,
     ) -> None:
         super().__init__(tracer)
@@ -196,11 +202,12 @@ class Speech(Traced):
         for asset in speech_assets:
             segments = operation.speech_segments[asset.asset_id]
             operation.transcripts[asset.asset_id] = "\n".join(segment.text for segment in segments)
-            self._trace_identity_yield(
-                "sensemem.identity.speakers",
-                tuple((segment.speaker_id, segment.identity_score) for segment in segments),
-                cached=asset.asset_id not in analyzed,
-            )
+            with self._trace("sensemem.identity.speakers", kind="stage") as span:
+                record_identity_yield(
+                    span,
+                    tuple((segment.speaker_id, segment.identity_score) for segment in segments),
+                    cached=asset.asset_id not in analyzed,
+                )
 
     def with_audio_transcripts(
         self,
@@ -224,12 +231,22 @@ class Speech(Traced):
             else asset
             for asset in prepared.assets
         )
-        text = derived_text(prepared.text, assets)
+        sections = transcript_sections(prepared.text, assets)
+        text = "\n\n".join((*((prepared.text,) if prepared.text else ()), *sections))
         if len(text) > MAX_TEXT_CHARACTERS:
             raise ModelError(
                 "audio transcription exceeded the supported text length", reason="payload_too_large"
             )
-        return replace(prepared, text=text, assets=assets)
+        return replace(
+            prepared,
+            text=text,
+            assets=assets,
+            canonical_parts=(
+                *prepared.canonical_parts,
+                *(("audio_transcript", section) for section in sections),
+            ),
+            audio_transcript=prepared.audio_transcript or bool(sections),
+        )
 
     def cache_audio_transcripts(
         self,
@@ -249,18 +266,17 @@ class Speech(Traced):
             by_id = {asset.asset_id: asset for asset in speech}
             refs = tuple(self._hydrator.asset_ref(by_id[asset_id]) for asset_id in missing)
             try:
-                transcribe = getattr(self._backends.transcriber, "transcribe", None)
-                if callable(transcribe):
-                    model = getattr(self._backends.transcriber, "transcription_model", None)
+                transcriber = self._backends.transcriber
+                if isinstance(transcriber, TranscriptionBackend):
                     with self._model_trace(
                         "transcription",
                         "transcription",
-                        model=model if isinstance(model, str) else None,
+                        model=transcriber.transcription_model,
                         batch_size=len(refs),
                         modalities=(cast(Modality, asset.modality) for asset in refs),
                     ):
                         mark_model_requests(1)
-                        generated = transcribe(refs)
+                        generated = transcriber.transcribe(refs)
                 else:
                     analyses = self._analyze_speech(refs)
                     generated = tuple(

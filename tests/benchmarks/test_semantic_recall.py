@@ -23,7 +23,7 @@ from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     ObservationContext,
@@ -162,7 +162,7 @@ def test_sequence_orders_the_entire_selected_union_without_changing_selection_or
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             recall_planning=planning,
             evidence_budget_chars=None,
@@ -236,7 +236,7 @@ def test_sequence_orders_additions_after_packing_without_licensing_completeness(
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             recall_planning=True,
             recall_query_expansion=semantic,
@@ -281,7 +281,7 @@ def test_semantic_recall_recovers_a_missing_route_candidate(
             tmp_path / str(enabled),
             embedder=models,
             answerer=models,
-            config=MemoryConfig(
+            settings=MemorySettings(
                 retrieval_mode=RetrievalMode.DENSE,
                 index_quantization=quantization,
                 recall_planning=True,
@@ -335,7 +335,7 @@ def test_semantic_recall_distinguishes_delivery_from_reader_success(
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             recall_planning=True,
             recall_query_expansion=True,
@@ -410,7 +410,7 @@ def test_semantic_support_precedes_a_saturated_original_tail(
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             recall_planning=True,
             recall_query_expansion=True,
@@ -486,7 +486,7 @@ def test_strict_semantic_replanning_reads_a_new_entity_before_searching_it(tmp_p
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             recall_planning=True,
             recall_query_expansion=True,
@@ -581,7 +581,7 @@ def test_replanning_retains_a_bridge_found_outside_the_original_ranking(  # noqa
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             index_quantization=IndexQuantization.NONE,
             recall_planning=True,
@@ -697,7 +697,7 @@ def test_semantic_routes_share_the_budget_before_a_route_spends_its_tail(  # noq
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE,
             index_quantization=IndexQuantization.NONE,
             recall_planning=True,

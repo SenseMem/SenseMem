@@ -76,6 +76,23 @@ the SQLite-before-Zvec-before-ack order:
 | `sensemem.index.sync.zvec.optimize` | Run the conditional Zvec optimization check after a flush. |
 | `sensemem.index.sync.sqlite.ack` | Acknowledge the flushed outbox rows in SQLite. |
 
+## Retrieval diagnostics
+
+`search(..., explain=True)` returns candidate IDs, score components, and rejection reasons in
+`SearchResult.trace`; without it, `trace` is `None`. The
+[value reference](api/python-values.md#records-and-retrieval) lists its fields. `rejected_by` names
+`stale_index`, `occurrence_range`, `missing_memory`, `memory_type`, `minimum_relevance`,
+`ambiguity`, or `limit`. Evidence content is omitted.
+
+`candidate_limit` is the final depth requested per native route. `exhaustive` means every route
+returned fewer candidates than its bound; approximate search remains approximate. `ambiguous`
+reports suppression of a close tie.
+
+The returned hit `score` is the final ranking score; the relevance gate uses `gate_relevance`.
+Set `minimum_relevance` and `ambiguity_margin` on the owner, using the trace to distinguish
+threshold rejection from query or filter problems. REST and MCP cannot override these settings
+per request.
+
 ## Capture timing
 
 Capture acknowledgement, settle duration, and time to settled are three different numbers and
@@ -119,18 +136,17 @@ audio duration but do not invent token counts. Cached-input and reasoning-output
 in the same model-to-operation rollup. Embedding model spans set `sensemem.embedding.task` to
 `retrieval.document` or `retrieval.query`, so ingest and retrieval inference can be separated.
 
-OpenAI-compatible model spans record `gen_ai.response.model` and
-`gen_ai.openai.response.system_fingerprint` only when the response supplies a non-empty value.
-Streaming inspects the final usage chunk too. `sensemem.model.response_models` and
-`sensemem.model.response_system_fingerprints` retain all distinct values when one span covers
-several responses; the scalar field is `mixed` instead of silently assigning the whole span to the
-last response. These are response provenance, not a copy of the request or response body.
+OpenAI-compatible model spans record the response model and system fingerprint when supplied,
+including in a stream's final usage chunk. `gen_ai.response.model` and
+`gen_ai.openai.response.system_fingerprint` hold a single value or `mixed` when responses differ;
+`sensemem.model.response_models` and `sensemem.model.response_system_fingerprints` retain all
+distinct values when one span covers several responses.
 
 Provider request IDs are recorded as `gen_ai.request.id` for a single request and collected in
 `sensemem.model.request_ids` when one model span covers multiple requests. They are taken from
-the SDK response or provider error, including failure paths; an absent ID is left absent rather
-than invented. A local trace ID identifies the SenseMem operation, while the provider request
-ID identifies the upstream call for support. Keep both in protected operator telemetry.
+the SDK response or provider error, including failure paths. A local trace ID identifies the
+SenseMem operation, while the provider request ID identifies the upstream call for support.
+Keep both in protected operator telemetry.
 
 ## First output and transport timing
 
@@ -189,7 +205,6 @@ Watch these degradation and recognition attributes:
 
 Ordinary spans omit memory text, media bytes, paths, metadata, request and response bodies, and
 provider exception details. Grounding diagnostics can record memory and asset IDs; treat exported
-traces as private operational data. Apart from the non-content response model, fingerprint, and provider request IDs
-above, a failed span
-receives only generic error status. Use `search(..., explain=True)` for one retrieval investigation and
-the structured error envelope for failures.
+traces as private operational data. Failed spans receive a generic error status. Use
+`search(..., explain=True)` for one retrieval investigation and the structured error envelope for
+failures.

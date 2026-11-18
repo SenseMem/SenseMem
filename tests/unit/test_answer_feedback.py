@@ -12,7 +12,7 @@ from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     SearchHit,
@@ -69,7 +69,7 @@ def test_abstention_preserves_ranking_and_only_success_reinforces(
         tmp_path,
         embedder=TinyEmbedder(),
         answerer=answerer,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0, reinforce_on_answer=True),
     ) as memory:
         records = memory.add_many(("The kettle is red.", "The crate is blue."))
         before = memory.search("kettle", limit=2, reference_at=reference).hits
@@ -99,3 +99,16 @@ def test_abstention_preserves_ranking_and_only_success_reinforces(
         for hit in successful.hits:
             reinforced = memory._store.records.read_memory(hit.id)
             assert reinforced is not None and reinforced.access_count == 1
+
+
+def test_answering_does_not_turn_a_provided_evidence_pool_into_feedback_by_default(
+    tmp_path: Path,
+) -> None:
+    answerer = _Answerer(AbstentionReason.INSUFFICIENT_EVIDENCE)
+    answerer.reason = None
+    with Memory(tmp_path, embedder=TinyEmbedder(), answerer=answerer) as memory:
+        records = memory.add_many(("The kettle is red.", "The unrelated box is blue."))
+        assert not memory.ask("kettle", limit=2).abstained
+        for record in records:
+            stored = memory._store.records.read_memory(record.id)
+            assert stored is not None and stored.access_count == 0

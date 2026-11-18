@@ -13,7 +13,7 @@ dependencies = [
     "numpy>=2,<3",
     "opentelemetry-api>=1.45.2,<2",
     "pydantic>=2.14.2,<3",
-    "zvec>=0.8,<0.9",
+    "zvec>=0.8.1,<0.9",
 ]
 
 [project.urls]
@@ -41,7 +41,7 @@ all = [
     "mcp>=2.3,<3",
     "modelscope-hub>=0.6.1,<1",
     "nltk>=3.9,<4",
-    "openai>=3,<4",
+    "openai[realtime]>=3,<4",
     "opencv-python-headless>=4.10,<6",
     "opentelemetry-sdk>=1.45.2,<2",
     "pillow>=13,<14",
@@ -82,7 +82,7 @@ observability = [
 openai = [
     "av>=14,<19",
     "httpx2>=2.16,<3",
-    "openai>=3,<4",
+    "openai[realtime]>=3,<4",
     "pillow>=13,<14",
 ]
 face = [
@@ -170,7 +170,14 @@ dev = [
 ]
 
 [tool.hatch.build]
-exclude = ["**/AGENTS.md", "**/CLAUDE.md", "/docs/research/**", "/research/**", "/paper.*"]
+exclude = [
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    "/.impeccable/**",
+    "/docs/research/**",
+    "/research/**",
+    "/paper.*",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true

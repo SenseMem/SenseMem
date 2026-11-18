@@ -48,7 +48,7 @@ provider codes remain unclassified; this mapping adds no retry loop to the model
 
 ### A configuration filename is rejected
 
-`Memory.from_config()` accepts a mapping or `SenseMemConfig`, not a path. Decode JSON with
+`Memory.from_config()` accepts a mapping or `MemorySpec`, not a path. Decode JSON with
 `json.loads()` or YAML with the host's `yaml.safe_load()` before passing it. Unknown fields,
 providers, and invalid numeric or Boolean values are rejected at this boundary. See
 [file loading](configuration.md#loading-a-configuration-file).

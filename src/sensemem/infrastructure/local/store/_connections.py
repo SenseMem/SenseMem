@@ -11,14 +11,14 @@ from pathlib import Path
 from threading import Condition
 from weakref import ReferenceType, ref
 
+from sensemem._capacity import Capacity
 from sensemem.infrastructure.local._capacity import (
     FILE_DESCRIPTOR_LOCK,
-    Capacity,
     ProcessLock,
     file_descriptor_usage,
 )
 from sensemem.infrastructure.local._lock import DataDirectoryLock
-from sensemem.infrastructure.local.store._predicates import validate_predicate_schema
+from sensemem.infrastructure.local.store._predicates import validate_predicate_provenance
 from sensemem.infrastructure.local.store._recall import RECALL_FOLD_FUNCTION, recall_fold
 from sensemem.infrastructure.local.store._schema import (
     REQUIRED_TABLES,
@@ -26,8 +26,6 @@ from sensemem.infrastructure.local.store._schema import (
     create_schema,
     table_names,
     user_version,
-    validate_evidence_clause_schema,
-    validate_text_selector_schema,
 )
 from sensemem.infrastructure.local.store.errors import (
     LocalStoreCapacityError,
@@ -163,9 +161,7 @@ class Connections:
             tables = table_names(connection)
             if version == 0:
                 create_schema(connection, tables)
-                version = user_version(connection)
-                tables = table_names(connection)
-            if version != SCHEMA_VERSION:
+            elif version != SCHEMA_VERSION:
                 raise UnsupportedSchemaError(
                     f"unsupported local schema version {version}; expected {SCHEMA_VERSION}. "
                     + (
@@ -175,13 +171,10 @@ class Connections:
                         else "This directory was written by a newer SenseMem."
                     )
                 )
-            missing_tables = REQUIRED_TABLES - tables
-            if missing_tables:
+            elif missing_tables := REQUIRED_TABLES - tables:
                 names = ", ".join(sorted(missing_tables))
                 raise UnsupportedSchemaError(f"local schema is missing required tables: {names}")
-            validate_evidence_clause_schema(connection)
-            validate_text_selector_schema(connection)
-            validate_predicate_schema(connection)
+            validate_predicate_provenance(connection)
 
     def _open_connection(self, *, secure_delete: bool = False) -> sqlite3.Connection:
         # `check_same_thread=False` disables sqlite3's own guard, not the ownership rule it

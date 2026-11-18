@@ -11,32 +11,98 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast
 
-from sensemem.exceptions import StorageError, ValidationError
-from sensemem.types import (
-    ConsentClaim,
-    ConsentState,
-    EvidenceBasis,
-    FormationProposal,
-    IdentityChange,
-    IdentityClaim,
+from pydantic import TypeAdapter
+
+from sensemem.control_values import (
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryOperationRecord,
-    Modality,
-    SpatialAnchor,
-    SpatialContext,
+    QueryFailure,
 )
+from sensemem.exceptions import StorageError, ValidationError
+from sensemem.identity import ConsentClaim, ConsentState, IdentityChange, IdentityClaim
+from sensemem.semantics import AffectLink, AffectWitness, FormationProposal
+from sensemem.spatial import RetrievalScope, SpatialContext
+from sensemem.types import EvidenceBasis, MemoryCategory, Modality, RecordKind, SpatialAnchor
 
-# Binding one voice to one face is the kernel's own corroboration rule over co-occurrence
-# evidence it counted, not a model's proposal, so the recipe names that rule. It is what makes
-# the MERGE row's lineage honest: the recognizer models produced the templates, this rule
-# decided the bind, and `rollback()` reverses it.
-IDENTITY_LINK_RECIPE = "sensemem-identity-link-v1"
+# Binding a voice to a face requires an explicit host statement. Recognizers supply separate
+# observations; co-occurrence is not evidence that a visible person produced the voice.
+IDENTITY_LINK_RECIPE = "sensemem-identity-host-binding-v1"
+# Shared by host consent assertions and their authoritative storage projections.
+CONSENT_PREDICATE = "consent"
+_AFFECT_LINK = TypeAdapter(AffectLink)
+_AFFECT_WITNESSES = TypeAdapter(tuple[AffectWitness, ...])
+
+
+def dump_query_failure(failure: QueryFailure) -> str:
+    scope = failure.scope
+    return _canonical_json(
+        {
+            "query": failure.query,
+            "operation": failure.operation,
+            "memory_types": None
+            if failure.memory_types is None
+            else [value.value for value in failure.memory_types],
+            "reference_at": _encode_optional_datetime(failure.reference_at),
+            "occurred_from": _encode_optional_datetime(failure.occurred_from),
+            "occurred_until": _encode_optional_datetime(failure.occurred_until),
+            "scope": None
+            if scope is None
+            else {
+                "valid_at": _encode_optional_datetime(scope.valid_at),
+                "known_at": _encode_optional_datetime(scope.known_at),
+                "near": None if scope.near is None else _spatial_payload(scope.near),
+                "radius_m": scope.radius_m,
+                "place_id": scope.place_id,
+                "identity_id": scope.identity_id,
+            },
+        }
+    )
+
+
+def load_query_failure(payload: str) -> QueryFailure:
+    try:
+        value = json.loads(payload)
+        scope = value["scope"]
+        return QueryFailure(
+            query=value["query"],
+            operation=cast(Literal["search", "compile", "ask"], value["operation"]),
+            memory_types=None
+            if value["memory_types"] is None
+            else tuple(MemoryCategory(item) for item in value["memory_types"]),
+            reference_at=_decode_optional_datetime(value["reference_at"]),
+            occurred_from=_decode_optional_datetime(value["occurred_from"]),
+            occurred_until=_decode_optional_datetime(value["occurred_until"]),
+            scope=None
+            if scope is None
+            else RetrievalScope(
+                valid_at=_decode_optional_datetime(scope["valid_at"]),
+                known_at=_decode_optional_datetime(scope["known_at"]),
+                near=None if scope["near"] is None else _decode_spatial_context(scope["near"]),
+                radius_m=scope["radius_m"],
+                place_id=scope["place_id"],
+                identity_id=scope["identity_id"],
+            ),
+        )
+    except (KeyError, TypeError, ValueError, ValidationError) as error:
+        raise StorageError("stored query failure is invalid") from error
+
+
+def query_failure_key(failure: QueryFailure) -> str:
+    value = json.loads(dump_query_failure(failure))
+    folded = unicodedata.normalize("NFKC", failure.query).casefold()
+    value["query"] = " ".join(
+        "".join(character if character.isalnum() else " " for character in folded).split()
+    )
+    value["reference_at"] = (
+        None if failure.reference_at is None else failure.reference_at.date().isoformat()
+    )
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
 def operation_touches(
@@ -68,7 +134,9 @@ def operation_touches(
 
 def dump_operation(operation: MemoryOperation) -> str:
     """Return the canonical JSON the operation log stores for one operation."""
-    return _json({**_identity(operation), "rationale": operation.rationale})
+    return _canonical_json(
+        {**_operation_effect_payload(operation), "rationale": operation.rationale}
+    )
 
 
 def load_operation(payload: str) -> MemoryOperation:
@@ -86,10 +154,10 @@ def load_operation(payload: str) -> MemoryOperation:
             intent=cast(MemoryIntent, value["intent"]),
             evidence_ids=tuple(value["evidence_ids"]),
             target_ids=tuple(value["target_ids"]),
-            proposal=None if proposal is None else _proposal(proposal),
-            claim=None if claim is None else _claim(claim),
-            consent=None if consent is None else _consent(consent),
-            identity=None if identity is None else _identity_change(identity),
+            proposal=None if proposal is None else _decode_formation_proposal(proposal),
+            claim=None if claim is None else _decode_identity_claim(claim),
+            consent=None if consent is None else _decode_consent_claim(consent),
+            identity=None if identity is None else _decode_identity_change(identity),
             rationale=cast(str | None, value["rationale"]),
         )
     except (
@@ -105,11 +173,12 @@ def load_operation(payload: str) -> MemoryOperation:
 
 def operation_key(operation: MemoryOperation, *, recipe: str | None) -> str:
     """Return the idempotency identity of one operation under one reasoning recipe."""
-    payload = _json({**_identity(operation), "recipe": recipe})
+    payload = _canonical_json({**_operation_effect_payload(operation), "recipe": recipe})
     return hashlib.sha256(f"sensemem-operation-v1:{payload}".encode()).hexdigest()
 
 
-def _identity(operation: MemoryOperation) -> dict[str, object]:
+def _operation_effect_payload(operation: MemoryOperation) -> dict[str, object]:
+    """Serialize effect-defining fields shared by logging and the idempotency key."""
     proposal = operation.proposal
     claim = operation.claim
     consent = operation.consent
@@ -145,7 +214,7 @@ def _identity(operation: MemoryOperation) -> dict[str, object]:
     }
 
 
-def _identity_change(value: object) -> IdentityChange:
+def _decode_identity_change(value: object) -> IdentityChange:
     if not isinstance(value, dict):
         raise ValueError
     return IdentityChange(
@@ -154,7 +223,7 @@ def _identity_change(value: object) -> IdentityChange:
     )
 
 
-def _consent(value: object) -> ConsentClaim:
+def _decode_consent_claim(value: object) -> ConsentClaim:
     if not isinstance(value, dict):
         raise ValueError
     return ConsentClaim(
@@ -164,7 +233,7 @@ def _consent(value: object) -> ConsentClaim:
     )
 
 
-def _claim(value: object) -> IdentityClaim:
+def _decode_identity_claim(value: object) -> IdentityClaim:
     if not isinstance(value, dict):
         raise ValueError
     return IdentityClaim(
@@ -175,7 +244,7 @@ def _claim(value: object) -> IdentityClaim:
 
 
 def proposal_payload(proposal: FormationProposal) -> dict[str, object]:
-    """Return the JSON one formation proposal is logged as, which `_proposal` reads back.
+    """Return the JSON one formation proposal is logged as, which `_decode_formation_proposal` reads back.
 
     Shared with the CLI so an operation row it prints stays the shape `load_operation` accepts.
     """
@@ -188,13 +257,34 @@ def proposal_payload(proposal: FormationProposal) -> dict[str, object]:
         "predicate": proposal.predicate,
         "value": proposal.value,
         "confidence": proposal.confidence,
-        "valid_from": _time_text(proposal.valid_from),
-        "valid_until": _time_text(proposal.valid_until),
+        "valid_from": _encode_optional_datetime(proposal.valid_from),
+        "valid_until": _encode_optional_datetime(proposal.valid_until),
         "cue_modality": (None if proposal.cue_modality is None else proposal.cue_modality.value),
         "valence": proposal.valence,
         "arousal": proposal.arousal,
         "spatial": None if spatial is None else _spatial_payload(spatial),
         "evidence_ids": (None if proposal.evidence_ids is None else list(proposal.evidence_ids)),
+        "local_id": proposal.local_id,
+        "affect_link": affect_link_payload(proposal.affect_link),
+        "affect_witnesses": [
+            {"source_id": item.source_id, "reporter": item.reporter, "quote": item.quote}
+            for item in proposal.affect_witnesses
+        ],
+    }
+
+
+def affect_link_payload(link: AffectLink | None) -> dict[str, object] | None:
+    """Serialize a resolved link or formation-local references without changing their meaning."""
+    if link is None:
+        return None
+    return {
+        "affect_id": link.affect_id,
+        "role": link.role,
+        "object_ref": {
+            "memory_id": link.object_ref.memory_id,
+            "identity_id": link.object_ref.identity_id,
+        },
+        "polarity": link.polarity,
     }
 
 
@@ -211,30 +301,37 @@ def _spatial_payload(spatial: SpatialContext) -> dict[str, object]:
     }
 
 
-def _proposal(value: object) -> FormationProposal:
+def _decode_formation_proposal(value: object) -> FormationProposal:
     if not isinstance(value, dict):
         raise ValueError
     spatial = value["spatial"]
     evidence_ids = value["evidence_ids"]
     return FormationProposal(
-        kind=cast(MemoryKind, value["kind"]),
+        kind=cast(RecordKind, value["kind"]),
         content=cast(str, value["content"]),
         basis=cast(EvidenceBasis, value["basis"]),
         subject=cast(str | None, value["subject"]),
         predicate=cast(str | None, value["predicate"]),
         value=cast(str | None, value["value"]),
         confidence=cast(float, value["confidence"]),
-        valid_from=_time(value["valid_from"]),
-        valid_until=_time(value["valid_until"]),
-        spatial=None if spatial is None else _spatial(spatial),
+        valid_from=_decode_optional_datetime(value["valid_from"]),
+        valid_until=_decode_optional_datetime(value["valid_until"]),
+        spatial=None if spatial is None else _decode_spatial_context(spatial),
         cue_modality=cast(Modality | None, value["cue_modality"]),
         valence=cast(float | None, value["valence"]),
         arousal=cast(float | None, value["arousal"]),
         evidence_ids=None if evidence_ids is None else tuple(evidence_ids),
+        local_id=cast(str | None, value["local_id"]),
+        affect_link=(
+            None
+            if value["affect_link"] is None
+            else _AFFECT_LINK.validate_python(value["affect_link"])
+        ),
+        affect_witnesses=_AFFECT_WITNESSES.validate_python(value["affect_witnesses"]),
     )
 
 
-def _spatial(value: object) -> SpatialContext:
+def _decode_spatial_context(value: object) -> SpatialContext:
     if not isinstance(value, dict):
         raise ValueError
     orientation = value["orientation_xyzw"]
@@ -253,11 +350,11 @@ def _spatial(value: object) -> SpatialContext:
     )
 
 
-def _time_text(value: datetime | None) -> str | None:
+def _encode_optional_datetime(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
 
 
-def _time(value: object) -> datetime | None:
+def _decode_optional_datetime(value: object) -> datetime | None:
     if value is None:
         return None
     if not isinstance(value, str):
@@ -265,7 +362,7 @@ def _time(value: object) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
-def _json(payload: Mapping[str, object]) -> str:
+def _canonical_json(payload: Mapping[str, object]) -> str:
     return json.dumps(
         payload,
         ensure_ascii=False,

@@ -14,22 +14,15 @@ from pydantic import ValidationError as PydanticValidationError
 
 import sensemem.configuration as configuration
 import sensemem.recipes as recipes
-from sensemem import (
-    Memory,
-    Modality,
-    ModelInput,
-    OpenAIModels,
-    SearchHit,
-    SenseMemConfig,
-    ValidationError,
-)
+from sensemem import Memory, MemorySpec, Modality, ModelInput, SearchHit, ValidationError
 from sensemem.models.base import GenerationBackend
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 @pytest.mark.parametrize("value", [0, 33, True, "6"])
 def test_investigation_query_limit_is_strict_and_bounded(value: object) -> None:
     with pytest.raises(PydanticValidationError):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {"embedding": {"provider": "openai"}, "settings": {"recall_max_queries": value}}
         )
 
@@ -40,11 +33,11 @@ def test_structured_answer_controls_map_to_the_generation_adapter(
     captured: dict[str, object] = {}
     marker = cast(GenerationBackend, object())
 
-    def build(**values: object) -> GenerationBackend:
+    def build(_backend_type: object, **values: object) -> GenerationBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes, "_owned_openai", build)
     config = configuration.OpenAIGenerationConfig(
         provider="openai", answer_format="structured", source_metadata_key="document_id"
     )
@@ -94,7 +87,7 @@ def test_declarative_structured_adapter_constructs_and_binds_custom_source_ids(
                 source_metadata_key="document_id",
             )
         )
-        assert isinstance(adapter, OpenAIModels)
+        assert isinstance(adapter, OpenAICompletion)
         hit = SearchHit(
             id="internal-record",
             content="A grounded source.",
@@ -163,7 +156,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
             reranking["gpu_memory_utilization"] = 0.7
             reranking.update(image_limit=3, video_limit=1, image_max_pixels=131072, video_frames=4)
             reranking["video_cache_bytes"] = 1048576
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "data_dir": tmp_path,
             "embedding": {"provider": "openai"},
@@ -171,7 +164,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
             "settings": {"recall_max_queries": 4},
         }
     )
-    composition = configuration.resolve_memory_config(config)
+    composition = configuration.build_memory_composition(config)
     assert isinstance(composition.plugins.reranker, Reranker)
     assert composition.settings.recall_max_queries == 4
     composition.close()
@@ -215,7 +208,7 @@ def test_reranker_is_an_owned_optional_declarative_backend(
 )
 def test_qwen3_vl_runtime_controls_are_strict(controls: dict[str, object]) -> None:
     with pytest.raises(PydanticValidationError):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "reranking": {"provider": "qwen3-vl", "model": "org/reranker", **controls},
@@ -226,7 +219,7 @@ def test_qwen3_vl_runtime_controls_are_strict(controls: dict[str, object]) -> No
 @pytest.mark.parametrize("provider", ["sentence-transformers", "qwen3-vl"])
 def test_reranking_validation_reports_the_public_field_path(provider: str) -> None:
     with pytest.raises(ValidationError, match=r"config\.reranking\.batch_size:"):
-        configuration.resolve_memory_config(
+        configuration.build_memory_composition(
             {
                 "embedding": {"provider": "openai"},
                 "reranking": {"provider": provider, "model": "org/reranker", "batch_size": 0},
@@ -241,7 +234,7 @@ def test_native_benchmark_overrides_preserve_the_reranking_provider(
     from sensemem.benchmarks.eval_config import _evaluation_memory_config
     from sensemem.benchmarks.model_config import ModelConfig
 
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai"},
@@ -253,7 +246,11 @@ def test_native_benchmark_overrides_preserve_the_reranking_provider(
     )
     assert effective is not None
     assert effective.reranking == config.reranking
-    assert effective.reranking is not None and effective.reranking.provider == provider
+    assert isinstance(
+        effective.reranking,
+        (configuration.SentenceTransformersRerankingConfig, configuration.Qwen3VLRerankingConfig),
+    )
+    assert effective.reranking.provider == provider
 
 
 def test_invalid_reranker_releases_storage_ownership(tmp_path: Path) -> None:

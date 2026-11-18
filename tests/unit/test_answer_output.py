@@ -8,13 +8,15 @@ from datetime import datetime, timezone
 
 import pytest
 
+from sensemem.evidence import evidence_aliases
 from sensemem.exceptions import ModelError
 from sensemem.models._answer_output import (
-    evidence_aliases,
     parse_answer_draft,
     render_answer_draft,
 )
-from sensemem.types import AbstentionReason, AnswerResult, SearchHit
+from sensemem.models._openai_output import _finish_answer
+from sensemem.records import AnswerResult, SearchHit
+from sensemem.types import AbstentionReason
 
 NOW = datetime(2026, 2, 14, 16, 35, 47, tzinfo=timezone.utc)
 
@@ -82,6 +84,61 @@ def test_source_field_is_chosen_by_host_and_duplicate_application_sources_coales
     )
     draft = parse_answer_draft('{"draft":{"kind":"source_ids","evidence_labels":["E1","E2"]}}')
     assert render_answer_draft(draft, hits, source_metadata_key="document_key").answer == "public"
+
+
+def test_finish_structured_source_answer_keeps_delivered_aliases_and_host_source_field() -> None:
+    retrieved = (
+        _hit("omitted", "A source.", metadata={"document_key": "hidden"}),
+        _hit("shown", "Another source.", metadata={"document_key": "public"}),
+    )
+    result = _finish_answer(
+        '{"draft":{"kind":"source_ids","evidence_labels":["E1"]}}',
+        retrieved,
+        retrieved[1:],
+        answer_policy="strict",
+        answer_format="structured",
+        source_metadata_key="document_key",
+    )
+    assert result.answer == "public"
+    assert result.hits == retrieved[1:]
+    assert not result.abstained
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_finish_best_effort_keeps_answer_and_flags_missing_grounded_evidence(
+    structured: bool,
+) -> None:
+    output = (
+        '{"draft":{"kind":"text","answer":"blue","evidence_labels":[],"abstained":false}}'
+        if structured
+        else "blue"
+    )
+    result = _finish_answer(
+        output,
+        (_hit("retrieved", "Unrelated source."),),
+        (),
+        answer_policy="best_effort",
+        answer_format="structured" if structured else "text",
+        source_metadata_key="source_id",
+    )
+    assert result.answer == "blue"
+    assert result.abstained
+    assert result.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
+
+
+def test_finish_strict_structured_abstention_hides_marker_behind_public_refusal() -> None:
+    result = _finish_answer(
+        '{"draft":{"kind":"text","answer":"[insufficient_evidence]",'
+        '"evidence_labels":[],"abstained":true}}',
+        (),
+        (),
+        answer_policy="strict",
+        answer_format="structured",
+        source_metadata_key="source_id",
+    )
+    assert result.answer == "I don't know based on the available memories."
+    assert result.abstained
+    assert result.abstention_reason is AbstentionReason.INSUFFICIENT_EVIDENCE
 
 
 def test_text_is_not_reinterpreted_as_a_date_or_executable_expression() -> None:

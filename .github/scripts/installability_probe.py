@@ -45,7 +45,7 @@ class _StubEmbedder:
         return None
 
 
-def _memory_flow(tracer: object = None) -> None:
+def _probe_memory_round_trip(tracer: object = None) -> None:
     """Write and read one record end to end: SQLite, the outbox, and the Zvec loader."""
     from sensemem import Memory
 
@@ -62,12 +62,12 @@ def _memory_flow(tracer: object = None) -> None:
         assert memory.delete(record.id)
 
 
-def _base() -> None:
-    _memory_flow()
-    _product_cli()
+def _probe_base_import() -> None:
+    _probe_memory_round_trip()
+    _probe_product_cli()
 
 
-def _product_cli() -> None:
+def _probe_product_cli() -> None:
     """Run the `sensemem` console script's entry point on the base dependency set.
 
     The script is declared whether or not its module imports, and every composition path except
@@ -79,7 +79,7 @@ def _product_cli() -> None:
     assert main(["--url", "http://127.0.0.1:1", "-q", "--explain", "doctor"]) == 0
 
 
-def _benchmarks() -> None:
+def _probe_benchmark_dependencies() -> None:
     """Reach the download client and text scorers the catalog tasks load lazily."""
     from sensemem.benchmarks.cli import main
 
@@ -91,7 +91,7 @@ def _benchmarks() -> None:
     assert parse_judge_score("{score: 0.7,}") == (0.7, True)
 
 
-def _observability() -> None:
+def _probe_telemetry_export() -> None:
     """Export real operation spans through the SDK this extra exists to supply."""
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -102,35 +102,43 @@ def _observability() -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    _memory_flow(provider.get_tracer(TRACER_NAME))
+    _probe_memory_round_trip(provider.get_tracer(TRACER_NAME))
     provider.shutdown()
     assert {"sensemem.add", "sensemem.search"} <= {
         span.name for span in exporter.get_finished_spans()
     }
 
 
-def _openai() -> None:
+def _probe_openai_adapter() -> None:
     """Build the adapter over a real SDK client without issuing a request."""
     import av
     from openai import OpenAI
     from PIL import Image
 
-    from sensemem import OpenAIModels
+    from sensemem import OpenAICompletion, OpenAIEmbedder, OpenAITranscriber
 
-    client = OpenAI(api_key="installability-probe", base_url="http://127.0.0.1:1/v1")
-    models = OpenAIModels(client)
-    assert callable(av.open) and Image.Image is not None
-    assert models.embedding_dimension > 0
-    models.close()
+    with OpenAI(api_key="installability-probe", base_url="http://127.0.0.1:1/v1") as client:
+        embedder = OpenAIEmbedder(client)
+        completion = OpenAICompletion(client)
+        transcriber = OpenAITranscriber(client)
+        try:
+            assert callable(av.open) and Image.Image is not None
+            assert embedder.embedding_dimension > 0
+            assert callable(completion.answer) and callable(transcriber.transcribe)
+        finally:
+            embedder.close()
+            completion.close()
+            transcriber.close()
+        assert not client.is_closed()
 
 
-def _face() -> None:
+def _probe_opencv_dependencies() -> None:
     """Load the OpenCV APIs used by the face backend without downloading model weights."""
     cv = importlib.import_module("cv2")
     assert all(hasattr(cv, name) for name in ("FaceDetectorYN", "FaceRecognizerSF", "VideoCapture"))
 
 
-def _local() -> None:
+def _probe_local_dependencies() -> None:
     """Load every third-party module the local backends resolve at first use.
 
     ``import funasr.utils.load_utils`` is not enough: since 1.4.7 FunASR guards ``torchaudio``
@@ -146,7 +154,7 @@ def _local() -> None:
     assert hasattr(torchaudio.functional, "forced_align")
 
 
-def _server() -> None:
+def _probe_server_surface() -> None:
     """Build the real ASGI application over a real memory instance."""
     from sensemem import Memory
     from sensemem.api import create_app
@@ -174,7 +182,7 @@ def _server() -> None:
     }
 
 
-def _mcp() -> None:
+def _probe_mcp_tools() -> None:
     """Build the real MCP server and resolve the thirteen supported tool schemas."""
     import asyncio
 
@@ -215,7 +223,10 @@ MODULES: dict[str, tuple[str, ...]] = {
         "sensemem.infrastructure.local",
         "sensemem.memory",
         "sensemem.models.base",
-        "sensemem.models.openai_sdk",
+        "sensemem.models.openai_agent",
+        "sensemem.models.openai_completion",
+        "sensemem.models.openai_embedding",
+        "sensemem.models.openai_speech",
         "sensemem.recipes",
         "sensemem.types",
     ),
@@ -228,7 +239,13 @@ MODULES: dict[str, tuple[str, ...]] = {
         "sensemem.benchmarks.task_catalog",
     ),
     "observability": ("sensemem", "sensemem._telemetry"),
-    "openai": ("sensemem", "sensemem.models.openai_sdk"),
+    "openai": (
+        "sensemem",
+        "sensemem.models.openai_agent",
+        "sensemem.models.openai_completion",
+        "sensemem.models.openai_embedding",
+        "sensemem.models.openai_speech",
+    ),
     "face": ("sensemem", "sensemem.models.opencv_face"),
     "local": (
         "sensemem.models.funasr",
@@ -239,14 +256,14 @@ MODULES: dict[str, tuple[str, ...]] = {
 }
 
 LOADERS: dict[str, Callable[[], None]] = {
-    "base": _base,
-    "benchmarks": _benchmarks,
-    "observability": _observability,
-    "openai": _openai,
-    "face": _face,
-    "local": _local,
-    "server": _server,
-    "mcp": _mcp,
+    "base": _probe_base_import,
+    "benchmarks": _probe_benchmark_dependencies,
+    "observability": _probe_telemetry_export,
+    "openai": _probe_openai_adapter,
+    "face": _probe_opencv_dependencies,
+    "local": _probe_local_dependencies,
+    "server": _probe_server_surface,
+    "mcp": _probe_mcp_tools,
 }
 
 

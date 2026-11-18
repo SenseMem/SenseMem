@@ -11,9 +11,9 @@ import json
 import unicodedata
 from dataclasses import dataclass
 
-from sensemem.types import EvidenceBasis, MemoryKind
+from sensemem.types import EvidenceBasis, RecordKind
 
-PREDICATE_REGISTRY_VERSION = "sensemem-predicates-v1"
+PREDICATE_REGISTRY_VERSION = "sensemem-predicates-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,16 @@ _CLAIM_KINDS = frozenset({"state", "trait", "relation"})
 PREDICATES = (
     PredicateDefinition(
         "preferred_drink",
-        frozenset({"preferred_drink", "favorite_beverage", "favourite_beverage", "喜欢的饮料"}),
+        frozenset(
+            {
+                "preferred_drink",
+                "favorite_beverage",
+                "favourite_beverage",
+                "current_preferred_drink",
+                "only_current_preferred_drink",
+                "喜欢的饮料",
+            }
+        ),
         _CLAIM_KINDS,
     ),
     PredicateDefinition(
@@ -61,8 +70,8 @@ def resolve_predicate(
     literal = normalize_label(predicate)
     cardinality = (
         "one"
-        if kind == MemoryKind.STATE.value
-        or (kind == MemoryKind.TRAIT.value and basis == EvidenceBasis.USER_STATEMENT.value)
+        if kind == RecordKind.STATE.value
+        or (kind == RecordKind.TRAIT.value and basis == EvidenceBasis.USER_STATEMENT.value)
         else "many"
     )
     definition = _ALIASES.get(literal or "")

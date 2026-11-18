@@ -15,28 +15,30 @@ from sensemem import (
     GenerationRoutingBackend,
     MediaSelectionBackend,
     MemoryPlugins,
+    MemorySpec,
     Modality,
     ModelInput,
-    OpenAIModels,
-    SenseMemConfig,
     SenseMemError,
     SpeakerName,
     ValidationError,
     VisionAnalysisBackend,
     VisualDescription,
 )
+from sensemem.configuration import OpenAIGenerationConfig
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.models.openai_embedding import OpenAIEmbedder
 
 
 def test_branded_public_values_use_the_sensemem_namespace() -> None:
-    config = SenseMemConfig.model_validate({"embedding": {"provider": "openai"}})
+    config = MemorySpec.model_validate({"embedding": {"provider": "openai"}})
     assert config.data_dir == Path(".sensemem")
-    assert config.model_json_schema()["title"] == "SenseMemConfig"
+    assert config.model_json_schema()["title"] == "MemorySpec"
     assert SenseMemError.code == "sensemem_error"
 
 
 @pytest.mark.parametrize("modalities", [None, ["text"], ["video", "text", "audio"]])
 def test_local_embedding_loading_options_round_trip(modalities: list[str] | None) -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {
                 "provider": "sentence-transformers",
@@ -50,7 +52,7 @@ def test_local_embedding_loading_options_round_trip(modalities: list[str] | None
     assert encoded["embedding"]["modalities"] == (
         None if modalities is None else sorted(modalities)
     )
-    assert SenseMemConfig.model_validate_json(config.model_dump_json()) == config
+    assert MemorySpec.model_validate_json(config.model_dump_json()) == config
 
 
 @pytest.mark.parametrize("invalid", [{"dtype": "float16"}, {"modalities": []}])
@@ -58,7 +60,7 @@ def test_local_embedding_schema_rejects_unsafe_precision_and_no_modalities(
     invalid: dict[str, object],
 ) -> None:
     with pytest.raises(ValueError):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {
                     "provider": "sentence-transformers",
@@ -70,8 +72,8 @@ def test_local_embedding_schema_rejects_unsafe_precision_and_no_modalities(
 
 
 def test_composed_backends_implement_the_public_protocols() -> None:
-    model = OpenAIModels()
-    embedding = EmbeddingRouter((model,))
+    model = OpenAICompletion()
+    embedding = EmbeddingRouter((OpenAIEmbedder(),))
     generation = GenerationRouter((EvidenceGeneration(model, selector=model),))
     assert isinstance(embedding, EmbeddingBackend)
     assert isinstance(embedding, EmbeddingInputSupport)
@@ -83,7 +85,7 @@ def test_composed_backends_implement_the_public_protocols() -> None:
 
 
 def test_declared_generation_routes_have_independent_modalities_and_controls() -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {
@@ -100,7 +102,7 @@ def test_declared_generation_routes_have_independent_modalities_and_controls() -
             },
         }
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.model == "text-fixture"
     route = config.generation.routes[0]
     assert route.modalities == {Modality.TEXT, Modality.IMAGE} and route.max_tokens == 512

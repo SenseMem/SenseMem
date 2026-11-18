@@ -6,27 +6,21 @@ from collections.abc import Sequence
 from datetime import datetime
 from time import perf_counter
 
+from sensemem.content import AssetRef
 from sensemem.context import EvidenceClosure, _rejection
+from sensemem.context_values import ContextBudget, ContextUnknown, ContextUnknownKind
 from sensemem.control import load_operation
+from sensemem.control_values import MemoryOperationRecord, MemoryOutcome, MemoryTrigger
 from sensemem.exceptions import StorageError
 from sensemem.infrastructure.local.store import StoredAsset, StoredMemory, StoredOperation
 from sensemem.kernel.content import PreparedContent, decode_metadata
 from sensemem.kernel.runtime import Storage, translate_storage_errors
 from sensemem.models.base import ModelInput
-from sensemem.types import (
-    AssetRef,
-    ContextBudget,
-    ContextUnknown,
-    ContextUnknownKind,
-    MemoryOperationRecord,
-    MemoryOutcome,
-    MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
-    Modality,
-    RetrievalScope,
-    SearchHit,
-)
+from sensemem.prompts import context as context_prompts
+from sensemem.ranking_policy import RankingMemory
+from sensemem.records import MemoryRecord, SearchHit
+from sensemem.spatial import RetrievalScope
+from sensemem.types import MemoryCategory, Modality
 
 
 def operation_record(logged: StoredOperation) -> MemoryOperationRecord:
@@ -79,10 +73,11 @@ class Hydrator:
             metadata=decode_metadata(memory.metadata_json),
             assets=tuple(self.asset_ref(asset) for asset in memory.assets),
             modality=Modality(memory.modality),
-            memory_type=MemoryType(memory.memory_type),
+            memory_type=MemoryCategory(memory.memory_type),
             context=memory.context,
             forgotten_at=memory.forgotten_at,
             place_id=memory.place_id,
+            parts=memory.parts,
         )
 
     def search_hit(self, memory: StoredMemory, relevance: float) -> SearchHit:
@@ -96,10 +91,41 @@ class Hydrator:
             metadata=decode_metadata(memory.metadata_json),
             assets=tuple(self.asset_ref(asset) for asset in memory.assets),
             modality=Modality(memory.modality),
-            memory_type=MemoryType(memory.memory_type),
+            memory_type=MemoryCategory(memory.memory_type),
             context=memory.context,
             forgotten_at=memory.forgotten_at,
             place_id=memory.place_id,
+            parts=memory.parts,
+        )
+
+    def ranking_memory(self, memory: StoredMemory) -> RankingMemory:
+        """Expose SQLite metadata without validating files for provisional candidates."""
+        return RankingMemory(
+            id=memory.memory_id,
+            content=memory.content,
+            created_at=memory.created_at,
+            occurred_at=memory.occurred_at,
+            occurred_end=memory.occurred_end,
+            metadata=decode_metadata(memory.metadata_json),
+            assets=tuple(
+                AssetRef(
+                    id=asset.asset_id,
+                    modality=Modality(asset.modality),
+                    media_type=asset.mime_type,
+                    size_bytes=asset.size_bytes,
+                    sha256=asset.sha256,
+                    name=asset.name,
+                )
+                for asset in memory.assets
+            ),
+            modality=Modality(memory.modality),
+            memory_type=MemoryCategory(memory.memory_type),
+            context=memory.context,
+            place_id=memory.place_id,
+            parts=memory.parts,
+            updated_at=memory.updated_at,
+            last_accessed_at=memory.last_accessed_at,
+            access_count=memory.access_count,
         )
 
     def asset_ref(self, asset: StoredAsset) -> AssetRef:
@@ -119,6 +145,7 @@ class Hydrator:
         return ModelInput(
             text=prepared.text,
             assets=tuple(self.asset_ref(asset) for asset in prepared.assets),
+            parts=prepared.parts,
         )
 
     def evidence_closures(  # noqa: C901 - bounded scoped provenance traversal
@@ -134,13 +161,14 @@ class Hydrator:
         started_at = perf_counter() if started_at is None else started_at
         by_id = {anchor.id: anchor for anchor in anchors}
         frontier = tuple(
-            source_id
+            (anchor.id, source_id)
             for anchor in anchors
             if anchor.context is not None
             for source_id in anchor.context.evidence_ids
         )
         expanded: set[str] = set()
         bounded: set[str] = set()
+        retained_edges: set[tuple[str, str]] = set()
         deadline = False
         max_nodes = max(1, len(anchors) * budget.max_items)
         while frontier:
@@ -150,7 +178,13 @@ class Hydrator:
             ):
                 deadline = True
                 break
-            current = tuple(dict.fromkeys(frontier))
+            with translate_storage_errors("read retained consolidation evidence"):
+                retained_edges.update(
+                    self._store.control.retained_evidence_edges(
+                        tuple(dict.fromkeys(parent for parent, _source in frontier))
+                    )
+                )
+            current = tuple(dict.fromkeys(source for _parent, source in frontier))
             wanted = tuple(source_id for source_id in current if source_id not in by_id)
             selected: tuple[str, ...] = ()
             if wanted:
@@ -170,11 +204,12 @@ class Hydrator:
                         place_id=None if scope is None else scope.place_id,
                         identity_id=None if scope is None else scope.identity_id,
                         active_only=True,
+                        retained_ids=frozenset(source for _parent, source in retained_edges),
                     )
                 for memory in hydrated:
                     by_id[memory.memory_id] = self.search_hit(memory, 0.0)
             frontier = tuple(
-                child
+                (source_id, child)
                 for source_id in current
                 if source_id not in expanded
                 and (source := by_id.get(source_id)) is not None
@@ -192,20 +227,16 @@ class Hydrator:
             states: dict[str, int] = {}
             ordered: list[str] = []
 
-            def visit(memory_id: str, depth: int) -> str | None:
-                if depth > max_depth:
-                    return "bounded"
-                if memory_id in bounded:
+            def visit(memory_id: str, depth: int, parent_id: str | None = None) -> str | None:
+                if depth > max_depth or memory_id in bounded:
                     return "bounded"
                 hit = by_id.get(memory_id)
                 if hit is None:
-                    return (
-                        "unavailable before the compilation deadline"
-                        if deadline
-                        else "unavailable under the requested scope"
-                    )
+                    return "deadline" if deadline else "scope"
+                if hit.forgotten_at is not None and (parent_id, memory_id) not in retained_edges:
+                    return "withdrawn"
                 if _rejection(hit, budget, reference_at) is not None:
-                    return "excluded by the requested context bounds"
+                    return "context_bounds"
                 state = states.get(memory_id, 0)
                 if state == 1:
                     return "cyclic"
@@ -215,7 +246,7 @@ class Hydrator:
                 context = hit.context
                 if context is not None:
                     for source_id in context.evidence_ids:
-                        if (reason := visit(source_id, depth + 1)) is not None:
+                        if (reason := visit(source_id, depth + 1, memory_id)) is not None:
                             return reason
                 states[memory_id] = 2
                 ordered.append(memory_id)
@@ -245,8 +276,10 @@ class Hydrator:
         unknowns = tuple(
             ContextUnknown(
                 kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                detail=f"{count} ranked assertions required evidence {reason}",
+                detail=context_prompts.evidence_unavailable(count, reason),
             )
-            for reason, count in sorted(reasons.items())
+            for reason, count in sorted(
+                reasons.items(), key=lambda item: context_prompts.EVIDENCE_FAILURES[item[0]]
+            )
         )
         return tuple(closures), unknowns

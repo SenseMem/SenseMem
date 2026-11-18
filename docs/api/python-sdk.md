@@ -16,6 +16,7 @@ for the same operations in an async application.
 | Await operations or consume live streams | [Async and streaming](python-streams.md) |
 | Look up returned fields, enums, or root exports | [Public values](python-values.md) |
 | Implement inference or select a bundled model | [Backend protocols](python-backends.md), [adapters](python-adapters.md) |
+| Register capabilities or compose an optional tool-using agent | [Tools](python-tools.md), [agents](python-agents.md) |
 | Handle failures and input bounds | [Errors and limits](#errors-and-limits) |
 
 ## First use
@@ -49,7 +50,8 @@ Memory(
     former: FormationBackend | None = None,
     consolidator: ConsolidationBackend | None = None,
     reranker: RerankingBackend | None = None,
-    config: MemoryConfig | None = None,
+    tools: ToolRegistry | None = None,
+    settings: MemorySettings | None = None,
     tracer: opentelemetry.trace.Tracer | None = None,
 ) -> None
 
@@ -57,29 +59,35 @@ Memory.from_plugins(
     data_dir: str | Path = ".sensemem",
     *,
     plugins: MemoryPlugins,
-    config: MemoryConfig | None = None,
+    settings: MemorySettings | None = None,
     tracer: Tracer | None = None,
 ) -> Memory
 
 Memory.from_config(
-    config: SenseMemConfig | Mapping[str, object],
+    config: MemorySpec | Mapping[str, object],
     *,
+    factories: Mapping[str, PluginFactory] | None = None,
     tracer: Tracer | None = None,
 ) -> Memory
 
-resolve_memory_config(
-    value: SenseMemConfig | Mapping[str, object],
+build_memory_composition(
+    spec: MemorySpec | Mapping[str, object],
+    *,
+    factories: Mapping[str, PluginFactory] | None = None,
 ) -> MemoryComposition
 ```
 
 `embedder` is required. The other slots independently enable answering, speech/transcription,
 visual description, faces, formation, consolidation, or reranking. An omitted slot does not inherit
-another slot's capability. `MemoryConfig` carries policies; `tracer` is a separate dependency.
+another slot's capability. `MemorySettings` carries policies; `tracer` is a separate dependency.
 
-`MemoryPlugins` is a value bundle with the same backend slots. Construction validates protocols
-and declarations before storage opens. `Memory.from_config` constructs the closed catalog of
-bundled providers. `resolve_memory_config` returns a `MemoryComposition(data_dir, plugins, settings)`;
-close it unless its plugins have been transferred to an owner.
+`MemoryPlugins` is a value bundle with the same backend slots and optional tool registry.
+Construction validates protocols and declarations before storage opens. `Memory.from_config`
+constructs bundled providers or [host-registered factories](../configuration/plugins.md).
+`build_memory_composition` validates the specification and constructs the adapters, returning a
+`MemoryComposition(data_dir, plugins, settings)` without opening storage. Construction may load
+models and allocate clients; close the composition unless its plugins have been transferred to
+an owner.
 
 See [runtime settings](../configuration/settings.md) for defaults and
 [backend contracts](python-backends.md) for custom implementations. Answer evidence budgets,
@@ -91,7 +99,8 @@ One physical directory has one live owner. A second raises `StorageError(reason=
 Use separate directories or send requests to the existing REST owner. Metadata provides no logical
 account/request isolation. An instance belongs to the process that opened it and cannot cross fork.
 
-`Memory` closes each distinct supplied backend once; an adapter may document separate ownership of
+`Memory` owns supplied backends and tool resources from construction, including failed construction,
+and closes each distinct resource once; an adapter may document separate ownership of
 a caller-supplied provider client. Use a context manager or close explicitly; repeated closes are
 harmless.
 
@@ -134,7 +143,7 @@ StreamInput(
     occurred_at: datetime | None = None,
     occurred_end: datetime | None = None,
     metadata: Mapping[str, object] | None = None,
-    memory_type: MemoryType = MemoryType.SEMANTIC,
+    memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
     context: ObservationContext | None = None,
     transcript: str | None = None,
     description: str | None = None,

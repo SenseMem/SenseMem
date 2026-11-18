@@ -26,6 +26,7 @@ from sensemem.types import Modality
 # Model span modules mapped onto the failure stage a caller sees.
 _MODEL_STAGES = {
     "consolidation": "consolidate",
+    "event_segmentation": "segment",
     "embedding": "embed",
     "face": "recognize",
     "formation": "form",
@@ -97,37 +98,26 @@ class Traced:
             _MODEL_STAGES[module],
         )
 
-    def _trace_identity_yield(
-        self,
-        name: str,
-        resolved: Sequence[tuple[str | None, float | None]],
-        *,
-        cached: bool,
-    ) -> None:
-        """Record one asset's recognizer yield under stable ``sensemem.identity.*`` names.
 
-        ``resolved`` pairs every observation's identity with its match score. All five attributes
-        are emitted even for an empty asset: a recognizer whose detection threshold suits another
-        domain runs, costs time, and yields nothing, which is otherwise indistinguishable from
-        having configured no recognizer at all. ``cached`` separates re-read observations from a
-        fresh analysis so that cheap-because-cached never reads as cheap-because-empty.
+def record_identity_yield(
+    span: Span,
+    resolved: Sequence[tuple[str | None, float | None]],
+    *,
+    cached: bool,
+) -> None:
+    """Record recognizer results on the speech or vision stage that produced them.
 
-        ``observations`` and ``matched_existing`` count observations; ``identities`` and ``created``
-        count distinct identities. The store reports ``identity_score`` only where an observation
-        matched an existing identity by similarity, so its absence is the only available signal for
-        a new identity. A cross-modal adoption, where one asset's lone face takes the identity of
-        its lone voice, also arrives without a score and therefore counts as created here.
-        """
-        identities = {identity for identity, _ in resolved if identity is not None}
-        created = {
-            identity for identity, score in resolved if identity is not None and score is None
-        }
-        with self._trace(name, kind="stage") as span:
-            span.set_attribute(IDENTITY_OBSERVATIONS, len(resolved))
-            span.set_attribute(IDENTITY_IDENTITIES, len(identities))
-            span.set_attribute(
-                IDENTITY_MATCHED,
-                sum(1 for _, score in resolved if score is not None),
-            )
-            span.set_attribute(IDENTITY_CREATED, len(created))
-            span.set_attribute(IDENTITY_CACHED, cached)
+    Observation and match counts include every observation; identity and creation counts
+    deduplicate IDs. Emit all five attributes even for an empty result, distinguishing an
+    empty detection from an unconfigured recognizer. A missing match score marks a new ID.
+    """
+    identities = {identity for identity, _ in resolved if identity is not None}
+    created = {identity for identity, score in resolved if identity is not None and score is None}
+    span.set_attribute(IDENTITY_OBSERVATIONS, len(resolved))
+    span.set_attribute(IDENTITY_IDENTITIES, len(identities))
+    span.set_attribute(
+        IDENTITY_MATCHED,
+        sum(1 for _, score in resolved if score is not None),
+    )
+    span.set_attribute(IDENTITY_CREATED, len(created))
+    span.set_attribute(IDENTITY_CACHED, cached)

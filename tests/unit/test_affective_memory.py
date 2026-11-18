@@ -12,17 +12,18 @@ from pathlib import Path
 from _feature_support import ATOMIC_MODALITIES, CueConsolidator, TinyEmbedder
 
 from sensemem import (
+    AffectWitness,
     Blob,
     ContextBudget,
     EvidenceBasis,
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryKind,
     MemoryRecord,
+    MemorySettings,
     Modality,
     ObservationContext,
+    RecordKind,
 )
 
 MISSING_DOG = "the user's voice rose while telling me the dog Max went missing"
@@ -41,14 +42,14 @@ class CompanionFormer:
     formation_space = "companion-test:v1"
 
     def form(self, inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]:
-        return tuple(self._proposals(item.content.text) for item in inputs)
+        return tuple(self._proposals(item.content.text, item.memory_id) for item in inputs)
 
-    def _proposals(self, text: str) -> tuple[FormationProposal, ...]:
+    def _proposals(self, text: str, source_id: str) -> tuple[FormationProposal, ...]:
         if "went missing" in text:
             return (
-                FormationProposal(kind=MemoryKind.EVENT, content="the dog Max went missing"),
+                FormationProposal(kind=RecordKind.EVENT, content="the dog Max went missing"),
                 FormationProposal(
-                    kind=MemoryKind.AFFECT,
+                    kind=RecordKind.AFFECT,
                     content="the user seemed anxious about the missing dog",
                     subject="user",
                     value="anxious",
@@ -61,20 +62,23 @@ class CompanionFormer:
         if "wasn't angry" in text:
             return (
                 FormationProposal(
-                    kind=MemoryKind.AFFECT,
-                    content="the user says they were nervous about the missing dog, not angry",
-                    basis=EvidenceBasis.USER_STATEMENT,
+                    kind=RecordKind.AFFECT,
+                    content=text,
+                    basis=EvidenceBasis.MODEL_INFERENCE,
                     subject="user",
                     value="nervous",
                     cue_modality=Modality.TEXT,
                     valence=-0.3,
                     arousal=0.6,
+                    affect_witnesses=(
+                        AffectWitness(source_id=source_id, reporter="user", quote=text),
+                    ),
                 ),
             )
         if "sighed" in text:
             return (
                 FormationProposal(
-                    kind=MemoryKind.AFFECT,
+                    kind=RecordKind.AFFECT,
                     content="the words about the missing dog read as settled",
                     subject="user",
                     value="settled",
@@ -84,7 +88,7 @@ class CompanionFormer:
                     arousal=0.2,
                 ),
                 FormationProposal(
-                    kind=MemoryKind.AFFECT,
+                    kind=RecordKind.AFFECT,
                     content="the voice about the missing dog sounded weary",
                     subject="user",
                     value="weary",
@@ -106,11 +110,11 @@ def _memory(data_dir: Path) -> Memory:
         embedder=TinyEmbedder(),
         former=CompanionFormer(),
         consolidator=CueConsolidator(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     )
 
 
-def _records(memory: Memory, kind: MemoryKind) -> tuple[MemoryRecord, ...]:
+def _records(memory: Memory, kind: RecordKind) -> tuple[MemoryRecord, ...]:
     return tuple(
         record
         for record in memory.list(limit=100).items
@@ -125,7 +129,7 @@ def test_a_cue_an_event_and_an_observation_stay_three_traceable_records(tmp_path
         bundle = memory.compile(DOG_GOAL, budget=ContextBudget(max_items=8))
 
         (cue,) = bundle.affect
-        (event,) = _records(memory, MemoryKind.EVENT)
+        (event,) = _records(memory, RecordKind.EVENT)
         assert cue.context is not None
         assert cue.context.evidence_ids == (observation.id,)
         assert cue.event_ids == (event.id,)
@@ -138,12 +142,15 @@ def test_a_cue_an_event_and_an_observation_stay_three_traceable_records(tmp_path
         assert "arousal 0.70" in line
 
 
-def test_a_user_statement_coexists_with_the_inference_it_corrects(tmp_path: Path) -> None:
-    """A statement forms a higher-authority version; it never deletes the inference."""
+def test_a_reported_correction_coexists_with_the_inference_it_corrects(tmp_path: Path) -> None:
+    """Automatic interpretation preserves the report without granting self-report authority."""
     with _memory(tmp_path) as memory:
         memory.add(MISSING_DOG, context=ObservationContext(source_id="turn-1"))
-        memory.add(CORRECTION, context=ObservationContext(source_id="turn-2"))
-        cues = _records(memory, MemoryKind.AFFECT)
+        memory.add(
+            CORRECTION,
+            context=ObservationContext(source_id="turn-2", basis=EvidenceBasis.USER_STATEMENT),
+        )
+        cues = _records(memory, RecordKind.AFFECT)
         bundle = memory.compile(DOG_GOAL, budget=ContextBudget(max_items=8))
 
         assert {record.context.value for record in cues if record.context} == {
@@ -158,9 +165,10 @@ def test_a_user_statement_coexists_with_the_inference_it_corrects(tmp_path: Path
         statement = next(
             hit for hit in bundle.affect if hit.context and hit.context.value == "nervous"
         )
-        assert "basis user_statement" in next(
+        assert "basis model_inference" in next(
             row for row in bundle.render().splitlines() if row.startswith(f"- [{statement.id}]")
         )
+        assert statement.context is not None and statement.context.affect_witnesses
 
 
 def test_two_modalities_of_one_moment_stay_two_cues(tmp_path: Path) -> None:
@@ -170,7 +178,7 @@ def test_two_modalities_of_one_moment_stay_two_cues(tmp_path: Path) -> None:
             (SIGH, Blob(b"sigh", "audio/wav")),
             context=ObservationContext(source_id="turn-3"),
         )
-        cues = _records(memory, MemoryKind.AFFECT)
+        cues = _records(memory, RecordKind.AFFECT)
         bundle = memory.compile(DOG_GOAL, budget=ContextBudget(max_items=8))
 
         assert {record.context.cue_modality for record in cues if record.context} == {
@@ -190,14 +198,14 @@ def test_a_second_independent_capture_reinforces_the_same_trait_rather_than_crea
             (SIGH, Blob(b"sigh", "audio/wav")),
             context=ObservationContext(source_id="turn-3"),
         )
-        one_capture = tuple(record.id for record in _records(memory, MemoryKind.AFFECT))
+        one_capture = tuple(record.id for record in _records(memory, RecordKind.AFFECT))
         first = memory.consolidate(evidence_ids=one_capture)
         (trait_id,) = first.operations[0].created_ids
 
         memory.add(MISSING_DOG, context=ObservationContext(source_id="turn-1"))
         (independent,) = (
             record.id
-            for record in _records(memory, MemoryKind.AFFECT)
+            for record in _records(memory, RecordKind.AFFECT)
             if record.id not in one_capture
         )
         second = memory.consolidate(evidence_ids=(one_capture[0], independent))
@@ -211,7 +219,7 @@ def test_forgetting_a_cue_is_cognitive_and_reversible(tmp_path: Path) -> None:
     """Affect can be forgotten without erasing the audit trail, and forgetting is reversible."""
     with _memory(tmp_path) as memory:
         memory.add(MISSING_DOG, context=ObservationContext(source_id="turn-1"))
-        (cue,) = _records(memory, MemoryKind.AFFECT)
+        (cue,) = _records(memory, RecordKind.AFFECT)
 
         operation = memory.forget((cue.id,))
         assert operation is not None

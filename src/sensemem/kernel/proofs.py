@@ -3,21 +3,10 @@
 from collections.abc import Mapping
 from itertools import combinations
 
+from sensemem._context_proofs import proof_support as proof_support
+from sensemem._context_proofs import singleton_group
+from sensemem.context_values import ContextProof, ContextProofNode, ContextProofScoring
 from sensemem.kernel.corroboration import EvidenceNode, SupportSummary
-from sensemem.types import ContextProof, ContextProofNode
-
-
-def proof_support(proofs: tuple[ContextProof, ...]) -> tuple[int, float]:
-    """Verify independence separately from confidence; one clause cannot corroborate itself."""
-    count = int(bool(proofs))
-    confidence = max((proof.confidence for proof in proofs), default=0.0)
-    for left, right in combinations(proofs, 2):
-        if left.anchor_id != right.anchor_id:
-            raise ValueError("support witnesses must have the same anchor")
-        if left.independent_of(right):
-            count = 2
-            confidence = max(confidence, 1.0 - (1.0 - left.confidence) * (1.0 - right.confidence))
-    return count, confidence
 
 
 def certificates(  # noqa: C901 - bounded AND joins keep incomplete prefixes out of certificates
@@ -59,7 +48,10 @@ def certificates(  # noqa: C901 - bounded AND joins keep incomplete prefixes out
             return [
                 {
                     memory_id: ContextProofNode(
-                        memory_id=memory_id, confidence=node.confidence, capture_id=node.root_group
+                        memory_id=memory_id,
+                        confidence=node.confidence,
+                        capture_id=node.root_group,
+                        source_group_id=node.source_group_id,
                     )
                 }
             ]
@@ -73,7 +65,10 @@ def certificates(  # noqa: C901 - bounded AND joins keep incomplete prefixes out
             partials = [
                 {
                     memory_id: ContextProofNode(
-                        memory_id=memory_id, sources=sources, confidence=assessment.confidence
+                        memory_id=memory_id,
+                        sources=sources,
+                        confidence=assessment.confidence,
+                        source_group_id=node.source_group_id,
                     )
                 }
             ]
@@ -114,11 +109,15 @@ def select_certificates(
     proofs: tuple[ContextProof, ...],
     required: SupportSummary,
     costs: Mapping[str, int],
+    conditions: frozenset[str] = frozenset(),
+    *,
+    scoring: ContextProofScoring = "independent_pair",
 ) -> tuple[ContextProof, ...]:
     """Buy the union of count and confidence witnesses, never just the cheapest single path.
 
     At most 64 witnesses, 2016 pair comparisons and 256 candidate unions are considered. The
     choice is a bounded cost heuristic, not an optimal packing or proof of search completeness.
+    Capture-group scoring also considers one union of the strongest witness per stored group.
     """
     if len(proofs) > 64:
         raise ValueError("selection accepts at most 64 certificates")
@@ -126,7 +125,7 @@ def select_certificates(
     groups.extend(
         (left, right)
         for left, right in combinations(proofs, 2)
-        if proof_support((left, right))[0] == 2
+        if proof_support((left, right), conditions, scoring=scoring)[0] >= 2
     )
 
     def cost(group: tuple[ContextProof, ...]) -> int:
@@ -135,11 +134,38 @@ def select_certificates(
             len(proof.render()) + 1 for proof in group
         )
 
+    if scoring == "capture_groups":
+        representatives: dict[str, ContextProof] = {}
+        for proof in proofs:
+            group_id = singleton_group(proof, conditions)
+            if group_id is None:
+                continue
+            previous = representatives.get(group_id)
+            if previous is None or (
+                proof_support((proof,), conditions, scoring=scoring)[1],
+                -cost((proof,)),
+            ) > (
+                proof_support((previous,), conditions, scoring=scoring)[1],
+                -cost((previous,)),
+            ):
+                representatives[group_id] = proof
+        if representatives:
+            groups.append(tuple(representatives.values()))
+
     count_groups = sorted(
-        (group for group in groups if proof_support(group)[0] >= required.count), key=cost
+        (
+            group
+            for group in groups
+            if proof_support(group, conditions, scoring=scoring)[0] >= required.count
+        ),
+        key=cost,
     )[:16]
     score_groups = sorted(
-        (group for group in groups if proof_support(group)[1] + 1e-12 >= required.confidence),
+        (
+            group
+            for group in groups
+            if proof_support(group, conditions, scoring=scoring)[1] + 1e-12 >= required.confidence
+        ),
         key=cost,
     )[:16]
     unions = [

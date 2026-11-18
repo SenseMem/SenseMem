@@ -6,19 +6,21 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
-from functools import partial
 from typing import cast
 
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import (
-    IDENTITY_EVIDENCE_ASSETS,
-    IDENTITY_EVIDENCE_REQUIRED,
-    IDENTITY_LINKED,
     IDENTITY_NAMES_BOUND,
     IDENTITY_NAMES_REFUSED,
 )
 from sensemem.control import IDENTITY_LINK_RECIPE, dump_operation, operation_key
+from sensemem.control_values import (
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryTrigger,
+)
 from sensemem.exceptions import (
     IdentityNotFoundError,
     MemoryNotFoundError,
@@ -26,8 +28,19 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
+from sensemem.identity import (
+    ConsentClaim,
+    ConsentState,
+    IdentityChange,
+    IdentityClaim,
+    IdentityErasure,
+    IdentityProfile,
+    PerceptionCoverage,
+    PerceptionKind,
+    PerceptionResult,
+    PerceptionSkipReason,
+)
 from sensemem.infrastructure.local.store import (
-    IdentityLink,
     StaleOperationError,
     StoredAsset,
     StoredEmbedding,
@@ -42,10 +55,10 @@ from sensemem.kernel.derived import (
 )
 from sensemem.kernel.embedding import Embedding
 from sensemem.kernel.execution import Execution
-from sensemem.kernel.formation import (
+from sensemem.kernel.formation import Formation, RejectedOperation
+from sensemem.kernel.formation_rules import (
     CONSENT_RECIPE,
     NAMING_RECIPE,
-    Formation,
     consent_proposal,
     formation_context,
     formation_memory_id,
@@ -57,7 +70,7 @@ from sensemem.kernel.lifecycle import Lifecycle, OperationAssets
 from sensemem.kernel.materialization import Materializer
 from sensemem.kernel.projection import Projection
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.speech import Speech
 from sensemem.kernel.tracing import Traced
 from sensemem.kernel.validation import (
@@ -67,24 +80,7 @@ from sensemem.kernel.validation import (
 from sensemem.kernel.vision import Vision
 from sensemem.models.base import SpeechBackend
 from sensemem.perception import VisualDescription
-from sensemem.types import (
-    ConsentClaim,
-    ConsentState,
-    EvidenceBasis,
-    IdentityChange,
-    IdentityClaim,
-    IdentityErasure,
-    IdentityProfile,
-    MemoryIntent,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryTrigger,
-    Modality,
-    PerceptionCoverage,
-    PerceptionKind,
-    PerceptionResult,
-    PerceptionSkipReason,
-)
+from sensemem.types import EvidenceBasis, Modality, RecordKind
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,7 +126,7 @@ class Identities(Traced):
         projection: Projection,
         vision: Vision,
         formation: Formation,
-        settings: Settings,
+        settings: ResolvedSettings,
         execution: Execution,
     ) -> None:
         super().__init__(tracer)
@@ -311,7 +307,7 @@ class Identities(Traced):
         )
         prepared = replace(
             prepare_memory(
-                self._materializer.prepare(proposal.content, operation),
+                self._materializer.materialize_content(proposal.content, operation),
                 occurred_at=None,
                 occurred_end=None,
                 metadata=None,
@@ -443,8 +439,7 @@ class Identities(Traced):
         """
         with translate_storage_errors("read identity naming assertion"):
             removed, projection = self._store.identities.naming_projection_after_delete(memory_id)
-        factory = self._formation.naming_projection_factory(operation)
-        if factory is not None:
+        if self._settings.independent_evidence:
             with translate_storage_errors("read affected speech memories"):
                 memory_ids = sorted(
                     {
@@ -580,36 +575,45 @@ class Identities(Traced):
         *,
         relationship: str | None,
         operation: OperationAssets,
+        sources: Sequence[str] = (),
     ) -> str:
         """Record naming one person as a typed ENTITY claim bound to that identity.
 
-        This is what makes a name retrievable knowledge instead of a label on a row, and it is
-        the versioned thing `identities.name` projects. It rests on the host's authority rather
-        than on a model, so it needs neither a former nor a consolidator to be configured, and
-        it carries no evidence: nothing was observed, somebody said so.
-
-        It is logged like any other control-plane operation, so naming is auditable through
-        `operations()` and reversible through `rollback()`. The logged intent is `IDENTIFY` and
-        the claim travels on the operation itself, so `operations()` never has to pass an
-        identity ID off as a memory ID in `evidence_ids`. A host cites nothing: nothing was
-        observed, somebody said so, so the evidence set is empty.
+        A host statement carries USER_STATEMENT and no model or source. A model-inferred
+        speaker name carries its visual model, recipe, and observed source memories; the
+        ordinary evidence projection governs its visibility and removal. Both are versioned
+        ENTITY assertions, logged as IDENTIFY and reversible through rollback().
 
         Re-asserting the same name and relationship is idempotent, because the derived memory ID
         is a function of the claim; a different name supersedes through the shared lineage.
         """
-        proposal = naming_proposal(name, relationship, basis=EvidenceBasis.USER_STATEMENT)
+        inferred = bool(sources)
+        recipe = (
+            f"sensemem-speaker-naming-v2:{self._backends.vision_space}"
+            if inferred
+            else NAMING_RECIPE
+        )
+        model_id = self._backends.vision_model if inferred else None
+        proposal = naming_proposal(
+            name,
+            relationship,
+            basis=EvidenceBasis.MODEL_INFERENCE if inferred else EvidenceBasis.USER_STATEMENT,
+        )
         now = datetime.now(timezone.utc)
-        context = formation_context(
-            None,
-            proposal,
-            model_id=None,
-            recipe=NAMING_RECIPE,
-            recorded_at=now,
-            identity_id=identity_id,
+        context = replace(
+            formation_context(
+                None,
+                proposal,
+                model_id=model_id,
+                recipe=recipe,
+                recorded_at=now,
+                identity_id=identity_id,
+            ),
+            evidence_ids=tuple(sorted(sources)),
         )
         prepared = replace(
             prepare_memory(
-                self._materializer.prepare(proposal.content, operation),
+                self._materializer.materialize_content(proposal.content, operation),
                 occurred_at=None,
                 occurred_end=None,
                 metadata=None,
@@ -618,7 +622,7 @@ class Identities(Traced):
             memory_id=formation_memory_id(
                 identity_id,
                 proposal,
-                recipe=NAMING_RECIPE,
+                recipe=recipe,
                 context=context,
             ),
             context=context,
@@ -626,9 +630,12 @@ class Identities(Traced):
         proposed = MemoryOperation(
             intent=MemoryIntent.IDENTIFY,
             claim=IdentityClaim(identity_id=identity_id, name=name, relationship=relationship),
-            rationale="the host registered this name",
+            evidence_ids=context.evidence_ids,
+            rationale="a visual model inferred this speaker's name from the cited recordings"
+            if inferred
+            else "the host registered this name",
         )
-        base_key = operation_key(proposed, recipe=NAMING_RECIPE)
+        base_key = operation_key(proposed, recipe=recipe)
         with translate_storage_errors("check a naming operation"):
             key = self._store.control.naming_operation_key(base_key, prepared.memory_id)
         # `_register_identity` holds `_formation_lock` for this whole call (the same lock
@@ -636,14 +643,15 @@ class Identities(Traced):
         # `_form_sources`), so this IDENTIFY commit cannot land while a consolidate apply pass
         # is in progress either.
         for attempt in range(4):
-            expected: list[StoredMemory] = []
             try:
                 self._formation.commit(
-                    ((prepared, None, proposal.confidence),),
+                    tuple((prepared, source, proposal.confidence) for source in sources)
+                    if inferred
+                    else ((prepared, None, proposal.confidence),),
                     (),
                     assets=operation,
                     completed_at=now,
-                    recipe=NAMING_RECIPE,
+                    recipe=recipe,
                     # Re-asserting a standing name changes nothing, so it logs nothing: the operation
                     # key is already active and the log's unique index would refuse it anyway.
                     operation=(
@@ -652,21 +660,17 @@ class Identities(Traced):
                         else StoredOperation(
                             operation_key=key,
                             intent=proposed.intent.value,
-                            trigger=MemoryTrigger.MANUAL.value,
-                            recipe=NAMING_RECIPE,
+                            trigger=MemoryTrigger.EVIDENCE.value
+                            if inferred
+                            else MemoryTrigger.MANUAL.value,
+                            model_id=model_id,
+                            recipe=recipe,
                             operation_json=dump_operation(proposed),
                             applied_at=now,
                         )
                     ),
+                    require_visible=context.evidence_ids,
                     projection_identity_id=identity_id,
-                    projection_factory=partial(
-                        self.reindex_speech,
-                        identity_id,
-                        speaker_name=name,
-                        operation=operation,
-                        expected=expected,
-                    ),
-                    projection_sources=expected,
                 )
             except StaleOperationError:
                 if attempt == 3:
@@ -751,23 +755,20 @@ class Identities(Traced):
     def bind_speaker_names(self, operation: OperationAssets) -> None:
         """Register the staged names, now that the memory carrying the voices is readable.
 
-        `register_identity` in all but name -- it lands the same `IDENTIFY` assertion through the
-        same commit, so it is auditable through `operations()` and reversible through
-        `rollback()` -- but it resolves and checks the person itself rather than raising on one
-        who has since been merged away, and it holds the existing operation instead of nesting a
-        second one inside this write.
+        The assertion cites the original recordings, its producing model and recipe. It uses
+        MODEL_INFERENCE and ordinary independent-support visibility, rather than the host
+        authority of register_identity().
 
         A different standing name is never overwritten. The name came from a model reading a
         transcript, and one mishearing would rewrite every document that person appears in; the
-        host's own `register_identity` stays the only thing that can replace a name. Nothing here
-        links identities either: `identity_link_min_assets` governs who is the same person, and a
-        name is not evidence about that.
+        host's own `register_identity` stays the only thing that can replace a name. A name
+        supplies no authority to bind a voice to a face.
         """
         bindings = dict(operation.speaker_names)
         operation.speaker_names.clear()
         bound = 0
         refused = 0
-        for identity_id, name in bindings.items():
+        for identity_id, (name, asset_ids) in bindings.items():
             with self._formation_lock:
                 with translate_storage_errors("read identity profile"):
                     profile = self._store.identities.identity_profile(identity_id)
@@ -779,20 +780,32 @@ class Identities(Traced):
                     # A merged/deleted identity or invalid name named nobody.
                     operation.speaker_names_refused += 1
                     continue
-                if profile.name == proposed:
+                if profile.name == proposed and profile.confirmed:
                     continue
-                if profile.name is not None:
+                if profile.name is not None and profile.name != proposed:
                     refused += 1
                     _LOGGER.warning(
                         "a distilled name conflicts with an existing name; "
                         "keeping the registered name"
                     )
                     continue
+                with translate_storage_errors("read naming evidence"):
+                    source_ids = self._store.media.asset_memory_ids(tuple(asset_ids))
+                    stored = self._store.records.read_memories(source_ids)
+                sources = tuple(
+                    source.memory_id
+                    for source in stored
+                    if source.context is None or source.context.kind is RecordKind.OBSERVATION
+                )
+                if not sources:
+                    refused += 1
+                    continue
                 self._assert_identity_name(
                     profile.identity_id,
                     proposed,
                     relationship=profile.relationship,
                     operation=operation,
+                    sources=sources,
                 )
             bound += 1
         refused += operation.speaker_names_refused
@@ -830,7 +843,11 @@ class Identities(Traced):
                 if identity_id is None:
                     operation.speaker_names_refused += 1
                     continue
-                operation.speaker_names.setdefault(identity_id, proposed.name)
+                standing = operation.speaker_names.setdefault(identity_id, (proposed.name, set()))
+                if standing[0] != proposed.name:
+                    operation.speaker_names_refused += 1
+                    continue
+                standing[1].add(asset_id)
 
     def known_speaker_names(self, asset_id: str, operation: OperationAssets) -> dict[str, str]:
         """Map this asset's `speaker_N` labels to whatever name is already known for them.
@@ -845,7 +862,8 @@ class Identities(Traced):
             return {}
         names: dict[str, str] = {}
         for identity_id, label in speaker_labels(segments).items():
-            name = operation.speaker_names.get(identity_id)
+            staged = operation.speaker_names.get(identity_id)
+            name = None if staged is None else staged[0]
             if name is None:
                 name = next(
                     (
@@ -864,10 +882,9 @@ class Identities(Traced):
         assets: Sequence[StoredAsset],
         operation: OperationAssets,
         *,
-        link: bool = True,
         kinds: frozenset[PerceptionKind] = frozenset({"speech", "faces"}),
     ) -> None:
-        """Recognize independent voice/face inputs concurrently, then authorize identity links."""
+        """Recognize voice and face independently; co-occurrence never binds two people."""
         speech = self._speech.answer_speech_assets(assets) if "speech" in kinds else ()
         faces = self._vision.answer_face_assets(assets) if "faces" in kinds else ()
         if speech and faces:
@@ -880,165 +897,63 @@ class Identities(Traced):
             self._speech.recognize(speech, operation)
         elif faces:
             self._vision.recognize(faces, operation)
-        if link:
-            with self._formation_lock:
-                for asset in faces:
-                    self._link_asset_identity(asset.asset_id, operation)
 
-    def _identity_link_is_corroborated(
-        self,
-        speaker_id: str,
-        face_id: str,
-        asset_id: str,
-    ) -> bool:
-        """Record this asset's voice-and-face co-occurrence and report whether it is enough.
-
-        One asset's co-occurrence is not evidence that one person produced both. Egocentric
-        capture is the adversarial case: the wearer speaks while a different person's face
-        fills the frame, so a single clip would bind the listener's face to the wearer's voice
-        and nothing downstream could tell.
-
-        Counting assets raises the price of that mistake but does not prevent it. A wearer
-        talks to the same person across many clips, so the wrong pair accumulates as fast as a
-        genuine speaker's, and measurement on synthetic egocentric traffic confirms it: at the
-        default of two assets the wearer still binds to an interlocutor's face under every
-        ingestion order tried. What the count does buy is that a face seen once is never
-        bound, and `_link_asset_identity` keeps the damage to that one bind by refusing to let
-        an identity holding both modalities absorb anything further.
-        """
-        observed = self._store.identities.record_identity_link_evidence(
-            speaker_id, face_id, asset_id
-        )
-        corroborated = observed >= self._settings.identity_link_min_assets
-        with self._trace("sensemem.identity.link", kind="stage") as span:
-            span.set_attribute(IDENTITY_EVIDENCE_ASSETS, observed)
-            span.set_attribute(IDENTITY_EVIDENCE_REQUIRED, self._settings.identity_link_min_assets)
-            span.set_attribute(IDENTITY_LINKED, corroborated)
-        return corroborated
-
-    def _identity_link_operation(self, plan: IdentityLink) -> StoredOperation:
-        """Build the MERGE log row one corroborated cross-modal bind commits with."""
-        proposed = MemoryOperation(
-            intent=MemoryIntent.MERGE,
-            identity=IdentityChange(
-                identity_id=plan.target_id,
-                moved_ids=(plan.source_id,),
-            ),
-            rationale=(
-                f"one voice and one face co-occurred in at least "
-                f"{self._settings.identity_link_min_assets} assets"
-            ),
-        )
-        return StoredOperation(
-            operation_key=operation_key(proposed, recipe=IDENTITY_LINK_RECIPE),
-            intent=proposed.intent.value,
-            # Independent evidence accumulated until it corroborated the pair, which is exactly
-            # what this trigger names -- no clock and no host request is involved.
-            trigger=MemoryTrigger.EVIDENCE.value,
-            model_id=self._backends.face_model,
+    def apply_identity_merge(
+        self, proposed: MemoryOperation, *, assets: OperationAssets
+    ) -> MemoryOperationRecord:
+        """Commit a host-confirmed binding; recognizer co-occurrence is insufficient."""
+        change = proposed.identity
+        assert change is not None
+        first_id, second_id = change.identity_id, change.moved_ids[0]
+        with translate_storage_errors("read identity binding"):
+            restrained = self._store.identities.restrained_identities()
+            plan = self._store.identities.identity_link_plan(
+                first_id, second_id, allow_rejected_pair=True, preferred_identity=first_id
+            )
+        if {first_id, second_id} & restrained:
+            raise RejectedOperation("unauthorized")
+        if plan is None or plan.target_id != first_id:
+            raise RejectedOperation("identity_binding_invalid")
+        with translate_storage_errors("check an identity binding operation"):
+            key = self._store.identities.identity_binding_operation_key(
+                operation_key(proposed, recipe=IDENTITY_LINK_RECIPE), first_id, second_id
+            )
+        logged = StoredOperation(
+            operation_key=key,
+            intent=MemoryIntent.MERGE.value,
+            trigger=MemoryTrigger.MANUAL.value,
             recipe=IDENTITY_LINK_RECIPE,
             operation_json=dump_operation(proposed),
             applied_at=datetime.now(timezone.utc),
         )
-
-    def _link_asset_identity(self, asset_id: str, operation: OperationAssets) -> None:
-        for attempt in range(4):
-            try:
-                self._link_asset_identity_once(asset_id, operation)
-            except StaleOperationError:
-                if attempt == 3:
-                    raise StorageError(
-                        "identity projection is busy; retry the update",
-                        reason="capacity_exceeded",
-                        stage="admission",
-                    ) from None
-            else:
-                return
-
-    def _link_asset_identity_once(self, asset_id: str, operation: OperationAssets) -> None:
-        speaker_ids = {
-            segment.speaker_id
-            for segment in operation.speech_segments.get(asset_id, ())
-            if segment.speaker_id is not None
-        }
-        face_ids = {
-            observation.identity_id for observation in operation.face_observations.get(asset_id, ())
-        }
-        if len(speaker_ids) != 1 or len(face_ids) != 1:
-            return
-        speaker_id, face_id = next(iter(speaker_ids)), next(iter(face_ids))
-        # Withheld or withdrawn consent stops the merge on either side. Fusing a voice and a
-        # face is a new claim about a person -- that these two templates are one human -- so it
-        # is exactly the processing a refusal refuses, and unlike enrolment it is not something
-        # answering a question needs.
-        with translate_storage_errors("read identity consent"):
-            restrained = self._store.identities.restrained_identities()
-        if {speaker_id, face_id} & restrained:
-            return
-        if speaker_id == face_id:
-            # Already one identity. Recording this would store an identity co-occurring with
-            # itself, once per asset forever, and no such pair can ever yield a plan.
-            return
-        if not self._identity_link_is_corroborated(speaker_id, face_id, asset_id):
-            return
-        # Only a voice-only and a face-only identity may fuse here. Letting a fragment rejoin
-        # an identity that already holds its modality is what turns one wrong cross-modal bind
-        # into a cascade: once a wearer's voice owns one interlocutor's face, that identity
-        # holds both modalities, and every later fragment (the interlocutor's own voice, then
-        # the next interlocutor's face) is a fragment rejoining it. Measured on synthetic
-        # egocentric traffic (one off-camera wearer, three interlocutors, random ingestion
-        # order), permitting it collapsed all four people into one identity every time;
-        # refusing it capped the damage at the single unavoidable first bind and raised
-        # correct merges from 0/3 to 2/3. `LocalStore` still offers the wider merge to a
-        # caller that has established the claim some other way.
-        plan = self._store.identities.identity_link_plan(speaker_id, face_id)
-        if plan is None:
-            return
         expected: list[StoredMemory] | None = None
         memories: tuple[StoredMemory, ...] = ()
         embeddings: tuple[StoredEmbedding, ...] = ()
-        if self._settings.index_speech and plan.source_id == speaker_id:
+        if self._settings.index_speech:
             expected = []
             memories, embeddings = self.reindex_speech(
                 plan.target_id,
                 speaker_name=plan.name,
                 previous_speaker_id=plan.source_id,
-                operation=operation,
+                operation=assets,
                 expected=expected,
             )
         with self._write_lock, translate_storage_errors("link recognized identities"):
             linked = self._store.identities.link_identities(
-                speaker_id,
-                face_id,
+                first_id,
+                second_id,
                 expected=plan,
+                allow_rejected_pair=True,
+                preferred_identity=first_id,
                 memories=memories,
                 embeddings=embeddings,
                 projection_sources=expected,
-                operation=self._identity_link_operation(plan),
+                operation=logged,
             )
             if linked is None:
-                return
+                raise RejectedOperation("duplicate")
             self._projection.drain()
-        linked_ids = {plan.target_id, plan.source_id}
-        for cached_asset, segments in tuple(operation.speech_segments.items()):
-            operation.speech_segments[cached_asset] = tuple(
-                replace(
-                    segment,
-                    speaker_id=plan.target_id,
-                    speaker_name=plan.name,
-                )
-                if segment.speaker_id in linked_ids
-                else segment
-                for segment in segments
-            )
-        for cached_asset, observations in tuple(operation.face_observations.items()):
-            operation.face_observations[cached_asset] = tuple(
-                replace(
-                    observation,
-                    identity_id=plan.target_id,
-                    identity_name=plan.name,
-                )
-                if observation.identity_id in linked_ids
-                else observation
-                for observation in observations
+        with translate_storage_errors("read an identity binding operation"):
+            return operation_record(
+                self._store.control.read_operations(operation_key=logged.operation_key)[0]
             )

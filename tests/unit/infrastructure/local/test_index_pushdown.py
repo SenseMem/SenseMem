@@ -1,12 +1,4 @@
-"""High-selectivity scope predicates are answered by the index, not by widening a window.
-
-`identity_id` and `place_id` are static per document, so before this the kernel retrieved an
-unscoped candidate window and dropped everything outside the scope in SQLite afterwards. That
-post-filter widens the window when too few candidates survive, but the widening is bounded, and
-for a predicate that matches two records in a library the bound is reached long before the matches
-are: the answer silently came back short. These tests pin the two halves of the fix -- the filter
-reaches Zvec, and a missing collection rebuilds those fields from SQLite without re-embedding.
-"""
+"""Identity and place predicates reach Zvec and rebuild from SQLite without re-embedding."""
 
 from __future__ import annotations
 
@@ -19,7 +11,7 @@ from pathlib import Path
 from sensemem import (
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     ObservationContext,
@@ -120,7 +112,7 @@ def test_a_place_label_with_an_apostrophe_indexes_and_scopes(tmp_path: Path) -> 
     on that directory re-raised the same rejection.
     """
     with Memory(
-        tmp_path, embedder=_CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=_CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         record = memory.add(
             "a kettle on a worktop",
@@ -140,7 +132,7 @@ def test_a_place_label_the_grammar_cannot_spell_still_scopes(tmp_path: Path) -> 
     is dropped from the pushdown instead, and SQLite hydration still enforces the scope.
     """
     with Memory(
-        tmp_path, embedder=_CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=_CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         for place in ("attic\\", "Ana\tRoom"):
             record = memory.add(
@@ -177,7 +169,7 @@ def test_missing_index_rebuild_preserves_scope_fields_without_reembedding(
     tmp_path: Path,
 ) -> None:
     with Memory(
-        tmp_path, embedder=_CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=_CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         record = memory.add(
             "a kettle on a worktop",
@@ -186,7 +178,9 @@ def test_missing_index_rebuild_preserves_scope_fields_without_reembedding(
     shutil.rmtree(tmp_path / "zvec")
 
     reopened = _CountingEmbedder()
-    with Memory(tmp_path, embedder=reopened, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=reopened, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         # The scope fields are reconstructed from authoritative rows alongside stored vectors.
         assert reopened.calls == 0
         scoped = memory.search("kettle", scope=RetrievalScope(place_id="kitchen")).hits

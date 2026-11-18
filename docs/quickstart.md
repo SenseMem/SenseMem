@@ -120,17 +120,17 @@ The following snippets reuse `config` from step 2.
 ```python
 from datetime import datetime, timezone
 
-from sensemem import MemoryType
+from sensemem import MemoryCategory
 
 with Memory.from_config(config) as memory:
     memory.add(
         "Maya placed the spare key in the toolbox during the workshop.",
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
         occurred_at=datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc),
     )
     hits = memory.search(
         "What happened during the workshop?",
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
     ).hits
 ```
 

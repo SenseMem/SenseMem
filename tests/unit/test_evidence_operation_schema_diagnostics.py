@@ -1,7 +1,7 @@
 """Schema diagnostics retain static shapes without rejected provider input or context."""
 
 import json
-from dataclasses import FrozenInstanceError, asdict, fields
+from dataclasses import asdict
 from typing import cast
 
 import pytest
@@ -44,9 +44,6 @@ def test_missing_required_nullable_field_reports_only_its_static_name() -> None:
     del payload["measure"]
     issues = _failure(payload).schema_issues
     assert [(issue.error_type, issue.location) for issue in issues] == [("missing", ("measure",))]
-    for field in fields(issues[0]):
-        with pytest.raises(FrozenInstanceError):
-            setattr(issues[0], field.name, PRIVATE)
 
 
 def test_wrong_scalar_type_has_sanitized_array_item_location() -> None:

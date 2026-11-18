@@ -9,25 +9,27 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
+import sensemem.models._openai_requests as openai_requests
 from sensemem import (
     Blob,
     EvidenceBasis,
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryContext,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryRecord,
+    MemorySettings,
     ModelError,
     ModelInput,
     ObservationContext,
+    RecordKind,
+    RecordSemantics,
     ValidationError,
 )
 from sensemem.infrastructure.local.store import records as stored_records
-from sensemem.models.openai_sdk import _formation_content, _formation_results
+from sensemem.models._openai_output import _formation_results
+from sensemem.models._openai_requests import _formation_content
 
 
 class HistoryFormer:
@@ -52,7 +54,7 @@ class HistoryFormer:
                 if historical is None or target.content.text != "She left her notebook."
                 else (
                     FormationProposal(
-                        kind=MemoryKind.EVENT,
+                        kind=RecordKind.EVENT,
                         content="Ada left her notebook.",
                         subject="Ada",
                         evidence_ids=(target.memory_id, historical.id),
@@ -75,8 +77,9 @@ def test_history_is_read_only_and_joint_sources_require_agreed_metadata(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=8),
     ) as memory:
+        assert MemorySettings().formation_history_max_rows == 8
+        assert MemorySettings().formation_history_budget_chars == 6_000
         original = memory.add("Ada is the visitor.", metadata={"common": 1, "old": 2})
         current = memory.add("She left her notebook.", metadata={"common": 1, "new": 3})
         assert [value.memory_id for value in former.inputs] == [original.id, current.id]
@@ -90,9 +93,26 @@ def test_history_is_read_only_and_joint_sources_require_agreed_metadata(
         assert event.metadata == {}
 
 
-@pytest.mark.parametrize("kind", (MemoryKind.ENTITY, MemoryKind.RELATION))
+def test_zero_history_explicitly_disables_default_causal_context(tmp_path: Path) -> None:
+    former = HistoryFormer()
+    with Memory(
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        settings=MemorySettings(formation_history_max_rows=0),
+    ) as memory:
+        memory.add("Ada is the visitor.")
+        memory.add("She left her notebook.")
+        assert all(not target.history for target in former.inputs)
+        assert all(
+            row.context is not None and row.context.kind is RecordKind.OBSERVATION
+            for row in memory.list(limit=20).items
+        )
+
+
+@pytest.mark.parametrize("kind", (RecordKind.ENTITY, RecordKind.RELATION))
 def test_self_citing_restatement_is_refused_without_failing_source_write(
-    tmp_path: Path, kind: MemoryKind
+    tmp_path: Path, kind: RecordKind
 ) -> None:
     class RestatingFormer(HistoryFormer):
         def form(
@@ -121,7 +141,7 @@ def test_self_citing_restatement_is_refused_without_failing_source_write(
                     else (
                         restatement,
                         FormationProposal(
-                            kind=MemoryKind.EVENT,
+                            kind=RecordKind.EVENT,
                             content="A notebook was received.",
                             evidence_ids=(target.memory_id,),
                         ),
@@ -134,7 +154,7 @@ def test_self_citing_restatement_is_refused_without_failing_source_write(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=16),
+        settings=MemorySettings(formation_history_max_rows=16),
     ) as memory:
         original = memory.add("Rava studies botany.")
         current = memory.add("The notebook arrived.")
@@ -157,7 +177,7 @@ def test_history_reports_truncation_without_skipping_a_long_recent_correction(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=8, formation_history_budget_chars=30),
+        settings=MemorySettings(formation_history_max_rows=8, formation_history_budget_chars=30),
     ) as memory:
         memory.add("Ada is the visitor.")
         memory.add("The earlier name was a guess. " * 5)
@@ -174,7 +194,7 @@ def test_text_history_does_not_resolve_or_reopen_original_media(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=8),
+        settings=MemorySettings(formation_history_max_rows=8),
     ) as memory:
         original = memory.add(("Ada is the visitor.", Blob(b"image", "image/png")))
 
@@ -201,7 +221,7 @@ def test_forgetting_a_cited_history_during_model_call_prevents_atomic_commit(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=8),
+        settings=MemorySettings(formation_history_max_rows=8),
     ) as memory:
         original = memory.add("Ada is the visitor.")
         former.before_return = lambda: memory.forget((original.id,))
@@ -219,11 +239,11 @@ def test_withdrawing_support_that_hides_history_prevents_atomic_commit(tmp_path:
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(independent_evidence=True, formation_history_max_rows=16),
+        settings=MemorySettings(independent_evidence=True, formation_history_max_rows=16),
     ) as memory:
         roots = (memory.add("First independent event."), memory.add("Second independent event."))
         proposal = FormationProposal(
-            kind=MemoryKind.TRAIT,
+            kind=RecordKind.TRAIT,
             content=former.history_content,
             subject="Ada",
             predicate="disposition",
@@ -259,7 +279,7 @@ def test_delayed_formation_reads_the_history_version_known_at_capture(tmp_path: 
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=16),
+        settings=MemorySettings(formation_history_max_rows=16),
     ) as memory:
         source = memory.add("A named visitor arrived.")
         history_id = memory.apply(
@@ -267,7 +287,7 @@ def test_delayed_formation_reads_the_history_version_known_at_capture(tmp_path: 
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=(source.id,),
                 proposal=FormationProposal(
-                    kind=MemoryKind.EVENT,
+                    kind=RecordKind.EVENT,
                     content="Ada is the visitor.",
                     subject="Ada",
                     confidence=0.8,
@@ -299,7 +319,7 @@ def test_batch_grounding_uses_each_targets_own_history_snapshot(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(formation_history_max_rows=16),
+        settings=MemorySettings(formation_history_max_rows=16),
     ) as memory:
         standing = memory.add("Ada is the visitor.")
         assert standing.context is not None
@@ -318,7 +338,7 @@ def test_batch_grounding_uses_each_targets_own_history_snapshot(
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.EVENT,
+                        kind=RecordKind.EVENT,
                         content=f"Ada saw {item.content.text}.",
                         subject="Ada",
                         evidence_ids=(item.memory_id, standing.id),
@@ -342,8 +362,8 @@ def _history_input(*, retired: bool = False) -> FormationInput:
         id="old",
         content="Ada is the visitor.",
         created_at=before,
-        context=MemoryContext(
-            kind=MemoryKind.ENTITY,
+        context=RecordSemantics(
+            kind=RecordKind.ENTITY,
             subject="Ada",
             basis=EvidenceBasis.USER_STATEMENT,
             confidence=1.0,
@@ -386,7 +406,9 @@ def test_adapter_exposes_history_status_but_only_accepts_active_witnesses(retire
             ]
         }
     )
-    (results,) = _formation_results(response, (target,))
+    (results,) = _formation_results(
+        response, (target,), source_aliases=openai_requests._formation_aliases((target,))
+    )
     assert len(results) == (0 if retired else 1)
     if results:
         assert results[0].evidence_ids == ("current", "old")
@@ -413,7 +435,11 @@ def test_adapter_does_not_accept_another_targets_private_history() -> None:
             ]
         }
     )
-    assert _formation_results(response, (first, second)) == ((), ())
+    assert _formation_results(
+        response,
+        (first, second),
+        source_aliases=openai_requests._formation_aliases((first, second)),
+    ) == ((), ())
 
 
 def test_adapter_assigns_private_aliases_to_each_targets_different_snapshot_of_one_record() -> None:
@@ -452,7 +478,11 @@ def test_adapter_assigns_private_aliases_to_each_targets_different_snapshot_of_o
                 ]
             }
         )
-        results = _formation_results(response, (first, second))
+        results = _formation_results(
+            response,
+            (first, second),
+            source_aliases=openai_requests._formation_aliases((first, second)),
+        )
         assert tuple(len(group) for group in results) == ((1, 1) if private else (0, 0))
         if private:
             assert results[0][0].evidence_ids == (first.memory_id, old.id)
@@ -474,6 +504,6 @@ def test_history_window_is_validated_before_opening_storage(tmp_path: Path, rows
         Memory(
             tmp_path / "not-created",
             embedder=TinyEmbedder(),
-            config=MemoryConfig(formation_history_max_rows=rows),
+            settings=MemorySettings(formation_history_max_rows=rows),
         )
     assert not (tmp_path / "not-created").exists()

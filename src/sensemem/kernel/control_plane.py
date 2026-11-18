@@ -2,33 +2,54 @@
 
 from __future__ import annotations
 
-import builtins
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import partial
 from itertools import zip_longest
 
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import mark_model_requests
-from sensemem.control import dump_operation, load_operation, operation_key
+from sensemem.content import ContentInput
+from sensemem.control import (
+    dump_operation,
+    load_operation,
+    load_query_failure,
+    operation_key,
+    query_failure_key,
+)
+from sensemem.control_values import (
+    ConsolidationCandidate,
+    ConsolidationReport,
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryOutcome,
+    MemoryTrigger,
+    QueryFailure,
+)
 from sensemem.exceptions import MemoryNotFoundError, ModelError, SenseMemError, ValidationError
+from sensemem.identity import IdentityChange
 from sensemem.infrastructure.local.store import (
+    NamingPreparationRequired,
     ProtectedMemoryError,
     StaleOperationError,
-    StoredEmbedding,
     StoredMemory,
     StoredOperation,
 )
+from sensemem.infrastructure.local.store.errors import ReplacementNotVisibleError
+from sensemem.kernel.affect import affect_witness_refusal, resolve_affect_proposal
 from sensemem.kernel.content import prepare_memory
 from sensemem.kernel.contracts import Backends
-from sensemem.kernel.formation import (
-    Formation,
-    RejectedOperation,
+from sensemem.kernel.embedding import Embedding
+from sensemem.kernel.formation import Formation, RejectedOperation
+from sensemem.kernel.formation_identity import claim_identity
+from sensemem.kernel.formation_rules import (
     agreed_inheritance,
     consolidation_primary,
     formation_context,
+    formation_evidence_active,
     formation_memory_id,
     formation_memory_type,
     is_bound_naming_assertion,
@@ -44,26 +65,12 @@ from sensemem.kernel.materialization import Materializer
 from sensemem.kernel.projection import Projection
 from sensemem.kernel.retrieval import Retrieval
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
+from sensemem.kernel.temporal import query_temporal_range
 from sensemem.kernel.tracing import Traced
 from sensemem.kernel.validation import validate_limit, validated_identifier
-from sensemem.types import (
-    ConsolidationCandidate,
-    ConsolidationReport,
-    ContentInput,
-    EvidenceBasis,
-    IdentityChange,
-    MemoryIntent,
-    MemoryKind,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryOutcome,
-    MemoryRecord,
-    MemoryTrigger,
-)
-
-_LOGGER = logging.getLogger(__name__)
-
+from sensemem.records import MemoryRecord
+from sensemem.types import EvidenceBasis, RecordKind
 
 # One empty recall is a question nobody had asked before; two near-equal ones inside the
 # configured window is a gap. Not configurable: below two there is no repetition to speak of, and
@@ -71,15 +78,25 @@ _LOGGER = logging.getLogger(__name__)
 _REPEATED_FAILURES = 2
 
 
-def _target_refusal(
-    targets: Mapping[str, StoredMemory], target_ids: Sequence[str], *, host_authored: bool
+def _operation_refusal(
+    targets: Mapping[str, StoredMemory],
+    target_ids: Sequence[str],
+    *,
+    host_authored: bool,
+    shown: Mapping[str, MemoryRecord] | None,
+    evidence_ids: Sequence[str],
 ) -> str | None:
+    if shown is not None and any(
+        source not in shown or not formation_evidence_active(shown[source])
+        for source in evidence_ids
+    ):
+        return "evidence_not_shown"
     if any(is_bound_naming_assertion(targets, target) for target in target_ids):
         return "naming_assertion"
     if any(is_consent_assertion(targets, target) for target in target_ids):
         return "consent_assertion"
     if not host_authored and any(
-        target.context is not None and target.context.kind is MemoryKind.RESPONSE_POLICY
+        target.context is not None and target.context.kind is RecordKind.RESPONSE_POLICY
         for target in targets.values()
     ):
         return "unauthorized"
@@ -95,12 +112,13 @@ class ControlPlane(Traced):
         tracer: Tracer,
         storage: Storage,
         backends: Backends,
-        settings: Settings,
+        settings: ResolvedSettings,
         lifecycle: Lifecycle,
         hydrator: Hydrator,
         materializer: Materializer,
         projection: Projection,
         retrieval: Retrieval,
+        embedding: Embedding,
         formation: Formation,
         identities: Identities,
     ) -> None:
@@ -115,6 +133,7 @@ class ControlPlane(Traced):
         self._materializer = materializer
         self._projection = projection
         self._retrieval = retrieval
+        self._embedding = embedding
         self._formation = formation
         self._identities = identities
 
@@ -184,9 +203,10 @@ class ControlPlane(Traced):
             )
         if not failures:
             return ()
-        candidates: builtins.list[ConsolidationCandidate] = []
+        candidates: list[ConsolidationCandidate] = []
         for failure in failures:
-            prepared = self._materializer.prepare(failure.query, assets)
+            query_failure = load_query_failure(failure.context_json)
+            prepared = self._materializer.materialize_content(failure.query, assets)
             outcome = self._retrieval.search_prepared(
                 prepared,
                 limit=min(100, max(2, limit // 4)),
@@ -201,19 +221,12 @@ class ControlPlane(Traced):
                 capture_trace=False,
             )
             memory_ids = tuple(hit.id for hit in outcome.hits)
-            if not memory_ids:
-                # Nothing to weigh: the store holds no evidence anywhere near this query, so
-                # there is no bounded evidence set a proposal could cite.
-                continue
-            with translate_storage_errors("read deliberation marks"):
-                weighed = self._store.control.read_weighed_at(memory_ids)
-            if weighed and failure.failed_at <= max(weighed.values()):
-                continue
             candidates.append(
                 ConsolidationCandidate(
                     trigger=MemoryTrigger.QUERY_FAILURE,
                     memory_ids=memory_ids,
                     evidence_count=failure.failures,
+                    query_failure=query_failure,
                 )
             )
         return tuple(candidates)
@@ -232,8 +245,9 @@ class ControlPlane(Traced):
             raise ValidationError("idle must be a boolean")
         with self._trace("sensemem.consolidate", kind="operation"):
             rounds = weighed = skipped = calls = 0
-            operations: builtins.list[MemoryOperationRecord] = []
-            rejected: builtins.list[tuple[MemoryOperation, str]] = []
+            operations: list[MemoryOperationRecord] = []
+            rejected: list[tuple[MemoryOperation, str]] = []
+            unresolved: list[QueryFailure] = []
             for _round in range(max_rounds):
                 candidates = self.consolidation_candidates(limit=limit, idle=idle)
                 if not candidates:
@@ -241,13 +255,17 @@ class ControlPlane(Traced):
                 rounds += 1
                 for candidate in candidates:
                     report = self.consolidate(
-                        evidence_ids=candidate.memory_ids, limit=limit, trigger=candidate.trigger
+                        evidence_ids=candidate.memory_ids,
+                        limit=limit,
+                        trigger=candidate.trigger,
+                        query_failure=candidate.query_failure,
                     )
                     weighed += report.weighed
                     calls += report.model_calls
                     skipped += not report.weighed
                     operations.extend(report.operations)
                     rejected.extend(report.rejected)
+                    unresolved.extend(report.unresolved_queries)
             return ConsolidationReport(
                 rounds=rounds,
                 weighed=weighed,
@@ -255,6 +273,7 @@ class ControlPlane(Traced):
                 operations=tuple(operations),
                 rejected=tuple(rejected),
                 model_calls=calls,
+                unresolved_queries=tuple(unresolved),
             )
 
     def consolidate(
@@ -264,11 +283,17 @@ class ControlPlane(Traced):
         query: ContentInput | None = None,
         limit: int = 32,
         trigger: MemoryTrigger = MemoryTrigger.MANUAL,
+        query_failure: QueryFailure | None = None,
     ) -> ConsolidationReport:
         """Process one evidence set, selected by IDs, query or the recent-record window."""
         validate_limit(limit, maximum=100)
         if not isinstance(trigger, MemoryTrigger):
             raise ValidationError("trigger must be a MemoryTrigger")
+        if query_failure is not None and (
+            not isinstance(query_failure, QueryFailure)
+            or trigger is not MemoryTrigger.QUERY_FAILURE
+        ):
+            raise ValidationError("query failure context requires its matching trigger")
         with (
             self._trace("sensemem.consolidate.pass", kind="operation"),
             self._lifecycle.operation(model_work=True) as assets,
@@ -286,9 +311,19 @@ class ControlPlane(Traced):
                 operation=assets,
             )
             if not shown:
-                return ConsolidationReport()
-            applied: builtins.list[MemoryOperationRecord] = []
-            rejected: builtins.list[tuple[MemoryOperation, str]] = []
+                self._record_deliberation(
+                    trigger,
+                    (),
+                    proposed=0,
+                    applied=0,
+                    rejected=0,
+                    query_failure=query_failure,
+                )
+                return ConsolidationReport(
+                    unresolved_queries=() if query_failure is None else (query_failure,)
+                )
+            applied: list[MemoryOperationRecord] = []
+            rejected: list[tuple[MemoryOperation, str]] = []
             # One pass must not contradict itself: an operation may not name -- as evidence or as
             # a target -- a record an earlier accepted operation retired, nor retire evidence an
             # earlier one built on.
@@ -305,16 +340,14 @@ class ControlPlane(Traced):
             # cited premises visible. A source or target that moved while the backend was
             # thinking is refused as stale. A model call that raised weighed nothing, so no
             # marker is recorded and the candidate stays due.
-            proposals = self._propose_operations(tuple(shown.values()), trigger=trigger)
+            proposals = self._propose_operations(
+                tuple(shown.values()), trigger=trigger, query_failure=query_failure
+            )
             with self._formation_lock:
                 for operation in proposals:
                     targets = retiring_targets(operation)
                     named = set(operation.evidence_ids) | set(operation.target_ids)
                     if targets & consumed or named & retired:
-                        _LOGGER.warning(
-                            "consolidation refused a %s proposal: inconsistent_batch",
-                            operation.intent.value,
-                        )
                         rejected.append((operation, "inconsistent_batch"))
                         continue
                     try:
@@ -330,11 +363,6 @@ class ControlPlane(Traced):
                             )
                         )
                     except RejectedOperation as rejection:
-                        _LOGGER.warning(
-                            "consolidation refused a %s proposal: %s",
-                            operation.intent.value,
-                            rejection.reason,
-                        )
                         rejected.append((operation, rejection.reason))
                     else:
                         consumed.update(set(operation.evidence_ids) - targets)
@@ -348,6 +376,7 @@ class ControlPlane(Traced):
                 proposed=len(proposals),
                 applied=len(applied),
                 rejected=len(rejected),
+                query_failure=query_failure,
             )
             return ConsolidationReport(
                 operations=tuple(applied),
@@ -355,7 +384,30 @@ class ControlPlane(Traced):
                 weighed=len(shown),
                 rounds=1,
                 model_calls=1,
+                unresolved_queries=(query_failure,)
+                if query_failure is not None
+                and self._query_still_failed(query_failure, assets=assets)
+                else (),
             )
+
+    def _query_still_failed(self, failure: QueryFailure, *, assets: OperationAssets) -> bool:
+        prepared = self._materializer.materialize_content(failure.query, assets)
+        reference = failure.reference_at or datetime.now(timezone.utc)
+        outcome = self._retrieval.search_prepared(
+            prepared,
+            limit=1,
+            operation=assets,
+            memory_types=None if failure.memory_types is None else frozenset(failure.memory_types),
+            reference_at=reference,
+            temporal_range=query_temporal_range(failure.query, reference),
+            occurred_from=failure.occurred_from,
+            occurred_until=failure.occurred_until,
+            scope=failure.scope,
+            require_unambiguous=False,
+            capture_trace=False,
+        )
+        # Retrieving evidence does not prove that an answer or evidence-closed compilation works.
+        return failure.operation != "search" or not outcome.hits
 
     def _record_deliberation(
         self,
@@ -365,6 +417,7 @@ class ControlPlane(Traced):
         proposed: int,
         applied: int,
         rejected: int,
+        query_failure: QueryFailure | None = None,
     ) -> None:
         """Mark one evidence set weighed so candidate derivation stops re-listing it."""
         with self._write_lock, translate_storage_errors("record a deliberation"):
@@ -375,6 +428,9 @@ class ControlPlane(Traced):
                 proposed=proposed,
                 applied=applied,
                 rejected=rejected,
+                query_failure_key=None
+                if query_failure is None
+                else query_failure_key(query_failure),
             )
 
     def apply(self, operation: MemoryOperation) -> MemoryOperationRecord:
@@ -513,7 +569,8 @@ class ControlPlane(Traced):
                 # One transaction: the created records disappear in the same commit that marks
                 # the operation rolled back, so a crash between the two cannot leave an active
                 # operation whose recorded output is gone.
-                reverted, orphaned = self._store.control.rollback_operation(
+                commit_naming = partial(
+                    self._store.control.rollback_operation,
                     row.operation_id,
                     rolled_back_at=datetime.now(timezone.utc),
                     delete_memory_ids=(
@@ -537,7 +594,11 @@ class ControlPlane(Traced):
                         *row.activated_ids,
                         *(row.created_ids if assertion else ()),
                     ),
-                    require_no_later_dependencies=((*row.created_ids, *row.activated_ids)),
+                    require_no_later_dependencies=(
+                        *row.created_ids,
+                        *row.activated_ids,
+                        *row.forgotten_ids,
+                    ),
                     require_in_force=(
                         (*row.created_ids, *row.changed_ids) if row.superseded else ()
                     ),
@@ -545,15 +606,18 @@ class ControlPlane(Traced):
                     # forgetting a CONSOLIDATE carried both reverse through one field. A FORGET
                     # row logged before that field existed carries the same IDs in `changed_ids`,
                     # and must still un-forget rather than silently do nothing.
-                    clear_forgotten=row.forgotten_ids
-                    or (row.changed_ids if operation.intent is MemoryIntent.FORGET else ()),
-                    naming_projection_factory=self._formation.naming_projection_factory(
-                        assets, force=naming
-                    ),
+                    clear_forgotten=row.forgotten_ids,
                     projection_identity_ids=(operation.claim.identity_id,)
                     if naming and operation.claim is not None
                     else (),
                 )
+                try:
+                    reverted, orphaned = commit_naming()
+                except NamingPreparationRequired as pending_naming:
+                    prepared_naming = self._embedding.prepare_naming_documents(
+                        pending_naming.documents, assets
+                    )
+                    reverted, orphaned = commit_naming(naming_projection=prepared_naming)
             self._lifecycle.queue_asset_cleanup(orphaned)
             self._projection.drain()
             return reverted
@@ -579,16 +643,21 @@ class ControlPlane(Traced):
         absorbed = change.moved_ids[0]
         merging = operation.intent is MemoryIntent.CORRECT
         with translate_storage_errors("roll back an identity operation"):
-            reverted, _orphaned = self._store.control.rollback_operation(
+            commit_naming = partial(
+                self._store.control.rollback_operation,
                 row.operation_id,
                 rolled_back_at=datetime.now(timezone.utc),
                 split_identity=None if merging else absorbed,
                 merge_identities=(change.identity_id, absorbed) if merging else None,
-                naming_projection_factory=self._formation.naming_projection_factory(
-                    assets, force=True
-                ),
                 projection_identity_ids=(change.identity_id, absorbed),
             )
+            try:
+                reverted, _orphaned = commit_naming()
+            except NamingPreparationRequired as pending_naming:
+                prepared_naming = self._embedding.prepare_naming_documents(
+                    pending_naming.documents, assets
+                )
+                reverted, _orphaned = commit_naming(naming_projection=prepared_naming)
         self._projection.drain()
         return reverted
 
@@ -609,12 +678,9 @@ class ControlPlane(Traced):
     ) -> tuple[dict[str, MemoryRecord], frozenset[str]]:
         """Resolve what the backend may cite and, separately, what it may act on.
 
-        The first value is the shown set: active, visible records the backend sees and is allowed
-        to cite as evidence. The second is the window its `target_ids` are bounded by. They differ
-        only for explicit `evidence_ids`, because a hidden derived record -- an inferred `TRAIT`
-        below the visibility threshold, or a claim a `CORRECT` already retired -- is exactly what
-        `REINFORCE` and `CORRECT` exist for and can never appear in the shown set. Naming it is
-        the host's decision; a `query` or the default window never widens the window itself.
+        Explicit IDs may include hidden or retired assertions as target-only records. They are
+        shown so the backend can name them, but cannot support a proposal. A query or default
+        window never expands into these targets; forgotten records are never shown.
         """
         requested: tuple[str, ...] = ()
         if evidence_ids is not None:
@@ -630,7 +696,7 @@ class ControlPlane(Traced):
                 raise ValidationError("evidence_ids must be a sequence of memory IDs") from None
             requested = candidates
         elif query is not None:
-            prepared = self._materializer.prepare(query, operation)
+            prepared = self._materializer.materialize_content(query, operation)
             reference = datetime.now(timezone.utc)
             outcome = self._retrieval.search_prepared(
                 prepared,
@@ -657,6 +723,16 @@ class ControlPlane(Traced):
             return {}, frozenset()
         with translate_storage_errors("read consolidation evidence"):
             memories = self._store.records.read_memories(candidates, active_only=True)
+            if requested:
+                by_id = {memory.memory_id: memory for memory in memories}
+                for memory in self._store.records.read_memories(requested):
+                    if (
+                        memory.forgotten_at is None
+                        and memory.context is not None
+                        and (not memory.context.visible or memory.context.retired_at is not None)
+                    ):
+                        by_id[memory.memory_id] = memory
+                memories = tuple(by_id[memory_id] for memory_id in candidates if memory_id in by_id)
         memories = memories[:limit]
         self._lifecycle.lease_assets(
             tuple(asset for memory in memories for asset in memory.assets),
@@ -670,6 +746,7 @@ class ControlPlane(Traced):
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         assert self._backends.consolidator is not None
         try:
@@ -681,7 +758,11 @@ class ControlPlane(Traced):
                 modalities=(record.modality for record in evidence),
             ):
                 mark_model_requests(1)
-                proposals = self._backends.consolidator.consolidate(evidence, trigger=trigger)
+                proposals = self._backends.consolidator.consolidate(
+                    evidence,
+                    trigger=trigger,
+                    query_failure=query_failure,
+                )
         except SenseMemError:
             raise
         except Exception as error:
@@ -715,6 +796,8 @@ class ControlPlane(Traced):
         host_authored: bool = False,
     ) -> MemoryOperationRecord:
         if operation.intent is MemoryIntent.MERGE:
+            if host_authored:
+                return self._identities.apply_identity_merge(operation, assets=assets)
             # A cross-modal merge is committed by the kernel from corroboration evidence it
             # counted itself, never from a proposal: an agent-facing model must not be able to
             # fuse two people by asking. Refused here rather than in the value type, so a
@@ -743,7 +826,13 @@ class ControlPlane(Traced):
         # person permitted; only `record_consent()` supersedes it and only `rollback()` retracts.
         # Checked here for the same reason as the rule above.
         targets = self._control_records(operation.target_ids)
-        refusal = _target_refusal(targets, operation.target_ids, host_authored=host_authored)
+        refusal = _operation_refusal(
+            targets,
+            operation.target_ids,
+            host_authored=host_authored,
+            shown=shown,
+            evidence_ids=operation.evidence_ids,
+        )
         if refusal is not None:
             raise RejectedOperation(refusal)
         pending = StoredOperation(
@@ -785,11 +874,15 @@ class ControlPlane(Traced):
             )
         except ProtectedMemoryError:
             raise RejectedOperation("unauthorized") from None
-        except StaleOperationError:
+        except StaleOperationError as error:
             # The proposal was built on records the apply transaction found had moved. Nothing
             # was written; the in-transaction re-check is the whole guarantee, so there is no
             # expected-revision token to carry and no partial effect to undo.
-            raise RejectedOperation("stale") from None
+            raise RejectedOperation(
+                "replacement_not_visible"
+                if isinstance(error, ReplacementNotVisibleError)
+                else "stale"
+            ) from None
 
     def _apply_operation_effects(
         self,
@@ -820,14 +913,27 @@ class ControlPlane(Traced):
         reinforce: tuple[tuple[str, str], ...] = ()
         correct_ids: tuple[str, ...] = ()
         forget_ids: tuple[str, ...] = ()
+        withdraw_retained: frozenset[str] = frozenset()
         if operation.intent is MemoryIntent.REINFORCE:
             reinforce = self._reinforcement_pairs(operation, targets, shown=shown)
         elif operation.intent is MemoryIntent.CORRECT:
             correct_ids = self._correction_targets(
                 operation, targets, shown, host_authored=host_authored
             )
+            if host_authored:
+                with translate_storage_errors("read retained evidence before correction"):
+                    withdraw_retained = self._store.control.retained_evidence_sources(correct_ids)
         else:
-            if any(targets[memory_id].forgotten_at is not None for memory_id in targets):
+            with translate_storage_errors("read retained evidence before forgetting"):
+                withdraw_retained = (
+                    self._store.control.retained_evidence_sources(operation.target_ids)
+                    if host_authored
+                    else frozenset()
+                )
+            if any(
+                targets[memory_id].forgotten_at is not None and memory_id not in withdraw_retained
+                for memory_id in targets
+            ):
                 raise RejectedOperation("already_forgotten")
             if not host_authored and (
                 pending.trigger != MemoryTrigger.PRESSURE.value
@@ -837,7 +943,8 @@ class ControlPlane(Traced):
             forget_ids = operation.target_ids
         with self._write_lock:
             with translate_storage_errors("apply a memory operation"):
-                logged = self._store.control.apply_control_operation(
+                commit_naming = partial(
+                    self._store.control.apply_control_operation,
                     pending,
                     reinforce=reinforce,
                     correct_ids=correct_ids,
@@ -846,7 +953,15 @@ class ControlPlane(Traced):
                     # before it opened. A REINFORCE target must additionally still stand: a
                     # CORRECT between validation and here makes the proposal stale. `forget()`
                     # deliberately gets no such check -- forgetting a corrected record is legal.
-                    require_active=(*operation.target_ids, *operation.evidence_ids),
+                    require_active=(
+                        *(
+                            target
+                            for target in operation.target_ids
+                            if target not in withdraw_retained
+                        ),
+                        *operation.evidence_ids,
+                    ),
+                    withdraw_retained=tuple(withdraw_retained),
                     require_unretired=(
                         operation.target_ids if operation.intent is MemoryIntent.REINFORCE else ()
                     ),
@@ -857,8 +972,14 @@ class ControlPlane(Traced):
                         if forget_ids and not host_authored
                         else None
                     ),
-                    naming_projection_factory=self._formation.naming_projection_factory(assets),
                 )
+                try:
+                    logged = commit_naming()
+                except NamingPreparationRequired as pending_naming:
+                    prepared_naming = self._embedding.prepare_naming_documents(
+                        pending_naming.documents, assets
+                    )
+                    logged = commit_naming(naming_projection=prepared_naming)
             if logged is None:
                 raise RejectedOperation("duplicate")
             self._projection.drain()
@@ -915,7 +1036,7 @@ class ControlPlane(Traced):
             raise RejectedOperation("already_linked")
         return tuple((target, source) for source in operation.evidence_ids)
 
-    def _apply_consolidation(
+    def _apply_consolidation(  # noqa: C901 - one evidence-qualified operation transaction
         self,
         operation: MemoryOperation,
         pending: StoredOperation,
@@ -934,13 +1055,32 @@ class ControlPlane(Traced):
             raise RejectedOperation("target_not_evidence")
         proposal = operation.proposal
         assert proposal is not None
+        if proposal.local_id is not None:
+            raise RejectedOperation("invalid_proposal")
+        resolved = resolve_affect_proposal(
+            replace(proposal, evidence_ids=operation.evidence_ids), shown, {}
+        )
+        if (
+            resolved is None
+            or not set(resolved.evidence_ids or ()) <= set(operation.evidence_ids)
+            or affect_witness_refusal(resolved, shown, host_authored=host_authored)
+        ):
+            raise RejectedOperation("invalid_proposal")
+        proposal = resolved
         sources = tuple(shown[memory_id] for memory_id in operation.evidence_ids)
         primary = consolidation_primary(proposal, sources, host_authored=host_authored)
         if primary is None:
             raise RejectedOperation("invalid_proposal")
+        episode = primary
+        if proposal.affect_link is not None:
+            episode = shown[proposal.affect_link.affect_id]
         # One operation, one transaction time: the derived record, its evidence links, and any
         # consolidation forgetting all carry the timestamp the log row reports.
         now = pending.applied_at
+        try:
+            identity_id = claim_identity(proposal, sources)
+        except ValidationError:
+            raise RejectedOperation("invalid_proposal") from None
         context = replace(
             formation_context(
                 primary,
@@ -948,16 +1088,27 @@ class ControlPlane(Traced):
                 model_id=self._backends.consolidation_model,
                 recipe=self._backends.consolidation_recipe,
                 recorded_at=now,
-                identity_id=self._formation.bound_identity(proposal),
+                identity_id=identity_id,
             ),
             evidence_ids=tuple(sorted(source.id for source in sources)),
         )
+        if proposal.affect_link is not None:
+            assert episode.context is not None
+            context = replace(
+                context,
+                identity_id=episode.context.identity_id,
+                valid_from=proposal.valid_from,
+                valid_until=proposal.valid_until,
+                spatial=episode.context.spatial,
+            )
         place_id, metadata = agreed_inheritance(sources)
+        if proposal.affect_link is not None:
+            place_id = episode.place_id
         prepared = replace(
             prepare_memory(
-                self._materializer.prepare(proposal.content, assets),
-                occurred_at=primary.occurred_at,
-                occurred_end=primary.occurred_end,
+                self._materializer.materialize_content(proposal.content, assets),
+                occurred_at=episode.occurred_at,
+                occurred_end=episode.occurred_end,
                 metadata=metadata,
                 memory_type=formation_memory_type(proposal.kind),
             ),
@@ -1076,7 +1227,7 @@ class ControlPlane(Traced):
         )
         prepared = replace(
             prepare_memory(
-                self._materializer.prepare(proposal.content, assets),
+                self._materializer.materialize_content(proposal.content, assets),
                 occurred_at=None,
                 occurred_end=None,
                 # A name is not observed anywhere: who somebody is stays true in the next room,
@@ -1094,19 +1245,6 @@ class ControlPlane(Traced):
             context=context,
         )
 
-        def projection() -> tuple[tuple[StoredMemory, ...], tuple[StoredEmbedding, ...]]:
-            with translate_storage_errors("preview an identity projection"):
-                projected, _relationship = self._store.identities.naming_projection_after_assertion(
-                    identity_id,
-                    prepared.memory_id,
-                    context,
-                )
-            return self._identities.reindex_speech(
-                identity_id,
-                speaker_name=projected,
-                operation=assets,
-            )
-
         # Hold the lock while `_commit_formation` prepares the assertion and projection vectors
         # and commits both, so no concurrent naming write can invalidate the preview.
         with self._write_lock:
@@ -1123,7 +1261,6 @@ class ControlPlane(Traced):
                 require_visible=operation.evidence_ids,
                 preserve_response_policies=not host_authored,
                 projection_identity_id=identity_id,
-                projection_factory=projection,
             )
         if logged is None:
             raise RejectedOperation("duplicate")

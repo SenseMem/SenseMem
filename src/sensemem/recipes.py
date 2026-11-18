@@ -15,9 +15,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from importlib import import_module
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from sensemem.exceptions import ValidationError
+from sensemem.models._openai_client import OpenAIClient
+from sensemem.models._openai_defaults import (
+    DEFAULT_EMBEDDING_DIMENSION,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_TRANSCRIPTION_MODEL,
+)
 from sensemem.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
@@ -32,13 +39,9 @@ from sensemem.models.funasr import (
     DEFAULT_FUNASR_RECIPE,
     FunASRTranscriber,
 )
-from sensemem.models.openai_sdk import (
-    DEFAULT_EMBEDDING_DIMENSION,
-    DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_GENERATION_MODEL,
-    DEFAULT_TRANSCRIPTION_MODEL,
-    OpenAIModels,
-)
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.models.openai_embedding import OpenAIEmbedder
+from sensemem.models.openai_speech import OpenAITranscriber
 from sensemem.types import Modality
 
 if TYPE_CHECKING:
@@ -104,7 +107,7 @@ def describe(name: str) -> dict[str, object]:
     if family == FUNASR:
         return {
             "recipe": name,
-            "class": _qualified(FunASRTranscriber),
+            "classes": {"transcriber": _qualified(FunASRTranscriber)},
             "slots": list(slots(name)),
             "models": {"transcriber": DEFAULT_FUNASR_MODEL_ID},
             "revision": DEFAULT_FUNASR_RECIPE.model_revision,
@@ -112,7 +115,16 @@ def describe(name: str) -> dict[str, object]:
         }
     return {
         "recipe": name,
-        "class": _qualified(OpenAIModels),
+        "classes": {
+            slot: _qualified(
+                OpenAIEmbedder
+                if slot == "embedder"
+                else OpenAITranscriber
+                if slot == "transcriber"
+                else OpenAICompletion
+            )
+            for slot in _OPENAI_MODELS
+        },
         "slots": list(slots(name)),
         "models": {
             slot: default if model is None else model for slot, default in _OPENAI_MODELS.items()
@@ -125,70 +137,46 @@ def describe(name: str) -> dict[str, object]:
 
 def embedder(name: str, *, load: bool = False) -> EmbeddingBackend:
     """Return the embedding backend one recipe names; the caller owns and closes it."""
-    return cast(EmbeddingBackend, _build(name, slot="embedder", load=load))
+    return cast(EmbeddingBackend, _build_recipe_backend(name, slot="embedder", load=load))
 
 
 def answerer(name: str, *, load: bool = False) -> GenerationBackend:
     """Return the generation backend one recipe names; the caller owns and closes it."""
-    return cast(GenerationBackend, _build(name, slot="answerer", load=load))
+    return cast(GenerationBackend, _build_recipe_backend(name, slot="answerer", load=load))
 
 
 def former(name: str, *, load: bool = False) -> FormationBackend:
     """Return the formation backend one recipe names; the caller owns and closes it."""
-    return cast(FormationBackend, _build(name, slot="former", load=load))
+    return cast(FormationBackend, _build_recipe_backend(name, slot="former", load=load))
 
 
 def consolidator(name: str, *, load: bool = False) -> ConsolidationBackend:
     """Return the consolidation backend one recipe names; the caller owns and closes it."""
-    return cast(ConsolidationBackend, _build(name, slot="consolidator", load=load))
+    return cast(ConsolidationBackend, _build_recipe_backend(name, slot="consolidator", load=load))
 
 
 def vision(name: str, *, load: bool = False) -> VisionDescriptionBackend:
     """Return the visual-description backend one recipe names; the caller owns and closes it."""
-    return cast(VisionDescriptionBackend, _build(name, slot="vision", load=load))
+    return cast(VisionDescriptionBackend, _build_recipe_backend(name, slot="vision", load=load))
 
 
 def transcriber(name: str, *, load: bool = False) -> SpeechBackend | TranscriptionBackend:
     """Return the speech backend one recipe names; the caller owns and closes it."""
     return cast(
         "SpeechBackend | TranscriptionBackend",
-        _build(name, slot="transcriber", load=load),
+        _build_recipe_backend(name, slot="transcriber", load=load),
     )
-
-
-class _OwnedClientModels(OpenAIModels):
-    """``OpenAIModels`` over an SDK client this module constructed, and therefore closes.
-
-    ``OpenAIModels.close()`` leaves a caller-owned client open, which is right when an application
-    supplied one. Here the recipe is that caller, so the client's lifetime is the returned
-    backend's: without this a long-lived process retains one HTTP connection pool per recipe call
-    even after closing everything the recipe handed back.
-    """
-
-    __slots__ = ("_owned_client", "_owned_client_closed")
-
-    _owned_client: OpenAI
-    _owned_client_closed: bool
-
-    def close(self) -> None:
-        """Close the backend, then the SDK client the recipe created to build it."""
-        if self._owned_client_closed:
-            return
-        self._owned_client_closed = True
-        super().close()
-        self._owned_client.close()
 
 
 # What the SDK client takes rather than the adapter; everything else is an adapter control.
 _CONNECTION = ("base_url", "api_key", "timeout", "max_retries")
 
 
-def _owned_openai_models(**controls: object) -> OpenAIModels:
-    """Build the SDK adapter and own the client created for declarative composition.
+_OpenAIBackend = TypeVar("_OpenAIBackend", bound=OpenAIClient)
 
-    Forward adapter controls without duplicating its constructor signature. The adapter
-    validates values and rejects unknown keywords.
-    """
+
+def _owned_openai(backend_type: type[_OpenAIBackend], **controls: object) -> _OpenAIBackend:
+    """Build one request adapter and transfer the created client's lifetime to it."""
     connection = {}
     for name in _CONNECTION:
         value = controls.pop(name, None)
@@ -196,19 +184,14 @@ def _owned_openai_models(**controls: object) -> OpenAIModels:
             connection[name] = value
     client = _openai_client(**connection)
     try:
-        # Declarative controls cross this dynamic boundary once; the adapter owns validation
-        # and rejects unknown keywords with its inherited constructor signature.
-        build = cast(Callable[..., _OwnedClientModels], _OwnedClientModels)
-        backend = build(client, **controls)
+        build = cast(Callable[..., _OpenAIBackend], backend_type)
+        return build(client, owns_client=True, **controls)
     except BaseException:
         client.close()
         raise
-    backend._owned_client = client
-    backend._owned_client_closed = False
-    return backend
 
 
-def _build(name: str, *, slot: Slot, load: bool) -> object:
+def _build_recipe_backend(name: str, *, slot: Slot, load: bool) -> object:
     family, model = _split(name)
     require_slot(name, slot)
     if family == FUNASR:
@@ -221,20 +204,21 @@ def _build(name: str, *, slot: Slot, load: bool) -> object:
     # credentials and fails when none are present.
     selected = _OPENAI_MODELS[slot] if model is None else model
     if slot == "embedder":
-        return _owned_openai_models(embedding_model=selected)
+        return _owned_openai(OpenAIEmbedder, embedding_model=selected)
     if slot in ("answerer", "former", "consolidator"):
         # One adapter serves all three: `formation_model` and `consolidation_model` are the
         # generation model it was given.
-        return _owned_openai_models(generation_model=selected)
+        return _owned_openai(OpenAICompletion, generation_model=selected)
     if slot == "vision":
         # `vision_capabilities` are the generation ones, and `Memory` rejects a describer that
         # declares anything but image or video. Image alone is the declarative default too:
         # video is captioned from four decoded stills, so it costs four image parts per memory.
-        return _owned_openai_models(
+        return _owned_openai(
+            OpenAICompletion,
             generation_model=selected,
             generation_capabilities=frozenset({Modality.IMAGE}),
         )
-    return _owned_openai_models(transcription_model=selected)
+    return _owned_openai(OpenAITranscriber, transcription_model=selected)
 
 
 def _openai_client(**config: object) -> OpenAI:

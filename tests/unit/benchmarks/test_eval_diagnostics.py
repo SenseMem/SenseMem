@@ -15,17 +15,15 @@ import pytest
 
 from sensemem import AnswerChunk, AnswerResult, AsyncMemory, SearchHit
 from sensemem._telemetry import _record_generation_inputs, _record_retrieval_results
-from sensemem.benchmarks.eval import (
-    _answer_many,
-    _answer_span,
-    _cache_outcome,
-    _cached_results,
-    _with_grounding_loss,
-)
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_answers import _answer_many, _answer_span
 from sensemem.benchmarks.eval_arms import _Arm, _BaselineGenerator
-from sensemem.benchmarks.eval_cache import CachedAnswer, EvidenceInterval, ResponseCache
+from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
+from sensemem.benchmarks.eval_evidence import EvidenceInterval
+from sensemem.benchmarks.eval_options import EvaluationOptions
+from sensemem.benchmarks.eval_report import _with_grounding_loss
 from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
+from sensemem.benchmarks.eval_samples import _cache_outcome, _cached_results
 from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
 from sensemem.benchmarks.task_catalog import TaskSpec
 
@@ -129,6 +127,22 @@ def test_returned_metadata_cannot_replace_observed_reader_source_provenance() ->
     assert unknown["source_coverage"] is None
 
 
+def test_text_only_sources_are_reported_without_full_or_reader_coverage() -> None:
+    sample = _sample(
+        generation_evidence=(),
+        evidence=(),
+        memory_ids=(),
+        projection_source_ids=("projection",),
+        projection_evidence=(EvidenceInterval("projection", "s2", None, None),),
+    )
+    organization = _diagnose(sample)["layers"]["organization"]
+    assert organization["text_only_source_ids"] == ["s2"]
+    assert organization["source_ids"] == []
+    assert organization["source_coverage"]["recall"] == 0
+    assert _diagnose(sample)["layers"]["reader_input"]["source_coverage"] is None
+    assert sample.json()["projection_source_ids"] == ("projection",)
+
+
 def test_conditional_scores_count_unknown_observations_separately() -> None:
     module = importlib.import_module("sensemem.benchmarks.eval_diagnostics")
     full = _sample(
@@ -195,8 +209,7 @@ async def test_answer_pipeline_correlates_concurrent_samples_without_a_second_se
                 EvalQuestion(f"q{index}", (f"source{index}",), references=("answer",))
                 for index in range(3)
             ),
-            request_concurrency=3,
-            recall_limit=3,
+            options=EvaluationOptions(request_concurrency=3, recall_limit=3),
             task_name="fixture",
             unit_id="unit",
             tracer=telemetry.tracer,
@@ -271,6 +284,43 @@ def test_compile_partial_organization_survives_response_cache(tmp_path: Path) ->
         cache.close()
 
 
+def test_compile_text_only_organization_survives_response_cache(tmp_path: Path) -> None:
+    question = EvalQuestion("q", ("question",), references=("answer",))
+    unit = EvalUnit("unit", (MemoryItem("s2", ("fact",)),), (question,))
+    task = LoadedTask(
+        TaskSpec("fixture", "Fixture", "fixture.json", "v1", "owner/repo", "0" * 40),
+        tmp_path / "fixture.json",
+        "d" * 64,
+        (unit,),
+    )
+    projected = (EvidenceInterval("m2", "s2", None, None),)
+    outcome = _AnswerOutcome(
+        "answer",
+        1.0,
+        0.0,
+        (),
+        (),
+        generation_evidence=(),
+        projection_source_ids=("m2",),
+        projection_evidence=projected,
+    )
+    arm = _Arm("compile")
+    cache = ResponseCache(tmp_path / "responses.db", "run", "fixture")
+    try:
+        _cache_outcome(cache, task, unit, question, outcome, 0, arm=arm)
+        sample = _cached_results(cache, task, unit, arm=arm, predict_only=False, log_samples=False)[
+            ("compile", "q")
+        ]
+        assert sample.projection_evidence == projected
+        assert sample.projection_source_ids == ("m2",)
+        assert sample.evidence == () and sample.generation_evidence == ()
+        organization = _diagnose(sample)["layers"]["organization"]
+        assert organization["text_only_source_ids"] == ["s2"]
+        assert organization["source_coverage"] is None
+    finally:
+        cache.close()
+
+
 @pytest.mark.asyncio
 async def test_failed_compile_generation_retains_the_organization_boundary() -> None:
     from sensemem import ContextBudget, ContextBundle
@@ -301,8 +351,7 @@ async def test_failed_compile_generation_retains_the_organization_boundary() -> 
         await _answer_many(
             cast(AsyncMemory, CompiledMemory()),
             (EvalQuestion("q", ("question",), references=("answer",)),),
-            request_concurrency=1,
-            recall_limit=3,
+            options=EvaluationOptions(request_concurrency=1, recall_limit=3),
             arm=_Arm("compile", generator=cast(_BaselineGenerator, BrokenGenerator())),
             task_name="fixture",
             unit_id="unit",

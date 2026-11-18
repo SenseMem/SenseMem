@@ -2,32 +2,25 @@
 
 from __future__ import annotations
 
-import math
 from collections import Counter
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
+import sensemem.perception as perception
+from sensemem._value_validation import _require_aware, _require_interval
+from sensemem.capabilities import EmbeddingRoute
+from sensemem.content import AssetRef, ContentPart
+from sensemem.control_values import MemoryOperation, MemoryTrigger, QueryFailure
+from sensemem.events import EventSegment
 from sensemem.exceptions import ValidationError
 from sensemem.perception import VisualDescription
-from sensemem.types import (
-    AnswerPolicy,
-    AnswerResult,
-    AssetRef,
-    EmbeddingRoute,
-    FormationProposal,
-    MemoryOperation,
-    MemoryRecord,
-    MemoryTrigger,
-    Modality,
-    ObservationContext,
-    SearchHit,
-    VisualRetrievalMatch,
-    _require_aware,
-    _require_interval,
-)
+from sensemem.records import AnswerResult, MemoryRecord, SearchHit, VisualRetrievalMatch
+from sensemem.semantics import FormationProposal
+from sensemem.spatial import ObservationContext
+from sensemem.types import AnswerPolicy, Modality
 
 
 class EmbedTask(str, Enum):
@@ -46,6 +39,7 @@ class ModelInput:
     image_retrieval_matches: tuple[VisualRetrievalMatch, ...] = ()
     source_metadata: Mapping[str, dict[str, object]] = field(default_factory=dict, compare=False)
     evidence_sources: tuple[SearchHit, ...] = field(default=(), compare=False)
+    parts: tuple[ContentPart, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str):
@@ -75,31 +69,106 @@ class ModelInput:
         if any(not isinstance(hit, SearchHit) for hit in sources):
             raise ValidationError("evidence sources must contain SearchHit values")
         object.__setattr__(self, "evidence_sources", sources)
+        if any(not isinstance(part, ContentPart) for part in self.parts):
+            raise ValidationError("model input parts must contain ContentPart values")
+        if not self.parts:
+            object.__setattr__(
+                self,
+                "parts",
+                (
+                    *((ContentPart("text", self.text),) if self.text else ()),
+                    *(ContentPart("asset", asset.id) for asset in assets),
+                ),
+            )
 
     @property
     def modality(self) -> Modality:
         """Return text, one media kind, or omni for two or more media kinds."""
-        kinds = {asset.modality for asset in self.assets}
+        kinds = {cast(Modality, asset.modality) for asset in self.assets}
         if not kinds:
             return Modality.TEXT
         if len(kinds) == 1:
-            kind = next(iter(kinds))
-            if kind is not None:
-                return kind
+            return next(iter(kinds))
         return Modality.OMNI
 
     @property
     def modalities(self) -> frozenset[Modality]:
         """Return every atomic modality present in this input."""
-        values = {asset.modality for asset in self.assets}
+        values = {cast(Modality, asset.modality) for asset in self.assets}
         if self.text:
             values.add(Modality.TEXT)
-        return frozenset(value for value in values if value is not None)
+        return frozenset(values)
 
     @property
     def assets_per_modality(self) -> int:
         """Maximum number of assets of any one media kind in this input."""
         return max(Counter(asset.modality for asset in self.assets).values(), default=0)
+
+    @property
+    def ordered_content(self) -> tuple[str | AssetRef, ...]:
+        """Interleave retained source parts, then append any additional model context."""
+        assets = {asset.id: asset for asset in self.assets}
+        result: list[str | AssetRef] = []
+        offset = 0
+        for part in self.parts:
+            if part.kind == "asset":
+                if part.value in assets:
+                    result.append(assets[part.value])
+                continue
+            position = self.text.find(part.value, offset)
+            if position < 0:
+                # A routed transcript may replace the original textual representation.
+                return (*((self.text,) if self.text else ()), *self.assets)
+            if prefix := self.text[offset:position].strip():
+                result.append(prefix)
+            result.append(part.value)
+            offset = position + len(part.value)
+        if suffix := self.text[offset:].strip():
+            result.append(suffix)
+        present = {value.id for value in result if isinstance(value, AssetRef)}
+        result.extend(asset for asset in self.assets if asset.id not in present)
+        return tuple(result)
+
+
+@dataclass(frozen=True, slots=True)
+class EventObservation:
+    """One ordered source chunk, retaining its capture interval and native evidence."""
+
+    content: ModelInput
+    occurred_at: datetime
+    occurred_end: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.content, ModelInput):
+            raise ValidationError("event observation content must be a ModelInput")
+        if not isinstance(self.occurred_at, datetime) or not isinstance(
+            self.occurred_end, datetime
+        ):
+            raise ValidationError("event observation requires occurred_at and occurred_end")
+        _require_interval(self.occurred_at, self.occurred_end)
+
+
+@runtime_checkable
+class EventSegmentationBackend(Protocol):
+    """Assess complete prefixes and summarize an unfinished suffix without finalizing it.
+
+    A final ``EventSegment(complete=False)`` covers the entire remaining window. The runtime
+    can carry this untrusted interpretation into the next bounded assessment while preserving
+    every original media chunk outside the model's context window.
+    """
+
+    @property
+    def event_model(self) -> str: ...
+
+    @property
+    def event_recipe(self) -> str: ...
+
+    def segment_events(
+        self,
+        observations: Sequence[EventObservation],
+        *,
+        end_of_stream: bool = False,
+    ) -> tuple[EventSegment, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +339,7 @@ class RerankingBackend(Protocol):
 
 @runtime_checkable
 class FormationBackend(Protocol):
-    """One thread-safe model that proposes typed semantics without writing storage."""
+    """One thread-safe model that proposes MODEL_INFERENCE semantics without writing storage."""
 
     @property
     def formation_capabilities(self) -> frozenset[Modality]: ...
@@ -304,71 +373,10 @@ class ConsolidationBackend(Protocol):
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]: ...
 
     def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class SpeechTurn:
-    """One timed local-speaker turn returned by a speech backend."""
-
-    start_ms: int
-    end_ms: int
-    text: str
-    speaker_label: str | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.start_ms, bool)
-            or not isinstance(self.start_ms, int)
-            or isinstance(self.end_ms, bool)
-            or not isinstance(self.end_ms, int)
-            or self.start_ms < 0
-            or self.end_ms <= self.start_ms
-        ):
-            raise ValidationError("speech turn must have a positive time range")
-        if not isinstance(self.text, str) or not self.text.strip():
-            raise ValidationError("speech turn text must not be blank")
-        object.__setattr__(self, "text", self.text.strip())
-        if self.speaker_label is not None:
-            if not isinstance(self.speaker_label, str) or not self.speaker_label.strip():
-                raise ValidationError("speech turn speaker_label must not be blank")
-            object.__setattr__(self, "speaker_label", self.speaker_label.strip())
-
-
-@dataclass(frozen=True, slots=True)
-class SpeakerEmbedding:
-    """One backend-local speaker label and its voice identity exemplar."""
-
-    speaker_label: str
-    values: tuple[float, ...]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.speaker_label, str) or not self.speaker_label.strip():
-            raise ValidationError("speaker embedding label must not be blank")
-        values = tuple(self.values)
-        if not values or any(not math.isfinite(value) for value in values):
-            raise ValidationError("speaker embedding must contain finite values")
-        object.__setattr__(self, "speaker_label", self.speaker_label.strip())
-        object.__setattr__(self, "values", values)
-
-
-@dataclass(frozen=True, slots=True)
-class SpeechAnalysis:
-    """Timed transcript and voice identity exemplars for one media asset."""
-
-    turns: tuple[SpeechTurn, ...]
-    speakers: tuple[SpeakerEmbedding, ...]
-
-    def __post_init__(self) -> None:
-        turns, speakers = tuple(self.turns), tuple(self.speakers)
-        if any(not isinstance(turn, SpeechTurn) for turn in turns) or any(
-            not isinstance(speaker, SpeakerEmbedding) for speaker in speakers
-        ):
-            raise ValidationError("speech analysis contains invalid values")
-        object.__setattr__(self, "turns", turns)
-        object.__setattr__(self, "speakers", speakers)
 
 
 @runtime_checkable
@@ -384,64 +392,9 @@ class SpeechBackend(Protocol):
     @property
     def transcription_space(self) -> str: ...
 
-    def analyze(self, assets: Sequence[AssetRef]) -> tuple[SpeechAnalysis, ...]: ...
+    def analyze(self, assets: Sequence[AssetRef]) -> tuple[perception.SpeechAnalysis, ...]: ...
 
     def close(self) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class FaceEmbedding:
-    """One detected face and its backend-local identity exemplar."""
-
-    face_label: str
-    values: tuple[float, ...]
-    bounding_box: tuple[float, float, float, float]
-    observed_at_ms: int | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.face_label, str) or not self.face_label.strip():
-            raise ValidationError("face embedding label must not be blank")
-        values = tuple(self.values)
-        if not values or any(not math.isfinite(value) for value in values):
-            raise ValidationError("face embedding must contain finite values")
-        box = tuple(self.bounding_box)
-        if len(box) != 4 or any(not math.isfinite(value) for value in box):
-            raise ValidationError("face bounding_box must contain four finite values")
-        x, y, width, height = box
-        if (
-            x < 0.0
-            or y < 0.0
-            or width <= 0.0
-            or height <= 0.0
-            or x + width > 1.0
-            or y + height > 1.0
-        ):
-            raise ValidationError("face bounding_box must be normalized within the frame")
-        if self.observed_at_ms is not None and (
-            isinstance(self.observed_at_ms, bool)
-            or not isinstance(self.observed_at_ms, int)
-            or self.observed_at_ms < 0
-        ):
-            raise ValidationError("face observed_at_ms must be a non-negative integer")
-        object.__setattr__(self, "face_label", self.face_label.strip())
-        object.__setattr__(self, "values", values)
-        object.__setattr__(self, "bounding_box", box)
-
-
-@dataclass(frozen=True, slots=True)
-class FaceAnalysis:
-    """Detected face exemplars for one image or sampled video."""
-
-    faces: tuple[FaceEmbedding, ...]
-
-    def __post_init__(self) -> None:
-        faces = tuple(self.faces)
-        if any(not isinstance(face, FaceEmbedding) for face in faces):
-            raise ValidationError("face analysis contains invalid values")
-        labels = {face.face_label for face in faces}
-        if len(labels) != len(faces):
-            raise ValidationError("face analysis labels must be unique")
-        object.__setattr__(self, "faces", faces)
 
 
 @runtime_checkable
@@ -460,7 +413,7 @@ class FaceBackend(Protocol):
     @property
     def face_analysis_space(self) -> str: ...
 
-    def analyze(self, assets: Sequence[AssetRef]) -> tuple[FaceAnalysis, ...]: ...
+    def analyze(self, assets: Sequence[AssetRef]) -> tuple[perception.FaceAnalysis, ...]: ...
 
     def close(self) -> None: ...
 

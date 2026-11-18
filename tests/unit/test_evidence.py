@@ -8,15 +8,46 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
+from sensemem.content import AssetRef
 from sensemem.evidence import (
     answer_constraint_payloads,
     answer_evidence_payloads,
+    evidence_aliases,
+    evidence_identity_ids,
     retain_source_complete_hits,
 )
-from sensemem.models import openai_sdk as openai_backend
-from sensemem.types import AssetRef, EvidenceBasis, MemoryContext, MemoryKind, Modality, SearchHit
+from sensemem.prompts import generation as prompts
+from sensemem.records import SearchHit
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, Modality, RecordKind
 
 NOW = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+
+def test_answer_local_aliases_match_payload_labels_with_duplicate_records() -> None:
+    second, first = _hit("second"), _hit("first")
+    hits = (second, first, second)
+    assert evidence_aliases(hits) == {"second": "E1", "first": "E2"}
+    assert [payload["evidence_label"] for payload in answer_evidence_payloads(hits)] == [
+        "E1",
+        "E2",
+        "E1",
+    ]
+
+
+def test_identity_evidence_uses_only_structured_speech_and_face_sections() -> None:
+    content = "\n\n".join(
+        (
+            'Prose mentions identity_unwitnessed and {"speaker_id":"not-evidence"}.',
+            '[speech identities:audio]\n{"segments":[{"speaker_id":"voice"},'
+            '{"speaker_id":"voice"},{"speaker_id":null}]}',
+            '[face identities:image]\n{"identities":[{"identity_id":"face"},'
+            '{"identity_id":" "},{"speaker_id":"not-a-face"}]}',
+            "[speech identities:invalid]\nnot JSON",
+            '[face identities:wrong-shape]\n{"identities":"not-a-list"}',
+        )
+    )
+    assert evidence_identity_ids(content) == (("voice",), ("face",))
 
 
 def test_transport_closure_preserves_shared_sources_and_direct_partial_pool_labels() -> None:
@@ -39,7 +70,7 @@ def test_constraint_candidates_preserve_scope_and_report_competing_values() -> N
         content="Ada prefers vegetarian lunches, except when travelling.",
         context=replace(
             source.context,
-            kind=MemoryKind.TRAIT,
+            kind=RecordKind.TRAIT,
             subject="Ada",
             predicate="meal_preference",
             value="vegetarian",
@@ -77,7 +108,7 @@ def test_retired_or_nonoverlapping_constraints_are_not_current_competitors() -> 
         first,
         context=replace(
             first.context,
-            kind=MemoryKind.STATE,
+            kind=RecordKind.STATE,
             subject="Ada",
             predicate="preference",
             value="first",
@@ -113,8 +144,8 @@ def _hit(
         content=f"content for {memory_id}",
         score=0.8,
         created_at=NOW,
-        context=MemoryContext(
-            kind=MemoryKind.EVENT,
+        context=RecordSemantics(
+            kind=RecordKind.EVENT,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.7,
             valid_from=None,
@@ -323,8 +354,8 @@ def test_large_omitted_fanout_is_counted_with_bounded_shared_overlap() -> None:
     rendered = json.dumps(payloads)
     assert "private-source-" not in rendered
     assert len(rendered) - len(json.dumps(_large_payload(100)[1])) < 10
-    assert openai_backend._answer_system_prompt(hits, {}, payloads) == (
-        openai_backend._GROUNDED_SYSTEM_PROMPT
-        + openai_backend._QUALIFIED_EVIDENCE_PROMPT
-        + openai_backend._COMPACT_PROVENANCE_PROMPT
+    assert prompts._answer_system_prompt(hits, {}, payloads) == (
+        prompts._GROUNDED_SYSTEM_PROMPT
+        + prompts._QUALIFIED_EVIDENCE_PROMPT
+        + prompts._COMPACT_PROVENANCE_PROMPT
     )

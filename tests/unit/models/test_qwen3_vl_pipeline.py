@@ -28,7 +28,7 @@ class Image:
         self.closed = True
 
 
-class Runtime:
+class FakeRerankingRuntime:
     def __init__(self) -> None:
         self.images: list[Image] = []
         self.videos: list[tuple[str, dict[str, object]]] = []
@@ -50,8 +50,8 @@ class Runtime:
 
 
 @pytest.fixture
-def runtime(monkeypatch: pytest.MonkeyPatch) -> Runtime:
-    runtime = Runtime()
+def runtime(monkeypatch: pytest.MonkeyPatch) -> FakeRerankingRuntime:
+    runtime = FakeRerankingRuntime()
     llm = SimpleNamespace(
         get_tokenizer=lambda: SimpleNamespace(encode=lambda *args, **kwargs: [1]),
         classify=lambda rows, **kwargs: runtime.classify(rows),
@@ -77,7 +77,7 @@ def asset(tmp_path: Path, name: str = "a", modality: Modality = Modality.VIDEO) 
 
 
 def test_prepares_next_chunk_during_inference_and_stops_one_chunk_ahead(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Runtime
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: FakeRerankingRuntime
 ) -> None:
     entered = Event()
     next_ready = Event()
@@ -115,7 +115,7 @@ def test_prepares_next_chunk_during_inference_and_stops_one_chunk_ahead(
 
 
 def test_other_requests_prepare_while_inference_is_locked_and_close_waits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Runtime
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: FakeRerankingRuntime
 ) -> None:
     entered = Event()
     other_ready = Event()
@@ -171,7 +171,10 @@ def test_other_requests_prepare_while_inference_is_locked_and_close_waits(
 
 @pytest.mark.parametrize("fail_inference", [False, True])
 def test_releases_active_and_prefetched_images_on_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: Runtime, fail_inference: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: FakeRerankingRuntime,
+    fail_inference: bool,
 ) -> None:
     next_ready = Event()
     fetch_image = runtime.fetch_image
@@ -211,7 +214,7 @@ def test_releases_active_and_prefetched_images_on_failure(
 
 @pytest.mark.parametrize(("budget", "decodes"), [(0, 2), (15, 2), (16, 1)])
 def test_video_cache_reuses_sha_across_paths_and_queries_with_timing(
-    tmp_path: Path, runtime: Runtime, budget: int, decodes: int
+    tmp_path: Path, runtime: FakeRerankingRuntime, budget: int, decodes: int
 ) -> None:
     video = asset(tmp_path)
     model = Qwen3VLReranker.load(
@@ -238,7 +241,7 @@ def test_video_cache_reuses_sha_across_paths_and_queries_with_timing(
 
 
 def test_video_cache_evicts_least_recently_used_and_separates_sampling(
-    tmp_path: Path, runtime: Runtime
+    tmp_path: Path, runtime: FakeRerankingRuntime
 ) -> None:
     cache = reranking._VideoCache(32)
     for name, frames in [("a", 4), ("b", 4), ("a", 4), ("c", 4), ("b", 4), ("b", 8)]:
@@ -250,7 +253,7 @@ def test_video_cache_evicts_least_recently_used_and_separates_sampling(
     assert not cache._entries
 
 
-def test_chunked_calls_report_actual_inference_count(runtime: Runtime) -> None:
+def test_chunked_calls_report_actual_inference_count(runtime: FakeRerankingRuntime) -> None:
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -274,7 +277,7 @@ def test_chunked_calls_report_actual_inference_count(runtime: Runtime) -> None:
 
 @pytest.mark.parametrize("count", [0, 2])
 def test_each_chunk_rejects_wrong_score_count(
-    monkeypatch: pytest.MonkeyPatch, runtime: Runtime, count: int
+    monkeypatch: pytest.MonkeyPatch, runtime: FakeRerankingRuntime, count: int
 ) -> None:
     def classify(rows: list[reranking._Prompt]) -> list[object]:
         runtime.batches.append(rows)

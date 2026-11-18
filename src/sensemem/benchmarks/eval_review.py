@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import cast
 
-from sensemem.benchmarks.eval_artifacts import _jsonl_bytes
+from sensemem.benchmarks.artifact_io import encode_jsonl_bytes
 from sensemem.benchmarks.eval_diagnostics import LAYERS
 from sensemem.benchmarks.eval_results import EVAL_SCHEMA_VERSION
 
@@ -123,7 +123,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
                     },
                 }
             )
-    payload = _jsonl_bytes(selected)
+    payload = encode_jsonl_bytes(selected)
     arguments.output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _publish_review(arguments.output, payload)
     return 0

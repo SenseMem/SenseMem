@@ -11,10 +11,14 @@ from typing import Any, Literal, cast
 import httpx2 as httpx
 import pytest
 from test_formation_history import _history_input
-from test_openai_sdk import _sdk_client
+from test_openai_adapters import _sdk_client
 
-import sensemem.models.openai_sdk as backend
-from sensemem import AssetRef, FormationInput, Modality, ModelInput, OpenAIModels
+import sensemem.models._openai_output as openai_output
+import sensemem.models._openai_protocol as openai_protocol
+import sensemem.models._openai_requests as openai_requests
+from sensemem import AssetRef, FormationInput, Modality, ModelInput
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.prompts import generation as prompts
 
 
 def _response(witnesses: list[list[str]]) -> str:
@@ -39,7 +43,7 @@ def _response(witnesses: list[list[str]]) -> str:
 
 
 def _payload(inputs: tuple[FormationInput, ...]) -> dict[str, Any]:
-    content = backend._formation_content(inputs)
+    content = openai_requests._formation_content(inputs)
     assert isinstance(content, str)
     return cast(dict[str, Any], json.loads(content))
 
@@ -82,7 +86,7 @@ def test_http_request_sends_four_identical_thirty_record_histories_once(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(transport),
             generation_response_format=mode,
         )
@@ -106,7 +110,7 @@ def test_http_request_sends_four_identical_thirty_record_histories_once(
         | {"read_only_history": shared}
         for observation in payload["observations"]
     ]
-    assert len(wire.encode()) < len(backend._json_text(inline).encode()) // 2
+    assert len(wire.encode()) < len(openai_protocol._json_text(inline).encode()) // 2
     assert "private-history-" not in wire and "private-source-" not in wire
 
 
@@ -146,9 +150,9 @@ def test_only_complete_equal_ordered_snapshots_are_shared(difference: str) -> No
             ),
         )
         changed = replace(old, context=replace(old.context, evidence_ids=("not-in-history",)))
-        assert backend._formation_history_payload(
+        assert openai_requests._formation_history_payload(
             first.history[0], "history_0", {}
-        ) == backend._formation_history_payload(changed, "history_0", {})
+        ) == openai_requests._formation_history_payload(changed, "history_0", {})
     elif difference == "visible":
         changed = replace(old, context=replace(old.context, visible=False))
     elif difference == "retired":
@@ -167,7 +171,7 @@ def test_only_complete_equal_ordered_snapshots_are_shared(difference: str) -> No
     payload = _payload((first, second))
     assert "read_only_history_groups" not in payload
     assert all("read_only_history" in item for item in payload["observations"])
-    aliases = backend._formation_aliases((first, second))
+    aliases = openai_requests._formation_aliases((first, second))
     assert set(aliases[0].values()).isdisjoint(aliases[1].values())
 
 
@@ -187,7 +191,9 @@ def test_shared_aliases_do_not_authorize_a_private_or_missing_history() -> None:
             ["observation_3", "history_0"],
         ]
     )
-    results = backend._formation_results(response, inputs)
+    results = openai_output._formation_results(
+        response, inputs, source_aliases=openai_requests._formation_aliases(inputs)
+    )
     assert tuple(len(items) for items in results) == (1, 1, 0, 0)
     assert results[0][0].evidence_ids == (first.memory_id, first.history[0].id)
     assert results[1][0].evidence_ids == (second.memory_id, first.history[0].id)
@@ -195,7 +201,12 @@ def test_shared_aliases_do_not_authorize_a_private_or_missing_history() -> None:
     response = _response(
         [["observation_0"], ["observation_1"], ["observation_2", "history_2"], ["observation_3"]]
     )
-    assert backend._formation_results(response, inputs)[2] == ()
+    assert (
+        openai_output._formation_results(
+            response, inputs, source_aliases=openai_requests._formation_aliases(inputs)
+        )[2]
+        == ()
+    )
 
 
 def test_current_batch_history_keeps_observation_alias_and_own_source_once() -> None:
@@ -207,7 +218,7 @@ def test_current_batch_history_keeps_observation_alias_and_own_source_once() -> 
     inputs = (first, second, third)
     shared = _payload(inputs)["read_only_history_groups"]["history_group_0"]
     assert shared[0]["observation_id"] == "observation_2"
-    results = backend._formation_results(
+    results = openai_output._formation_results(
         _response(
             [
                 ["observation_0", "observation_2"],
@@ -216,14 +227,16 @@ def test_current_batch_history_keeps_observation_alias_and_own_source_once() -> 
             ]
         ),
         inputs,
+        source_aliases=openai_requests._formation_aliases(inputs),
     )
     assert results[0][0].evidence_ids == ("current", "third")
     assert results[1][0].evidence_ids == ("second", "third")
     assert results[2][0].evidence_ids == ("third",)
     assert (
-        backend._formation_results(
+        openai_output._formation_results(
             _response([["observation_0"], ["observation_1"], ["observation_2", "observation_2"]]),
             inputs,
+            source_aliases=openai_requests._formation_aliases(inputs),
         )[2]
         == ()
     )
@@ -252,7 +265,7 @@ def test_native_parts_keep_observation_and_media_order_after_shared_header(tmp_p
         asset.id: ({"type": "image_url", "image_url": {"url": f"fixture:{asset.id}"}},)
         for asset in assets
     }
-    content = backend._formation_content(inputs, image_parts=image_parts)
+    content = openai_requests._formation_content(inputs, image_parts=image_parts)
     assert isinstance(content, list)
     assert "read_only_history_groups" in json.loads(str(content[0]["text"]))
     for index in range(2):
@@ -278,9 +291,9 @@ def test_nonshared_and_empty_history_keep_the_inline_shape() -> None:
 def test_shared_history_prompt_changes_both_formation_recipe_identities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    before = (OpenAIModels(), OpenAIModels(generation_response_format="json_schema"))
-    monkeypatch.setattr(backend, "_FORMATION_SYSTEM_PROMPT", "previous formation presentation")
-    after = (OpenAIModels(), OpenAIModels(generation_response_format="json_schema"))
+    before = (OpenAICompletion(), OpenAICompletion(generation_response_format="json_schema"))
+    monkeypatch.setattr(prompts, "_FORMATION_SYSTEM_PROMPT", "previous formation presentation")
+    after = (OpenAICompletion(), OpenAICompletion(generation_response_format="json_schema"))
     for old, new in zip(before, after, strict=True):
         assert old.formation_space != new.formation_space
         assert old.vision_space == new.vision_space

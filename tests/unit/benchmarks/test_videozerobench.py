@@ -15,17 +15,19 @@ from sensemem import (
     AsyncMemory,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     SearchHit,
 )
 from sensemem.benchmarks import prepare_media
-from sensemem.benchmarks.eval import _regressed, run_loaded_task
 from sensemem.benchmarks.eval_adapters import LoadedTask, load_task
 from sensemem.benchmarks.eval_console import _table
 from sensemem.benchmarks.eval_metrics import _comparisons, _metrics, _videozerobench_metrics
+from sensemem.benchmarks.eval_options import EvaluationOptions
+from sensemem.benchmarks.eval_report import _regressed
 from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.eval_runner import run_loaded_task
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.official_scorers import judge_plan, metric_is_official
 from sensemem.benchmarks.task_catalog import TASKS, expand
@@ -261,7 +263,10 @@ async def test_eval_runs_all_levels_through_asyncmemory_without_writing_gold_hin
         backend = Reader()
         return AsyncMemory(
             Memory(
-                path, embedder=backend, answerer=backend, config=MemoryConfig(minimum_relevance=0)
+                path,
+                embedder=backend,
+                answerer=backend,
+                settings=MemorySettings(minimum_relevance=0),
             )
         )
 
@@ -269,10 +274,9 @@ async def test_eval_runs_all_levels_through_asyncmemory_without_writing_gold_hin
         task,
         run=BenchmarkRun(tmp_path / "stores", "videozerobench", "test"),
         memory_factory=factory,
-        batch_size=4,
-        unit_concurrency=1,
-        request_concurrency=2,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=4, unit_concurrency=1, request_concurrency=2, recall_limit=5
+        ),
     )
     assert len(samples) == 8
     assert all(sample.error_code is None for sample in samples)

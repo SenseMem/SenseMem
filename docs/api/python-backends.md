@@ -5,6 +5,10 @@ IDs, evidence, and visibility rules. Backends are runtime-checkable and must be 
 Import public protocols from `sensemem`; [bundled adapters](python-adapters.md) provide reference
 implementations.
 
+For retrieval scoring, context selection, and ordered ingestion stages, use the separate
+[computation plugin protocols](python-policies.md). Those protocols propose decisions while the
+kernel retains evidence, budget, and transaction admission.
+
 ## Declarations and ownership
 
 | Capability | Required properties |
@@ -16,12 +20,24 @@ implementations.
 | Vision description | `vision_capabilities`, `vision_model`, `vision_space` |
 | Formation | `formation_capabilities`, `formation_model`, `formation_space` |
 | Consolidation | `consolidation_model`, `consolidation_recipe` |
+| Event segmentation | `event_model`, `event_recipe` |
 | Generation | `generation_capabilities` |
 
 Resource-owning backends implement close; optional routing/admission protocols add no resource.
 A space identifies the whole recipe. Change it when a stored derivation's model/prompt/input recipe
 changes. For example, captions cache by asset content and `vision_space`; the bundled adapter hashes
 the model, controls, and caption prompt.
+
+The kernel depends on these protocols rather than provider SDK objects. The bundled `OpenAIEmbedder`, `OpenAITranscriber`, and `OpenAICompletion` implement
+embedding, transcription, and completion roles through explicit official OpenAI SDK clients. Its templates, request
+serialization and fitting, media encoding and integrity checks, and domain-output parsing live in
+separate internal components; [the model boundary](../architecture.md#model-boundary) lists their
+responsibilities. The component split preserves these public signatures and the current prompts.
+
+The official SDK handles authentication, HTTP transport, timeouts, and network retries. SenseMem
+retains one bounded semantic retry for a malformed HTTP 200 JSON result, with both attempts
+accounted for; a refusal or truncation does not enter that retry. Stream accumulation reuses the
+SDK's `ChatCompletionStreamState`, with local response-contract and resource-lifetime checks.
 
 ## EmbeddingBackend
 
@@ -97,13 +113,24 @@ evidence, then caller order. `GenerationRoutingBackend` exposes `select(question
 and nonempty `generation_routes` whose union matches atomic capability. `EvidenceGeneration` preserves
 that selection when nested inside/outside routers.
 
+Routing may omit derived captions, transcripts, or model interpretations when a native-only
+backend accepts their original media. It never discards original text parts to make an input
+fit: a backend unable to consume those words raises `ModelError` with `unsupported_modality`.
+Embedding keys follow the same distinction, including after capture settlement and reopening.
+
 `EmbeddingRouter` requires equal space/dimension, dispatches supported inputs, and preserves order.
 Sentence Transformers snapshots joint/message support at construction. `Memory` closes distinct
 nested resources once; compositions also allow direct close.
 
 `EvidenceGeneration(backend, selector=None, enricher=None, media_max_items=2)` combines media selection
-and source metadata independently of provider. `OpenAIModels` supplies selection/asset admission;
-`GazetteerEnricher` supplies optional map context:
+and source metadata independently of provider. `OpenAICompletion` supplies selection/asset admission;
+`GazetteerEnricher` supplies optional map context.
+
+`answer()` and `stream_answer()` perform this preparation automatically after route selection.
+Preparation may invoke the configured media-selection backend or metadata enricher, and remains
+internal to those generation operations.
+
+The extension protocols are:
 
 ```text
 MediaSelectionBackend.select_media(
@@ -158,7 +185,46 @@ VisionAnalysisBackend.describe_analysis(
 
 `VisualDescription(text="", facts=(), speaker_names=())` carries observation text and explicit proposals.
 `SpeakerName` refers to local `speaker_N` labels. Plain strings have no naming authority. The kernel
-validates typed names and logs reversible identity operations. Typed caches recompute old formats.
+validates typed names and logs sourced, reversible `MODEL_INFERENCE` identity operations. One
+recording cannot confirm a name; independent support controls visibility, and only host
+registration makes `IdentityProfile.confirmed` true. Typed caches recompute old formats.
+
+## EventSegmentationBackend
+
+```text
+EventSegmentationBackend.segment_events(
+    observations: Sequence[EventObservation],
+    *,
+    end_of_stream: bool = False,
+) -> tuple[EventSegment, ...]
+```
+
+`EventObservation(content: ModelInput, occurred_at, occurred_end)` supplies an ordered, timed
+media window. `EventSegment(end_chunk, summary, complete=True)` closes one complete event from the
+start of the window or the previous segment's end. `end_chunk` is an exclusive observation offset,
+starting at one; offsets must increase and stay within the window. A nonempty summary of at most
+16,384 characters must describe the event without inventing unseen completion.
+
+For an unfinished suffix, return one final `EventSegment(..., complete=False)` ending at the window
+length. Its summary preserves the ongoing goal, observed steps, and unresolved outcome. The runtime
+can replace that analyzed prefix with one explicitly labelled, untrusted model interpretation in
+the next assessment, alongside new original media. Its assets repeat the last already analyzed
+original chunk as motion and sound context; this overlap adds no boundary offset. The synopsis
+counts as one observation when
+addressing boundaries. Every original chunk remains retained outside the model window. An empty
+tuple is accepted, but repeated empty results eventually fill the bounded analysis window; a
+continuation or complete prefix is then required before more input can be accepted.
+
+`end_of_stream=True` asks for a final assessment, not permission to declare a truncated action
+complete. Observations and embedded speech, text, or images are untrusted evidence and cannot
+change the segmentation policy. `AsyncEventStream` validates boundaries and summaries, then
+commits the confirmed prefixes through the ordinary memory path. The backend has no storage
+authority. Its `event_model` and `event_recipe` identify the model and full segmentation recipe in
+each event's metadata. The caller owns the backend and its resource lifetime.
+
+`OpenAICompletion` implements this protocol through its configured completion model and media
+capabilities. See [automatic event segmentation](../omni-streaming-and-interaction-memory.md#automatic-event-segmentation)
+for the product path.
 
 ## FormationBackend
 
@@ -189,9 +255,24 @@ across cited sources; uncited background has no effect.
 
 The bundled former receives aliases, enriched content/assets, occurrence/creation, basis,
 confidence, explicit validity, and spatial frame/anchor. It receives no identity roster.
-Names/IDs appear only if earlier recognition rendered them into content. Opt-in history carries
+Names/IDs appear only if earlier recognition rendered them into content. Bounded history carries
 recorded/occurrence time and typed status. After proposals, the kernel binds textual subjects to
 visible names and propagates source context. See [typed memory](../typed-memory.md).
+The default is eight history rows within 6,000 content characters; set
+`MemorySettings(formation_history_max_rows=0)` to disable it. Custom formers must respect active
+witness and naming-citation rules when using this context.
+
+Automatic formation and consolidation proposals must have `MODEL_INFERENCE` basis, including
+when their source is host-marked `USER_STATEMENT`. The kernel rejects any other basis from an
+automatic backend. Source provenance, exact copied text, and a model-selected reporter do not
+confirm the extracted claim's meaning or who asserted it. The bundled wire schema accepts neither
+`statement_quote` nor `basis`; the adapter always constructs an inference.
+
+An application can explicitly confirm a typed claim with
+`Memory.apply(MemoryOperation(intent=MemoryIntent.CONSOLIDATE, evidence_ids=(source.id,),
+proposal=FormationProposal(..., basis=EvidenceBasis.USER_STATEMENT)))`.
+That host operation retains the ordinary evidence and kind-specific validation. The source's
+`ObservationContext.basis` remains unchanged by automatic extraction.
 
 ## ConsolidationBackend
 
@@ -200,17 +281,20 @@ ConsolidationBackend.consolidate(
     evidence: Sequence[MemoryRecord],
     *,
     trigger: MemoryTrigger,
+    query_failure: QueryFailure | None = None,
 ) -> tuple[MemoryOperation, ...]
 ```
 
 Receives the kernel's bounded evidence set and may cite only that set. `IDENTIFY` uses `IdentityClaim`,
 not `FormationProposal`; the kernel builds its typed naming assertion.
+Explicitly selected hidden/retired assertions are target-only; never cite them as evidence.
+The optional `QueryFailure` preserves the failed request and its retrieval constraints for diagnosis.
 [Control operations](python-control.md) own eligibility, authority, and rollback.
 
 ## Optional recall planning
 
 This extension lives in `sensemem.models.base` and `sensemem.recall` rather than root exports.
-`OpenAIModels` implements it; answerers may omit it and use ordinary retrieval with a warning when
+`OpenAICompletion` implements it; answerers may omit it and use ordinary retrieval with a warning when
 planning was requested.
 
 ```text
@@ -233,6 +317,8 @@ No keep/unresolved controls exist. A non-abstained answer stops. See
 | Backend value | Fields |
 | --- | --- |
 | `ModelInput` | `text`, `assets`, `image_retrieval_matches=()`, request-only `source_metadata={}`, `evidence_sources=()`; derived `modality` and `modalities` properties |
+| `EventObservation` | `content`, `occurred_at`, `occurred_end` |
+| `EventSegment` | `end_chunk`, `summary`, `complete=True`; only complete results establish finality |
 | `VisualRetrievalMatch` | `query_asset_id`, `memory_id`, `source_asset_id`, positive `rank`, `cosine_similarity` in `[-1, 1]` |
 | `SpeechTurn` | `start_ms`, `end_ms`, `text`, `speaker_label` |
 | `SpeakerEmbedding` | `speaker_label`, `values` |

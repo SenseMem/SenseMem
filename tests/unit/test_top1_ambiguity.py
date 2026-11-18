@@ -11,7 +11,7 @@ import pytest
 from sensemem import (
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     ObservationContext,
@@ -39,18 +39,22 @@ class _EqualEmbedder:
 
 @pytest.mark.parametrize("mode", (RetrievalMode.HYBRID, RetrievalMode.LEXICAL))
 @pytest.mark.parametrize("query", ("Alice", "Alice bakery", "爱丽丝面包店"))
+@pytest.mark.parametrize("reverse", (False, True))
 def test_lexical_ties_are_ambiguous_even_with_full_query_coverage(
-    tmp_path: Path, mode: RetrievalMode, query: str
+    tmp_path: Path, mode: RetrievalMode, query: str, reverse: bool
 ) -> None:
     # Both records fully cover the question but disagree. The real index must discover both;
     # replacing only the embedder leaves route generation, hydration, fusion and gating intact.
     with Memory(
         tmp_path,
         embedder=_EqualEmbedder(),
-        config=MemoryConfig(retrieval_mode=mode, ambiguity_margin=0.05),
+        settings=MemorySettings(retrieval_mode=mode, ambiguity_margin=0.05),
     ) as memory:
-        first = memory.add("Alice bakery is open. 爱丽丝面包店营业。")
-        second = memory.add("Alice bakery not open. 爱丽丝面包店停业。")
+        documents = (
+            "Alice bakery is open. 爱丽丝面包店营业。",
+            "Alice bakery not open. 爱丽丝面包店停业。",
+        )
+        first, second = memory.add_many(tuple(reversed(documents)) if reverse else documents)
         multiple = memory.search(query, limit=2, explain=True)
         assert multiple.trace is not None
         assert {hit.id for hit in multiple.hits} == {first.id, second.id}
@@ -67,16 +71,23 @@ def test_lexical_ties_are_ambiguous_even_with_full_query_coverage(
     }
 
 
-def test_validity_scope_preserves_current_and_historical_preferences(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reverse", (False, True))
+def test_validity_scope_preserves_current_and_historical_preferences(
+    tmp_path: Path, reverse: bool
+) -> None:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     change = datetime(2026, 6, 1, tzinfo=timezone.utc)
     now = datetime(2026, 7, 1, tzinfo=timezone.utc)
     with Memory(tmp_path, embedder=_EqualEmbedder()) as memory:
-        previous = memory.add(
-            "Alice prefers tea",
-            context=ObservationContext(valid_from=start, valid_until=change),
+        documents = (
+            ("Alice prefers tea", ObservationContext(valid_from=start, valid_until=change)),
+            ("Alice prefers coffee", ObservationContext(valid_from=change)),
         )
-        current = memory.add("Alice prefers coffee", context=ObservationContext(valid_from=change))
+        records = {
+            text: memory.add(text, context=context)
+            for text, context in (reversed(documents) if reverse else documents)
+        }
+        previous, current = (records[text] for text, _ in documents)
         assert [
             hit.id for hit in memory.search("Alice prefers", limit=1, reference_at=now).hits
         ] == [current.id]
@@ -94,9 +105,25 @@ def test_validity_scope_preserves_current_and_historical_preferences(tmp_path: P
         ] == [previous.id]
 
 
+@pytest.mark.parametrize("reverse", (False, True))
+def test_question_echo_does_not_authorize_an_ambiguous_answer(
+    tmp_path: Path, reverse: bool
+) -> None:
+    documents = (
+        "Unanswered question: Alice bakery location?",
+        "Her shop is at 17 Elm Street.",
+    )
+    with Memory(tmp_path, embedder=_EqualEmbedder()) as memory:
+        memory.add_many(tuple(reversed(documents)) if reverse else documents)
+        result = memory.search("Alice bakery location", limit=1, explain=True)
+    assert result.trace is not None
+    assert result.hits == ()
+    assert result.trace.ambiguous
+
+
 def test_zero_margin_retains_explicit_opt_out(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=_EqualEmbedder(), config=MemoryConfig(ambiguity_margin=0)
+        tmp_path, embedder=_EqualEmbedder(), settings=MemorySettings(ambiguity_margin=0)
     ) as memory:
         first = memory.add("Alice bakery is open")
         second = memory.add("Alice bakery is closed")

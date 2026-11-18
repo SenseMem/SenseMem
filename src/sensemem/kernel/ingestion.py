@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -17,6 +16,7 @@ from typing import TypeVar
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import CAPTURE_FAILED, CAPTURE_SETTLED, CAPTURE_TIME_TO_SEARCHABLE
+from sensemem.content import AssetRef, Blob, ContentInput
 from sensemem.exceptions import ModelError, SenseMemError, StorageError, ValidationError
 from sensemem.infrastructure.local.store import StaleOperationError, StoredEmbedding, StoredMemory
 from sensemem.kernel.content import (
@@ -32,7 +32,9 @@ from sensemem.kernel.derived import (
     description_sections,
     has_stream_description,
     prepared_from_stored,
+    refresh_stream_content,
     with_stream_description,
+    with_stream_interpretation,
     with_stream_transcript,
 )
 from sensemem.kernel.embedding import DOCUMENT_TASK, Embedding
@@ -42,13 +44,15 @@ from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.identity import Identities
 from sensemem.kernel.lifecycle import Lifecycle, OperationAssets
 from sensemem.kernel.materialization import Materializer
+from sensemem.kernel.processing import IngestionStages
 from sensemem.kernel.projection import Projection
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.speech import Speech
 from sensemem.kernel.tracing import Traced
 from sensemem.kernel.validation import (
     MAX_TEXT_CHARACTERS,
+    decode_cursor,
     memory_id_filter,
     strict_bool,
     validate_limit,
@@ -56,22 +60,11 @@ from sensemem.kernel.validation import (
 )
 from sensemem.kernel.vision import Vision
 from sensemem.perception import VisualDescription
-from sensemem.types import (
-    AssetRef,
-    Blob,
-    ContentInput,
-    MemoryContext,
-    MemoryKind,
-    MemoryRecord,
-    MemoryType,
-    Modality,
-    ObservationContext,
-    PendingCapture,
-    StreamInput,
-)
-
-_LOGGER = logging.getLogger(__name__)
-
+from sensemem.records import MemoryRecord, PendingCapture
+from sensemem.semantics import RecordSemantics
+from sensemem.spatial import ObservationContext
+from sensemem.stream_values import StreamInput
+from sensemem.types import MemoryCategory, Modality, RecordKind
 
 STREAM_GROUP_ITEMS = 32
 
@@ -109,7 +102,7 @@ class Ingestion(Traced):
         tracer: Tracer,
         storage: Storage,
         backends: Backends,
-        settings: Settings,
+        settings: ResolvedSettings,
         lifecycle: Lifecycle,
         hydrator: Hydrator,
         materializer: Materializer,
@@ -120,6 +113,7 @@ class Ingestion(Traced):
         formation: Formation,
         identities: Identities,
         execution: Execution,
+        processing: IngestionStages,
     ) -> None:
         super().__init__(tracer)
         self._settlement_claims = Condition()
@@ -138,6 +132,7 @@ class Ingestion(Traced):
         self._vision = vision
         self._formation = formation
         self._identities = identities
+        self._processing = processing
 
     def add(
         self,
@@ -146,7 +141,7 @@ class Ingestion(Traced):
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         return self._add_one(
@@ -165,10 +160,11 @@ class Ingestion(Traced):
         occurred_at: datetime | None,
         occurred_end: datetime | None,
         metadata: Mapping[str, object] | None,
-        memory_type: MemoryType,
+        memory_type: MemoryCategory,
         context: ObservationContext | None,
         transcript: str | None = None,
         description: str | None = None,
+        interpretation: str | None = None,
     ) -> MemoryRecord:
         with (
             self._trace("sensemem.add", kind="operation"),
@@ -177,24 +173,26 @@ class Ingestion(Traced):
             if self._backends.former is not None and context is None:
                 context = ObservationContext()
             with self._trace("sensemem.content.prepare", kind="stage"):
-                prepared_content = self._materializer.prepare(content, assets)
+                prepared_content = self._materializer.materialize_content(content, assets)
                 if transcript is not None:
                     prepared_content = with_stream_transcript(prepared_content, transcript)
                 if description is not None:
                     prepared_content = with_stream_description(prepared_content, description)
                     self._stage_stream_description(prepared_content, description, assets)
+                if interpretation is not None:
+                    prepared_content = with_stream_interpretation(prepared_content, interpretation)
             prepared = prepare_memory(
                 prepared_content,
                 occurred_at=occurred_at,
                 occurred_end=occurred_end,
                 metadata=metadata,
-                memory_type=memory_type,
+                memory_type=validated_memory_type(memory_type),
                 context=context,
             )
-            record = self._add_prepared((prepared,), operation=assets)[0]
-            self._formation.form_sources((record,), operation=assets)
-            self._complete_formation((record,))
-            return record
+            records, formation_through = self._add_prepared((prepared,), operation=assets)
+            self._formation.form_sources(records, operation=assets)
+            self._complete_formation(formation_through)
+            return records[0]
 
     def add_many(
         self,
@@ -203,7 +201,7 @@ class Ingestion(Traced):
         occurred_at: Sequence[datetime | None] | None = None,
         occurred_end: Sequence[datetime | None] | None = None,
         metadata: Sequence[Mapping[str, object] | None] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: Sequence[ObservationContext | None] | None = None,
     ) -> tuple[MemoryRecord, ...]:
         with (
@@ -231,7 +229,7 @@ class Ingestion(Traced):
                 )
             with self._trace("sensemem.content.prepare", kind="stage"):
                 prepared = tuple(
-                    self._materializer.prepare_batch_item(
+                    self._materializer.materialize_batch_item(
                         content,
                         index=index,
                         operation=assets,
@@ -260,9 +258,9 @@ class Ingestion(Traced):
                 )
             if not prepared:
                 return ()
-            records = self._add_prepared(prepared, operation=assets)
+            records, formation_through = self._add_prepared(prepared, operation=assets)
             self._formation.form_sources(records, operation=assets)
-            self._complete_formation(records)
+            self._complete_formation(formation_through)
             return records
 
     def capture(
@@ -272,7 +270,7 @@ class Ingestion(Traced):
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         return self._capture_one(
@@ -291,10 +289,11 @@ class Ingestion(Traced):
         occurred_at: datetime | None,
         occurred_end: datetime | None,
         metadata: Mapping[str, object] | None,
-        memory_type: MemoryType,
+        memory_type: MemoryCategory,
         context: ObservationContext | None,
         transcript: str | None = None,
         description: str | None = None,
+        interpretation: str | None = None,
     ) -> MemoryRecord:
         with (
             self._trace("sensemem.capture", kind="operation"),
@@ -303,7 +302,7 @@ class Ingestion(Traced):
             if self._backends.former is not None and context is None:
                 context = ObservationContext()
             with self._trace("sensemem.content.prepare", kind="stage"):
-                prepared_content = self._materializer.prepare(content, assets)
+                prepared_content = self._materializer.materialize_content(content, assets)
                 # Folded in here, exactly as `_add_one` folds them, so a streaming FINAL that
                 # already carries ASR or caption text keeps the same content-addressed ID on
                 # either commit path and `settle()` sees the marker instead of paying again.
@@ -312,14 +311,25 @@ class Ingestion(Traced):
                 if description is not None:
                     prepared_content = with_stream_description(prepared_content, description)
                     self._stage_stream_description(prepared_content, description, assets)
+                if interpretation is not None:
+                    prepared_content = with_stream_interpretation(prepared_content, interpretation)
             prepared = prepare_memory(
                 prepared_content,
                 occurred_at=occurred_at,
                 occurred_end=occurred_end,
                 metadata=metadata,
-                memory_type=memory_type,
+                memory_type=validated_memory_type(memory_type),
                 context=context,
             )
+            refreshed = False
+            if any(kind not in {"text", "asset"} for kind, _ in prepared.content.canonical_parts):
+                with translate_storage_errors("check captured derivation"):
+                    existing = self._store.records.read_memory(prepared.memory_id)
+                if existing is not None:
+                    previous = prepared_from_stored(existing).content
+                    updated_content = refresh_stream_content(previous, prepared.content)
+                    refreshed = updated_content != previous
+                    prepared = replace(prepared, content=updated_content)
             # Reject unsupported media before committing a capture; otherwise `settle()` cannot
             # process it with the configured native or derived capabilities.
             fallback_unsupported(
@@ -330,8 +340,8 @@ class Ingestion(Traced):
                 | self._speech.transcript_fallback(prepared.content.assets),
             )
             now = datetime.now(timezone.utc)
-            # No index lock: a capture enqueues no vectors, so it has no outbox work to drain and
-            # never has to wait behind a Zvec flush.
+            # Captures write no vectors. A refresh may withdraw old ones, with their durable
+            # outbox deletes applied by the next index drain, so neither path waits on a flush.
             with (
                 self._trace("sensemem.storage.write", kind="stage"),
                 translate_storage_errors("capture memory"),
@@ -341,6 +351,7 @@ class Ingestion(Traced):
                         StoredMemory(
                             memory_id=prepared.memory_id,
                             content=prepared.content.text,
+                            parts=prepared.content.parts,
                             modality=prepared.content.modality.value,
                             memory_type=prepared.memory_type.value,
                             assets=prepared.content.assets,
@@ -350,10 +361,15 @@ class Ingestion(Traced):
                             created_at=now,
                             updated_at=now,
                             place_id=prepared.place_id,
-                            context=stored_memory_context(prepared, recorded_at=now),
+                            context=(
+                                None
+                                if refreshed
+                                else stored_memory_context(prepared, recorded_at=now)
+                            ),
                         ),
                     ),
                     enqueued_at=now,
+                    replace_existing=refreshed,
                 )
             with (
                 self._trace("sensemem.storage.hydrate", kind="stage"),
@@ -413,13 +429,6 @@ class Ingestion(Traced):
             if waits:
                 span.set_attribute(CAPTURE_TIME_TO_SEARCHABLE, max(waits))
             if failures:
-                # Only the first is raised, and a row that reaches `max_attempts` is then skipped
-                # by the queue read rather than retried, so without this the rest are silent.
-                _LOGGER.warning(
-                    "settle left %d captured record(s) unfinished; first: %s",
-                    len(failures),
-                    failures[0],
-                )
                 raise failures[0]
             return len(settled)
 
@@ -428,6 +437,7 @@ class Ingestion(Traced):
         *,
         limit: int = 100,
         memory_ids: Sequence[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[PendingCapture, ...]:
         with (
             self._trace("sensemem.pending_captures", kind="operation"),
@@ -436,7 +446,11 @@ class Ingestion(Traced):
             validate_limit(limit, maximum=100)
             memory_ids = memory_id_filter(memory_ids)
             with translate_storage_errors("read the capture queue"):
-                return self._store.captures.pending_captures(limit=limit, memory_ids=memory_ids)
+                return self._store.captures.pending_captures(
+                    limit=limit,
+                    memory_ids=memory_ids,
+                    after=None if cursor is None else decode_cursor(cursor),
+                )
 
     def add_stream(
         self,
@@ -496,7 +510,7 @@ class Ingestion(Traced):
                 if error.subject is None:
                     error.subject = f"contents[{index}]"
                 raise
-            yield await self._execution.run(
+            yield await self._execution.run_in_worker(
                 self.add_stream_item, content, index=index, capture=capture
             )
             index += 1
@@ -520,13 +534,14 @@ class Ingestion(Traced):
                     context=content.context,
                     transcript=content.transcript,
                     description=content.description,
+                    interpretation=content.interpretation,
                 )
             return write(
                 content,
                 occurred_at=None,
                 occurred_end=None,
                 metadata=None,
-                memory_type=MemoryType.SEMANTIC,
+                memory_type=MemoryCategory.SEMANTIC,
                 context=None,
             )
         except SenseMemError as error:
@@ -548,7 +563,7 @@ class Ingestion(Traced):
 
     def _add_prepared(
         self, prepared: Sequence[PreparedMemory], *, operation: OperationAssets
-    ) -> tuple[MemoryRecord, ...]:
+    ) -> tuple[tuple[MemoryRecord, ...], dict[str, datetime]]:
         for attempt in range(4):
             try:
                 return self._add_prepared_once(prepared, operation=operation)
@@ -565,12 +580,104 @@ class Ingestion(Traced):
                     ) from None
         raise AssertionError("unreachable")
 
+    def _prepare_documents(
+        self,
+        memories: Sequence[PreparedMemory],
+        operation: OperationAssets,
+    ) -> tuple[tuple[PreparedMemory, ...], tuple[StoredEmbedding, ...], datetime]:
+        """Derive and embed one batch before add or settlement opens its transaction."""
+        speech_indexed = self._settings.index_speech and any(
+            self._speech.answer_speech_assets(memory.content.assets) for memory in memories
+        )
+        memories = [self._processing.process_memory(memory, operation) for memory in memories]
+        if speech_indexed:
+            self._speech.prepare_index(
+                self._speech.answer_speech_assets(
+                    tuple(asset for memory in memories for asset in memory.content.assets)
+                ),
+                operation,
+            )
+        batched = tuple(asset for memory in memories for asset in memory.content.assets)
+        if Modality.AUDIO not in self._backends.embedding_capabilities:
+            self._speech.cache_audio_transcripts(
+                tuple(
+                    asset
+                    for memory in memories
+                    if not memory.content.audio_transcript
+                    for asset in memory.content.assets
+                ),
+                operation,
+            )
+        elif self._speech.derives_transcripts(batched):
+            self._speech.cache_audio_transcripts(batched, operation)
+        # Derived visual text can rescue media this embedder cannot take, so it has to
+        # exist before the fallback guard below decides the write is impossible.
+        described = self._vision.pending_descriptions(
+            tuple(memory.content for memory in memories),
+            operation,
+        )
+        self._identities.stage_speaker_names(described, operation)
+        memories = [
+            replace(
+                memory,
+                content=self._with_visual_descriptions(memory.content, described, operation),
+            )
+            for memory in memories
+        ]
+        fallback = Modality.AUDIO not in self._backends.embedding_capabilities
+        if fallback:
+            for memory in memories:
+                fallback_unsupported(
+                    memory.content,
+                    self._backends.embedding_capabilities,
+                    "embedding",
+                    rescuable=self._speech.transcript_fallback(memory.content.assets),
+                )
+        memories = [self._embedding.prepare_document(memory, operation) for memory in memories]
+        selector_maps = {
+            memory.memory_id: text_selector_map(
+                memory.content,
+                raw_observation=(
+                    not isinstance(memory.context, RecordSemantics)
+                    or memory.context.kind is RecordKind.OBSERVATION
+                ),
+            )
+            for memory in memories
+        }
+        embedding_parts = tuple(
+            (memory, object_part, model_input)
+            for memory in memories
+            for object_part, model_input in enumerate(
+                self._embedding.build_retrieval_inputs(memory.content)
+            )
+        )
+        vectors, embedding_parts = self._embedding.embed_document_parts(embedding_parts)
+        now = datetime.now(timezone.utc)
+        stored_embeddings = tuple(
+            StoredEmbedding(
+                embedding_id=embedding_row_id(memory.memory_id, object_part),
+                memory_id=memory.memory_id,
+                values=vector,
+                model_id=self._backends.embedding_model,
+                space_id=self._backends.space_id,
+                task=DOCUMENT_TASK,
+                created_at=now,
+                object_part=object_part,
+                normalized=True,
+                text_selectors=selector_maps[memory.memory_id].get(model_input, ()),
+            )
+            for (memory, object_part, model_input), vector in zip(
+                embedding_parts, vectors, strict=True
+            )
+        )
+        return tuple(memories), stored_embeddings, now
+
     def _add_prepared_once(
         self,
         prepared: Sequence[PreparedMemory],
         *,
         operation: OperationAssets,
-    ) -> tuple[MemoryRecord, ...]:
+    ) -> tuple[tuple[MemoryRecord, ...], dict[str, datetime]]:
         unique = {memory.memory_id: memory for memory in prepared}
         ordered_ids = tuple(unique)
         with (
@@ -579,84 +686,42 @@ class Ingestion(Traced):
         ):
             candidates = self._store.records.read_memories(ordered_ids)
         candidates_by_id = {row.memory_id: row for row in candidates}
+        refreshed_content = {
+            memory_id: refresh_stream_content(
+                prepared_from_stored(existing).content, unique[memory_id].content
+            )
+            for memory_id, existing in candidates_by_id.items()
+        }
+        refreshed = {
+            memory_id: replace(unique[memory_id], content=content)
+            for memory_id, content in refreshed_content.items()
+            if content.text != candidates_by_id[memory_id].content
+            or content.parts != candidates_by_id[memory_id].parts
+        }
+        unique.update(refreshed)
         existing_rows = tuple(
             candidates_by_id[memory_id]
             for memory_id in ordered_ids
-            if memory_id in candidates_by_id
+            if memory_id in candidates_by_id and memory_id not in refreshed
         )
         existing_ids = set(candidates_by_id) & set(ordered_ids)
-        missing = [unique[memory_id] for memory_id in ordered_ids if memory_id not in existing_ids]
+        missing = [
+            unique[memory_id]
+            for memory_id in ordered_ids
+            if memory_id not in existing_ids or memory_id in refreshed
+        ]
         # Settle before preparing this write: the two batches are
         # independent and must not share pending speech identity plans.
         self._settle_queued(existing_rows, operation=operation)
-        speech_indexed = self._settings.index_speech and any(
-            self._speech.answer_speech_assets(memory.content.assets) for memory in missing
-        )
         stored_memories: tuple[StoredMemory, ...] = ()
         stored_embeddings: tuple[StoredEmbedding, ...] = ()
         if missing:
-            if speech_indexed:
-                self._speech.prepare_index(
-                    self._speech.answer_speech_assets(
-                        tuple(asset for memory in missing for asset in memory.content.assets)
-                    ),
-                    operation,
-                )
-            batched = tuple(asset for memory in missing for asset in memory.content.assets)
-            if Modality.AUDIO not in self._backends.embedding_capabilities:
-                self._speech.cache_audio_transcripts(
-                    tuple(
-                        asset
-                        for memory in missing
-                        if not memory.content.audio_transcript
-                        for asset in memory.content.assets
-                    ),
-                    operation,
-                )
-            elif self._speech.derives_transcripts(batched):
-                self._speech.cache_audio_transcripts(batched, operation)
-            # Derived visual text can rescue media this embedder cannot take, so it has to
-            # exist before the fallback guard below decides the write is impossible.
-            described = self._vision.pending_descriptions(
-                tuple(memory.content for memory in missing),
-                operation,
-            )
-            self._identities.stage_speaker_names(described, operation)
-            missing = [
-                replace(
-                    memory,
-                    content=self._with_visual_descriptions(memory.content, described, operation),
-                )
-                for memory in missing
-            ]
-            fallback = Modality.AUDIO not in self._backends.embedding_capabilities
-            if fallback:
-                for memory in missing:
-                    fallback_unsupported(
-                        memory.content,
-                        self._backends.embedding_capabilities,
-                        "embedding",
-                        rescuable=self._speech.transcript_fallback(memory.content.assets),
-                    )
-            missing = [self._embedding.prepare(memory, operation) for memory in missing]
-            selector_maps = {
-                memory.memory_id: text_selector_map(
-                    memory.content,
-                    raw_observation=not isinstance(memory.context, MemoryContext),
-                )
-                for memory in missing
-            }
-            embedding_parts = tuple(
-                (memory, object_part, model_input)
-                for memory in missing
-                for object_part, model_input in enumerate(self._embedding.inputs(memory.content))
-            )
-            vectors, embedding_parts = self._embedding.embed_document_parts(embedding_parts)
-            now = datetime.now(timezone.utc)
+            documents, stored_embeddings, now = self._prepare_documents(missing, operation)
             stored_memories = tuple(
                 StoredMemory(
                     memory_id=memory.memory_id,
                     content=memory.content.text,
+                    parts=memory.content.parts,
                     modality=memory.content.modality.value,
                     memory_type=memory.memory_type.value,
                     assets=memory.content.assets,
@@ -666,26 +731,13 @@ class Ingestion(Traced):
                     created_at=now,
                     updated_at=now,
                     place_id=memory.place_id,
-                    context=stored_memory_context(memory, recorded_at=now),
+                    context=(
+                        None
+                        if memory.memory_id in refreshed
+                        else stored_memory_context(memory, recorded_at=now)
+                    ),
                 )
-                for memory in missing
-            )
-            stored_embeddings = tuple(
-                StoredEmbedding(
-                    embedding_id=embedding_row_id(memory.memory_id, object_part),
-                    memory_id=memory.memory_id,
-                    values=vector,
-                    model_id=self._backends.embedding_model,
-                    space_id=self._backends.space_id,
-                    task=DOCUMENT_TASK,
-                    created_at=now,
-                    object_part=object_part,
-                    normalized=True,
-                    text_selectors=selector_maps[memory.memory_id].get(model_input, ()),
-                )
-                for (memory, object_part, model_input), vector in zip(
-                    embedding_parts, vectors, strict=True
-                )
+                for memory in documents
             )
         if stored_memories:
             # SQLite is authoritative and uses one WAL connection per transaction. Commit
@@ -702,6 +754,7 @@ class Ingestion(Traced):
                     stored_memories,
                     stored_embeddings,
                     speech_plans=operation.speech_plans,
+                    replace_embeddings=bool(refreshed),
                     formation_pending_at=(
                         stored_memories[0].created_at if self._backends.former is not None else None
                     ),
@@ -727,20 +780,26 @@ class Ingestion(Traced):
         # every memory that mentions the person, and this write's own memory has to be one of
         # them -- `speaker_memory_ids` joins through `memory_assets`, which exists only now.
         self._identities.bind_speaker_names(operation)
-        return tuple(
-            self._hydrator.memory_record(rows_by_id[memory.memory_id]) for memory in prepared
+        return (
+            tuple(
+                self._hydrator.memory_record(rows_by_id[memory.memory_id]) for memory in prepared
+            ),
+            {memory.memory_id: memory.updated_at for memory in stored_memories},
         )
 
-    def _complete_formation(self, records: Sequence[MemoryRecord]) -> None:
+    def _complete_formation(self, formation_through: Mapping[str, datetime]) -> None:
         """Clear the queue rows `_add_prepared` wrote once formation has actually run.
 
         A no-op without a former, and harmless for a record that was never enqueued or whose row
         `_settle_queued` already removed: the delete simply matches nothing.
         """
-        if self._backends.former is None or not records:
+        if self._backends.former is None or not formation_through:
             return
         with translate_storage_errors("complete formation"):
-            self._store.captures.complete_captures(tuple(record.id for record in records))
+            self._store.captures.complete_settlements(
+                formation_through,
+                through=True,
+            )
 
     def _settle_queued(
         self,
@@ -789,7 +848,12 @@ class Ingestion(Traced):
     def _settle_stored(
         self, rows: Sequence[StoredMemory], *, operation: OperationAssets
     ) -> tuple[tuple[str, ...], tuple[SenseMemError, ...]]:
-        if len(rows) > 1 and all(not row.assets for row in rows) and self._backends.former is None:
+        if (
+            len(rows) > 1
+            and all(not row.assets for row in rows)
+            and self._backends.former is None
+            and not self._processing.enabled
+        ):
             try:
                 return self._settle_text_batch(rows)
             except ModelError:
@@ -807,8 +871,10 @@ class Ingestion(Traced):
 
     def _settle_one(self, row: StoredMemory) -> bool | SenseMemError:
         with self._claim_settlement((row.memory_id,)):
-            if not self._store.captures.pending_captures(limit=1, memory_ids=(row.memory_id,)):
+            queued = self._store.captures.pending_captures(limit=1, memory_ids=(row.memory_id,))
+            if not queued:
                 return False
+            enqueued_at = queued[0].enqueued_at
             try:
                 with self._lifecycle.operation() as operation:
                     with self._write_lock:
@@ -819,13 +885,25 @@ class Ingestion(Traced):
                             return False
                         row = current
                         self._lifecycle.lease_assets(row.assets, operation.leased)
-                    return self._settle_row(row, operation=operation)
+                    return self._settle_row(row, enqueued_at=enqueued_at, operation=operation)
             except SenseMemError as error:
-                return self._settlement_failure(row.memory_id, error)
+                return (
+                    self._settlement_failure(row.memory_id, error, enqueued_at=enqueued_at) or False
+                )
 
-    def _settlement_failure(self, memory_id: str, error: SenseMemError) -> SenseMemError:
+    def _settlement_failure(
+        self,
+        memory_id: str,
+        error: SenseMemError,
+        *,
+        enqueued_at: datetime,
+    ) -> SenseMemError | None:
         with translate_storage_errors("record a failed settlement"):
-            self._store.captures.record_capture_failure(memory_id, str(error))
+            recorded = self._store.captures.record_capture_failure(
+                memory_id, str(error), enqueued_at=enqueued_at
+            )
+        if not recorded:
+            return None
         if error.subject is None:
             error.subject = memory_id
         return error
@@ -836,13 +914,15 @@ class Ingestion(Traced):
         ids = tuple(row.memory_id for row in rows)
         with self._claim_settlement(ids):
             queued = {
-                item.memory_id
+                item.memory_id: item.enqueued_at
                 for item in self._store.captures.pending_captures(
                     limit=len(ids),
                     memory_ids=ids,
                 )
             }
-            rows = tuple(row for row in rows if row.memory_id in queued)
+            # Read the task version before its content, as the single-row path does. The
+            # caller's earlier rows may predate a refresh that happened while claiming them.
+            rows = self._store.records.read_memories(tuple(queued))
             embedded = {
                 row.memory_id
                 for row in rows
@@ -854,7 +934,7 @@ class Ingestion(Traced):
             parts = tuple(
                 (memory, part, value)
                 for memory in prepared
-                for part, value in enumerate(self._embedding.inputs(memory.content))
+                for part, value in enumerate(self._embedding.build_retrieval_inputs(memory.content))
             )
             vectors, parts = self._embedding.embed_document_parts(parts) if parts else ((), ())
             now = datetime.now(timezone.utc)
@@ -883,21 +963,38 @@ class Ingestion(Traced):
                         if row.memory_id in embedded or self._store.captures.settle_capture(
                             replace(row, context=None, updated_at=now),
                             by_id.get(row.memory_id, ()),
+                            enqueued_at=queued[row.memory_id],
                         ):
                             settled.append(row.memory_id)
                 except SenseMemError as error:
-                    failures.append(self._settlement_failure(row.memory_id, error))
+                    failure = self._settlement_failure(
+                        row.memory_id, error, enqueued_at=queued[row.memory_id]
+                    )
+                    if failure is not None:
+                        failures.append(failure)
             try:
                 with self._write_lock:
                     self._projection.drain()
             except SenseMemError as error:
                 for memory_id in settled:
-                    self._settlement_failure(memory_id, error)
-                raise
-            self._store.captures.complete_captures(settled)
-            return tuple(settled), tuple(failures)
+                    failure = self._settlement_failure(
+                        memory_id, error, enqueued_at=queued[memory_id]
+                    )
+                    if failure is not None:
+                        failures.append(failure)
+                return (), tuple(failures)
+            completed = self._store.captures.complete_settlements(
+                {memory_id: queued[memory_id] for memory_id in settled}
+            )
+            return completed, tuple(failures)
 
-    def _settle_row(self, row: StoredMemory, *, operation: OperationAssets) -> bool:
+    def _settle_row(
+        self,
+        row: StoredMemory,
+        *,
+        enqueued_at: datetime,
+        operation: OperationAssets,
+    ) -> bool:
         """Settle one captured row, or report `False` if another writer settled it first."""
         # An `add()` that crashed between its commit and formation leaves a queue row over a
         # record that is already enriched, embedded, and indexed. Its vectors are final, so
@@ -909,7 +1006,7 @@ class Ingestion(Traced):
             )
         settled = row
         if not embedded:
-            enriched = self._enrich_row(row, operation=operation)
+            enriched = self._enrich_row(row, enqueued_at=enqueued_at, operation=operation)
             if enriched is None:
                 return False
             settled = enriched
@@ -917,13 +1014,19 @@ class Ingestion(Traced):
         with self._write_lock:
             self._projection.drain()
         with translate_storage_errors("complete captured memory"):
-            self._store.captures.complete_captures((row.memory_id,))
-        return True
+            completed = self._store.captures.complete_settlements({row.memory_id: enqueued_at})
+        return bool(completed)
 
-    def _enrich_row(self, row: StoredMemory, *, operation: OperationAssets) -> StoredMemory | None:
+    def _enrich_row(
+        self,
+        row: StoredMemory,
+        *,
+        enqueued_at: datetime,
+        operation: OperationAssets,
+    ) -> StoredMemory | None:
         for attempt in range(4):
             try:
-                return self._enrich_row_once(row, operation=operation)
+                return self._enrich_row_once(row, enqueued_at=enqueued_at, operation=operation)
             except StaleOperationError:
                 for plan in operation.speech_plans:
                     operation.speech_segments.pop(plan.asset.asset_id, None)
@@ -941,49 +1044,17 @@ class Ingestion(Traced):
         self,
         row: StoredMemory,
         *,
+        enqueued_at: datetime,
         operation: OperationAssets,
     ) -> StoredMemory | None:
         """Derive, embed, and commit one captured row, or return `None` if it lost the race."""
-        memory = prepared_from_stored(row)
-        speech_assets = self._speech.answer_speech_assets(memory.content.assets)
-        speech_indexed = self._settings.index_speech and bool(speech_assets)
-        if speech_indexed:
-            self._speech.prepare_index(speech_assets, operation)
-        if Modality.AUDIO not in self._backends.embedding_capabilities:
-            if not memory.content.audio_transcript:
-                self._speech.cache_audio_transcripts(memory.content.assets, operation)
-        elif self._speech.derives_transcripts(memory.content.assets):
-            self._speech.cache_audio_transcripts(memory.content.assets, operation)
-        # Same order as `_add_prepared`: derived visual text has to exist before the fallback
-        # guard decides whether this embedder can take the media at all.
-        described = self._vision.pending_descriptions((memory.content,), operation)
-        self._identities.stage_speaker_names(described, operation)
-        memory = replace(
-            memory,
-            content=self._with_visual_descriptions(memory.content, described, operation),
+        documents, embeddings, now = self._prepare_documents(
+            (prepared_from_stored(row),), operation
         )
-        if Modality.AUDIO not in self._backends.embedding_capabilities:
-            # Same rescue set `_add_prepared` allows, so a composition `add()` accepts is not
-            # one `settle()` refuses after the record is already durable.
-            fallback_unsupported(
-                memory.content,
-                self._backends.embedding_capabilities,
-                "embedding",
-                rescuable=self._speech.transcript_fallback(memory.content.assets),
-            )
-        memory = self._embedding.prepare(memory, operation)
-        vectors, parts = self._embedding.embed_document_parts(
-            tuple(
-                (memory, object_part, model_input)
-                for object_part, model_input in enumerate(self._embedding.inputs(memory.content))
-            )
+        memory = documents[0]
+        enriched = replace(
+            row, content=memory.content.text, parts=memory.content.parts, updated_at=now
         )
-        selector_map = text_selector_map(
-            memory.content,
-            raw_observation=(row.context is None or row.context.kind is MemoryKind.OBSERVATION),
-        )
-        now = datetime.now(timezone.utc)
-        enriched = replace(row, content=memory.content.text, updated_at=now)
         with (
             self._trace("sensemem.storage.write", kind="stage"),
             translate_storage_errors("settle captured memory"),
@@ -994,23 +1065,8 @@ class Ingestion(Traced):
             # leave the record retryable rather than searchable but silently unformed.
             committed = self._store.captures.settle_capture(
                 replace(enriched, context=None),
-                tuple(
-                    StoredEmbedding(
-                        embedding_id=embedding_row_id(row.memory_id, object_part),
-                        memory_id=row.memory_id,
-                        values=vector,
-                        model_id=self._backends.embedding_model,
-                        space_id=self._backends.space_id,
-                        task=DOCUMENT_TASK,
-                        created_at=now,
-                        object_part=object_part,
-                        normalized=True,
-                        text_selectors=selector_map.get(model_input, ()),
-                    )
-                    for (_memory, object_part, model_input), vector in zip(
-                        parts, vectors, strict=True
-                    )
-                ),
+                embeddings,
+                enqueued_at=enqueued_at,
                 speech_plans=operation.speech_plans,
             )
         if not committed:

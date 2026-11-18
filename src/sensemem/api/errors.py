@@ -23,11 +23,7 @@ _RETRY_AFTER_SECONDS = "1"
 # gets the code, reason, and stage without the local path or row the failure names.
 _PRIVATE_SUBJECT_CODES = frozenset({"index_unavailable", "internal_error", "storage_error"})
 
-# The whole transport mapping, keyed by `reason` alone. Keying on the reason rather than on the
-# exception class or the raise site is the contract: one condition gets one status wherever it is
-# raised from, so a raise site cannot invent a second answer for a condition already mapped, and
-# adding a reason means adding a row here. `SenseMemError.reason` is a closed vocabulary; a
-# reason with no row falls back to its code, which is deliberately coarse.
+# Classify known reasons consistently across endpoints; unclassified errors use STATUS_BY_CODE.
 REASON_STATUS: Mapping[str, int] = {
     "memory_not_found": status.HTTP_404_NOT_FOUND,
     "identity_not_found": status.HTTP_404_NOT_FOUND,
@@ -40,10 +36,7 @@ REASON_STATUS: Mapping[str, int] = {
     "unsupported_modality": status.HTTP_422_UNPROCESSABLE_CONTENT,
     "unexpected": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "schema_unsupported": status.HTTP_500_INTERNAL_SERVER_ERROR,
-    # `io_failed` is the coarse label the storage wrapper puts on any failure it cannot classify,
-    # programming errors included, and it is deliberately not retryable. 503 would tell a client
-    # the opposite, so it says 500. `instance_unusable` is the same shape: a closed or forked
-    # instance cannot be revived by the caller repeating the call.
+    # Repeating a database/IO failure or a call on a closed/forked instance does not fix it.
     "io_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "instance_unusable": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "backend_not_configured": status.HTTP_501_NOT_IMPLEMENTED,
@@ -56,8 +49,7 @@ REASON_STATUS: Mapping[str, int] = {
     "asset_changed": status.HTTP_502_BAD_GATEWAY,
     "model_failed": status.HTTP_502_BAD_GATEWAY,
     "model_refused": status.HTTP_502_BAD_GATEWAY,
-    # Every retryable reason lands here, and `test_every_retryable_reason_says_503` proves it:
-    # an agent that reads 503 plus `Retry-After` must not have to also read the reason.
+    # Retryable reasons use 503 and Retry-After.
     "connection_failed": status.HTTP_503_SERVICE_UNAVAILABLE,
     "capacity_exceeded": status.HTTP_503_SERVICE_UNAVAILABLE,
     "timeout": status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -67,8 +59,7 @@ REASON_STATUS: Mapping[str, int] = {
     "flush_failed": status.HTTP_503_SERVICE_UNAVAILABLE,
     "index_missing": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
-# The fallback for the raise sites that pass no reason at all. Coarse on purpose: it says only
-# whether the failure is upstream or local, which is all an unclassified raise can honestly say.
+# Defaults for errors without a classified reason.
 STATUS_BY_CODE: Mapping[str, int] = {
     "sensemem_error": status.HTTP_500_INTERNAL_SERVER_ERROR,
     "internal_error": status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -149,11 +140,11 @@ def register_error_handlers(app: FastAPI) -> None:
 def exception_response(error: Exception) -> JSONResponse:
     """Map an operation failure to the stable REST envelope, including during SSE."""
     if isinstance(error, SenseMemError):
-        status_code, message = _public_error(error)
+        status_code = _public_status(error)
         return error_response(
             status_code,
             error.code,
-            message,
+            error_message(error),
             reason=error.reason,
             retryable=error.retryable,
             stage=error.stage,
@@ -165,7 +156,7 @@ def exception_response(error: Exception) -> JSONResponse:
             ),
         )
     trace_id = _trace_id()
-    _LOGGER.error("unhandled API error", exc_info=error, extra={"trace_id": trace_id})
+    _LOGGER.error("unhandled API error (%s)", type(error).__name__, extra={"trace_id": trace_id})
     return error_response(
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         "internal_error",
@@ -203,11 +194,6 @@ def error_response(
         content=body.model_dump(mode="json"),
         headers=headers,
     )
-
-
-def _public_error(error: SenseMemError) -> tuple[int, str]:
-    """Map a public failure onto a status that says whether the same call can ever succeed."""
-    return _public_status(error), error_message(error)
 
 
 def _public_status(error: SenseMemError) -> int:

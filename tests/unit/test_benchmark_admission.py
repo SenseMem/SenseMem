@@ -16,22 +16,20 @@ from sensemem import (
     AsyncMemory,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
     SearchHit,
 )
-from sensemem.benchmarks import eval as eval_module
-from sensemem.benchmarks.eval import (
-    _answer_many,
-    _measure_standalone_searches,
-    _model_operation,
-    run_loaded_task,
-)
+from sensemem.benchmarks import eval_ingest as eval_ingest_module
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
+from sensemem.benchmarks.eval_answers import _answer_many
 from sensemem.benchmarks.eval_arms import PRODUCT_ARM, _Arm
+from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
+from sensemem.benchmarks.eval_runner import _measure_standalone_searches, run_loaded_task
+from sensemem.benchmarks.eval_runtime import _model_operation
 from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.task_catalog import TaskSpec
@@ -91,7 +89,7 @@ async def test_streaming_evaluation_queues_excess_requests_per_store(
                 data_dir,
                 embedder=TinyEmbedder(),
                 answerer=answerer,
-                config=MemoryConfig(minimum_relevance=0),
+                settings=MemorySettings(minimum_relevance=0),
             )
         )
 
@@ -121,10 +119,12 @@ async def test_streaming_evaluation_queues_excess_requests_per_store(
             task,
             run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
             memory_factory=memory_factory,
-            batch_size=1,
-            unit_concurrency=unit_count,
-            request_concurrency=request_concurrency,
-            recall_limit=1,
+            options=EvaluationOptions(
+                batch_size=1,
+                unit_concurrency=unit_count,
+                request_concurrency=request_concurrency,
+                recall_limit=1,
+            ),
         )
     finally:
         release.set()
@@ -193,7 +193,7 @@ async def test_ingest_and_answers_share_the_process_model_budget(tmp_path: Path)
                 path,
                 embedder=Embedder(),
                 answerer=Answerer(),
-                config=MemoryConfig(minimum_relevance=0),
+                settings=MemorySettings(minimum_relevance=0),
             )
         )
 
@@ -218,10 +218,9 @@ async def test_ingest_and_answers_share_the_process_model_budget(tmp_path: Path)
             task,
             run=BenchmarkRun(tmp_path / "stores", "fixture", "mixed"),
             memory_factory=factory,
-            batch_size=1,
-            unit_concurrency=16,
-            request_concurrency=128,
-            recall_limit=1,
+            options=EvaluationOptions(
+                batch_size=1, unit_concurrency=16, request_concurrency=128, recall_limit=1
+            ),
         )
     finally:
         release.set()
@@ -292,10 +291,10 @@ async def test_ingest_backoff_releases_model_capacity_and_can_be_cancelled(
             await resume.wait()
             await operation()
 
-    monkeypatch.setattr(eval_module, "_retry_transient", retry)
+    monkeypatch.setattr(eval_ingest_module, "_retry_transient", retry)
     async with AsyncMemory(Memory(tmp_path, embedder=Embedder())) as memory:
         pending = asyncio.create_task(
-            eval_module._ingest(
+            eval_ingest_module._ingest(
                 memory,
                 (MemoryItem("evidence", ("evidence",)),),
                 batch_size=1,
@@ -360,10 +359,9 @@ async def test_cancelled_evaluation_waits_for_every_store_to_close(tmp_path: Pat
             task,
             run=BenchmarkRun(tmp_path / "stores", "fixture", "cancel"),
             memory_factory=TrackedMemory,
-            batch_size=1,
-            unit_concurrency=2,
-            request_concurrency=28,
-            recall_limit=1,
+            options=EvaluationOptions(
+                batch_size=1, unit_concurrency=2, request_concurrency=28, recall_limit=1
+            ),
         )
     )
     try:
@@ -413,7 +411,9 @@ class _ConcurrentQueries(TinyEmbedder):
 @pytest.mark.asyncio
 async def test_non_streaming_evaluation_queues_excess_requests_per_store(tmp_path: Path) -> None:
     embedder = _ConcurrentQueries()
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         memory.add("The answer is A.")
         try:
             outcomes = await _answer_many(
@@ -422,8 +422,7 @@ async def test_non_streaming_evaluation_queues_excess_requests_per_store(tmp_pat
                     EvalQuestion(f"q{index}", ("What is the answer?",), references=("A",))
                     for index in range(128)
                 ),
-                request_concurrency=128,
-                recall_limit=1,
+                options=EvaluationOptions(request_concurrency=128, recall_limit=1),
                 arm=_Arm("random"),
             )
         finally:
@@ -470,7 +469,9 @@ async def test_search_replay_queues_excess_requests_per_store(tmp_path: Path) ->
         "1" * 64,
         (EvalUnit("unit", (), questions),),
     )
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         memory.add("The answer is A.")
         telemetry = EvaluationTelemetry()
         try:

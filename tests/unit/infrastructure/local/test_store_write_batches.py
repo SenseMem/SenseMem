@@ -60,10 +60,10 @@ def test_batch_selector_reads_scale_with_parents_instead_of_embedding_keys(
             store.records.write_memories(memories)
         with store._connections.connection() as connection:
             connection.set_trace_callback(statements.append)
-        if replacement:
-            store.records.replace_memory_embeddings(memories, embeddings)
-        else:
-            assert store.records.write_memories(memories, embeddings) == (True,) * 4
+        assert (
+            store.records.write_memories(memories, embeddings, replace_embeddings=replacement)
+            == (not replacement,) * 4
+        )
         content_reads = [
             statement
             for statement in statements
@@ -110,10 +110,7 @@ def test_invalid_selector_rolls_back_the_batch_and_its_outbox(
         previous_selectors = store.index.read_text_selectors(embedding_ids)
         previous_operations = store.index.pending_index_operations()
         with pytest.raises(ValueError, match="text selector"):
-            if replacement:
-                store.records.replace_memory_embeddings(memories, (first, second))
-            else:
-                store.records.write_memories(memories, (first, second))
+            store.records.write_memories(memories, (first, second), replace_embeddings=replacement)
         assert store.records.read_memories(ids) == previous_memories
         assert store.index.read_text_selectors(embedding_ids) == previous_selectors
         assert store.index.pending_index_operations() == previous_operations
@@ -151,7 +148,7 @@ def test_replacing_embeddings_removes_old_selectors_and_queues_both_index_action
         store.records.write_memory(memory, old)
         pending = store.index.pending_index_operations()
         assert store.index.acknowledge_index_operations(pending) == len(pending)
-        store.records.replace_memory_embeddings((changed,), new)
+        assert store.records.write_memories((changed,), new, replace_embeddings=True) == (False,)
         assert store.records.read_memory(memory.memory_id) == changed
         assert store.index.read_embedding(old[1].embedding_id) is None
         ids = tuple(row.embedding_id for row in (*old, new[1]))

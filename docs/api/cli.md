@@ -9,14 +9,18 @@ or [exit codes](#exit-codes).
 
 ## Surface
 
-`sensemem` provides 32 SDK operation commands plus `doctor`; each invocation runs one command in
-one process and emits one JSON result. Local commands dispatch to the corresponding `Memory`
+Each `sensemem` invocation runs one command in one process and emits one JSON result.
+Local commands dispatch to the corresponding `Memory`
 method, except for the diagnostic `doctor`; remote commands forward to a running owner's `/v1`
 route. The CLI owns argument decoding, composition selection, JSON projection, and exit-code
 mapping, not storage or retrieval policy.
 
 Benchmark commands belong to the separate `sensemem-bench` surface documented in
 [benchmarking](../benchmarking.md).
+
+`read_asset`, `replay_sources`, `prepare_input`, and `call_tool` are Python SDK methods without
+CLI commands. Use them through the SDK when reading media bytes, replaying observations into
+another store, preparing model input, or executing registered tools.
 
 ## Invoke the CLI
 
@@ -114,7 +118,7 @@ sensemem --embedder openai --former openai --vision openai add @panel.png
 | `settle` | optional `MEMORY_ID...`; `--limit`; `--max-attempts` | `{"settled":int}` | yes |
 | `pending-captures` | optional `MEMORY_ID...`; `--limit` | `{"pending":[...]}` | yes |
 | `search` | content; `--explain`; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--occurred-from`; `--occurred-until` | `{"hits":[...],"trace":null}` (or the requested trace) | yes |
-| `ask` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope`; `--link-identities`/`--no-link-identities` | answer object | yes (the server controls linking) |
+| `ask` | content; `--limit`; `--memory-type`; `--reference-at`; `--scope` | answer object | yes |
 | `compile` | content; `--max-chars`; `--max-items`; `--max-media-items`; repeatable `--memory-type`; `--min-confidence`; `--freshness-seconds`; `--max-latency-ms`; `--reference-at`; `--scope`; `--allow-partial-sources`; `--selected-proofs` | context bundle plus `rendered` | yes |
 | `get` | `MEMORY_ID` | memory object | yes |
 | `perceive` | `MEMORY_ID`; optional repeatable `--kind speech` / `--kind faces` | `{"speech":[...],"faces":[...],"coverage":[...]}` | yes when the owner enables `embodied_operations` |
@@ -231,19 +235,16 @@ retyped on each invocation.
 values use the CLI's `validation_error` exit status without sending a remote request.
 
 `forget` is cognitive forgetting, reversible with `rollback`; `delete` removes live records and
-unreferenced media, without a secure-erasure guarantee. With the
-default `reinforce_on_answer=True`, a non-abstained `ask` also reinforces backend-declared hits;
-abstention adds no reinforcement. Use `--app` to construct a memory with that policy disabled.
+unreferenced media, without a secure-erasure guarantee. Automatic answer reinforcement defaults to
+`False`. With `reinforce_on_answer=True`, a non-abstained `ask` also reinforces backend-declared
+hits; abstention adds no reinforcement. Use `--app` to construct a memory with an explicit policy.
 
-#### Answer-time identity linking
+#### Explicit identity binding
 
-`ask` may run face recognition on a retrieved photo or video before answering. With the default
-`--link-identities` (true), a voice-and-face pair corroborated across enough assets is fused into
-one identity and logged as a `merge` row, the same as `perceive_memory`; `--no-link-identities`
-still runs recognition to answer the question but never commits that bind. `--url` compositions
-send no such request to REST: `POST /v1/answers` decides the same question from `create_app`'s own
-`embodied_operations` switch instead, so `--link-identities` has no effect there and the remote
-answerer links identities only when the host has opted in to embodied operations.
+`ask` and `perceive` recognize evidence while keeping face and voice identities separate. A host
+can confirm a binding with a `merge` identity operation through local `apply --operation`; see the
+[SDK confirmation contract](python-identity.md#cross-modal-identity-binding). The operation is logged
+and reversible. The former `--link-identities` option has been removed.
 
 ### Content and JSONL input
 
@@ -300,6 +301,7 @@ for a completed answer, or SDK `ask_stream()` and the REST SSE endpoint for incr
 
 On success, stdout contains one JSON document and a trailing newline. Local results use the same
 memory, hit, answer, page, and deletion field vocabulary as [REST response objects](rest.md#response-objects).
+Memory and hit `parts` preserve the ordered text, asset references, and labelled derived sections.
 `search --explain` serializes the [Python retrieval trace](python-values.md).
 `SpeakerSegment` and `FaceObservation` use their public Python fields. Memory and hit documents
 carry `context` when typed semantics exist, identically in local and `--url` mode, with enum

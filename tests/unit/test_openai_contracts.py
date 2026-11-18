@@ -5,15 +5,18 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx2 as httpx
 import pytest
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
+from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from test_openai_sdk import _asset, _sdk_client, _search_hit
+from test_openai_adapters import _asset, _sdk_client, _search_hit, _stream_chunk
 
 import sensemem.recipes as recipes
 from sensemem import (
@@ -25,12 +28,12 @@ from sensemem import (
     ModelError,
     ModelInput,
     ObservationContext,
-    OpenAIModels,
     ValidationError,
 )
 from sensemem._telemetry import model_span
 from sensemem.api.errors import exception_response
-from sensemem.recall import parse_recall_plan
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.recall import parse_recall_program
 
 NOW = datetime(2026, 10, 26, tzinfo=timezone.utc)
 
@@ -62,7 +65,7 @@ def test_reasoning_plans_omit_sampling_and_use_completion_budget(model: str) -> 
         return _reply('{"shape":"point","steps":[{"op":"similar"}]}')
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(client), generation_model=model, generation_max_tokens=800
         )
         adapter.plan_recall(
@@ -77,7 +80,7 @@ def test_reasoning_plans_omit_sampling_and_use_completion_budget(model: str) -> 
 @pytest.mark.parametrize("control", [{"generation_temperature": 0.0}, {"generation_seed": 0}])
 def test_unsupported_explicit_reasoning_sampler_fails_before_http(control: dict[str, Any]) -> None:
     with pytest.raises(ValidationError, match="not support"):
-        OpenAIModels(generation_model="gpt-5-mini", **control)
+        OpenAICompletion(generation_model="gpt-5-mini", **control)
 
 
 @pytest.mark.parametrize(
@@ -89,7 +92,7 @@ def test_default_non_reasoning_models_preserve_explicit_temperature(model: str) 
         return _reply("blue")
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(transport), generation_model=model, generation_temperature=0.1
         )
         assert (
@@ -97,7 +100,7 @@ def test_default_non_reasoning_models_preserve_explicit_temperature(model: str) 
             == "blue"
         )
     with pytest.raises(ValidationError, match="not support"):
-        OpenAIModels(
+        OpenAICompletion(
             generation_model=model,
             generation_temperature=0.1,
             generation_extra_body={"reasoning_effort": "medium"},
@@ -113,7 +116,7 @@ def test_reasoning_vision_does_not_inject_a_sampler(tmp_path: Path) -> None:
         return _reply('{"descriptions":["Shown: blue toolbox"]}')
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
         )
         assert adapter.describe((ModelInput(assets=(image,)),)) == ("Shown: blue toolbox",)
@@ -140,7 +143,7 @@ def test_safety_refusal_is_not_retried_or_exposed(stream: bool) -> None:
         return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_stream=stream)
+        adapter = OpenAICompletion(_sdk_client(client), generation_stream=stream)
         with pytest.raises(ModelError) as failure:
             adapter.plan_recall("question", reference_at=NOW, corpus_digest="1 text record")
     assert failure.value.reason == "model_refused"
@@ -166,7 +169,7 @@ def test_answer_refusal_cannot_be_a_successful_partial_answer(stream: bool) -> N
         return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client))
+        adapter = OpenAICompletion(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             if stream:
                 assert (
@@ -198,7 +201,7 @@ def test_provider_failures_publish_recovery_contract(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client))
+        adapter = OpenAICompletion(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             adapter.answer(ModelInput(text="question"), (_search_hit(),))
     assert failure.value.reason == reason
@@ -260,7 +263,7 @@ def test_answer_context_rejection_preserves_evidence_and_does_not_retry(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
         )
         with pytest.raises(ModelError) as failure:
@@ -292,7 +295,7 @@ def test_provider_payload_rejection_is_permanent_and_private(
         return httpx.Response(413, text="<html>private provider detail</html>")
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client))
+        adapter = OpenAICompletion(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             if stream:
                 list(adapter.stream_answer(ModelInput(text="question"), (_search_hit(),)))
@@ -325,7 +328,7 @@ def test_answer_text_ceiling_matches_emitted_utf8_text(
         return _reply("blue")
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
         )
         assert adapter.answer(ModelInput(text="什么颜色?"), (hit,)).answer == "blue"
@@ -338,9 +341,11 @@ def test_answer_text_ceiling_matches_emitted_utf8_text(
                 else [part["text"] for part in message["content"] if part["type"] == "text"]
             )
         )
-        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes)
+        monkeypatch.setattr("sensemem.models._openai_requests._MAX_GROUNDED_TEXT_BYTES", text_bytes)
         assert adapter.answer(ModelInput(text="什么颜色?"), (hit,)).answer == "blue"
-        monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", text_bytes - 1)
+        monkeypatch.setattr(
+            "sensemem.models._openai_requests._MAX_GROUNDED_TEXT_BYTES", text_bytes - 1
+        )
         with pytest.raises(ModelError) as failure:
             adapter.answer(ModelInput(text="什么颜色?"), (hit,))
     assert len(sent) == 2
@@ -366,7 +371,7 @@ def test_trace_keeps_request_id_without_provider_bodies(failed: bool) -> None:
         httpx.Client(transport=httpx.MockTransport(respond)) as client,
         model_span(provider.get_tracer("contract"), "model", attributes={}),
     ):
-        adapter = OpenAIModels(_sdk_client(client))
+        adapter = OpenAICompletion(_sdk_client(client))
         if failed:
             with pytest.raises(ModelError):
                 adapter.answer(ModelInput(text="private question"), (_search_hit(),))
@@ -401,7 +406,7 @@ def test_streamed_upstream_error_preserves_recovery_contract(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client))
+        adapter = OpenAICompletion(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             list(adapter.stream_answer(ModelInput(text="question"), (_search_hit(),)))
     assert failure.value.reason == reason
@@ -439,7 +444,7 @@ def test_strict_formation_uses_schema_but_still_rejects_invented_witnesses() -> 
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_response_format="json_schema")
+        adapter = OpenAICompletion(_sdk_client(client), generation_response_format="json_schema")
         source = FormationInput(
             "source", ModelInput(text="The toolbox is blue."), ObservationContext()
         )
@@ -447,8 +452,8 @@ def test_strict_formation_uses_schema_but_still_rejects_invented_witnesses() -> 
 
 
 def test_json_schema_changes_persisted_recipes() -> None:
-    plain = OpenAIModels(generation_response_format="json_object")
-    strict = OpenAIModels(generation_response_format="json_schema")
+    plain = OpenAICompletion(generation_response_format="json_object")
+    strict = OpenAICompletion(generation_response_format="json_schema")
     assert strict.formation_space != plain.formation_space
     assert strict.vision_space != plain.vision_space
     assert strict.consolidation_recipe != plain.consolidation_recipe
@@ -465,7 +470,7 @@ def test_generation_store_is_explicit_for_answering_and_structural_calls(store: 
         return _reply('{"shape":"point","steps":[]}' if "response_format" in body else "Blue.")
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_store=store)
+        adapter = OpenAICompletion(_sdk_client(client), generation_store=store)
         adapter.answer(ModelInput(text="What color?"), (_search_hit(),))
         adapter.plan_recall("What color?", reference_at=NOW, corpus_digest="1 text record")
     assert len(calls) == 2
@@ -476,12 +481,12 @@ def test_generation_store_is_explicit_for_answering_and_structural_calls(store: 
 @pytest.mark.parametrize("value", [None, 0, 1, "false"])
 def test_generation_store_rejects_non_boolean_values(value: object) -> None:
     with pytest.raises(ValidationError, match="generation_store"):
-        OpenAIModels(generation_store=cast(bool, value))
+        OpenAICompletion(generation_store=cast(bool, value))
 
 
 def test_extra_body_cannot_override_storage_policy() -> None:
     with pytest.raises(ValidationError, match="request contract"):
-        OpenAIModels(generation_extra_body={"store": True})
+        OpenAICompletion(generation_extra_body={"store": True})
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -507,7 +512,7 @@ def test_http_safety_refusal_never_retries_by_removing_media(
         return httpx.Response(400, json={"error": {"code": code, "message": message}})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.VIDEO})
         )
         with pytest.raises(ModelError) as failed:
@@ -534,7 +539,7 @@ def test_explicit_provider_code_prevents_message_based_media_fallback(tmp_path: 
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(
+        adapter = OpenAICompletion(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.VIDEO})
         )
         with pytest.raises(ModelError) as failed:
@@ -544,8 +549,8 @@ def test_explicit_provider_code_prevents_message_based_media_fallback(tmp_path: 
 
 
 def test_vision_recipe_uses_effective_sampling_controls() -> None:
-    implicit = OpenAIModels(generation_model="compatible-model")
-    explicit = OpenAIModels(
+    implicit = OpenAICompletion(generation_model="compatible-model")
+    explicit = OpenAICompletion(
         generation_model="compatible-model", generation_temperature=0.0, generation_seed=0
     )
     assert implicit.vision_space == explicit.vision_space
@@ -553,7 +558,7 @@ def test_vision_recipe_uses_effective_sampling_controls() -> None:
 
 def test_invalid_response_format_fails_locally() -> None:
     with pytest.raises(ValidationError, match="generation_response_format"):
-        OpenAIModels(generation_response_format=cast(Any, "invalid"))
+        OpenAICompletion(generation_response_format=cast(Any, "invalid"))
 
 
 @pytest.mark.parametrize(
@@ -568,7 +573,7 @@ def test_consolidation_errors_do_not_quote_model_output(reply: str) -> None:
         return _reply(reply)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client))
+        adapter = OpenAICompletion(_sdk_client(client))
         with pytest.raises(ModelError) as failure:
             adapter.consolidate(
                 (MemoryRecord(id="source", content="private memory body", created_at=NOW),),
@@ -603,10 +608,10 @@ def test_strict_recall_output_round_trips_through_semantic_parser(op: str) -> No
         return _reply(json.dumps({"shape": shape, "steps": steps}))
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_response_format="json_schema")
+        adapter = OpenAICompletion(_sdk_client(client), generation_response_format="json_schema")
         payload = adapter.plan_recall("question", reference_at=NOW, corpus_digest="10 text records")
     assert payload is not None
-    plan = parse_recall_plan(payload, reference_at=NOW)
+    plan = parse_recall_program(payload, reference_at=NOW)
     assert plan is not None
     assert plan.steps[-1].op == op
 
@@ -619,22 +624,22 @@ def test_json_stream_close_failure_preserves_usage_and_primary_refusal(
     class Stream:
         closed = False
 
-        def __iter__(self) -> Iterator[object]:
-            yield SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
+        def __iter__(self) -> Iterator[ChatCompletionChunk]:
+            yield _stream_chunk(
+                [
+                    ChunkChoice(
                         index=0,
                         finish_reason="stop",
-                        delta=SimpleNamespace(
+                        delta=ChoiceDelta(
                             content=None if refused else '{"shape":"point","steps":[]}',
                             refusal="private refusal" if refused else None,
                         ),
                     )
                 ]
             )
-            yield SimpleNamespace(
-                choices=[],
-                usage=SimpleNamespace(
+            yield _stream_chunk(
+                [],
+                usage=CompletionUsage(
                     prompt_tokens=4,
                     completion_tokens=3,
                     total_tokens=7,
@@ -657,7 +662,7 @@ def test_json_stream_close_failure_preserves_usage_and_primary_refusal(
     ):
         client = _sdk_client(transport)
         monkeypatch.setattr(client.chat.completions, "create", lambda **_kwargs: stream)
-        adapter = OpenAIModels(client, generation_stream=True)
+        adapter = OpenAICompletion(client, generation_stream=True)
         with pytest.raises(ModelError) as failure:
             adapter.plan_recall("question", reference_at=NOW, corpus_digest="1 text record")
     expected_reason = "connection_failed" if iterator_failure else None
@@ -726,7 +731,7 @@ def test_strict_protocol_is_not_downgraded_after_provider_rejection() -> None:
         return httpx.Response(400, json={"error": {"message": "Unsupported response format"}})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        adapter = OpenAIModels(_sdk_client(transport), generation_response_format="json_schema")
+        adapter = OpenAICompletion(_sdk_client(transport), generation_response_format="json_schema")
         with pytest.raises(ModelError) as failure:
             adapter.plan_recall("question", reference_at=NOW, corpus_digest="1 text record")
     assert failure.value.reason == "request_rejected"
@@ -755,7 +760,7 @@ def test_malformed_retry_keeps_all_request_ids() -> None:
         httpx.Client(transport=httpx.MockTransport(respond)) as transport,
         model_span(provider.get_tracer("retry"), "model", attributes={}),
     ):
-        adapter = OpenAIModels(_sdk_client(transport))
+        adapter = OpenAICompletion(_sdk_client(transport))
         assert adapter.form(
             (FormationInput("source", ModelInput(text="blue toolbox"), ObservationContext()),)
         ) == ((),)

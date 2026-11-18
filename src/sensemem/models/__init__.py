@@ -3,15 +3,10 @@
 from sensemem.models.base import (
     EmbeddingBackend,
     EmbedTask,
-    FaceAnalysis,
     FaceBackend,
-    FaceEmbedding,
     GenerationBackend,
     ModelInput,
-    SpeakerEmbedding,
-    SpeechAnalysis,
     SpeechBackend,
-    SpeechTurn,
     TranscriptionBackend,
 )
 from sensemem.models.funasr import (
@@ -27,6 +22,13 @@ from sensemem.models.funasr import (
 )
 from sensemem.models.opencv_face import OpenCVFaceAnalyzer
 from sensemem.models.sentence_transformers import SentenceTransformersEmbedder
+from sensemem.perception import (
+    FaceAnalysis,
+    FaceEmbedding,
+    SpeakerEmbedding,
+    SpeechAnalysis,
+    SpeechTurn,
+)
 
 __all__ = [
     "DEFAULT_FUNASR_MODEL_ID",

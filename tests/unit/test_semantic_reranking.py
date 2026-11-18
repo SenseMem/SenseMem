@@ -18,16 +18,18 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sensemem import (
     Blob,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ObservationContext,
     RetrievalMode,
     RetrievalScope,
 )
 from sensemem._telemetry import MODEL_REQUEST_COUNT
+from sensemem.content import ContentInput
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models.base import EmbedTask, ModelInput
-from sensemem.types import ContentInput, MemoryType, RetrievalCandidateTrace
+from sensemem.records import RetrievalCandidateTrace
+from sensemem.types import MemoryCategory
 
 
 class Embedder:
@@ -96,7 +98,7 @@ def test_complete_eligible_pool_is_reranked_before_limit_without_rewriting_score
         embedder=Embedder(),
         reranker=reranker,
         tracer=provider.get_tracer("test"),
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -135,35 +137,35 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
         tmp_path,
         embedder=embedder,
         reranker=reranker,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         live = memory.add(
             "cancelled live",
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             occurred_at=now,
             context=ObservationContext(place_id="visible"),
         )
         stale = memory.add(
             "stale source",
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             occurred_at=now,
             context=ObservationContext(place_id="visible"),
         )
         memory.add(
             "wrong type",
-            memory_type=MemoryType.PROCEDURAL,
+            memory_type=MemoryCategory.PROCEDURAL,
             occurred_at=now,
             context=ObservationContext(place_id="visible"),
         )
         memory.add(
             "outside requested time",
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             occurred_at=datetime(2022, 1, 1, tzinfo=timezone.utc),
             context=ObservationContext(place_id="visible"),
         )
         memory.add(
             "outside requested place",
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             occurred_at=now,
             context=ObservationContext(place_id="other"),
         )
@@ -172,7 +174,7 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
             connection.execute("DELETE FROM memory_records WHERE memory_id=?", (stale.id,))
         result = memory.search(
             "live",
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             occurred_from=now,
             scope=scope,
             limit=5,
@@ -191,11 +193,13 @@ def test_reranker_never_receives_stale_out_of_range_or_wrong_type_sources(tmp_pa
         tmp_path,
         embedder=embedder,
         reranker=Reranker(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as rebuilt:
         assert embedder.document_calls == document_calls
         assert (
-            rebuilt.search("live", memory_type=MemoryType.EPISODIC, occurred_from=now, scope=scope)
+            rebuilt.search(
+                "live", memory_type=MemoryCategory.EPISODIC, occurred_from=now, scope=scope
+            )
             .hits[0]
             .id
             == live.id
@@ -211,7 +215,7 @@ def test_empty_text_media_keep_positions_and_media_only_queries_skip_text_rerank
         tmp_path,
         embedder=Embedder(),
         reranker=reranker,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -240,7 +244,7 @@ def test_invalid_reranking_output_is_explicit_instead_of_silent_fallback(
         tmp_path,
         embedder=Embedder(),
         reranker=Reranker(scores=scores),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("first")
         memory.add("second")
@@ -258,7 +262,7 @@ def test_reranker_failure_is_sanitized_and_existing_ambiguity_policy_still_appli
         tmp_path,
         embedder=Embedder(),
         reranker=reranker,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0.1),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0.1),
     ) as memory:
         memory.add("first")
         memory.add("second")
@@ -311,7 +315,7 @@ def test_native_reranking_automatically_includes_original_query_and_candidate_me
         tmp_path,
         embedder=Embedder(),
         reranker=reranker,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -365,7 +369,7 @@ def test_candidate_media_stay_readable_during_reranking_and_are_released_on_fail
         tmp_path,
         embedder=Embedder(),
         reranker=DeletingReranker(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:

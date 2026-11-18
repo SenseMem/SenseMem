@@ -82,8 +82,9 @@ def route_input(
         return value
     if (
         missing == {Modality.TEXT}
-        and (prepared.audio_transcript or prepared.visual_description)
+        and any(kind not in {"text", "asset"} for kind, _text in prepared.canonical_parts)
         and value.assets
+        and not any(kind == "text" and text.strip() for kind, text in prepared.canonical_parts)
     ):
         return ModelInput(assets=value.assets)
     unsupported = []
@@ -111,4 +112,4 @@ def route_input(
             f"configured {operation} model has no usable representation",
             reason="unsupported_modality",
         )
-    return ModelInput(text=text, assets=assets)
+    return ModelInput(text=text, assets=assets, parts=value.parts)

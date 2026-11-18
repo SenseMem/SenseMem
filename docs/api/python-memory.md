@@ -12,7 +12,7 @@ See [construction and content](python-sdk.md), [identity and data lifecycle](pyt
 | Write searchable records | [add](#add), [add_many](#add_many), [add_stream](#add_stream) |
 | Defer model work | [capture](#capture), [settle](#settle), [pending_captures](#pending_captures) |
 | Recall or answer | [search](#search), [ask](#ask), [ask_stream](#ask_stream), [compile](#compile) |
-| Read or maintain | [get](#get), [list](#list), [reinforce](#reinforce), [delete](#delete), [reindex](#reindex), [optimize](#optimize) |
+| Read or maintain | [get](#get), [read_asset](#read_asset), [list](#list), [replay_sources](#replay_sources), [reinforce](#reinforce), [delete](#delete), [reindex](#reindex), [optimize](#optimize) |
 
 ## add
 
@@ -23,13 +23,17 @@ add(
     occurred_at: datetime | None = None,
     occurred_end: datetime | None = None,
     metadata: Mapping[str, object] | None = None,
-    memory_type: MemoryType = MemoryType.SEMANTIC,
+    memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
     context: ObservationContext | None = None,
 ) -> MemoryRecord
 ```
 
 Adds one content-addressed record, searchable on return. Repeating completed canonical input
 is idempotent; pending capture/formation work can still run on retry. Original media remains stored.
+Observation identity includes original ordered text/media parts, metadata, event time, memory type,
+and observation context. Model-derived transcripts, descriptions, and interpretations do not
+create a new original source. Different metadata, times, or contexts can still create distinct
+records; use `ObservationContext.source_id` when the host knows several records share one origin.
 
 ## add_many
 
@@ -40,7 +44,7 @@ add_many(
     occurred_at: Sequence[datetime | None] | None = None,
     occurred_end: Sequence[datetime | None] | None = None,
     metadata: Sequence[Mapping[str, object] | None] | None = None,
-    memory_type: MemoryType = MemoryType.SEMANTIC,
+    memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
     context: Sequence[ObservationContext | None] | None = None,
 ) -> tuple[MemoryRecord, ...]
 ```
@@ -72,7 +76,7 @@ capture(
     occurred_at: datetime | None = None,
     occurred_end: datetime | None = None,
     metadata: Mapping[str, object] | None = None,
-    memory_type: MemoryType = MemoryType.SEMANTIC,
+    memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
     context: ObservationContext | None = None,
 ) -> MemoryRecord
 ```
@@ -80,6 +84,10 @@ capture(
 Returns after SQLite commit and before model work. New records are available to get/list and
 invisible to search/ask/compile until settled. Existing searchable records retain vectors/readiness.
 IDs match add for the same input. The same embedder-capability boundary rejects unusable input.
+
+`MemoryRecord.parts` preserves the original text/media sequence through capture, settlement,
+reopening, search, and compilation. Asset parts refer to `record.assets` by ID; derived transcript
+and description parts remain distinguishable from caller text.
 
 ## settle
 
@@ -112,6 +120,7 @@ pending_captures(
     *,
     limit: int = 100,
     memory_ids: Sequence[str] | None = None,
+    cursor: str | None = None,
 ) -> tuple[PendingCapture, ...]
 ```
 
@@ -121,6 +130,8 @@ record is searchable and owes typed formation. A short-lived formation row under
 
 Use `memory_ids` to inspect specific rows. Absence means settled or never stored; get distinguishes
 the two. See [the backlog runbook](../operations.md#capture-backlog-before-a-snapshot).
+Pass the last item's `cursor` to continue in enqueue order, including when that row has since
+settled or been deleted. A full page may have a following page; an empty page ends traversal.
 
 ## search
 
@@ -129,7 +140,7 @@ search(
     query: ContentInput,
     *,
     limit: int = 10,
-    memory_type: MemoryType | None = None,
+    memory_type: MemoryCategory | None = None,
     reference_at: datetime | None = None,
     occurred_from: datetime | None = None,
     occurred_until: datetime | None = None,
@@ -163,10 +174,9 @@ ask(
     question: ContentInput,
     *,
     limit: int = 5,
-    memory_type: MemoryType | None = None,
+    memory_type: MemoryCategory | None = None,
     reference_at: datetime | None = None,
     scope: RetrievalScope | None = None,
-    link_identities: bool = True,
     answer_policy: AnswerPolicy = "strict",
 ) -> AnswerResult
 ```
@@ -182,8 +192,8 @@ the most likely supported answer or offered choice, marking low confidence. Its 
 can therefore contain a useful answer and `abstained=True` together. With no hits, best-effort still
 calls the model and reports `no_evidence`. Recognized marker text is removed from the terminal answer.
 
-`link_identities=True` permits corroborated voice/face merges during answer-time recognition, logged
-and reversible. `False` still recognizes faces but commits no merge or new link.
+Answer-time recognition keeps face and voice identities separate. A host confirms bindings through
+the [identity SDK](python-identity.md#cross-modal-identity-binding).
 
 ### Answer grounding
 
@@ -217,9 +227,10 @@ determine higher-order unions. `supporting_record_count` counts unique `evidence
 or independent corroboration. Source origin and supersession are separate relations unless also
 cited. Omitted media is counted by modality beside retained text.
 
-Non-abstained results reinforce backend-declared canonical hits when `reinforce_on_answer=True`.
-Abstention records query failure without reinforcement. Set the option false for independent
-evaluation questions. Declared use is not verified support.
+Automatic answer reinforcement defaults to `False`. Opting into `reinforce_on_answer=True`
+reinforces backend-declared canonical hits for non-abstained answers. Declared use is not verified
+support; hosts can instead call `reinforce()` after observing a useful outcome.
+Abstention records query failure without reinforcement.
 
 Planning and packing controls live in [runtime settings](../configuration/settings.md).
 
@@ -230,10 +241,9 @@ ask_stream(
     question: ContentInput,
     *,
     limit: int = 5,
-    memory_type: MemoryType | None = None,
+    memory_type: MemoryCategory | None = None,
     reference_at: datetime | None = None,
     scope: RetrievalScope | None = None,
-    link_identities: bool = True,
     answer_policy: AnswerPolicy = "strict",
 ) -> Generator[AnswerChunk, None, AnswerResult]
 ```
@@ -274,13 +284,23 @@ compile(
     reference_at: datetime | None = None,
     scope: RetrievalScope | None = None,
     allow_partial_sources: bool = False,
+    supplements: Sequence[ContextSupplement] = (),
 ) -> ContextBundle
 ```
 
-Retrieves once and returns `ContextBundle` without generation or conflict resolution.
+Returns `ContextBundle` without answer generation or conflict resolution. By default it retrieves
+once; configured recall planning can add one bounded, goal-directed read program.
 It may cache a spoken-query transcript and record an empty-query signal. The complete contract,
 budget prices, source closure, selected proofs, excerpts, compact presentation, actors, and
 unknowns are owned by [Context compilation](../context-compilation.md).
+
+`supplements` accepts temporary external evidence supplied by the host or its agent, each with
+nonempty `content` and `source` and optional timezone-aware `observed_at`/`expires_at`. Admitted
+values are returned as `bundle.supplements`; `omitted_supplements` and `unknowns` report exclusions.
+They share `max_chars` and `max_items` with stored evidence, taking slots in submission order
+before memory packing. Compilation does not persist them. The same input is available on
+`AsyncMemory.compile()`; use [AsyncContextSource](python-streams.md#asynccontextsource) to receive
+results from an application-owned coroutine without blocking independent pipeline work.
 
 ## get
 
@@ -290,6 +310,43 @@ get(memory_id: str) -> MemoryRecord
 
 Returns the canonical record, including hidden/retired context. Unknown IDs raise
 `MemoryNotFoundError`.
+
+## read_asset
+
+```text
+read_asset(memory_id: str, asset_id: str) -> Blob
+```
+
+Returns the original media bytes and MIME type after checking membership and SHA-256 integrity.
+The asset stays leased during the read. Unknown memories raise `MemoryNotFoundError`; an asset
+outside the named record raises `ValidationError`. This lets remote hosts deliver source media
+without exposing local filesystem paths.
+
+## replay_sources
+
+```text
+replay_sources(destination: Memory) -> Generator[MemoryRecord, None, None]
+```
+
+Re-ingests eligible original observations in chronological order into another
+host-owned directory. Text/media order, source context, event time, metadata, and symbolic place
+are preserved; the destination runs its configured embedding and formation backends. Each yielded
+record is durable. Repeating replay is content-addressed and idempotent.
+
+Active observations and consolidation-retired originals still supporting current visible
+knowledge are eligible. The latter must connect through current positive support clauses;
+retained intermediate summaries may preserve that connection. Each retired source must be permitted
+for its specific parent, and every member of an AND clause must have available grounded support.
+Consolidation permission alone does not make an abandoned or corrected claim valid. The current
+bounded evidence loader authorizes only complete proofs it can establish; an omitted branch cannot
+authorize replay. Explicitly withdrawn sources are excluded, and rollback restores their eligibility
+when the supporting knowledge becomes valid again.
+
+Use this to rebuild observations under a new model or embedding recipe. It does not copy derived
+assertions or interpretations, unsupported retired observations, identity administration,
+consent history, or operation history;
+it is not a backup. Configure those host policies on the destination before replay. `AsyncMemory`
+provides an async iterator accepting another `AsyncMemory`.
 
 ## list
 

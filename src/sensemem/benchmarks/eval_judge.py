@@ -29,9 +29,10 @@ from sensemem._telemetry import (
     mark_model_requests,
     model_span,
 )
+from sensemem.benchmarks._official.personamem_v3_tasks import CLUSTER_TASK_TYPES
+from sensemem.benchmarks.artifact_io import encode_json_bytes
 from sensemem.benchmarks.eval_adapters import LoadedTask
 from sensemem.benchmarks.eval_arms import _Arm
-from sensemem.benchmarks.eval_artifacts import _json_bytes
 from sensemem.benchmarks.eval_cache import (
     CachedAnswer,
     ResponseCache,
@@ -69,7 +70,7 @@ from sensemem.benchmarks.official_scorers import (
     sample_primary_metric,
 )
 from sensemem.models._openai_protocol import output_limit_parameter, sampling_supported
-from sensemem.models.openai_sdk import (
+from sensemem.models._openai_telemetry import (
     _model_usage,
     _record_openai_provenance,
     _record_usage_batch,
@@ -137,7 +138,7 @@ class _JudgeRequestError(Exception):
         self.error = error
 
 
-async def _apply_judges(
+async def _apply_judges(  # noqa: C901 - shared-cluster planning retains per-sample failure handling
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
     *,
@@ -154,6 +155,8 @@ async def _apply_judges(
         for question in unit.questions
     }
     planned: dict[str, JudgePlan] = {}
+    cluster_owners: dict[tuple[str, str, str, str], str] = {}
+    cluster_aliases: dict[str, str] = {}
     for sample in samples:
         if (
             sample.error_code not in (None, "JudgeError")
@@ -173,6 +176,14 @@ async def _apply_judges(
             metadata=question.metadata,
         )
         if plan is not None:
+            cluster_id = question.metadata.get("cluster_id")
+            if sample.task == "personamem-v3" and cluster_id:
+                key = (sample.arm, sample.unit_id, str(cluster_id), sample.prediction)
+                owner = cluster_owners.get(key)
+                if owner is not None:
+                    cluster_aliases[sample.sample_id] = owner
+                    continue
+                cluster_owners[key] = sample.sample_id
             planned[sample.sample_id] = plan
     if not planned:
         return tuple(samples)
@@ -229,7 +240,21 @@ async def _apply_judges(
         await client.close()
         if cache is not None:
             cache.close()
-    return tuple(judged)
+    by_id = {sample.sample_id: sample for sample in judged}
+    return tuple(
+        replace(
+            sample,
+            metrics=by_id[cluster_aliases[sample.sample_id]].metrics,
+            score=by_id[cluster_aliases[sample.sample_id]].score,
+            judge_model=by_id[cluster_aliases[sample.sample_id]].judge_model,
+            scorer_details=by_id[cluster_aliases[sample.sample_id]].scorer_details,
+            scorer_error=by_id[cluster_aliases[sample.sample_id]].scorer_error,
+            error_code=by_id[cluster_aliases[sample.sample_id]].error_code,
+        )
+        if sample.sample_id in cluster_aliases
+        else sample
+        for sample in judged
+    )
 
 
 async def _judge_sample(
@@ -246,9 +271,10 @@ async def _judge_sample(
     if plan is None:
         return sample
     try:
-        outcomes = tuple(
-            [
-                await _traced_judge_call(
+        outcomes = []
+        for index, messages in enumerate(plan.calls):
+            try:
+                outcome = await _traced_judge_call(
                     client,
                     messages,
                     sample=sample,
@@ -259,16 +285,25 @@ async def _judge_sample(
                     config=config,
                     tracer=tracer,
                 )
-                for index, messages in enumerate(plan.calls)
-            ]
-        )
+            except (_JudgeRequestError, ValueError):
+                if (
+                    plan.parser != "personamem_v3"
+                    or plan.details.get("task_type") not in CLUSTER_TASK_TYPES
+                ):
+                    raise
+                outcome = ({}, "", False)
+            outcomes.append(outcome)
         scores = combine_judge_scores(plan, tuple(item[0] for item in outcomes))
         previous = dict(sample.metrics)
         if plan.parser == "mosaic":
             previous.pop("judge_parse_error", None)
             previous.pop("judge_model_mismatch", None)
         metrics = finalize_scores(sample.task, {**previous, **scores})
-        parse_failed = bool(scores.get("judge_parse_error"))
+        parse_failed = bool(scores.get("judge_parse_error")) or (
+            plan.parser == "personamem_v3"
+            and plan.details.get("task_type") in CLUSTER_TASK_TYPES
+            and bool(scores.get("n_judge_failed"))
+        )
         model_mismatch = bool(scores.get("judge_model_mismatch"))
         responses = tuple(item[1] for item in outcomes)
         return replace(
@@ -288,7 +323,9 @@ async def _judge_sample(
                 else sample.error_code
             ),
             scorer_error=(
-                "MOSAIC judge response could not be parsed"
+                "PersonaMem-v3 repetition judgments are incomplete"
+                if parse_failed and plan.parser == "personamem_v3"
+                else "MOSAIC judge response could not be parsed"
                 if parse_failed
                 else "MOSAIC judge response model does not match the official judge"
                 if model_mismatch
@@ -500,7 +537,7 @@ def _judge_cache_coordinates(
     config: _JudgeConfig,
 ) -> tuple[str, str]:
     key = hashlib.sha256(
-        _json_bytes(
+        encode_json_bytes(
             {
                 "version": SCORER_VERSION,
                 "request_version": JUDGE_REQUEST_VERSION,
@@ -582,7 +619,7 @@ def _unsupported_temperature(error: BaseException) -> bool:
 
 def _judge_cache_namespace(config: _JudgeConfig) -> str:
     return hashlib.sha256(
-        _json_bytes(
+        encode_json_bytes(
             {
                 "version": SCORER_VERSION,
                 "model": config.model,

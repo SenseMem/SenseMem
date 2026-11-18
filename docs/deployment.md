@@ -24,8 +24,8 @@ adapters around one constructed `Memory`, or have other processes call the exist
 
 Before starting the owner, verify:
 
-- Python 3.11 through 3.14 and compatible 64-bit wheels exist for Zvec 0.8 and every selected
-  backend. Zvec's additional Intel Mac and Windows ARM64 builds do not establish support for
+- Python 3.11 through 3.14 and compatible 64-bit wheels exist for Zvec 0.8.1+ within 0.8.x and
+  every selected backend. Zvec's additional Intel Mac and Windows ARM64 builds do not establish support for
   every optional model dependency; verify the complete environment on the target platform.
 - The data directory is on one local, durable filesystem with working SQLite WAL, file locking,
   atomic rename, and durable writes.
@@ -57,19 +57,19 @@ uv add "sensemem[local,openai]"
 ```python
 from openai import OpenAI
 
-from sensemem import SentenceTransformersEmbedder, Memory, OpenAIModels
+from sensemem import SentenceTransformersEmbedder, Memory, OpenAICompletion
 
 with OpenAI(timeout=30.0, max_retries=3) as client:
     with Memory(
         "/var/lib/sensemem/assistant",
         embedder=SentenceTransformersEmbedder(model_id="google/embeddinggemma-2"),
-        answerer=OpenAIModels(generation_client=client),
+        answerer=OpenAICompletion(client=client),
     ) as memory:
         memory.add("Process-owned memory")
 ```
 
 Keep one `Memory` open for a long-running process. `Memory.close()` closes supplied backend objects;
-`OpenAIModels.close()` deliberately leaves caller-owned OpenAI clients open. Construct `Memory`
+`OpenAICompletion.close()` deliberately leaves caller-owned OpenAI clients open. Construct `Memory`
 after any process fork, never before it.
 
 Review the selected model's license and retain its resolved identity when deploying; see
@@ -131,7 +131,7 @@ Keep the owner and caller-owned client open around the ASGI server in `my_applic
 from openai import OpenAI
 import uvicorn
 
-from sensemem import SentenceTransformersEmbedder, Memory, OpenAIModels
+from sensemem import SentenceTransformersEmbedder, Memory, OpenAICompletion
 from sensemem.api import create_app
 
 
@@ -142,7 +142,7 @@ def main() -> None:
             embedder=SentenceTransformersEmbedder(
                 model_id="google/embeddinggemma-2",
             ),
-            answerer=OpenAIModels(generation_client=client),
+            answerer=OpenAICompletion(client=client),
         ) as memory:
             uvicorn.run(create_app(memory=memory), host="127.0.0.1", port=8000)
 
@@ -164,7 +164,7 @@ ASGI app can also run on another host-selected server. The adapter adds no authe
 authorization, TLS, rate limiting, quota, or access audit log. Bind to a trusted interface or put the app
 behind the deployment's existing gateway or middleware. Keep `/healthz` protected consistently; it
 reports liveness and the live composition's capability declaration, not model or retrieval
-readiness. The app publishes thirteen product routes under `/v1`, or twenty-two when the host enables
+readiness. The app publishes fourteen product routes under `/v1`, or twenty-three when the host enables
 `identity_operations` and `embodied_operations`.
 
 Do not retry a timed-out request blindly. Adds are content-idempotent, but the SQLite commit can
@@ -207,7 +207,7 @@ Use the `sensemem` distribution, root Python imports, and the `sensemem` and `se
 commands. Install the extras required by the selected adapters and review
 [configuration](configuration.md) before changing a deployment.
 
-The current runtime accepts SQLite schema 21 and its declared representation identities.
+The current runtime accepts SQLite schema 25 and its declared representation identities.
 It does not migrate older schemas or convert incompatible model spaces. Read source data with
 its original runtime, then re-ingest into a fresh physical directory. Renaming a directory does
 not convert its format. Keep the original runtime and a tested backup until verification is complete.

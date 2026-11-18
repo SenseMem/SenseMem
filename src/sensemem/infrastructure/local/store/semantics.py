@@ -12,12 +12,14 @@ from sensemem.infrastructure.local.store._candidates import (
     FUNCTIONAL_CLAIM_SQL,
 )
 from sensemem.infrastructure.local.store._codec import (
+    SQLITE_PARAMETER_BATCH,
     datetime_text,
     prepare_write_batch,
     row_text,
 )
 from sensemem.infrastructure.local.store._connections import Connections
 from sensemem.infrastructure.local.store._corroboration import _load_nodes
+from sensemem.infrastructure.local.store._embeddings import write_embeddings
 from sensemem.infrastructure.local.store._identity import (
     reproject_named_identities,
     resolve_identity_id,
@@ -36,21 +38,29 @@ from sensemem.infrastructure.local.store._lineage import (
     version_retired,
 )
 from sensemem.infrastructure.local.store._naming_projection import (
-    NamingProjectionFactory,
+    NamingProjection,
     naming_snapshot,
     refresh_naming_documents,
-    validate_speech_projection,
 )
-from sensemem.infrastructure.local.store._operations import active_operation_id, insert_operation
-from sensemem.infrastructure.local.store.errors import ProtectedMemoryError, StaleOperationError
+from sensemem.infrastructure.local.store._operations import (
+    active_operation_id,
+    insert_operation,
+    retained_evidence_edges,
+)
+from sensemem.infrastructure.local.store._recall import require_recall_filters
+from sensemem.infrastructure.local.store._selection import identity_scope, version_time_clause
+from sensemem.infrastructure.local.store.errors import (
+    ProtectedMemoryError,
+    ReplacementNotVisibleError,
+    StaleOperationError,
+)
 from sensemem.infrastructure.local.store.records import (
     MemoryRecords,
     read_memories,
-    replace_memory_embeddings,
-    write_embeddings,
     write_memory,
 )
 from sensemem.infrastructure.local.store.rows import (
+    RecallRead,
     StoredEmbedding,
     StoredEvidenceClauseChange,
     StoredMemory,
@@ -60,7 +70,7 @@ from sensemem.infrastructure.local.store.rows import (
     require_identifier,
 )
 from sensemem.kernel.corroboration import EvidenceNode
-from sensemem.types import RetrievalScope, SpatialContext
+from sensemem.spatial import RetrievalScope, SpatialContext
 
 
 class Semantics:
@@ -86,6 +96,8 @@ class Semantics:
         require_identifier(memory_id, "memory_id")
         with self._connections.read_transaction() as connection:
             nodes, truncated = _load_nodes(connection, memory_id)
+            retained = retained_evidence_edges(connection, tuple(nodes))
+            retained_ids = frozenset(source for _parent, source in retained)
             records = read_memories(
                 connection,
                 tuple(nodes),
@@ -96,8 +108,141 @@ class Semantics:
                 place_id=None if scope is None else scope.place_id,
                 identity_id=None if scope is None else scope.identity_id,
                 active_only=True,
+                retained_ids=retained_ids,
             )
+            nodes = {
+                parent: replace(
+                    node,
+                    assessments=tuple(
+                        assessment
+                        for assessment in node.assessments
+                        if all(
+                            source not in retained_ids or (parent, source) in retained
+                            for source in assessment.sources
+                        )
+                    ),
+                )
+                for parent, node in nodes.items()
+            }
         return nodes, records, truncated
+
+    def affect_links(
+        self,
+        affect_ids: Sequence[str],
+        *,
+        limit: int = 128,
+        scope: RetrievalScope | None = None,
+    ) -> RecallRead:
+        """Read every eligible polarity for exact affect episodes in one scoped snapshot.
+
+        ``selected`` counts the eligible rows before the bound, so callers can withhold an
+        explanation whose competing assertions could not all be read. Ordering is structural,
+        never relevance-ranked; a denial competes on the same terms as an affirmation.
+        """
+        ids = tuple(dict.fromkeys(affect_ids))
+        for memory_id in ids:
+            require_identifier(memory_id, "affect_id")
+        require_recall_filters(None, None, limit)
+        if not ids:
+            return RecallRead()
+        version_clause, version_parameters = version_time_clause(
+            valid_at=None if scope is None else scope.valid_at,
+            known_at=None if scope is None else scope.known_at,
+            active_only=True,
+        )
+        place_clause = ""
+        place_parameters: tuple[object, ...] = ()
+        if scope is not None and scope.place_id is not None:
+            place_clause = "AND memory_records.place_id = ?"
+            place_parameters = (scope.place_id,)
+        spatial_clause = ""
+        spatial_parameters: tuple[object, ...] = ()
+        if scope is not None and scope.near is not None:
+            near = scope.near
+            spatial_clause = """
+                AND s.spatial_frame_id = ? AND s.spatial_anchor = ?
+                AND (s.spatial_x - ?) * (s.spatial_x - ?)
+                  + (s.spatial_y - ?) * (s.spatial_y - ?)
+                  + (s.spatial_z - ?) * (s.spatial_z - ?)
+                  <= (? + COALESCE(s.spatial_uncertainty_m, 0))
+                   * (? + COALESCE(s.spatial_uncertainty_m, 0))
+            """
+            assert scope.radius_m is not None
+            tolerance = scope.radius_m + (near.position_uncertainty_m or 0.0)
+            spatial_parameters = (
+                near.frame_id,
+                near.anchor.value,
+                near.x,
+                near.x,
+                near.y,
+                near.y,
+                near.z,
+                near.z,
+                tolerance,
+                tolerance,
+            )
+        selected = 0
+        candidates: list[str] = []
+        with self._connections.read_transaction() as connection:
+            identity_clause, identity_parameters = identity_scope(
+                connection, None if scope is None else scope.identity_id
+            )
+            if identity_clause is None:
+                return RecallRead()
+            for offset in range(0, len(ids), SQLITE_PARAMETER_BATCH // 2):
+                batch = ids[offset : offset + SQLITE_PARAMETER_BATCH // 2]
+                placeholders = ", ".join("?" for _memory_id in batch)
+                statement = f"""
+                    FROM memory_semantics AS s
+                    JOIN memory_records ON memory_records.memory_id = s.memory_id
+                    WHERE s.affect_id IN ({placeholders})
+                      AND memory_records.forgotten_at IS NULL
+                      AND EXISTS (
+                          SELECT 1 FROM memory_versions AS v
+                          WHERE v.memory_id = s.memory_id {version_clause}
+                      )
+                      AND (s.affect_object_identity_id IS NULL OR EXISTS (
+                          SELECT 1 FROM identities
+                          WHERE identity_id = s.affect_object_identity_id
+                          UNION ALL
+                          SELECT 1 FROM identity_aliases
+                          WHERE alias_id = s.affect_object_identity_id
+                      ))
+                      {place_clause} {identity_clause} {spatial_clause}
+                """
+                parameters = (
+                    *batch,
+                    *version_parameters,
+                    *place_parameters,
+                    *identity_parameters,
+                    *spatial_parameters,
+                )
+                selected += int(
+                    connection.execute(f"SELECT COUNT(*) {statement}", parameters).fetchone()[0]
+                )
+                if len(candidates) < limit:
+                    candidates.extend(
+                        row_text(row, "memory_id")
+                        for row in connection.execute(
+                            f"""SELECT s.memory_id {statement}
+                            ORDER BY s.affect_id, s.affect_role, s.affect_object_memory_id,
+                                     s.affect_object_identity_id, s.affect_polarity, s.memory_id
+                            LIMIT ?""",
+                            (*parameters, limit - len(candidates)),
+                        ).fetchall()
+                    )
+            records = read_memories(
+                connection,
+                candidates,
+                valid_at=None if scope is None else scope.valid_at,
+                known_at=None if scope is None else scope.known_at,
+                near=None if scope is None else scope.near,
+                radius_m=None if scope is None else scope.radius_m,
+                place_id=None if scope is None else scope.place_id,
+                identity_id=None if scope is None else scope.identity_id,
+                active_only=True,
+            )
+        return RecallRead(records, selected=selected)
 
     def apply_formation(  # noqa: C901 - one atomic formation transaction
         self,
@@ -117,10 +262,7 @@ class Semantics:
         require_visible: Sequence[str] = (),
         preserve_response_policies: bool = False,
         projection_identity_id: str | None = None,
-        projection_memories: Iterable[StoredMemory] = (),
-        projection_embeddings: Iterable[StoredEmbedding] = (),
-        projection_sources: Sequence[StoredMemory] | None = None,
-        naming_projection_factory: NamingProjectionFactory | None = None,
+        naming_projection: NamingProjection | None = None,
     ) -> bool:
         """Commit derived records, evidence, and source completion in one transaction.
 
@@ -151,14 +293,8 @@ class Semantics:
             memories,
             embeddings,
         )
-        projected_memories, projected_embeddings, projected_by_memory = prepare_write_batch(
-            projection_memories,
-            projection_embeddings,
-        )
         if projection_identity_id is not None:
             require_identifier(projection_identity_id, "projection_identity_id")
-        elif projected_memories:
-            raise ValueError("projection memories require projection_identity_id")
         sources = tuple(dict.fromkeys(source_memory_ids))
         require_identifier(recipe, "recipe")
         require_aware(completed_at, "completed_at")
@@ -170,8 +306,6 @@ class Semantics:
             if not members or len(set(members)) != len(members):
                 raise ValueError("evidence clause members must be non-empty and unique")
         with self._connections.transaction() as connection:
-            if projection_identity_id is not None and projection_sources is not None:
-                validate_speech_projection(connection, projection_identity_id, projection_sources)
             # Same in-transaction idempotency check `apply_control_operation` makes: a duplicate
             # that arrives after the caller's pre-check must be refused, not surface as a
             # unique-index violation.
@@ -219,6 +353,7 @@ class Semantics:
                         )
                     )
                 ),
+                force=projection_identity_id is not None,
             )
             if any(
                 connection.execute(
@@ -316,6 +451,15 @@ class Semantics:
                 supplied_memories,
                 changed_at=completed_at,
             )
+            if forget_ids:
+                try:
+                    require_visible_memories(
+                        connection, tuple(memory.memory_id for memory in supplied_memories)
+                    )
+                except StaleOperationError as error:
+                    raise ReplacementNotVisibleError(
+                        "consolidation cannot retire sources behind an invisible replacement"
+                    ) from error
             # Forgetting comes first: the projection has to be computed against the records that
             # remain, so consolidation forgetting a naming assertion stops projecting its name.
             forgotten: tuple[str, ...] = ()
@@ -327,16 +471,12 @@ class Semantics:
                 + tuple(memory_id for memory_id, _source, _confidence in evidence)
                 + tuple(forget_ids),
             )
-            if projection_identity_id is not None:
-                if resolve_identity_id(connection, projection_identity_id) is None:
-                    raise StaleOperationError(
-                        f"{projection_identity_id} is no longer an active identity"
-                    )
-                replace_memory_embeddings(
-                    connection,
-                    projected_memories,
-                    projected_embeddings,
-                    projected_by_memory,
+            if (
+                projection_identity_id is not None
+                and resolve_identity_id(connection, projection_identity_id) is None
+            ):
+                raise StaleOperationError(
+                    f"{projection_identity_id} is no longer an active identity"
                 )
             connection.executemany(
                 """
@@ -360,7 +500,14 @@ class Semantics:
                         superseded=tuple(dict.fromkeys(superseded)),
                     ),
                 )
-            refresh_naming_documents(connection, naming_before, naming_projection_factory)
+            refresh_naming_documents(
+                connection,
+                naming_before,
+                naming_projection,
+                # A staged display name may already match. The committed naming assertion
+                # still owns refreshing its indexed documents and their atomic retrieval keys.
+                force_ids=() if projection_identity_id is None else (projection_identity_id,),
+            )
         return True
 
     def formation_completed(self, source_memory_id: str, recipe: str) -> bool:

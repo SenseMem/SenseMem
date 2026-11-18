@@ -40,13 +40,6 @@ The repository and `gzone0111/MOSAIC@c4567178d7430d87484db1ab207f5c8aaa26199a` d
 declare no license at these revisions. SenseMem does not redistribute annotations, media,
 indexes, or run records. Upstream rights and permission requirements remain applicable.
 
-The pinned `slptongji/ES-MemEval@692624208acc077b8867698c1d6fcd998dee641a` repository contains
-the EvoEmo dataset and evaluator source but no license file or license declaration. SenseMem does
-not redistribute either. Its downloader retrieves `data/evo_emo.json` from the pinned repository
-only when an operator requests the ES-MemEval task. The query and judge instructions in SenseMem
-are compact semantic transcriptions, not copied source text. Confirm permission with the upstream
-rights holders before downloading, using, or redistributing EvoEmo.
-
 ## MIT evaluator material
 
 - AMA-Bench, copyright 2026 AMA-Bench Team. `ama_scoring.py` adapts
@@ -60,6 +53,14 @@ rights holders before downloading, using, or redistributing EvoEmo.
 - ATM-Bench, copyright 2026 Jingbiao Mei.
 - Mem-Gallery, copyright 2026 Yuanchen Bei.
 - PersonaMem-v3 evaluation code, copyright 2026 The PersonaMem-v3 Authors.
+  Task prompts, repetition restraint, novel-suggestion checks, warning detection, lifecycle
+  pairing, and aggregate formulas are adapted from `evaluation/prompts.py`,
+  `evaluation/metrics.py`, `evaluation/tasks/over_personalization.py`,
+  `evaluation/tasks/new_suggestions.py`, `evaluation/tasks/e5_horizon_lifecycle.py`,
+  `evaluation/tasks/e6_active_mistake_prevention.py`, and `scripts/aggregate_eval.py` at
+  `bowen-upenn/PersonaMem-v3@ad80a3b1b322129fb0585ead33b129a87bb4e387`.
+  SenseMem adapts typed input validation, SDK transport, physical isolation, response caching,
+  and numeric result serialization.
 
 Those components are provided under the MIT License:
 
@@ -109,9 +110,12 @@ Source: `mem-eval-suite/LoCoMo_refined@887091190789e8d6760e70b9edd696539923dc4f`
 PersonaMem-v3's *data* is licensed separately from its code: the personas
 derive from `facebook/gistbench` and inherit
 [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) --
-attribution, non-commercial. The evaluation code the scoring here is
-transcribed from is MIT (above). Source:
+attribution, non-commercial. The data is pinned to Hugging Face revision
 `bowen-upenn/PersonaMem-v3@7b00a090b35b7293e6efeeb19494207f32b5a9ee`.
+The evaluation code and prompts transcribed here are MIT (above), from
+[GitHub revision ad80a3b1b322129fb0585ead33b129a87bb4e387](https://github.com/bowen-upenn/PersonaMem-v3/tree/ad80a3b1b322129fb0585ead33b129a87bb4e387).
+SenseMem adapts model transport and result types, including the proactive-action protocol
+and deterministic geographic-shift scorer. No persona data is redistributed in the package.
 
 Each `backend/{persona_id}/profile.json` is the scorer-side ground-truth
 persona, which the release states is never shown to the evaluated agent. The

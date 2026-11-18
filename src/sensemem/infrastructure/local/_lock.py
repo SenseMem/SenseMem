@@ -15,11 +15,7 @@ class DataDirectoryLock:
     """Hold an operating-system lock for the lifetime of a local store."""
 
     def __init__(self, data_dir: Path) -> None:
-        try:
-            data_dir.mkdir(mode=0o700, parents=True)
-        except FileExistsError:
-            if not data_dir.is_dir():
-                raise
+        data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             os.chmod(data_dir, 0o700)
         self._path = data_dir / ".sensemem.lock"

@@ -33,6 +33,60 @@ def active_operation_id(connection: sqlite3.Connection, operation_key: str) -> i
     return None if row is None else int(row["operation_id"])
 
 
+def retained_evidence_edges(
+    connection: sqlite3.Connection,
+    memory_ids: Sequence[str] = (),
+    *,
+    source_ids: Sequence[str] = (),
+) -> frozenset[tuple[str, str]]:
+    """Return consolidation-only source permissions that no explicit forgetting withdrew."""
+    if not memory_ids and not source_ids:
+        return frozenset()
+    axis = "member.memory_id" if memory_ids else "member.source_memory_id"
+    requested = tuple(dict.fromkeys(memory_ids or source_ids))
+    edges: set[tuple[str, str]] = set()
+    for offset in range(0, len(requested), SQLITE_PARAMETER_BATCH):
+        batch = requested[offset : offset + SQLITE_PARAMETER_BATCH]
+        placeholders = ", ".join("?" for _memory_id in batch)
+        # Fix the join order and timestamp index: starting at operation history makes every
+        # evidence hop scan unrelated logs and repeatedly evaluate the withdrawal subquery.
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT member.memory_id, member.source_memory_id
+            FROM memory_evidence_clause_members AS member
+            CROSS JOIN memory_records AS r
+              ON r.memory_id = member.source_memory_id
+            CROSS JOIN memory_operations AS o INDEXED BY memory_operations_retained_sources_idx
+              ON o.applied_at = r.forgotten_at
+             AND o.intent = 'consolidate' AND o.rolled_back_at IS NULL
+            WHERE {axis} IN ({placeholders})
+              AND EXISTS (
+                SELECT 1 FROM json_each(o.effects_json, '$.forgotten_ids') AS source
+                WHERE source.value = member.source_memory_id
+              )
+              AND EXISTS (
+                SELECT 1 FROM json_tree(json_array(
+                    json_extract(o.effects_json, '$.created_ids'),
+                    json_extract(o.effects_json, '$.changed_ids')
+                )) AS derived
+                WHERE derived.type = 'text' AND derived.value = member.memory_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM memory_operations AS withdrawal
+                JOIN json_each(withdrawal.operation_json, '$.target_ids') AS target
+                  ON target.value = member.source_memory_id
+                WHERE withdrawal.intent = 'forget' AND withdrawal.rolled_back_at IS NULL
+                  AND withdrawal.operation_id > o.operation_id
+              )
+            """,
+            batch,
+        ).fetchall()
+        edges.update(
+            (row_text(row, "memory_id"), row_text(row, "source_memory_id")) for row in rows
+        )
+    return frozenset(edges)
+
+
 def later_operation_depends_on(
     connection: sqlite3.Connection,
     operation_id: int,

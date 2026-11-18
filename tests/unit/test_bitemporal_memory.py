@@ -14,12 +14,12 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryOperationRecord,
+    MemorySettings,
     ObservationContext,
+    RecordKind,
     RetrievalScope,
     ValidationError,
 )
@@ -37,7 +37,7 @@ class DrinkFormer:
             results.append(
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content=f"The user's preferred drink is {drink}",
                         subject="user",
                         predicate="preferred_drink",
@@ -71,7 +71,7 @@ def _drink_state(
     basis: EvidenceBasis = EvidenceBasis.MODEL_INFERENCE,
 ) -> FormationProposal:
     return FormationProposal(
-        kind=MemoryKind.STATE,
+        kind=RecordKind.STATE,
         content=f"The user's preferred drink is {value}",
         subject="user",
         predicate="preferred_drink",
@@ -101,7 +101,7 @@ def _state_values(memory: Memory, scope: RetrievalScope) -> set[str | None]:
     return {
         hit.context.value
         for hit in memory.search("preferred drink", limit=10, scope=scope).hits
-        if hit.context is not None and hit.context.kind is MemoryKind.STATE
+        if hit.context is not None and hit.context.kind is RecordKind.STATE
     }
 
 
@@ -112,7 +112,7 @@ def _confident_state_values(memory: Memory, valid_at: datetime) -> set[str | Non
             "preferred drink", limit=10, scope=RetrievalScope(valid_at=valid_at)
         ).hits
         if hit.context is not None
-        and hit.context.kind is MemoryKind.STATE
+        and hit.context.kind is RecordKind.STATE
         and hit.context.confidence >= 0.8
     }
 
@@ -158,7 +158,10 @@ def test_state_revision_requires_sufficient_evidence(
         _drink_state("coffee", confidence=new_confidence, basis=new_basis, valid_from=february),
     )
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, config=MemoryConfig(minimum_relevance=0)
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         tea_source = memory.add("I prefer tea")
         before = datetime.now(timezone.utc)
@@ -175,7 +178,7 @@ def test_state_revision_requires_sufficient_evidence(
         states = [
             record
             for record in memory.list(limit=10).items
-            if record.context is not None and record.context.kind is MemoryKind.STATE
+            if record.context is not None and record.context.kind is RecordKind.STATE
         ]
         assert {record.context.evidence_ids for record in states if record.context is not None} == {
             (tea_source.id,),
@@ -191,7 +194,7 @@ def test_state_revision_requires_sufficient_evidence(
             # Filtering out a known competing value cannot turn the surviving claim into an
             # affirmative answer. Search retains it; compilation reports unavailable evidence.
             assert not any(
-                hit.context and hit.context.kind is MemoryKind.STATE for hit in bundle.hits
+                hit.context and hit.context.kind is RecordKind.STATE for hit in bundle.hits
             )
             assert any(
                 item.kind is ContextUnknownKind.EVIDENCE_UNAVAILABLE for item in bundle.unknowns
@@ -209,7 +212,10 @@ def test_state_deletion_replay_preserves_stronger_alternatives(tmp_path: Path) -
         _drink_state("juice", confidence=1.0, valid_from=march, valid_until=april),
     )
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, config=MemoryConfig(minimum_relevance=0)
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("I prefer tea")
         memory.add("Maybe coffee")
@@ -226,7 +232,7 @@ def test_weak_state_consolidation_has_no_supersession_to_rollback(tmp_path: Path
     january = datetime(2026, 1, 1, tzinfo=timezone.utc)
     february = datetime(2026, 2, 1, tzinfo=timezone.utc)
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         first = memory.add("I prefer tea")
         second = memory.add("Maybe coffee")
@@ -259,7 +265,7 @@ def test_equal_confidence_state_consolidation_still_revises(
 ) -> None:
     january = datetime(2026, 1, 1, tzinfo=timezone.utc)
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         first, second = memory.add_many(("I prefer tea", "Now I prefer coffee"))
         memory.apply(
@@ -291,14 +297,17 @@ def test_state_replay_compares_current_independent_support(tmp_path: Path) -> No
         _drink_state("juice", confidence=1.0, valid_from=february),
     )
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), former=former, config=MemoryConfig(minimum_relevance=0)
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=former,
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("Tea preference, first capture")
         reinforcement = memory.add("Tea preference, independent capture")
         tea_id = next(
             hit.id
             for hit in memory.search("preferred drink", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         )
         memory.apply(
             MemoryOperation(
@@ -338,7 +347,7 @@ def test_state_revision_uses_grounded_confidence_before_retiring(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         memory.add("I prefer tea")
         memory.add("Maybe coffee", context=ObservationContext(confidence=0.1))
@@ -353,7 +362,7 @@ def test_state_replay_reaches_transitively_weakened_evidence(tmp_path: Path) -> 
     with Memory(
         tmp_path,
         embedder=TinyEmbedder(),
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=True),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=True),
     ) as memory:
         first = memory.add("witness A", context=ObservationContext(confidence=0.8))
         second = memory.add("witness B", context=ObservationContext(confidence=0.2))
@@ -363,7 +372,7 @@ def test_state_replay_reaches_transitively_weakened_evidence(tmp_path: Path) -> 
             memory,
             (first.id,),
             FormationProposal(
-                kind=MemoryKind.RELATION,
+                kind=RecordKind.RELATION,
                 content="An intermediate tea witness",
                 subject="user",
                 predicate="witness",
@@ -402,7 +411,7 @@ def test_state_replay_reaches_transitively_weakened_evidence(tmp_path: Path) -> 
 def test_state_replay_does_not_restore_explicitly_corrected_claim(tmp_path: Path) -> None:
     january = datetime(2026, 1, 1, tzinfo=timezone.utc)
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         first, second, third = memory.add_many(
             ("tea witness", "coffee witness", "extra coffee witness")
@@ -435,7 +444,7 @@ def test_reasserted_state_compares_replacement_assessment(tmp_path: Path) -> Non
     with Memory(
         tmp_path,
         embedder=TinyEmbedder(),
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=True),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=True),
     ) as memory:
         first, second = memory.add_many(("tea witness", "coffee witness"))
         tea = _derive(memory, (first.id,), _drink_state("tea", confidence=0.99, valid_from=january))
@@ -468,7 +477,7 @@ def test_state_corrections_preserve_valid_and_transaction_time(tmp_path: Path) -
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         tea_source = memory.add(
             "I prefer tea",
@@ -480,7 +489,7 @@ def test_state_corrections_preserve_valid_and_transaction_time(tmp_path: Path) -
         tea_state = next(
             hit
             for hit in memory.search("preferred drink", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         )
         known_before_correction = datetime.now(timezone.utc)
         memory.add(
@@ -519,7 +528,7 @@ def test_expired_derived_memory_is_soft_forgotten_but_source_remains(
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add(
             "I prefer tea",
@@ -549,7 +558,7 @@ def test_state_can_return_to_an_old_value_without_losing_backfilled_time(
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("I prefer tea", context=ObservationContext(valid_from=january))
         memory.add("I prefer coffee", context=ObservationContext(valid_from=february))
@@ -579,7 +588,7 @@ def test_later_backfill_wins_its_full_valid_interval_without_a_gap(tmp_path: Pat
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -603,7 +612,7 @@ def test_later_backfill_wins_its_full_valid_interval_without_a_gap(tmp_path: Pat
 def test_known_at_never_leaks_a_later_unformed_record(tmp_path: Path) -> None:
     known_before_add = datetime.now(timezone.utc)
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         source = memory.add("future transaction witness")
 
@@ -620,7 +629,7 @@ def test_known_at_never_leaks_a_later_unformed_record(tmp_path: Path) -> None:
 
 def test_valid_at_keeps_records_without_typed_validity(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         observation = memory.add("undated raw observation")
 
@@ -641,7 +650,7 @@ def test_get_keeps_provenance_for_a_fully_retired_state(tmp_path: Path) -> None:
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("I prefer tea", context=ObservationContext(valid_from=start))
         tea = next(
@@ -666,7 +675,7 @@ def test_deleting_latest_state_source_restores_prior_valid_tail(tmp_path: Path) 
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("I prefer tea", context=ObservationContext(valid_from=january))
         coffee = memory.add(
@@ -688,7 +697,7 @@ def test_deleting_latest_derived_state_restores_prior_valid_tail(tmp_path: Path)
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("I prefer tea", context=ObservationContext(valid_from=january))
         coffee_source = memory.add(
@@ -715,7 +724,7 @@ def test_deleting_middle_state_source_replays_the_remaining_lineage(tmp_path: Pa
         tmp_path,
         embedder=TinyEmbedder(),
         former=DrinkFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("I prefer tea", context=ObservationContext(valid_from=january))
         coffee = memory.add(
@@ -749,7 +758,7 @@ def test_one_source_can_form_the_same_state_in_disjoint_intervals(tmp_path: Path
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="The user's preferred drink is tea",
                         subject="user",
                         predicate="preferred_drink",
@@ -758,7 +767,7 @@ def test_one_source_can_form_the_same_state_in_disjoint_intervals(tmp_path: Path
                         valid_until=february,
                     ),
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="The user's preferred drink is coffee",
                         subject="user",
                         predicate="preferred_drink",
@@ -767,7 +776,7 @@ def test_one_source_can_form_the_same_state_in_disjoint_intervals(tmp_path: Path
                         valid_until=march,
                     ),
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="The user's preferred drink is tea",
                         subject="user",
                         predicate="preferred_drink",
@@ -782,7 +791,7 @@ def test_one_source_can_form_the_same_state_in_disjoint_intervals(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=EvolutionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("My drink preference changed twice")
 
@@ -804,7 +813,7 @@ def test_expired_observation_validity_soft_forgets_without_a_former(tmp_path: Pa
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=2)
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         expired = memory.add(
             "the guest wifi password is swordfish",

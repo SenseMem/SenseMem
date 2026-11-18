@@ -10,24 +10,19 @@ from openai import OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from test_openai_sdk import _asset, _sdk_client, _search_hit
+from test_openai_adapters import _asset, _sdk_client, _search_hit
 
-from sensemem import (
-    AbstentionReason,
-    EvidenceGeneration,
-    ModelError,
-    ModelInput,
-    OpenAIModels,
-    ValidationError,
-)
+from sensemem import AbstentionReason, EvidenceGeneration, ModelError, ModelInput, ValidationError
 from sensemem._telemetry import MODEL_REQUEST_COUNT, TOKEN_TOTAL, model_span, operation_span
-from sensemem.types import EvidenceBasis, MemoryContext, MemoryKind, Modality
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, Modality, RecordKind
 
 
 def _selected(
     client: OpenAI, *, generation_capabilities: frozenset[Modality] = frozenset({Modality.TEXT})
 ) -> EvidenceGeneration:
-    model = OpenAIModels(client, generation_capabilities=generation_capabilities)
+    model = OpenAICompletion(client, generation_capabilities=generation_capabilities)
     return EvidenceGeneration(model, selector=model, media_max_items=1)
 
 
@@ -83,8 +78,8 @@ def test_media_selection_preserves_an_assertion_only_with_its_source(
         _search_hit(),
         id="assertion",
         content="The key in the photo is amber.",
-        context=MemoryContext(
-            kind=MemoryKind.RELATION,
+        context=RecordSemantics(
+            kind=RecordKind.RELATION,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.9,
             valid_from=None,
@@ -262,8 +257,8 @@ def test_diagnosis_text_ceiling_includes_system_prompt_before_http(
 ) -> None:
     image = _asset(tmp_path, "image", Modality.IMAGE, "image/png", b"pixels")
     hit = replace(_search_hit(), assets=(image,), modality=Modality.IMAGE)
-    monkeypatch.setattr("sensemem.models.openai_sdk._MEDIA_DIAGNOSTIC_PROMPT", "界" * 500)
-    monkeypatch.setattr("sensemem.models.openai_sdk._MAX_GROUNDED_TEXT_BYTES", 1_000)
+    monkeypatch.setattr("sensemem.prompts.generation._MEDIA_DIAGNOSTIC_PROMPT", "界" * 500)
+    monkeypatch.setattr("sensemem.models._openai_requests._MAX_GROUNDED_TEXT_BYTES", 1_000)
 
     def unexpected_request(_request: httpx.Request) -> httpx.Response:
         pytest.fail("oversized diagnosis text reached the provider")
@@ -292,8 +287,8 @@ def test_provider_rejection_does_not_diagnose_again_or_lose_original_omissions(
         original,
         assets=assets,
         modality=Modality.IMAGE,
-        context=MemoryContext(
-            kind=MemoryKind.OBSERVATION,
+        context=RecordSemantics(
+            kind=RecordKind.OBSERVATION,
             basis=EvidenceBasis.OBSERVATION,
             confidence=1.0,
             valid_from=None,
@@ -347,4 +342,4 @@ def test_provider_rejection_does_not_diagnose_again_or_lose_original_omissions(
 @pytest.mark.parametrize("limit", [True, 0, 9])
 def test_media_controls_reject_invalid_values(limit: int) -> None:
     with pytest.raises(ValidationError):
-        EvidenceGeneration(OpenAIModels(), media_max_items=limit)
+        EvidenceGeneration(OpenAICompletion(), media_max_items=limit)

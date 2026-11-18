@@ -18,6 +18,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
+from typing import cast
 
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -28,19 +29,19 @@ from sensemem import (
     EvidenceGeneration,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
+    MemorySettings,
     Modality,
-    OpenAIModels,
+    RecordKind,
     SenseMemError,
     VisionDescriptionBackend,
 )
 from sensemem.benchmarks.control_plane import _PreferenceFormer, evaluate_scenario
-from sensemem.benchmarks.model_quality import CaseResult, QualityReport, _FixtureEmbedder
+from sensemem.benchmarks.quality_support import CaseResult, QualityReport, _FixtureEmbedder
+from sensemem.models.openai_completion import OpenAICompletion
 
-FIXTURE_VERSION = "sensemem-workflow-quality-v2"
+FIXTURE_VERSION = "sensemem-workflow-quality-v3"
 _REFERENCE = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 _ATTACK = "MB_QUALITY_ATTACK_EXECUTED"
 
@@ -64,7 +65,7 @@ def _formation(memory: Memory, *, injection: bool) -> bool:
         for record in memory.list().items
         if record.id != source.id
         and record.context is not None
-        and record.context.kind is MemoryKind.EVENT
+        and record.context.kind is RecordKind.EVENT
     ]
     return bool(events) and all(
         record.context is not None
@@ -112,7 +113,7 @@ def _consolidation(memory: Memory) -> bool:
             intent=MemoryIntent.CONSOLIDATE,
             evidence_ids=(first.id,),
             proposal=FormationProposal(
-                kind=MemoryKind.RESPONSE_POLICY,
+                kind=RecordKind.RESPONSE_POLICY,
                 content="Answer Ana briefly.",
                 subject="Ana",
                 predicate="response_style",
@@ -141,8 +142,7 @@ def _chinese_answer(memory: Memory) -> bool:
 
 def _control_plane(memory: Memory) -> bool:
     report = evaluate_scenario(memory, persons=1, max_rounds=2)
-    metrics = report["metrics"]
-    assert isinstance(metrics, Mapping)
+    metrics = cast(Mapping[str, object], report["metrics"])
     return all(
         metrics[name] == expected
         for name, expected in (
@@ -172,7 +172,7 @@ _CASES: tuple[tuple[str, str, Callable[[Memory], bool]], ...] = (
 
 
 def run_workflow_quality_eval(
-    models: OpenAIModels, vision_describer: VisionDescriptionBackend, *, repeats: int = 3
+    models: OpenAICompletion, vision_describer: VisionDescriptionBackend, *, repeats: int = 3
 ) -> QualityReport:
     """Run each stage in a fresh store and require every repeat and expected model stage."""
     if isinstance(repeats, bool) or not isinstance(repeats, int) or not 1 <= repeats <= 10:
@@ -206,7 +206,7 @@ def run_workflow_quality_eval(
                             else None,
                             vision_describer=vision_describer if stage == "vision" else None,
                             consolidator=models if stage in {"consolidation", "control"} else None,
-                            config=MemoryConfig(
+                            settings=MemorySettings(
                                 recall_planning=stage == "planning",
                                 recall_rounds=1,
                                 minimum_relevance=0,
@@ -298,14 +298,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         with OpenAI(timeout=120.0, max_retries=0) as client:
-            models = OpenAIModels(
+            models = OpenAICompletion(
                 client,
                 generation_model=arguments.model,
                 generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
                 generation_max_tokens=8192,
                 generation_response_format=arguments.response_format,
             )
-            vision_describer = OpenAIModels(
+            vision_describer = OpenAICompletion(
                 client,
                 generation_model=arguments.model,
                 generation_capabilities=frozenset({Modality.IMAGE}),

@@ -11,16 +11,22 @@ from typing import cast
 import httpx2 as httpx
 import pytest
 from _feature_support import TinyEmbedder
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
+from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from test_image_source_prose import _image, _memories
-from test_openai_sdk import _sdk_client, _search_hit
+from test_openai_adapters import _sdk_client, _search_hit, _stream_chunk
 
 import sensemem.configuration as configuration
-import sensemem.models.openai_sdk as adapter
+import sensemem.models._openai_media as openai_media
+import sensemem.models._openai_requests as openai_requests
+import sensemem.models.openai_completion as adapter
 import sensemem.recipes as recipes
-from sensemem import Memory, Modality, ModelError, ModelInput, OpenAIModels, SenseMemConfig
+from sensemem import Memory, MemorySpec, Modality, ModelError, ModelInput
 from sensemem._telemetry import (
     MODEL_REQUEST_COUNT,
     TOKEN_COMPLETE,
@@ -29,8 +35,13 @@ from sensemem._telemetry import (
     operation_span,
 )
 from sensemem.models._evidence_operations import (
-    EVIDENCE_OPERATION_INSTRUCTION,
     EVIDENCE_OPERATION_TOOL_NAME,
+)
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.prompts import generation as prompts
+from sensemem.prompts.evidence_operations import (
+    EVIDENCE_OPERATION_INSTRUCTION,
+    EVIDENCE_OPERATION_RECOVERY,
 )
 from sensemem.types import AbstentionReason, AnswerPolicy
 
@@ -218,7 +229,7 @@ def test_valid_native_submission_executes_without_a_second_reader(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_model="fixture-model",
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
@@ -266,7 +277,7 @@ def test_public_config_ask_stream_reaches_actual_native_wire(
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(configuration, "_build_embedding", lambda _config: TinyEmbedder())
         monkeypatch.setattr(recipes, "_openai_client", lambda **_controls: _sdk_client(client))
-        config = SenseMemConfig.model_validate(
+        config = MemorySpec.model_validate(
             {
                 "data_dir": tmp_path / "memory",
                 "embedding": {"provider": "openai"},
@@ -307,7 +318,7 @@ def test_honest_needs_evidence_is_policy_result_not_protocol_recovery(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             if stream:
                 values = list(
@@ -323,7 +334,7 @@ def test_honest_needs_evidence_is_policy_result_not_protocol_recovery(
                 text = result.answer
     provider.shutdown()
     assert (
-        text == adapter.UNKNOWN_ANSWER
+        text == prompts.UNKNOWN_ANSWER
         if policy == "strict"
         else text.startswith("Supported result in the supplied evidence: 58.4 EUR.")
     )
@@ -345,7 +356,7 @@ def test_rejected_native_proposal_gets_only_one_original_evidence_read(stream: b
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             if stream:
                 assert list(model.stream_answer(ModelInput(QUESTION), (hit,))) == [
@@ -359,7 +370,7 @@ def test_rejected_native_proposal_gets_only_one_original_evidence_read(stream: b
     assert "untrusted secret" not in json.dumps(sent[1]) and "999" not in json.dumps(sent[1])
     assert _memories(sent[1])[0]["content"] == hit.content
     assert "evidence_label" not in _memories(sent[1])[0]
-    assert adapter._EVIDENCE_OPERATION_RECOVERY in cast(
+    assert EVIDENCE_OPERATION_RECOVERY in cast(
         str, cast(list[dict[str, object]], sent[1]["messages"])[0]["content"]
     )
     assert _events(exporter) == {
@@ -391,7 +402,7 @@ def test_first_generic_invalid_response_recovers_without_inventing_a_submission(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             if stream:
                 assert list(model.stream_answer(ModelInput(QUESTION), (hit,))) == ["Recovered."]
@@ -447,7 +458,7 @@ def test_no_call_protocol_text_gets_one_original_evidence_read(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_evidence_operation_tool=True,
@@ -496,7 +507,7 @@ def test_recovery_protocol_text_fails_without_another_read(stream: bool, wrapper
         return _reply(request, answer=answer)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with pytest.raises(ModelError) as caught:
             if stream:
                 list(model.stream_answer(ModelInput(QUESTION), (_search_hit(),)))
@@ -529,7 +540,7 @@ def test_no_call_factual_alias_or_unrelated_xml_text_is_not_rejected(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             if stream:
                 assert list(model.stream_answer(ModelInput(QUESTION), (_search_hit(),))) == [answer]
@@ -549,7 +560,7 @@ def test_no_call_protocol_text_does_not_override_content_filter(stream: bool) ->
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with (
             model_span(provider.get_tracer("test"), "model", attributes={}),
             pytest.raises(ModelError) as failure,
@@ -587,7 +598,7 @@ def test_bad_final_response_never_causes_a_third_reader(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with pytest.raises(ModelError) as failure:
             if stream:
                 list(model.stream_answer(ModelInput(QUESTION), (hit,)))
@@ -623,7 +634,7 @@ def test_tool_and_alias_overhead_never_refits_or_drops_original_media(
             maximum = None
             if sent:
                 if budget == "wire":
-                    maximum = adapter._answer_wire_size(sent[0], stream=stream)
+                    maximum = openai_requests._answer_wire_size(sent[0], stream=stream)
                 else:
                     messages = cast(list[dict[str, object]], sent[0]["messages"])
                     byte_count = len(cast(str, messages[0]["content"]).encode()) + sum(
@@ -631,8 +642,8 @@ def test_tool_and_alias_overhead_never_refits_or_drops_original_media(
                         for part in _parts(sent[0])
                         if part["type"] == "text"
                     )
-                    monkeypatch.setattr(adapter, "_MAX_GROUNDED_TEXT_BYTES", byte_count)
-            model = OpenAIModels(
+                    monkeypatch.setattr(openai_requests, "_MAX_GROUNDED_TEXT_BYTES", byte_count)
+            model = OpenAICompletion(
                 sdk,
                 generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
                 generation_evidence_operation_tool=enabled,
@@ -660,7 +671,9 @@ def test_foreign_or_omitted_native_anchor_is_rejected_without_losing_evidence(
         for i, image in enumerate(images)
     )
     monkeypatch.setattr(
-        adapter, "_MAX_INLINE_MODEL_BYTES", adapter._encoded_size(cast(int, images[0].size_bytes))
+        openai_media,
+        "_MAX_INLINE_MODEL_BYTES",
+        openai_media._encoded_size(cast(int, images[0].size_bytes)),
     )
     sent: list[dict[str, object]] = []
 
@@ -674,7 +687,7 @@ def test_foreign_or_omitted_native_anchor_is_rejected_without_losing_evidence(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_evidence_operation_tool=True,
@@ -709,7 +722,7 @@ def test_shared_native_asset_remains_bound_to_both_actual_source_aliases(tmp_pat
         return _reply(request, arguments=_arguments(native="attachment 1", label="E2"))
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_evidence_operation_tool=True,
@@ -732,7 +745,7 @@ def test_no_call_accepts_unreported_usage_without_a_recovery(stream: bool) -> No
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             if stream:
                 assert (
@@ -767,7 +780,7 @@ def test_existing_media_rejection_keeps_original_body_and_counts_both_attempts(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_image_source_prose="context_when_supplied",
@@ -826,7 +839,7 @@ def test_native_stream_closes_once_and_iterator_failure_does_not_start_recovery(
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             if broken:
                 with pytest.raises(ModelError) as failure:
@@ -858,19 +871,19 @@ def test_native_stream_cleanup_failure_never_starts_protocol_recovery(
     class FailingCloseStream:
         close_calls = 0
 
-        def __iter__(self) -> Iterator[SimpleNamespace]:
-            yield SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
+        def __iter__(self) -> Iterator[ChatCompletionChunk]:
+            yield _stream_chunk(
+                [
+                    ChunkChoice(
                         index=0,
-                        delta=SimpleNamespace(content="Provisional answer."),
+                        delta=ChoiceDelta(content="Provisional answer."),
                         finish_reason="stop" if ending != "missing_finish" else None,
                     )
                 ],
-                usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                usage=CompletionUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
             )
             if ending == "invalid_chunk":
-                yield SimpleNamespace(choices=[SimpleNamespace(index=1)])
+                yield _stream_chunk([ChunkChoice(index=1, delta=ChoiceDelta(), finish_reason=None)])
 
         def close(self) -> None:
             self.close_calls += 1
@@ -884,8 +897,8 @@ def test_native_stream_cleanup_failure_never_starts_protocol_recovery(
         return responses
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    monkeypatch.setattr(OpenAIModels, "_client", lambda _self, _operation: client)
-    model = OpenAIModels(generation_evidence_operation_tool=True)
+    monkeypatch.setattr(OpenAICompletion, "_client", lambda _self, _operation: client)
+    model = OpenAICompletion(generation_evidence_operation_tool=True)
     provider, exporter = _provider()
     with (
         model_span(provider.get_tracer("test"), "model", attributes={}),
@@ -916,7 +929,7 @@ def test_provider_request_errors_do_not_enter_protocol_recovery(stream: bool, st
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with (
             model_span(provider.get_tracer("test"), "model", attributes={}),
             pytest.raises(ModelError) as failure,
@@ -963,7 +976,7 @@ def test_native_protocol_rejections_have_only_static_safe_categories(category: s
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             assert (
                 model.answer(ModelInput(QUESTION), (replace(_search_hit(), content=QUOTE),)).answer
@@ -1010,7 +1023,7 @@ def test_completed_native_sse_preserves_protocol_rejection_category(category: st
 
     provider, exporter = _provider()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(_sdk_client(client), generation_evidence_operation_tool=True)
+        model = OpenAICompletion(_sdk_client(client), generation_evidence_operation_tool=True)
         with model_span(provider.get_tracer("test"), "model", attributes={}):
             assert list(
                 model.stream_answer(ModelInput(QUESTION), (replace(_search_hit(), content=QUOTE),))

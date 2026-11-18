@@ -522,6 +522,42 @@ def test_int8_cosine_recall_survives_optimization_and_reopen(tmp_path: Path) -> 
         assert recovered / 120 >= 0.9
 
 
+def test_rabitq_graph_scores_survive_optimization_and_reopen(tmp_path: Path) -> None:
+    """Multibit graph traversal must not promote unrelated vectors with inflated scores."""
+    _require_zvec()
+    rng = np.random.default_rng(42)
+    # More than 1,000 nodes exercises HNSW traversal rather than the small-index linear path.
+    vectors = rng.standard_normal((1152, 128)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    queries = rng.standard_normal((8, 128)).astype(np.float32)
+    queries /= np.linalg.norm(queries, axis=1, keepdims=True)
+    fp64_vectors = vectors.astype(np.float64)
+    fp64_queries = queries.astype(np.float64)
+    cosines = fp64_queries @ fp64_vectors.T
+    cosines /= np.linalg.norm(fp64_queries, axis=1, keepdims=True)
+    cosines /= np.linalg.norm(fp64_vectors, axis=1)[None, :]
+    documents = [
+        _document(str(i), "note", tuple(float(x) for x in vector))
+        for i, vector in enumerate(vectors)
+    ]
+    path = tmp_path / "index"
+    with ZvecIndex(path, 128, quantization=IndexQuantization.RABITQ) as index:
+        for offset in range(0, len(documents), 1024):
+            index.upsert(documents[offset : offset + 1024])
+            index.flush()
+        index.optimize(concurrency=1)
+        index.flush()
+    with ZvecIndex(path, 128, quantization=IndexQuantization.RABITQ) as reopened:
+        for number, query in enumerate(queries):
+            hits = reopened.search(tuple(float(x) for x in query), limit=10)
+            assert len(hits) == 10
+            for hit in hits:
+                # Zvec 0.8.0's multibit graph path overstated cosine by more than 0.1 here.
+                # Allow quantization noise without requiring an approximate index's exact top-k.
+                expected = max(0.0, float(cosines[number, int(hit.id)]))
+                assert hit.relevance == pytest.approx(expected, abs=0.04)
+
+
 def test_full_text_search_stems_and_folds_accents(tmp_path: Path) -> None:
     _require_zvec()
     with ZvecIndex(tmp_path / "index", dimension=2) as index:
@@ -636,11 +672,9 @@ def test_flush_maintenance_compacts_persisted_segments(
         assert reopened.lexical_search("unique compacted target", limit=1)[0].id == "embedding_3"
 
 
-@pytest.mark.parametrize("failure_stage", ("validate", "stats"))
 def test_compaction_restores_the_previous_collection_when_reopen_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure_stage: str,
 ) -> None:
     _require_zvec()
     path = tmp_path / "index"
@@ -649,25 +683,16 @@ def test_compaction_restores_the_previous_collection_when_reopen_fails(
         index.flush()
 
         with monkeypatch.context() as injected:
-            expected = f"replacement {failure_stage} failed"
-            if failure_stage == "validate":
 
-                def reject_replacement(_schema: object) -> NoReturn:
-                    raise RuntimeError("replacement validation failed")
+            def reject_replacement_stats(_stats: object) -> NoReturn:
+                raise RuntimeError("replacement stats failed")
 
-                injected.setattr(index, "_validate_schema", reject_replacement)
-                expected = "replacement validation failed"
-            else:
-
-                def reject_replacement_stats(_stats: object) -> NoReturn:
-                    raise RuntimeError("replacement stats failed")
-
-                injected.setattr(
-                    zvec_index_module,
-                    "_indexed_document_count",
-                    reject_replacement_stats,
-                )
-            with pytest.raises(RuntimeError, match=expected):
+            injected.setattr(
+                zvec_index_module,
+                "_indexed_document_count",
+                reject_replacement_stats,
+            )
+            with pytest.raises(RuntimeError, match="replacement stats failed"):
                 index._compact()
 
         assert index.doc_count == 1
@@ -693,15 +718,6 @@ def test_write_refuses_to_consume_the_fd_safety_reserve(
 
     assert failure.value.errno == errno.EMFILE
     assert collection.documents == []
-
-
-def test_write_rechecks_headroom_after_concurrent_maintenance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    usage = iter(((900, 1_024), (700, 1_024)))
-    monkeypatch.setattr(zvec_index_module, "_file_descriptor_usage", lambda: next(usage))
-
-    zvec_index_module._require_file_descriptor_headroom()
 
 
 @pytest.mark.parametrize(

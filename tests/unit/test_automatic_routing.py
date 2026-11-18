@@ -20,15 +20,16 @@ from sensemem import (
     FormationProposal,
     IndexUnavailableError,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
     RetrievalMode,
     SearchHit,
+    SpeechAnalysis,
+    SpeechTurn,
 )
 from sensemem.kernel.ingestion import Ingestion
-from sensemem.models.base import SpeechAnalysis, SpeechTurn
 from sensemem.models.sentence_transformers import SentenceTransformersEmbedder
 
 TEXT = frozenset({Modality.TEXT})
@@ -139,7 +140,7 @@ def test_image_description_rescues_a_text_embedder_query(
         tmp_path,
         embedder=Embedder(),
         vision_describer=describer,
-        config=MemoryConfig(
+        settings=MemorySettings(
             query_vision=True, retrieval_mode=mode, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -157,7 +158,7 @@ def test_query_caption_reaches_a_text_answerer(tmp_path: Path) -> None:
         embedder=Embedder(ALL),
         answerer=Answerer(),
         vision_describer=describer,
-        config=MemoryConfig(query_vision=True, minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(query_vision=True, minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947 registration desk")
         assert memory.ask(("ALPHA-947", Blob(b"query-image", "image/png"))).answer
@@ -171,7 +172,7 @@ def test_video_transcript_rescues_add_search_and_ask(tmp_path: Path, media_quest
         embedder=Embedder(),
         answerer=Answerer(),
         transcriber=Transcriber(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         record = memory.add(Blob(b"stored-video", "video/mp4"))
         assert memory.search(Blob(b"query-video", "video/mp4")).hits[0].id == record.id
@@ -220,7 +221,7 @@ def test_speech_indexing_does_not_lock_the_instance_during_embedding(tmp_path: P
         tmp_path,
         embedder=BlockingEmbedder(ALL),
         transcriber=Speech(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947")
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -447,7 +448,7 @@ def test_temporal_and_global_index_routes_overlap(
     with Memory(
         tmp_path,
         embedder=Embedder(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:

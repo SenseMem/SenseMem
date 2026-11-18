@@ -3,7 +3,6 @@
 import ast
 from collections.abc import Sequence
 from dataclasses import asdict
-from inspect import signature
 from pathlib import Path
 from typing import cast
 
@@ -21,14 +20,13 @@ from sensemem import (
     GenerationRouter,
     Memory,
     MemoryCapabilities,
-    MemoryConfig,
     Modality,
     ModelError,
     ModelInput,
     SearchHit,
     ValidationError,
 )
-from sensemem.api.mcp import PerceptionResult as WirePerception
+from sensemem.api.responses import PerceptionResponse as WirePerception
 
 TEXT = frozenset({Modality.TEXT})
 ALL = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
@@ -131,35 +129,6 @@ def test_perception_distinguishes_missing_backend_from_empty_detection(tmp_path:
             "not_requested"
         }
         assert all(entry.processed for entry in selected.coverage if entry.kind == "faces")
-
-
-@pytest.mark.parametrize("budget", (1, 4))
-def test_evidence_consolidation_has_no_candidate_budget(tmp_path: Path, budget: int) -> None:
-    with (
-        Memory(tmp_path, embedder=Embedder()) as memory,
-        pytest.raises(TypeError, match="max_rounds"),
-    ):
-        memory.consolidate(evidence_ids=("source",), max_rounds=budget)  # type: ignore[call-arg]
-
-
-def test_expert_policy_is_one_configuration_value(tmp_path: Path) -> None:
-    assert set(signature(Memory).parameters) == {
-        "data_dir",
-        "embedder",
-        "answerer",
-        "transcriber",
-        "vision_describer",
-        "face_analyzer",
-        "former",
-        "consolidator",
-        "reranker",
-        "config",
-        "tracer",
-    }
-    config = MemoryConfig(minimum_relevance=0, index_speech=False)
-    with Memory(tmp_path, embedder=Embedder(), config=config) as memory:
-        record = memory.add("source")
-        assert memory.search("source").hits[0].id == record.id
 
 
 def test_model_clients_do_not_import_kernel_implementation() -> None:

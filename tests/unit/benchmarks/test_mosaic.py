@@ -21,7 +21,7 @@ from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
 )
@@ -33,14 +33,16 @@ from sensemem.benchmarks._official.mosaic_scoring import (
     text_metrics,
 )
 from sensemem.benchmarks.download import acquire_inputs
-from sensemem.benchmarks.eval import _score, run_loaded_task
 from sensemem.benchmarks.eval_adapters import (
     load_task,
 )
 from sensemem.benchmarks.eval_arms import _Arm
 from sensemem.benchmarks.eval_config import _Arguments, _JudgeConfig
 from sensemem.benchmarks.eval_metrics import _comparisons, _in_run_blind_rows, _metrics
+from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.eval_runner import run_loaded_task
+from sensemem.benchmarks.eval_samples import _score
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.mosaic import (
     MOSAIC_DATA_SHA256,
@@ -234,7 +236,7 @@ async def test_serial_and_batched_runs_preserve_persona_isolation_and_question_o
             Memory(
                 data_dir,
                 embedder=_TextEmbedder(),
-                config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+                settings=MemorySettings(index_quantization=IndexQuantization.NONE),
             )
         )
 
@@ -245,13 +247,15 @@ async def test_serial_and_batched_runs_preserve_persona_isolation_and_question_o
             task,
             run=run,
             memory_factory=factory,
-            batch_size=batch_size,
-            unit_concurrency=concurrency,
-            request_concurrency=4,
-            recall_limit=10,
-            predict_only=True,
+            options=EvaluationOptions(
+                batch_size=batch_size,
+                unit_concurrency=concurrency,
+                request_concurrency=4,
+                recall_limit=10,
+                predict_only=True,
+                ingest_concurrency=concurrency,
+            ),
             arms=(_Arm("random"),),
-            ingest_concurrency=concurrency,
             on_search_replay_ready=lambda _replay: None,
         )
         assert all(
@@ -263,7 +267,7 @@ async def test_serial_and_batched_runs_preserve_persona_isolation_and_question_o
             with Memory(
                 run.unit_path(unit.unit_id),
                 embedder=_TextEmbedder(),
-                config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+                settings=MemorySettings(index_quantization=IndexQuantization.NONE),
             ) as memory:
                 assert {
                     record.metadata["source_id"] for record in memory.list(limit=100).items

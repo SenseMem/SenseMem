@@ -9,8 +9,10 @@ from pydantic import ValidationError as SchemaError
 
 import sensemem.configuration as configuration
 import sensemem.recipes as recipes
-from sensemem import OpenAIModels, SenseMemConfig, ValidationError
+from sensemem import MemorySpec, ValidationError
+from sensemem.configuration import OpenAIGenerationConfig
 from sensemem.models.base import GenerationBackend, StreamingGenerationBackend
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 @pytest.fixture
@@ -18,40 +20,43 @@ def constructed_controls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, obje
     """Exercise real adapter validation without constructing a network client."""
     observed: list[dict[str, object]] = []
 
-    def build(**controls: object) -> OpenAIModels:
+    def build(_backend_type: object, **controls: object) -> OpenAICompletion:
         observed.append(controls.copy())
-        return cast(Callable[..., OpenAIModels], OpenAIModels)(**controls)
+        return cast(Callable[..., OpenAICompletion], OpenAICompletion)(**controls)
 
-    monkeypatch.setattr(recipes, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes, "_owned_openai", build)
     return observed
 
 
 def test_evidence_operation_tool_defaults_off_and_is_a_boolean_schema_field() -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {"embedding": {"provider": "openai"}, "generation": {"provider": "openai"}}
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.evidence_operation_tool is False
-    field = SenseMemConfig.model_json_schema()["$defs"]["OpenAIGenerationConfig"]["properties"][
+    field = MemorySpec.model_json_schema()["$defs"]["OpenAIGenerationConfig"]["properties"][
         "evidence_operation_tool"
     ]
     assert field["type"] == "boolean"
     assert field["default"] is False
-    assert signature(OpenAIModels).parameters["generation_evidence_operation_tool"].default is False
+    assert (
+        signature(OpenAICompletion).parameters["generation_evidence_operation_tool"].default
+        is False
+    )
 
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_explicit_booleans_round_trip_and_preserve_generation_ports(enabled: bool) -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai", "evidence_operation_tool": enabled},
         }
     )
-    restored = SenseMemConfig.model_validate_json(config.model_dump_json())
-    assert restored.generation is not None
+    restored = MemorySpec.model_validate_json(config.model_dump_json())
+    assert isinstance(restored.generation, OpenAIGenerationConfig)
     assert restored.generation.evidence_operation_tool is enabled
-    backend = OpenAIModels(generation_evidence_operation_tool=enabled)
+    backend = OpenAICompletion(generation_evidence_operation_tool=enabled)
     try:
         assert isinstance(backend, GenerationBackend)
         assert isinstance(backend, StreamingGenerationBackend)
@@ -62,19 +67,19 @@ def test_explicit_booleans_round_trip_and_preserve_generation_ports(enabled: boo
 @pytest.mark.parametrize("value", [None, 0, 1, 0.0, 1.0, "true", "false", "", [], {}])
 def test_non_boolean_values_are_rejected_at_config_and_direct_sdk(value: object) -> None:
     with pytest.raises(SchemaError, match="evidence_operation_tool"):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "generation": {"provider": "openai", "evidence_operation_tool": value},
             }
         )
     with pytest.raises(ValidationError, match="generation_evidence_operation_tool"):
-        OpenAIModels(generation_evidence_operation_tool=value)  # type: ignore[arg-type]
+        OpenAICompletion(generation_evidence_operation_tool=value)  # type: ignore[arg-type]
 
 
 def test_enabled_operation_tool_requires_text_at_both_boundaries() -> None:
     with pytest.raises(SchemaError, match=r"evidence_operation_tool.*answer_format"):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "generation": {
@@ -85,11 +90,13 @@ def test_enabled_operation_tool_requires_text_at_both_boundaries() -> None:
             }
         )
     with pytest.raises(ValidationError, match="generation_evidence_operation_tool"):
-        OpenAIModels(generation_evidence_operation_tool=True, generation_answer_format="structured")
+        OpenAICompletion(
+            generation_evidence_operation_tool=True, generation_answer_format="structured"
+        )
 
 
 def test_disabled_operation_tool_preserves_structured_answers() -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {
@@ -99,9 +106,9 @@ def test_disabled_operation_tool_preserves_structured_answers() -> None:
             },
         }
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.answer_format == "structured"
-    OpenAIModels(
+    OpenAICompletion(
         generation_evidence_operation_tool=False, generation_answer_format="structured"
     ).close()
 
@@ -109,7 +116,7 @@ def test_disabled_operation_tool_preserves_structured_answers() -> None:
 @pytest.mark.parametrize("slot", ["embedding", "formation", "vision", "consolidation"])
 def test_operation_tool_is_not_a_shared_completion_field(slot: str) -> None:
     with pytest.raises(SchemaError, match="evidence_operation_tool"):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 slot: {"provider": "openai", "evidence_operation_tool": True},
@@ -126,7 +133,7 @@ def test_generation_config_forwards_option_without_changing_provider_extensions(
         "reasoning_effort": "max",
         "vendor": {"tools": ["nested provider data"], "optional": None},
     }
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {
@@ -137,7 +144,7 @@ def test_generation_config_forwards_option_without_changing_provider_extensions(
             },
         }
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     backend = configuration._build_generation(config.generation)
     try:
         assert len(constructed_controls) == 1
@@ -153,7 +160,7 @@ def test_generation_config_forwards_option_without_changing_provider_extensions(
 def test_generation_routes_choose_their_operation_option_independently(
     constructed_controls: list[dict[str, object]],
 ) -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {
@@ -170,7 +177,7 @@ def test_generation_routes_choose_their_operation_option_independently(
             },
         }
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     backend = configuration._build_generation(config.generation)
     try:
         assert len(constructed_controls) == 2
@@ -188,9 +195,9 @@ def test_enabled_owned_tool_keys_are_rejected_by_sdk_and_config_build(
     key: str, constructed_controls: list[dict[str, object]]
 ) -> None:
     with pytest.raises(ValidationError, match="generation_extra_body"):
-        OpenAIModels(generation_evidence_operation_tool=True, generation_extra_body={key: None})
+        OpenAICompletion(generation_evidence_operation_tool=True, generation_extra_body={key: None})
     # Unknown provider JSON is validated by the SDK owner, not parsed twice in configuration.
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {
@@ -200,7 +207,7 @@ def test_enabled_owned_tool_keys_are_rejected_by_sdk_and_config_build(
             },
         }
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     with pytest.raises(ValidationError, match="generation_extra_body"):
         configuration._build_generation(config.generation)
     assert constructed_controls[0]["generation_evidence_operation_tool"] is True
@@ -210,16 +217,16 @@ def test_enabled_owned_tool_keys_are_rejected_by_sdk_and_config_build(
 def test_disabled_tool_preserves_existing_provider_tool_extensions(
     key: str, constructed_controls: list[dict[str, object]]
 ) -> None:
-    OpenAIModels(
+    OpenAICompletion(
         generation_evidence_operation_tool=False, generation_extra_body={key: None}
     ).close()
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai", "extra_body": {key: None}},
         }
     )
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     backend = configuration._build_generation(config.generation)
     try:
         assert constructed_controls[0]["generation_extra_body"] == {key: None}
@@ -233,7 +240,9 @@ def test_operation_option_does_not_weaken_existing_extra_body_protections(
     enabled: bool, key: str
 ) -> None:
     with pytest.raises(ValidationError, match="generation_extra_body"):
-        OpenAIModels(generation_evidence_operation_tool=enabled, generation_extra_body={key: None})
+        OpenAICompletion(
+            generation_evidence_operation_tool=enabled, generation_extra_body={key: None}
+        )
 
 
 @pytest.mark.parametrize("value", [1, [], {"tools": object()}])
@@ -241,7 +250,7 @@ def test_enabled_tool_validates_unknown_extra_body_before_owned_key_inspection(
     value: object,
 ) -> None:
     with pytest.raises(ValidationError, match="generation_extra_body"):
-        OpenAIModels(
+        OpenAICompletion(
             generation_evidence_operation_tool=True,
             generation_extra_body=value,  # type: ignore[arg-type]
         )

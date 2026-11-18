@@ -12,15 +12,16 @@ from sensemem import (
     AsyncMemory,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     SearchHit,
 )
 from sensemem.benchmarks import eval_config
-from sensemem.benchmarks.eval import run_loaded_task
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
 from sensemem.benchmarks.eval_config import _arguments, _build_parser
+from sensemem.benchmarks.eval_options import EvaluationOptions
+from sensemem.benchmarks.eval_runner import run_loaded_task
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.model_config import HarnessOverrides, RunOverrides
 from sensemem.benchmarks.task_catalog import TASKS
@@ -90,7 +91,7 @@ async def test_buffered_runner_reaches_sixteen_real_sdk_answers(tmp_path: Path) 
                 directory,
                 embedder=models,
                 answerer=models,
-                config=MemoryConfig(reinforce_on_answer=False),
+                settings=MemorySettings(reinforce_on_answer=False),
             )
         )
 
@@ -118,11 +119,13 @@ async def test_buffered_runner_reaches_sixteen_real_sdk_answers(tmp_path: Path) 
         task,
         run=BenchmarkRun(tmp_path / "stores", "atm-bench-main", "buffered"),
         memory_factory=factory,
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=16,
-        recall_limit=1,
-        stream_answers=False,
+        options=EvaluationOptions(
+            batch_size=1,
+            unit_concurrency=1,
+            request_concurrency=16,
+            recall_limit=1,
+            stream_answers=False,
+        ),
     )
     assert models.peak == 16
     assert len(samples) == 16

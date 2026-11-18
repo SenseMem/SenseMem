@@ -17,7 +17,8 @@ from sensemem.models.base import (
     StreamingGenerationBackend,
     embedding_routes,
 )
-from sensemem.types import AnswerPolicy, AnswerResult, Modality, SearchHit
+from sensemem.records import AnswerResult, SearchHit
+from sensemem.types import AnswerPolicy, Modality
 
 
 class GenerationRouter:

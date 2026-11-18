@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -22,6 +23,27 @@ STORE_METADATA_KEYS = {
     "index": "index.recipe",
 }
 EVIDENCE_RECIPE_KEY = "evidence.projection_recipe"
+INGESTION_RECIPE_KEY = "processing.ingestion_recipe"
+
+
+def plan_ingestion_recipe(
+    stages: tuple[tuple[str, str], ...], *, previous: str | None, has_records: bool
+) -> dict[str, str]:
+    """Require populated stores to retain their exact ordered ingestion recipe."""
+    recipe = json.dumps(
+        [{"name": name, "space": space} for name, space in stages],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if previous == recipe:
+        return {}
+    if has_records:
+        raise StorageError(
+            "ingestion stage recipes changed; replay sources into a fresh data directory",
+            reason="schema_unsupported",
+            stage="open",
+        )
+    return {INGESTION_RECIPE_KEY: recipe}
 
 
 def validated_index_quantization(value: object) -> IndexQuantization:

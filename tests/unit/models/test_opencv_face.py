@@ -9,10 +9,11 @@ import numpy as np
 import pytest
 
 import sensemem.models.opencv_face as opencv_face
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError
 from sensemem.models.base import FaceBackend
 from sensemem.models.opencv_face import OpenCVFaceAnalyzer
-from sensemem.types import AssetRef, Modality
+from sensemem.types import Modality
 
 
 class _Image:

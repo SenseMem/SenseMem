@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -31,7 +32,6 @@ from sensemem.benchmarks.official_scorers import (
     official_judge_model,
     parse_judge_response,
     retrieval_gold_ids,
-    task_primary_metric,
 )
 from sensemem.benchmarks.task_catalog import TaskSpec
 
@@ -142,10 +142,6 @@ def test_official_judge_response_parsers_keep_upstream_mappings() -> None:
     ) == {"llm_judge": 1.0}
     assert parse_judge_response(JudgePlan("p", "gallery", message), '{"score": "0.5"}') == {
         "llm_judge": 0.5
-    }
-    assert parse_judge_response(JudgePlan("p", "es_memeval", message), "Score: 1") == {
-        "llm_judge": 0.5,
-        "judge_score_0_2": 1.0,
     }
 
 
@@ -283,44 +279,6 @@ def test_m3_plan_preserves_the_official_system_message() -> None:
     assert plan is not None
     assert plan.calls[0][0] == JudgeMessage("system", "You are an expert in video understanding.")
     assert plan.calls[0][1].role == "user"
-
-
-def test_es_memeval_uses_its_set_overlap_f1_and_gpt4o_judge() -> None:
-    # Upstream deduplicates the overlap while retaining repeated prediction
-    # tokens in the denominator: 2 * (2/4 * 2/2) / (2/4 + 2/2).
-    assert _scores(
-        "es-memeval-qa",
-        "Painting helps painting helps",
-        "Painting helps",
-        {"capability": "information extraction"},
-    ) == {"f1": pytest.approx(2 / 3)}
-    assert _scores(
-        "es-memeval-qa",
-        "**Answer: Painting**",
-        "Painting",
-        {"capability": "information extraction"},
-    ) == {"f1": 1.0}
-
-    plan = judge_plan(
-        "es-memeval-qa",
-        question="What hobby did Sarah start?",
-        references=("Painting",),
-        prediction="**Answer: She started painting.**",
-        metadata={"capability": "information extraction"},
-    )
-
-    assert plan is not None
-    assert plan.parser == "es_memeval"
-    assert plan.max_tokens == 16
-    assert plan.calls[0][0] == JudgeMessage("system", "You are a strict evaluator.")
-    assert "Score: X" in plan.calls[0][1].content
-    assert "Model answer: She started painting." in plan.calls[0][1].content
-    assert "Model answer: **" not in plan.calls[0][1].content
-    assert official_judge_model("es-memeval-qa") == "gpt-4o"
-    assert judge_model_is_official("es-memeval-qa", "openai/gpt-4o")
-    assert task_primary_metric("es-memeval-qa") == "llm_judge"
-    assert metric_is_official("es-memeval-qa", "f1", "", uses_judge=False)
-    assert not metric_is_official("es-memeval-qa", "llm_judge", "gpt-4o", uses_judge=True)
 
 
 @pytest.mark.asyncio
@@ -677,6 +635,97 @@ def test_personamem_rubric_applies_the_official_deterministic_aggregation() -> N
     assert violated["personamem_score"] == 0.0
 
 
+def test_personamem_geo_shift_has_a_deterministic_official_headline() -> None:
+    metadata: dict[str, object] = {
+        "task_type": "local_recommendation_geo_shift",
+        "judge_evidence": {
+            "current_city": "Osaka",
+            "current_region": "Osaka",
+            "prior_city": "Lagos",
+        },
+    }
+    prediction = (
+        "In Osaka, explore neighborhood cafes, independent bookshops, quiet gardens, "
+        "local markets, walking routes, galleries, museums, and seasonal exhibitions "
+        "that suit your interests and afternoon schedule."
+    )
+    scores = _scores("personamem-v3", prediction, "gold", metadata)
+
+    assert scores["geo_shift_correctness"] == scores["personamem_score"] == 1.0
+    assert (
+        judge_plan(
+            "personamem-v3",
+            question="Where should I go?",
+            references=("gold",),
+            prediction=prediction,
+            metadata=metadata,
+        )
+        is None
+    )
+    assert metric_is_official(
+        "personamem-v3", "geo_shift_correctness", "other-judge", uses_judge=True
+    )
+    # Only the rendered answer is scored; JSON keys and reasoning must not
+    # supply missing substantive tokens or inject a stale city into the answer.
+    wrapped = '{"response": "one two six ten red tan dog cat bat rat fox hen cow pig"}'
+    assert _scores("personamem-v3", wrapped, "gold", metadata)["personamem_score"] == 0.0
+    wrapped = json.dumps({"response": prediction, "reasoning": "Lagos"})
+    assert _scores("personamem-v3", wrapped, "gold", metadata)["personamem_score"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    [
+        "proactive_close_friend_update",
+        "restraint_sensitive_event_silence",
+        "proactive_friend_feed_react",
+        "proactive_trending_feed_react",
+        "proactive_overactive_check",
+    ],
+)
+def test_personamem_proactive_requires_a_judge_and_uses_the_instance_polarity(
+    task_type: str,
+) -> None:
+    prediction = '{"should_act": false, "content": "", "reasoning": "Respect their quiet time."}'
+    metadata: dict[str, object] = {
+        "task_type": task_type,
+        # This release-level category is not the hidden act/restrain decision.
+        "expected_behavior": "proactive_assist",
+        "judge_evidence": {
+            "expected_behavior": "restrain",
+            "trigger_evidence": {"context": "private trigger evidence"},
+            "jitai_card": {"decision_rule": "private decision rule"},
+        },
+    }
+    local = _scores("personamem-v3", prediction, "gold", metadata)
+    assert local["decision_correct"] == 1.0
+    assert "proactive_action_score" not in local
+    assert "personamem_score" not in local
+
+    plan, scores = _judged(
+        "personamem-v3",
+        question="[system prompt] Decide whether to ping.",
+        references=("gold",),
+        prediction=prediction,
+        metadata=metadata,
+        replies=(
+            '{"trigger_detection_correctness": 0, "justification_quality": 0, '
+            '"preference_alignment": 0, "avoid_overpersonalization": 0, '
+            '"voice_match": 0, "restraint_justification": 10, '
+            '"negative_leakage": false, "stale_preference_use": false}',
+        ),
+    )
+    assert "expected_behavior = `restrain`" in plan.calls[0][0].content
+    assert "private trigger evidence" in plan.calls[0][0].content
+    assert "private decision rule" in plan.calls[0][0].content
+    # Correct restraint is graded only on its restraint justification; the
+    # decision itself comes from the emitted flag, not a judge's impression.
+    assert scores["personamem_score"] == scores["proactive_action_score"] == 1.0
+    assert not metric_is_official(
+        "personamem-v3", "proactive_action_score", "other-judge", uses_judge=True
+    )
+
+
 def test_personamem_ranking_is_deterministic_and_reads_both_answer_shapes() -> None:
     metadata: dict[str, object] = {
         "task_type": "personalized_recommendation",
@@ -786,56 +835,6 @@ def test_personamem_ranking_matches_current_official_graded_formula() -> None:
     )
     assert pre_q27["ndcg_at_5"] == pytest.approx(0.8447, abs=5e-5)
     assert witness_q27["ndcg_at_5"] == pytest.approx(0.9065, abs=5e-5)
-
-
-@pytest.mark.parametrize(
-    "task_type",
-    [
-        # No judge family at all.
-        "proactive_close_friend_update",
-        "proactive_trending_feed_react",
-        "restraint_sensitive_event_silence",
-        "proactive_overactive_check",
-        "active_mistake_prevention",
-        # In the rubric's applicability map, but upstream keeps that output as
-        # a diagnostic and computes the headline a different way: a leak-set
-        # composite, fatigue counters, or a paired-row delta.
-        "new_suggestions_chatbot",
-        "new_suggestions_recsys",
-        "local_recommendation_geo_shift",
-        "over_personalization_repetition_chatbot",
-        "over_personalization_repetition_recsys",
-        # Ranks a slate like the other three, but upstream scores it with a
-        # delta across two paired rows that a single row cannot carry.
-        "short_vs_long_term_lifecycle",
-    ],
-)
-def test_personamem_leaves_families_it_cannot_reproduce_unscored(task_type: str) -> None:
-    metadata: dict[str, object] = {
-        "task_type": task_type,
-        # Slate fields are supplied so a row cannot be left unscored merely for
-        # want of a candidate list.
-        "candidate_count": 4,
-        "positive_indexes": (1,),
-        "negative_indexes": (0,),
-        "judge_evidence": {},
-    }
-    scored = _scores("personamem-v3", "Ranked indexes: [1, 0, 2, 3]", "gold", dict(metadata))
-    # A slate-ranking task with no reproducible headline still reports its
-    # deterministic diagnostics; it just must not enter the aggregate.
-    assert "personamem_score" not in scored
-    if task_type != "short_vs_long_term_lifecycle":
-        assert scored == {}
-    assert (
-        judge_plan(
-            "personamem-v3",
-            question="react?",
-            references=("gold",),
-            prediction="I would stay quiet.",
-            metadata=metadata,
-        )
-        is None
-    )
 
 
 def test_personamem_scores_exactly_the_reproducible_task_types() -> None:

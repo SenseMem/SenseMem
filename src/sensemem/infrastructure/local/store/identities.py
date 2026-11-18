@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Literal
 
+from sensemem.identity import ConsentState, IdentityErasure, IdentityProfile
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
     datetime_text,
@@ -17,7 +18,6 @@ from sensemem.infrastructure.local.store._codec import (
 )
 from sensemem.infrastructure.local.store._connections import Connections
 from sensemem.infrastructure.local.store._identity import (
-    canonical_subject,
     current_consent_state,
     current_naming_assertion,
     has_naming_assertion,
@@ -33,11 +33,9 @@ from sensemem.infrastructure.local.store._identity import (
     visible_naming_assertions,
 )
 from sensemem.infrastructure.local.store._lineage import (
-    SOURCE_GROUP_QUERY,
     active_evidence_dependent_closure,
     current_evidence_ids,
     deletion_cascade,
-    semantic_visibility,
 )
 from sensemem.infrastructure.local.store._naming_projection import validate_speech_projection
 from sensemem.infrastructure.local.store._operations import active_operation_id, insert_operation
@@ -57,16 +55,9 @@ from sensemem.infrastructure.local.store.rows import (
     require_optional_identifier,
     validated_identity_modality,
     validated_identity_name,
-    validated_sha256,
 )
-from sensemem.types import (
-    ConsentState,
-    IdentityErasure,
-    IdentityProfile,
-    MemoryContext,
-    MemoryKind,
-    SpatialContext,
-)
+from sensemem.spatial import SpatialContext
+from sensemem.types import EvidenceBasis, RecordKind
 
 
 def merge_identity_rows(
@@ -79,6 +70,24 @@ def merge_identity_rows(
     merge has on memory records and therefore the one an operation log row can name.
     """
     target, source = plan.target_id, plan.source_id
+    connection.execute(
+        "DELETE FROM identity_rejections WHERE first_id = ? AND second_id = ?",
+        tuple(sorted((target, source))),
+    )
+    connection.execute(
+        """
+        INSERT INTO identity_rejections (first_id, second_id, created_at)
+        SELECT min(CASE WHEN first_id = ? THEN ? ELSE first_id END,
+                   CASE WHEN second_id = ? THEN ? ELSE second_id END),
+               max(CASE WHEN first_id = ? THEN ? ELSE first_id END,
+                   CASE WHEN second_id = ? THEN ? ELSE second_id END),
+               created_at
+        FROM identity_rejections
+        WHERE first_id = ? OR second_id = ?
+        ON CONFLICT (first_id, second_id) DO NOTHING
+        """,
+        (source, target, source, target, source, target, source, target, source, source),
+    )
     contributed = sole_identity_modality(connection, source)
     now = datetime_text(datetime.now(timezone.utc))
     # Read before the source's `identities` row is deleted below, so the alias row can carry
@@ -132,29 +141,6 @@ def merge_identity_rows(
         "UPDATE identity_aliases SET identity_id = ? WHERE identity_id = ?",
         (target, source),
     )
-    # Re-point accumulated evidence by copying it onto the target first: the
-    # same asset may already carry a row for the target, and the primary key
-    # would reject a plain UPDATE.
-    connection.execute(
-        """
-        INSERT INTO identity_link_evidence (voice_id, face_id, asset_id, created_at)
-        SELECT CASE WHEN voice_id = ? THEN ? ELSE voice_id END,
-               CASE WHEN face_id = ? THEN ? ELSE face_id END,
-               asset_id,
-               created_at
-        FROM identity_link_evidence
-        WHERE voice_id = ? OR face_id = ?
-        ON CONFLICT (voice_id, face_id, asset_id) DO NOTHING
-        """,
-        (source, target, source, target, source, source),
-    )
-    connection.execute(
-        "DELETE FROM identity_link_evidence WHERE voice_id = ? OR face_id = ?",
-        (source, source),
-    )
-    # Re-pointing turns this pair's own evidence into voice_id = face_id rows, which
-    # describe an identity co-occurring with itself and can never yield a plan.
-    connection.execute("DELETE FROM identity_link_evidence WHERE voice_id = face_id")
     connection.execute(
         """
         INSERT INTO identity_aliases (
@@ -232,10 +218,11 @@ def split_identity_rows(connection: sqlite3.Connection, alias_id: str) -> str | 
     connection.execute("DELETE FROM identity_aliases WHERE alias_id = ?", (alias_id,))
     connection.execute(
         """
-        DELETE FROM identity_link_evidence
-        WHERE voice_id IN (?, ?) AND face_id IN (?, ?)
+        INSERT INTO identity_rejections (first_id, second_id, created_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (first_id, second_id) DO NOTHING
         """,
-        (target, alias_id, target, alias_id),
+        (*sorted((target, alias_id)), now),
     )
     rebind_unlinked_claims(
         connection,
@@ -268,10 +255,21 @@ def identity_link_plan(
     second_id: str,
     *,
     allow_shared_modality: bool = False,
+    allow_rejected_pair: bool = False,
+    preferred_identity: str | None = None,
 ) -> IdentityLink | None:
     first = resolve_identity_id(connection, first_id)
     second = resolve_identity_id(connection, second_id)
     if first is None or second is None or first == second:
+        return None
+    if (
+        not allow_rejected_pair
+        and connection.execute(
+            "SELECT 1 FROM identity_rejections WHERE first_id = ? AND second_id = ?",
+            tuple(sorted((first, second))),
+        ).fetchone()
+        is not None
+    ):
         return None
     identities = (first, second)
     rows = connection.execute(
@@ -323,6 +321,10 @@ def identity_link_plan(
             identity_id,
         ),
     )
+    if preferred_identity is not None:
+        if preferred_identity not in identities:
+            return None
+        target, source = (first, second) if preferred_identity == first else (second, first)
     return IdentityLink(
         target,
         source,
@@ -518,87 +520,6 @@ class IdentityRegistry:
             return None, None
         return optional_row_text(row, "subject"), optional_row_text(row, "value")
 
-    def naming_projection_after_assertion(
-        self,
-        identity_id: str,
-        memory_id: str,
-        context: MemoryContext,
-    ) -> tuple[str | None, str | None]:
-        """Preview the projection after applying one bound naming assertion.
-
-        The caller uses this while holding its write lock to build speech documents before the
-        assertion transaction. The store remains the source of the evidence-group visibility
-        rule, so the preview and the commit cannot disagree about corroboration.
-        """
-        require_identifier(identity_id, "identity_id")
-        require_identifier(memory_id, "memory_id")
-        if context.kind is not MemoryKind.ENTITY or context.identity_id != identity_id:
-            raise ValueError("context must be a naming assertion for identity_id")
-        with self._connections.connection() as connection:
-            resolved_id = resolve_identity_id(connection, identity_id)
-            if resolved_id is None:
-                return None, None
-            groups = {
-                row_text(row, "source_group_id")
-                for row in connection.execute(
-                    """
-                    SELECT source_group_id FROM memory_evidence
-                    WHERE memory_id = ? AND retired_at IS NULL
-                    """,
-                    (memory_id,),
-                ).fetchall()
-            }
-            for source_memory_id in context.evidence_ids:
-                source = connection.execute(SOURCE_GROUP_QUERY, (source_memory_id,)).fetchone()
-                if source is None:
-                    raise sqlite3.IntegrityError("evidence source memory does not exist")
-                groups.add(row_text(source, "source_group_id"))
-            visible = semantic_visibility(
-                connection,
-                memory_id=memory_id,
-                lineage_id=context.lineage_id or memory_id,
-                kind=context.kind.value,
-                basis=context.basis.value,
-                identity_id=context.identity_id,
-                evidence_count=len(groups),
-                valid_from=context.valid_from,
-                valid_until=context.valid_until,
-            )
-            if visible:
-                return context.subject, context.value
-            current = current_naming_assertion(connection, resolved_id)
-        if current is None:
-            return None, None
-        return optional_row_text(current, "subject"), optional_row_text(current, "value")
-
-    def identity_for_subject(self, subject: str) -> str | None:
-        """Return the identity whose visible naming assertion canonically names this subject.
-
-        Deterministic and never a model's decision: the comparison is the same NFKC casefold
-        the semantic layer already uses, and two identities that currently project the same
-        canonical name resolve to neither, because binding a claim to the wrong person is
-        worse than leaving it unbound.
-        """
-        canonical = canonical_subject(subject)
-        if canonical is None:
-            return None
-        with self._connections.connection() as connection:
-            assertions = visible_naming_assertions(connection)
-            matches = {
-                row_text(row, "identity_id")
-                for row in assertions
-                if canonical_subject(optional_row_text(row, "subject")) == canonical
-            }
-            if len(matches) == 1:
-                identity_id = next(iter(matches))
-                if any(
-                    row_text(row, "identity_id") == identity_id
-                    and canonical_subject(optional_row_text(row, "subject")) != canonical
-                    for row in assertions
-                ):
-                    return None
-        return matches.pop() if len(matches) == 1 else None
-
     def provisional_identities(
         self,
         memory_ids: Sequence[str],
@@ -669,7 +590,7 @@ class IdentityRegistry:
         """Return, per memory, the NAMED identities its identity edge resolves to.
 
         A memory carries an identity edge two ways: its own semantic assertion may be bound to
-        an identity (`memory_semantics.identity_id`, the field `MemoryContext.identity_id`
+        an identity (`memory_semantics.identity_id`, the field `RecordSemantics.identity_id`
         projects), or its media asset may have recognized one -- the same asset-keyed join
         `provisional_identities` reads for the unnamed case. Each entry is `(identity_id,
         name, naming_memory_id)`. The naming assertion's own memory is never reported for
@@ -691,7 +612,7 @@ class IdentityRegistry:
                 merge_named_identity_links(connection, batch, named, links)
         return {memory_id: tuple(sorted(entries)) for memory_id, entries in sorted(links.items())}
 
-    def co_derived_events(
+    def read_co_derived_event_ids(
         self,
         memory_ids: Sequence[str],
         *,
@@ -749,7 +670,7 @@ class IdentityRegistry:
                     WHERE cue.memory_id IN ({placeholders}) AND s.kind = ?
                       AND {clause.format(alias="cue")} AND {clause.format(alias="ev")}
                     """,
-                    (*batch, MemoryKind.EVENT.value, *known_parameters, *known_parameters),
+                    (*batch, RecordKind.EVENT.value, *known_parameters, *known_parameters),
                 ).fetchall():
                     derived.setdefault(row_text(row, "memory_id"), []).append(
                         row_text(row, "event_id")
@@ -784,8 +705,8 @@ class IdentityRegistry:
         A merged identity resolves through its alias, like every other identity read, and the
         returned profile carries the canonical ID so a caller never has to resolve it twice.
 
-        `confirmed` and `evidence_ids` are derived, not stored: a person is confirmed exactly
-        while a visible naming assertion names them, and the evidence is that assertion's.
+        `confirmed` is true only for a visible host naming statement. Inferred names retain
+        their evidence and may be visible without being host-confirmed.
         """
         require_identifier(identity_id, "identity_id")
         with self._connections.connection() as connection:
@@ -808,7 +729,8 @@ class IdentityRegistry:
             identity_id=resolved_id,
             name=optional_row_text(row, "name"),
             relationship=optional_row_text(row, "relationship"),
-            confirmed=assertion is not None,
+            confirmed=assertion is not None
+            and assertion["basis"] == EvidenceBasis.USER_STATEMENT.value,
             evidence_ids=evidence_ids,
         )
 
@@ -834,9 +756,8 @@ class IdentityRegistry:
     def identity_assertion_memory_ids(self, identity_id: str) -> tuple[str, ...]:
         """Return every record bound to one identity, standing or superseded.
 
-        This is the assertion half of what is held about a person -- their names and their
-        consent statements, every version of each -- which `identity_memory_ids` does not cover
-        because those records observe nobody.
+        Includes assertions whose subject is the person and typed affect links targeting their
+        stable identity or an alias. `identity_memory_ids` covers media occurrences separately.
         """
         require_identifier(identity_id, "identity_id")
         with self._connections.connection() as connection:
@@ -846,54 +767,14 @@ class IdentityRegistry:
             rows = connection.execute(
                 """
                 SELECT memory_id FROM memory_semantics
-                WHERE identity_id = ? ORDER BY memory_id
+                WHERE identity_id = ? OR affect_object_identity_id IN (
+                    SELECT identity_id FROM identities WHERE identity_id = ?
+                    UNION SELECT alias_id FROM identity_aliases WHERE identity_id = ?
+                ) ORDER BY memory_id
                 """,
-                (resolved_id,),
+                (resolved_id, resolved_id, resolved_id),
             ).fetchall()
         return tuple(row_text(row, "memory_id") for row in rows)
-
-    def record_identity_link_evidence(self, voice_id: str, face_id: str, asset_id: str) -> int:
-        """Record one voice-and-face co-occurrence and count the pair's distinct assets.
-
-        Recording the same triple again is idempotent. Returns zero when either
-        identity is unknown, or when both resolve to the same identity because the pair has
-        already merged, so a caller can accumulate corroboration across assets before it
-        commits an irreversible cross-modal merge.
-        """
-        require_identifier(voice_id, "voice identity_id")
-        require_identifier(face_id, "face identity_id")
-        validated_sha256(asset_id)
-        now = datetime_text(datetime.now(timezone.utc))
-        with self._connections.transaction() as connection:
-            voice = resolve_identity_id(connection, voice_id)
-            face = resolve_identity_id(connection, face_id)
-            if voice is None or face is None or voice == face:
-                return 0
-            if (
-                connection.execute(
-                    "SELECT 1 FROM media_assets WHERE asset_id = ?",
-                    (asset_id,),
-                ).fetchone()
-                is None
-            ):
-                raise ValueError("identity link evidence requires a stored media asset")
-            connection.execute(
-                """
-                INSERT INTO identity_link_evidence (voice_id, face_id, asset_id, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (voice_id, face_id, asset_id) DO NOTHING
-                """,
-                (voice, face, asset_id, now),
-            )
-            row = connection.execute(
-                """
-                SELECT COUNT(DISTINCT asset_id) AS assets
-                FROM identity_link_evidence
-                WHERE voice_id = ? AND face_id = ?
-                """,
-                (voice, face),
-            ).fetchone()
-        return int(row["assets"])
 
     def identity_link_plan(
         self,
@@ -901,6 +782,8 @@ class IdentityRegistry:
         second_id: str,
         *,
         allow_shared_modality: bool = False,
+        allow_rejected_pair: bool = False,
+        preferred_identity: str | None = None,
     ) -> IdentityLink | None:
         """Return the currently valid merge plan for two complementary identities.
 
@@ -918,7 +801,24 @@ class IdentityRegistry:
                 first_id,
                 second_id,
                 allow_shared_modality=allow_shared_modality,
+                allow_rejected_pair=allow_rejected_pair,
+                preferred_identity=preferred_identity,
             )
+
+    def identity_binding_operation_key(
+        self, operation_key: str, first_id: str, second_id: str
+    ) -> str:
+        """Distinguish a host reconfirmation from the binding that a later split corrected."""
+        with self._connections.connection() as connection:
+            rejected = connection.execute(
+                "SELECT created_at FROM identity_rejections WHERE first_id = ? AND second_id = ?",
+                tuple(sorted((first_id, second_id))),
+            ).fetchone()
+        return (
+            operation_key
+            if rejected is None
+            else f"{operation_key}:reconfirmed:{row_text(rejected, 'created_at')}"
+        )
 
     def link_identities(
         self,
@@ -927,6 +827,8 @@ class IdentityRegistry:
         *,
         expected: IdentityLink | None = None,
         allow_shared_modality: bool = False,
+        allow_rejected_pair: bool = False,
+        preferred_identity: str | None = None,
         memories: Iterable[StoredMemory] = (),
         embeddings: Iterable[StoredEmbedding] = (),
         projection_sources: Sequence[StoredMemory] | None = None,
@@ -944,8 +846,6 @@ class IdentityRegistry:
         """
         require_identifier(first_id, "first identity_id")
         require_identifier(second_id, "second identity_id")
-        if expected is not None and not isinstance(expected, IdentityLink):
-            raise ValueError("expected must be an IdentityLink value or None")
         supplied_memories, supplied_embeddings, supplied_by_memory = prepare_write_batch(
             memories,
             embeddings,
@@ -961,6 +861,8 @@ class IdentityRegistry:
                 first_id,
                 second_id,
                 allow_shared_modality=allow_shared_modality,
+                allow_rejected_pair=allow_rejected_pair,
+                preferred_identity=preferred_identity,
             )
             if plan is None:
                 first = resolve_identity_id(connection, first_id)
@@ -1019,9 +921,9 @@ class IdentityRegistry:
         back, not only the rows the source originally supplied, so unlinking a
         re-absorbed fragment also hands over what the target learned in that modality.
 
-        Unlinking clears the pair's accumulated link evidence but does not suppress the
-        pair, so continued ingestion can corroborate and merge them again. Treat this as
-        resetting the evidence, not as recording that a human rejected the merge.
+        Unlinking records a durable rejection of this pair and clears its accumulated link
+        evidence. Reprocessing old observations cannot override that correction; a host must
+        explicitly confirm the pair again or roll back this split.
 
         Pass `memories` and `embeddings` to atomically replace indexed documents that named
         the merged person, exactly as `register_identity` does. They are applied only when the
@@ -1159,10 +1061,14 @@ class IdentityRegistry:
                 for row in connection.execute(
                     """
                     SELECT memory_id FROM memory_semantics
-                    WHERE identity_id = ? AND kind = ?
+                    WHERE (identity_id = ? AND kind = ?)
+                       OR affect_object_identity_id IN (
+                           SELECT identity_id FROM identities WHERE identity_id = ?
+                           UNION SELECT alias_id FROM identity_aliases WHERE identity_id = ?
+                       )
                     ORDER BY memory_id
                     """,
-                    (resolved_id, MemoryKind.ENTITY.value),
+                    (resolved_id, RecordKind.ENTITY.value, resolved_id, resolved_id),
                 ).fetchall()
             )
             unreferenced: list[StoredAsset] = []

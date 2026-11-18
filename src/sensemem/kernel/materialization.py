@@ -2,33 +2,30 @@
 
 from __future__ import annotations
 
-import builtins
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from sensemem._content import content_atoms
+from sensemem.content import AssetRef, Blob, ContentInput
 from sensemem.exceptions import SenseMemError, StorageError, ValidationError
 from sensemem.infrastructure.local.assets import AssetStoreError, AssetTooLargeError
 from sensemem.infrastructure.local.store import StoredAsset
 from sensemem.kernel.content import (
     PreparedContent,
     PreparedMemory,
-    content_atoms,
     media_hint,
     memory_modality,
     prepare_memory,
 )
+from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import Lifecycle, OperationAssets
 from sensemem.kernel.runtime import Storage, translate_storage_errors
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS, validated_text
-from sensemem.types import (
-    AssetRef,
-    Blob,
-    ContentAtom,
-    ContentInput,
-    MemoryType,
-    ObservationContext,
-)
+from sensemem.models.base import ModelInput
+from sensemem.spatial import ObservationContext
+from sensemem.types import MemoryCategory
 
 
 class Materializer:
@@ -39,21 +36,30 @@ class Materializer:
         *,
         storage: Storage,
         lifecycle: Lifecycle,
+        hydrator: Hydrator,
     ) -> None:
         self._assets = storage.assets
         self._store = storage.store
         self._write_lock = storage.write_lock
         self._lifecycle = lifecycle
+        self._hydrator = hydrator
 
-    def prepare(
+    @contextmanager
+    def lease_model_input(self, content: ContentInput) -> Iterator[ModelInput]:
+        """Lease validated input for an application-composed computation without adding memory."""
+        with self._lifecycle.operation(model_work=True) as operation:
+            yield self._hydrator.model_input(self.materialize_content(content, operation))
+
+    def materialize_content(
         self,
         content: ContentInput,
         operation: OperationAssets,
     ) -> PreparedContent:
+        """Validate atoms, persist supplied media and lease every referenced asset."""
         atoms = content_atoms(content)
-        text_parts: builtins.list[str] = []
-        assets: builtins.list[StoredAsset] = []
-        canonical: builtins.list[tuple[str, str]] = []
+        text_parts: list[str] = []
+        assets: list[StoredAsset] = []
+        canonical: list[tuple[str, str]] = []
         for atom in atoms:
             if isinstance(atom, str):
                 text = validated_text(atom, "content")
@@ -74,7 +80,7 @@ class Materializer:
             canonical_parts=tuple(canonical),
         )
 
-    def prepare_batch_item(
+    def materialize_batch_item(
         self,
         content: ContentInput,
         *,
@@ -83,13 +89,13 @@ class Materializer:
         occurred_at: datetime | None,
         occurred_end: datetime | None,
         metadata: Mapping[str, object] | None,
-        memory_type: MemoryType,
+        memory_type: MemoryCategory,
         context: ObservationContext | None,
     ) -> PreparedMemory:
-        """Prepare one batch item, naming its position when it is the item that fails."""
+        """Materialize one batch item and name its position when validation fails."""
         try:
             return prepare_memory(
-                self.prepare(content, operation),
+                self.materialize_content(content, operation),
                 occurred_at=occurred_at,
                 occurred_end=occurred_end,
                 metadata=metadata,
@@ -103,7 +109,7 @@ class Materializer:
 
     def _materialize_atom(
         self,
-        atom: ContentAtom,
+        atom: Path | Blob | AssetRef,
         operation: OperationAssets,
     ) -> StoredAsset:
         try:
@@ -126,10 +132,8 @@ class Materializer:
                     name=atom.name,
                     lease=True,
                 )
-            elif isinstance(atom, AssetRef):
-                return self._resolve_asset_reference(atom, operation)
             else:
-                raise ValidationError("content contains an unsupported input value")
+                return self._resolve_asset_reference(atom, operation)
         except SenseMemError:
             raise
         except (AssetTooLargeError, OSError, ValueError):

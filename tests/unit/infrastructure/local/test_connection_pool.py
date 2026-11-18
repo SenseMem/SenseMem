@@ -1,17 +1,7 @@
-"""What pooling connections must keep true, and the one cost it removes.
+"""Connection reuse preserves exclusive checkout, transaction isolation, and close ownership.
 
-Opening a SQLite connection is not free: one `sqlite3_open` plus the four `PRAGMA` statements that
-make a connection usable, measured at 450 us against a populated store. Nothing held a connection
-between calls, so every store helper opened its own -- seven for one `add`, five for one `search`,
-one for a `get` that then spent nine tenths of its latency on them.
-
-The pool is a checkout pool rather than a connection per thread: a connection leaves it for
-exactly one `with` block and is returned by the same `finally` that used to close it. That is what
-these tests pin. Exclusive checkout is the whole safety argument -- it is why two threads never
-execute on one connection and why two nested blocks still get two connections, as they did when
-each opened its own. A block that raised must not return its connection, because a statement that
-failed part way through can leave a transaction open that the next borrower would silently join.
-And `close()` has to reclaim what the pool still holds, or a store would outlive its handles.
+Concurrent and nested borrowers receive distinct connections. Failed transactions cannot leak
+into the next checkout, and closing the pool reclaims every connection it owns.
 """
 
 from __future__ import annotations
@@ -26,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from sensemem._capacity import Capacity
 from sensemem.infrastructure.local import LocalStore, StoredMemory
-from sensemem.infrastructure.local._capacity import Capacity
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError
 from sensemem.infrastructure.local.store import _connections as connections_module
 from sensemem.infrastructure.local.store._connections import Connections

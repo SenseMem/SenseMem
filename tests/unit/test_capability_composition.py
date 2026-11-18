@@ -19,8 +19,8 @@ from sensemem import (
     FaceAnalysis,
     GenerationRouter,
     Memory,
-    MemoryConfig,
     MemoryIntent,
+    MemorySettings,
     Modality,
     ModelInput,
     SearchHit,
@@ -72,7 +72,7 @@ def test_generation_selects_the_native_route_for_the_question(
         tmp_path,
         embedder=Embedder(ALL),
         answerer=GenerationRouter(backends),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947")
         question = (
@@ -97,7 +97,7 @@ def test_text_question_routes_on_visual_evidence_too(tmp_path: Path) -> None:
         tmp_path,
         embedder=Embedder(ALL),
         answerer=GenerationRouter((text, visual)),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         record = memory.add(("ALPHA-947", Blob(b"source", "image/png")))
         assert memory.ask("ALPHA-947").hits[0].id == record.id
@@ -123,7 +123,7 @@ def test_routing_survives_evidence_composition_and_converts_only_missing_media(
         embedder=Embedder(ALL),
         answerer=answerer,
         vision_describer=Describer(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add(("ALPHA-947", Blob(b"clip", "video/mp4")))
         assert memory.ask(("ALPHA-947", Blob(b"question", "image/png"))).answer
@@ -140,7 +140,7 @@ def test_specialized_embeddings_compose_atomic_keys(tmp_path: Path) -> None:
     with Memory(
         tmp_path,
         embedder=EmbeddingRouter((text, images)),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         record = memory.add(("ALPHA-947", Blob(b"source", "image/png")))
         assert memory.search(("ALPHA-947", Blob(b"query", "image/png"))).hits[0].id == record.id
@@ -192,7 +192,7 @@ def test_independent_face_and_speech_inference_overlap(tmp_path: Path) -> None:
         answerer=Answerer(),
         transcriber=ConcurrentSpeech(),
         face_analyzer=Faces(),
-        config=MemoryConfig(index_speech=False, minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(index_speech=False, minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add(("ALPHA-947", Blob(b"video", "video/mp4")))
         assert memory.ask("ALPHA-947").answer
@@ -211,7 +211,7 @@ def test_enrichment_is_independent_of_the_generation_provider(tmp_path: Path) ->
         tmp_path,
         embedder=Embedder(ALL),
         answerer=EvidenceGeneration(backend, enricher=Enricher()),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add(("ALPHA-947", Blob(b"source", "image/png")))
         assert memory.ask("ALPHA-947").answer
@@ -234,7 +234,7 @@ class NamedSpeech(Speech):
 
 
 @pytest.mark.parametrize("structured", (False, True))
-def test_only_explicit_visual_name_proposals_can_name_a_speaker(
+def test_only_corroborated_explicit_visual_name_proposals_can_name_a_speaker(
     tmp_path: Path, structured: bool
 ) -> None:
     class Plain(Describer):
@@ -256,6 +256,10 @@ def test_only_explicit_visual_name_proposals_can_name_a_speaker(
         vision_describer=Structured() if structured else Plain(),
     ) as memory:
         record = memory.add(Blob(b"video", "video/mp4"))
+        speaker = memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0]
+        assert speaker.speaker_name is None
+        # A second recording supplies independent support; replaying one asset cannot do so.
+        memory.add(Blob(b"independent video", "video/mp4"))
         speaker = memory.perceive(record.id, kinds=frozenset({"speech"})).speech[0]
         assert speaker.speaker_name == ("Lily" if structured else None)
         assert (

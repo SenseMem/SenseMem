@@ -22,12 +22,14 @@ from openai import OpenAI
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
 
-import sensemem.models.openai_sdk as adapter
-from sensemem import AssetRef, Modality, ModelInput, OpenAIModels, SearchHit
+import sensemem.models._openai_media as media
+import sensemem.models._openai_requests as requests
+from sensemem import AssetRef, Modality, ModelInput, SearchHit
 from sensemem.evidence import answer_evidence_payloads
 from sensemem.exceptions import ModelError
-from sensemem.models._media import _capture_fields, image_capture_metadata
-from sensemem.models.openai_sdk import _answer_text_parts
+from sensemem.infrastructure.local.media_metadata import _capture_fields, image_capture_metadata
+from sensemem.models._openai_requests import _answer_text_parts
+from sensemem.models.openai_completion import OpenAICompletion
 
 GPS = {1: "S", 2: (31, 15, IFDRational(1, 2)), 3: "W", 4: (121, 30, 0)}
 NOW = datetime(2026, 10, 28, tzinfo=timezone.utc)
@@ -219,7 +221,7 @@ def test_original_metadata_survives_resized_transport_without_mutating_source(
             http_client=transport,
             max_retries=0,
         )
-        model = OpenAIModels(
+        model = OpenAICompletion(
             client,
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             image_max_pixels=16,
@@ -284,23 +286,23 @@ def test_inline_omission_preserves_source_metadata_through_wire_fitting(
     if wire_budget == "tight":
         # Leave room for all source metadata but no image bytes. The first inline fit
         # may still admit an image, so the wire fit must use the same original sources.
-        probe = OpenAIModels(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}))
-        request, _, _, _ = probe._render_answer_request(
+        probe = OpenAICompletion(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}))
+        request, _, _, _ = probe._requests.render_answer_request(
             question,
             tuple(replace(hit, assets=(), modality=Modality.TEXT) for hit in hits),
             hits,
             {},
-            adapter._source_capture_metadata(assets),
+            media._source_capture_metadata(assets),
             answer_policy="strict",
             exhaustive=False,
             metadata_source_hits=hits,
         )
-        maximum = adapter._answer_wire_size(request, stream=stream) + 1
+        maximum = requests._answer_wire_size(request, stream=stream) + 1
     assert assets[0].size_bytes is not None
     monkeypatch.setattr(
-        adapter,
+        media,
         "_MAX_INLINE_MODEL_BYTES",
-        inline_images * adapter._encoded_size(assets[0].size_bytes),
+        inline_images * media._encoded_size(assets[0].size_bytes),
     )
     sent: list[bytes] = []
 
@@ -318,7 +320,7 @@ def test_inline_omission_preserves_source_metadata_through_wire_fitting(
         return _reply("observed")
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             OpenAI(api_key="fixture", http_client=transport, max_retries=0),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             image_max_pixels=1_048_576,
@@ -374,10 +376,10 @@ def test_inline_omission_does_not_bypass_metadata_source_integrity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     asset = replace(_photo(tmp_path), sha256="0" * 64)
-    monkeypatch.setattr(adapter, "_MAX_INLINE_MODEL_BYTES", 0)
-    model = OpenAIModels(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}))
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_BYTES", 0)
+    model = OpenAICompletion(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}))
     with pytest.raises(ModelError) as failure:
-        model._answer_request(ModelInput(text="Where?"), (_hit(asset),))
+        model._requests.answer_request(ModelInput(text="Where?"), (_hit(asset),))
     assert failure.value.reason == "asset_changed"
     assert failure.value.subject == asset.id
 

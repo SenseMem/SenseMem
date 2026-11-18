@@ -19,9 +19,9 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryKind,
     MemoryNotFoundError,
+    MemorySettings,
+    RecordKind,
 )
 
 
@@ -39,7 +39,7 @@ class RestatingFormer:
         source = inputs[0]
         self.calls += 1
         atlas = FormationProposal(
-            kind=MemoryKind.RELATION,
+            kind=RecordKind.RELATION,
             content="Riley owns an atlas.",
             subject="Riley",
             predicate="owns",
@@ -51,7 +51,7 @@ class RestatingFormer:
         previous = next(
             record
             for record in source.history
-            if record.context is not None and record.context.kind is MemoryKind.RELATION
+            if record.context is not None and record.context.kind is RecordKind.RELATION
         )
         # This declaration is conjunctive; discarding only the self member would falsely
         # authorize a different, independent assessment by the new raw source.
@@ -78,14 +78,16 @@ def test_automatic_self_evidence_refuses_whole_proposal_without_losing_valid_fac
             tmp_path,
             embedder=TinyEmbedder(),
             former=former,
-            config=MemoryConfig(formation_history_max_rows=12, independent_evidence=independent),
+            settings=MemorySettings(
+                formation_history_max_rows=12, independent_evidence=independent
+            ),
             tracer=provider.get_tracer("self-evidence-test"),
         ) as memory:
             original = memory.add("Riley owns an atlas.", occurred_at=at)
             atlas = next(
                 record
                 for record in memory.list().items
-                if record.context is not None and record.context.kind is MemoryKind.RELATION
+                if record.context is not None and record.context.kind is RecordKind.RELATION
             )
             current = memory.add(
                 "Riley also owns a telescope and still has the atlas.",

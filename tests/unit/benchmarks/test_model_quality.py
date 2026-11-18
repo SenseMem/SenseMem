@@ -49,7 +49,10 @@ class _GroundedAnswerer:
             raise ModelError("sensitive-provider-body", reason="response_invalid")
         trace.get_current_span().set_attribute("gen_ai.response.model", "returned-reader-snapshot")
         text = question.text
-        if "launch code" in text:
+        if any(
+            phrase in text
+            for phrase in ("launch code", "currently live", "Alex allergic", "verified current")
+        ):
             return AnswerResult(
                 "Unknown.",
                 tuple(hits),
@@ -83,8 +86,8 @@ def test_quality_gate_uses_distinct_physical_stores_for_every_case_and_repeat(
     assert report.passed
     assert report.configured_model == "fixture-reader-snapshot"
     assert report.response_models == ("returned-reader-snapshot",)
-    assert len(report.cases) == len(paths) == 8
-    assert len(set(paths)) == 8
+    assert len(report.cases) == len(paths) == 2 * len(model_quality.QUALITY_CASES)
+    assert len(set(paths)) == len(paths)
     assert all(not path.exists() for path in paths)
     assert all(len(evidence) == 1 for evidence in answerer.evidence)
     assert {case.case_id for case in report.cases} == {
@@ -92,6 +95,11 @@ def test_quality_gate_uses_distinct_physical_stores_for_every_case_and_repeat(
         "grounded_meeting",
         "insufficient_evidence",
         "memory_prompt_injection",
+        "partial_evidence",
+        "wrong_person_evidence",
+        "unresolved_conflict",
+        "unsupported_citation_instruction",
+        "explicit_correction",
     }
     assert "sensitive-provider-body" not in json.dumps(asdict(report))
 
@@ -150,7 +158,7 @@ def test_quality_gate_records_safe_error_codes_and_fails_closed() -> None:
     report = model_quality.run_quality_eval(_GroundedAnswerer(fail=True), repeats=1)
 
     assert not report.passed
-    assert len(report.cases) == 4
+    assert len(report.cases) == len(model_quality.QUALITY_CASES)
     assert all(case.error_code == "model_error" for case in report.cases)
     assert all(case.error_reason == "response_invalid" for case in report.cases)
     assert "sensitive-provider-body" not in json.dumps(asdict(report))
@@ -187,7 +195,10 @@ def test_quality_command_reports_scores_and_model_ids_without_generated_text(
         payload = json.loads(request.content)
         requests.append(payload)
         question = json.loads(payload["messages"][-1]["content"])["question"]
-        if "launch code" in question:
+        if any(
+            phrase in question
+            for phrase in ("launch code", "currently live", "Alex allergic", "verified current")
+        ):
             answer = "[insufficient_evidence]"
         else:
             answer = "Wednesday" if "meeting" in question else "blue"
@@ -222,7 +233,7 @@ def test_quality_command_reports_scores_and_model_ids_without_generated_text(
         )
 
     assert exit_code == (1 if inject else 0)
-    assert len(requests) == 4
+    assert len(requests) == len(model_quality.QUALITY_CASES)
     document = json.loads(output.read_text())
     assert document["passed"] is not inject
     assert document["configured_model"] == "fixture-reader-snapshot"

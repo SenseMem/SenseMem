@@ -20,7 +20,7 @@ from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -90,7 +90,7 @@ def test_query_vision_delivers_support_beyond_native_candidates(
             embedder=models,
             answerer=models,
             vision_describer=models,
-            config=MemoryConfig(
+            settings=MemorySettings(
                 query_vision=enabled,
                 retrieval_mode=RetrievalMode.DENSE,
                 index_quantization=quantization,

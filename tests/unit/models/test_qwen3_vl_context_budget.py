@@ -10,6 +10,7 @@ import pytest
 import sensemem.models.qwen3_vl_reranking as reranking
 from sensemem import AssetRef, Modality, ModelInput, Qwen3VLReranker
 from sensemem.exceptions import ModelError
+from sensemem.prompts import reranking as reranking_prompts
 
 REVISION = "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
 
@@ -58,7 +59,7 @@ def test_pair_at_context_limit_keeps_query_document_and_template(
 ) -> None:
     query = "Which booking was cancelled?"
     documents = ("Confirmed", "Cancelled 中文")
-    prompts = [reranking._prompt(query, document) for document in documents]
+    prompts = [reranking_prompts.qwen3_vl_prompt(query, document) for document in documents]
     submitted: list[object] = []
 
     def classify(rows: object, *, use_tqdm: bool) -> list[object]:
@@ -160,7 +161,7 @@ def test_visual_context_errors_are_classified_without_dropping_media_or_retrying
     assert submitted == [
         [
             {
-                "prompt": reranking._prompt("private query", marker),
+                "prompt": reranking_prompts.qwen3_vl_prompt("private query", marker),
                 "multi_modal_data": {modality.value: [media]},
             }
         ]

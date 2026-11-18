@@ -1,0 +1,41 @@
+{
+  "embedding": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key": "EMPTY",
+    "model": "google/embeddinggemma-2",
+    "dimension": 768,
+    "request_format": "messages",
+    "modalities": ["text", "image", "audio", "video"]
+  },
+  "formation": {
+    "provider": "openai",
+    "base_url": "https://api.example.com/v1",
+    "model": "qwen3.8-omni-flash",
+    "modalities": ["text", "image", "audio", "video"],
+    "response_format": "json_schema",
+    "extra_body": {"reasoning_effort": "none"},
+    "timeout": 120.0,
+    "max_retries": 1
+  },
+  "consolidation": {
+    "provider": "openai",
+    "base_url": "https://api.example.com/v1",
+    "model": "qwen3.8-omni-flash",
+    "modalities": ["text", "image", "audio", "video"],
+    "response_format": "json_schema",
+    "extra_body": {"reasoning_effort": "none"},
+    "timeout": 120.0,
+    "max_retries": 1
+  },
+  "generation": {
+    "provider": "openai",
+    "base_url": "https://api.example.com/v1",
+    "model": "qwen3.8-omni-flash",
+    "modalities": ["text", "image", "audio", "video"],
+    "response_format": "json_schema",
+    "extra_body": {"reasoning_effort": "none"},
+    "timeout": 120.0,
+    "max_retries": 1
+  }
+}

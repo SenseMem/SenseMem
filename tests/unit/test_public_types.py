@@ -8,11 +8,24 @@ from pathlib import Path
 import pytest
 
 from sensemem import (
+    FaceAnalysis,
+    FaceEmbedding,
     IndexQuantization,
     ModelInput,
     PrefetchResult,
+    SpeakerEmbedding,
+    SpeechAnalysis,
+    SpeechTurn,
     StreamInput,
     VisualRetrievalMatch,
+)
+from sensemem.content import AssetRef, Blob
+from sensemem.context_values import ContextUnknown, ContextUnknownKind
+from sensemem.control_values import (
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryTrigger,
 )
 from sensemem.exceptions import (
     RETRYABLE_REASONS,
@@ -25,21 +38,10 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
-from sensemem.types import (
-    AbstentionReason,
+from sensemem.records import (
     AnswerChunk,
     AnswerResult,
-    AssetRef,
-    Blob,
-    ContextUnknown,
-    ContextUnknownKind,
-    MemoryIntent,
-    MemoryOperation,
-    MemoryOperationRecord,
     MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
-    Modality,
     Page,
     PendingCapture,
     RetrievalCandidateTrace,
@@ -48,8 +50,31 @@ from sensemem.types import (
     SearchHit,
     SearchResult,
 )
+from sensemem.types import AbstentionReason, MemoryCategory, Modality
 
 NOW = datetime(2026, 8, 27, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        SpeechTurn(0, 100, "heard speech", "speaker_1"),
+        SpeakerEmbedding("speaker_1", (1.0, 0.0)),
+        SpeechAnalysis(
+            (SpeechTurn(0, 100, "heard speech", "speaker_1"),),
+            (SpeakerEmbedding("speaker_1", (1.0, 0.0)),),
+        ),
+        FaceEmbedding("face_1", (1.0, 0.0), (0.1, 0.2, 0.3, 0.4), 10),
+        FaceAnalysis((FaceEmbedding("face_1", (1.0, 0.0), (0.1, 0.2, 0.3, 0.4)),)),
+    ],
+)
+def test_perception_values_are_public_and_serializable(
+    value: SpeechTurn | SpeakerEmbedding | SpeechAnalysis | FaceEmbedding | FaceAnalysis,
+) -> None:
+    assert type(value).__module__ == "sensemem.perception"
+    restored = pickle.loads(pickle.dumps(value))
+    assert type(restored) is type(value)
+    assert restored == value
 
 
 def test_visual_retrieval_match_is_validated_and_bound_to_a_query_image(tmp_path: Path) -> None:
@@ -98,7 +123,7 @@ def test_memory_record_metadata_is_detached_and_serializable() -> None:
     metadata["source"] = "microphone"
 
     assert memory.metadata == {"source": "camera"}
-    assert memory.memory_type is MemoryType.SEMANTIC
+    assert memory.memory_type is MemoryCategory.SEMANTIC
     memory.metadata["source"] = "local edit"  # type: ignore[index]
     assert asdict(memory)["metadata"] == {"source": "local edit"}
     assert pickle.loads(pickle.dumps(memory)) == memory
@@ -114,7 +139,7 @@ def test_stream_input_snapshots_omni_parts_and_metadata() -> None:
         occurred_at=NOW,
         occurred_end=NOW + timedelta(seconds=30),
         metadata=metadata,
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
     )
 
     parts[0] = "changed"
@@ -135,12 +160,12 @@ def test_search_hit_is_flat_and_rejects_invalid_scores() -> None:
         content="A red screwdriver.",
         score=0.9,
         created_at=NOW,
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
     )
 
     assert hit.id == "memory_1"
     assert hit.content == "A red screwdriver."
-    assert hit.memory_type is MemoryType.EPISODIC
+    assert hit.memory_type is MemoryCategory.EPISODIC
     assert not hasattr(hit, "memory")
     with pytest.raises(ValidationError, match="between zero and one"):
         SearchHit(id="memory_1", content="A red screwdriver.", score=float("nan"), created_at=NOW)
@@ -155,7 +180,7 @@ def test_search_hit_is_flat_and_rejects_invalid_scores() -> None:
         )
 
     result = PrefetchResult(hits=(hit,))
-    assert asdict(result) == {"hits": (asdict(hit),)}
+    assert result.hits == (hit,)
     assert pickle.loads(pickle.dumps(result)) == result
     with pytest.raises(ValidationError, match="hits"):
         PrefetchResult(hits=(object(),))  # type: ignore[arg-type]

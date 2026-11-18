@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import hashlib
+from collections.abc import Generator, Sequence
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from opentelemetry.trace import Tracer
 
+from sensemem.content import Blob, ContentAtom
 from sensemem.control import operation_touches
-from sensemem.exceptions import IdentityNotFoundError, MemoryNotFoundError, ValidationError
+from sensemem.control_values import ExportBundle, MemoryOperationRecord, RetentionReport
+from sensemem.exceptions import (
+    IdentityNotFoundError,
+    MemoryNotFoundError,
+    StorageError,
+    ValidationError,
+)
+from sensemem.identity import IdentityProfile
+from sensemem.kernel.content import observation_from_record
 from sensemem.kernel.hydration import Hydrator, operation_record
 from sensemem.kernel.identity import Identities
 from sensemem.kernel.lifecycle import Lifecycle
 from sensemem.kernel.projection import Projection
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.tracing import Traced
 from sensemem.kernel.validation import (
     decode_cursor,
@@ -22,14 +33,11 @@ from sensemem.kernel.validation import (
     validate_limit,
     validated_identifier,
 )
-from sensemem.types import (
-    ExportBundle,
-    IdentityProfile,
-    MemoryOperationRecord,
-    MemoryRecord,
-    Page,
-    RetentionReport,
-)
+from sensemem.records import MemoryRecord, Page
+from sensemem.types import RecordKind
+
+if TYPE_CHECKING:
+    from sensemem.memory import Memory
 
 # How much one retention pass may delete. Physical deletion is unrecoverable, so a pass is
 # bounded and repeatable rather than unbounded: an operator runs it again until it reports
@@ -45,7 +53,7 @@ class Records(Traced):
         *,
         tracer: Tracer,
         storage: Storage,
-        settings: Settings,
+        settings: ResolvedSettings,
         lifecycle: Lifecycle,
         hydrator: Hydrator,
         projection: Projection,
@@ -53,6 +61,7 @@ class Records(Traced):
     ) -> None:
         super().__init__(tracer)
         self._store = storage.store
+        self._assets = storage.assets
         self._write_lock = storage.write_lock
         self._settings = settings
         self._lifecycle = lifecycle
@@ -73,6 +82,82 @@ class Records(Traced):
                 raise MemoryNotFoundError(f"memory does not exist: {normalized_id}")
             self._lifecycle.lease_assets(memory.assets, assets.leased)
             return self._hydrator.memory_record(memory)
+
+    def read_asset(self, memory_id: str, asset_id: str) -> Blob:
+        with (
+            self._trace("sensemem.read_asset", kind="operation"),
+            self._lifecycle.operation() as operation,
+        ):
+            normalized_memory = validated_identifier(memory_id, "memory_id")
+            normalized_asset = validated_identifier(asset_id, "asset_id")
+            with self._write_lock, translate_storage_errors("read source media"):
+                memory = self._store.records.read_memory(normalized_memory)
+                if memory is None:
+                    raise MemoryNotFoundError(f"memory does not exist: {normalized_memory}")
+                asset = next(
+                    (value for value in memory.assets if value.asset_id == normalized_asset), None
+                )
+                if asset is None:
+                    raise ValidationError(
+                        "asset does not belong to this memory", subject="asset_id"
+                    )
+                self._lifecycle.lease_assets((asset,), operation.leased)
+                self._lifecycle.reserve_payload(operation, asset.size_bytes)
+                path = self._assets.resolve(asset)
+            with translate_storage_errors("read source media"):
+                data = path.read_bytes()
+            if hashlib.sha256(data).hexdigest() != asset.sha256:
+                raise StorageError(
+                    "source media failed integrity verification", reason="asset_changed"
+                )
+            return Blob(data, asset.mime_type, asset.name)
+
+    def replay_sources(self, destination: Memory) -> Generator[MemoryRecord, None, None]:
+        """Re-ingest retained original observations into a separately owned directory."""
+        after: tuple[datetime, str] | None = None
+        while True:
+            with self._lifecycle.operation(), translate_storage_errors("list replay sources"):
+                page = self._store.records.list_memories(limit=100, after=after, oldest_first=True)
+                original_ids = tuple(
+                    stored.memory_id
+                    for stored in page
+                    if stored.context is None or stored.context.kind is RecordKind.OBSERVATION
+                )
+                active_ids = {
+                    stored.memory_id
+                    for stored in self._store.records.read_memories(original_ids, active_only=True)
+                }
+                replayable = active_ids | self._store.control.replayable_evidence_sources(
+                    tuple(memory_id for memory_id in original_ids if memory_id not in active_ids)
+                )
+            if not page:
+                return
+            for stored in page:
+                if stored.memory_id not in replayable:
+                    continue
+                record = self.get(stored.memory_id)
+                parts: list[ContentAtom] = []
+                media: dict[str, Blob] = {}
+                for part in record.parts:
+                    if part.kind == "text":
+                        parts.append(part.value)
+                    elif part.kind == "asset":
+                        if part.value not in media:
+                            media[part.value] = self.read_asset(record.id, part.value)
+                        parts.append(media[part.value])
+                yield destination.add(
+                    tuple(parts),
+                    occurred_at=record.occurred_at,
+                    occurred_end=record.occurred_end,
+                    metadata=record.metadata,
+                    memory_type=record.memory_type,
+                    context=(
+                        observation_from_record(record)
+                        if record.context is not None or record.place_id is not None
+                        else None
+                    ),
+                )
+            after = (page[-1].created_at, page[-1].memory_id)
 
     def reinforce(self, memory_ids: Sequence[str]) -> int:
         if isinstance(memory_ids, (str, bytes)):

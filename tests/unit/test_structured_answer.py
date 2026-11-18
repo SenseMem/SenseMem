@@ -9,13 +9,15 @@ from typing import Literal, cast
 
 import httpx2 as httpx
 import pytest
-from test_openai_sdk import _sdk_client
+from test_openai_adapters import _sdk_client
 
-from sensemem import OpenAIModels
+import sensemem.models._openai_media as openai_media
+import sensemem.models._openai_requests as openai_requests
 from sensemem.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
-from sensemem.models import openai_sdk as adapter
 from sensemem.models.base import ModelInput
-from sensemem.types import AnswerResult, SearchHit
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.prompts import generation as prompts
+from sensemem.records import AnswerResult, SearchHit
 
 NOW = datetime(2026, 4, 9, 11, 24, 35, tzinfo=timezone.utc)
 
@@ -61,12 +63,14 @@ def test_structured_budget_counts_the_schema_and_preserves_post_fit_source_alias
     stream: bool,
 ) -> None:
     hit = _hit("internal", "Visible source text.", "public-source")
-    probe = OpenAIModels(
+    probe = OpenAICompletion(
         generation_answer_format="structured", generation_request_max_bytes=100_000
     )
-    prepared = probe._answer_request(ModelInput(text="Which source?"), (hit,), stream=stream)
+    prepared = probe._requests.answer_request(
+        ModelInput(text="Which source?"), (hit,), stream=stream
+    )
     assert isinstance(prepared, tuple)
-    exact = adapter._answer_wire_size(prepared[0], stream=stream)
+    exact = openai_requests._answer_wire_size(prepared[0], stream=stream)
     requests: list[bytes] = []
     envelope = '{"draft":{"kind":"source_ids","evidence_labels":["E1"]}}'
 
@@ -88,7 +92,7 @@ def test_structured_budget_counts_the_schema_and_preserves_post_fit_source_alias
         return _reply(envelope)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(transport),
             generation_answer_format="structured",
             generation_request_max_bytes=exact,
@@ -100,7 +104,7 @@ def test_structured_budget_counts_the_schema_and_preserves_post_fit_source_alias
             answer = model.answer(ModelInput(text="Which source?"), (hit,))
         assert answer.answer == "public-source"
         assert len(requests[0]) == exact
-        too_small = OpenAIModels(
+        too_small = OpenAICompletion(
             _sdk_client(transport),
             generation_answer_format="structured",
             generation_request_max_bytes=exact - 1,
@@ -124,7 +128,7 @@ def test_structured_sources_use_post_fit_aliases_and_the_host_source_key(
     ) -> tuple[SearchHit, ...]:
         return tuple(hits[1:])
 
-    monkeypatch.setattr(adapter, "_fit_grounding_media", fitted)
+    monkeypatch.setattr(openai_media, "_fit_grounding_media", fitted)
 
     def respond(request: httpx.Request) -> httpx.Response:
         body = cast(dict[str, object], json.loads(request.content))
@@ -139,7 +143,7 @@ def test_structured_sources_use_post_fit_aliases_and_the_host_source_key(
     removed = _hit("internal-removed", "Removed before transport.", "removed")
     survivor = _hit("internal-survivor", "Delivered evidence.", "survivor")
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(transport),
             generation_answer_format="structured",
             generation_source_metadata_key="document_ref",
@@ -176,7 +180,7 @@ def test_structured_numeric_answer_checks_visible_quote_not_only_evidence_id(
         }
     )
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(transport),
             generation_answer_format="structured",
             generation_response_format=format_,
@@ -221,7 +225,7 @@ def test_structured_transport_rejects_quotes_that_split_original_source_tokens(
 ) -> None:
     reply = json.dumps({"draft": draft})
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         with pytest.raises(ModelError) as error:
             model.answer(
                 ModelInput(text="What does the evidence establish?"),
@@ -248,7 +252,7 @@ def test_structured_date_uses_explicit_granularity_and_final_timestamps() -> Non
         }
     )
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         assert (
             model.answer(
                 ModelInput(text="On which date?"), (_hit("visit", "A visit.", "source"),)
@@ -285,7 +289,7 @@ def test_structured_transport_utc_datetime_keeps_the_original_witness(
         }
     )
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         hits = (_hit("boarding", f"Boarding: {source_value}.", "source"),)
         if expected is None:
             with pytest.raises(ModelError) as error:
@@ -319,7 +323,7 @@ def test_structured_transport_number_format_omits_only_the_rendered_unit(duratio
         )
     reply = json.dumps({"draft": draft})
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         result = model.answer(
             ModelInput(text="Give the number only."), (_hit("source", source, "public"),)
         )
@@ -332,14 +336,14 @@ def test_structured_abstention_keeps_existing_answer_policy(
 ) -> None:
     reply = '{"draft":{"kind":"text","answer":"Probably amber.","evidence_labels":["E1"],"abstained":true}}'
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         result = model.answer(
             ModelInput(text="What color?"),
             (_hit("color", "Unclear color.", "photo"),),
             answer_policy=policy,
         )
     assert result.abstained
-    assert result.answer == (adapter.UNKNOWN_ANSWER if policy == "strict" else "Probably amber.")
+    assert result.answer == (prompts.UNKNOWN_ANSWER if policy == "strict" else "Probably amber.")
 
 
 @pytest.mark.parametrize(
@@ -347,7 +351,7 @@ def test_structured_abstention_keeps_existing_answer_policy(
     [
         ("[insufficient_evidence] Probably amber.", True, "Probably amber."),
         ("[insufficient_evidence] Probably amber.", False, "Probably amber."),
-        ("[insufficient_evidence]", True, adapter.UNKNOWN_ANSWER),
+        ("[insufficient_evidence]", True, prompts.UNKNOWN_ANSWER),
     ],
 )
 def test_structured_best_effort_text_cleans_the_marker_without_losing_abstention(
@@ -364,7 +368,7 @@ def test_structured_best_effort_text_cleans_the_marker_without_losing_abstention
         }
     )
     with httpx.Client(transport=httpx.MockTransport(lambda request: _reply(reply))) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         result = model.answer(
             ModelInput(text="What color?"),
             (_hit("color", "Unclear color.", "photo"),),
@@ -418,7 +422,7 @@ def test_structured_stream_buffers_validates_and_closes_before_exposing_text(end
     body = Body()
     response = httpx.Response(200, stream=body, headers={"content-type": "text/event-stream"})
     with httpx.Client(transport=httpx.MockTransport(lambda request: response)) as transport:
-        model = OpenAIModels(_sdk_client(transport), generation_answer_format="structured")
+        model = OpenAICompletion(_sdk_client(transport), generation_answer_format="structured")
         stream = model.stream_answer(
             ModelInput(text="Which source?"), (_hit("internal", "Evidence.", "public-source"),)
         )
@@ -444,7 +448,7 @@ def test_default_text_answer_does_not_add_schema_or_reinterpret_json() -> None:
         return _reply(text)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        result = OpenAIModels(_sdk_client(transport)).answer(
+        result = OpenAICompletion(_sdk_client(transport)).answer(
             ModelInput(text="Show the text."), (_hit("example", "Evidence.", "source"),)
         )
     assert "response_format" not in calls[0]
@@ -454,4 +458,4 @@ def test_default_text_answer_does_not_add_schema_or_reinterpret_json() -> None:
 @pytest.mark.parametrize("value", ["json", "", [], True])
 def test_unknown_structured_format_is_rejected_before_transport(value: object) -> None:
     with pytest.raises(ValidationError, match="generation_answer_format"):
-        OpenAIModels(generation_answer_format=cast(Literal["text", "structured"], value))
+        OpenAICompletion(generation_answer_format=cast(Literal["text", "structured"], value))

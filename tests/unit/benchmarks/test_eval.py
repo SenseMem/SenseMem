@@ -26,7 +26,7 @@ import pytest
 import yaml
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 import sensemem.benchmarks.eval as eval_module
 import sensemem.models.base as base_module
@@ -37,53 +37,70 @@ from sensemem import (
     AnswerResult,
     AssetRef,
     AsyncMemory,
+    CandidateBatch,
+    CandidateReadPort,
+    CandidateRequest,
+    ContextSelection,
+    ContextSelectionRequest,
+    DefaultCandidateSource,
+    DefaultContextSelector,
+    DefaultQueryPolicy,
+    DefaultRankingPolicy,
     FaceAnalysis,
     FaceBackend,
     IndexUnavailableError,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
+    MemoryComposition,
     MemoryPlugins,
-    MemoryType,
+    MemorySettings,
+    MemorySpec,
     Modality,
     ModelError,
+    QueryRepresentationPlan,
+    QueryRequest,
+    RankingRequest,
+    RankingScore,
     SearchHit,
-    SenseMemConfig,
+    SpeechAnalysis,
+    SpeechTurn,
+    StageResult,
     StorageError,
+    Tool,
+    ToolCall,
+    ToolRegistry,
 )
 from sensemem._telemetry import _record_retrieval_results
+from sensemem.benchmarks import eval_answers as eval_answers_module
 from sensemem.benchmarks import eval_arms as eval_arms_module
 from sensemem.benchmarks import eval_artifacts as eval_artifacts_module
+from sensemem.benchmarks import eval_backends as eval_backends_module
 from sensemem.benchmarks import eval_config as eval_config_module
 from sensemem.benchmarks import eval_console as eval_console_module
+from sensemem.benchmarks import eval_ingest as eval_ingest_module
+from sensemem.benchmarks import eval_inputs as eval_inputs_module
 from sensemem.benchmarks import eval_judge as eval_judge_module
 from sensemem.benchmarks import eval_metrics as eval_metrics_module
+from sensemem.benchmarks import eval_report as eval_report_module
 from sensemem.benchmarks import eval_results as eval_results_module
-from sensemem.benchmarks.eval import (
-    MemoryFactory,
-    _answer_many,
-    _BorrowedFaceBackend,
-    _BorrowedSpeechBackend,
-    _cache_namespace,
-    _ingest,
-    _ref_at_n,
-    _with_fallback_reference,
-    main,
-    run_loaded_task,
-)
+from sensemem.benchmarks import eval_runner as eval_runner_module
+from sensemem.benchmarks import eval_runtime as eval_runtime_module
+from sensemem.benchmarks import eval_samples as eval_samples_module
+from sensemem.benchmarks.eval import _with_fallback_reference, main
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     LoadedTask,
     MediaResolver,
     MemoryItem,
-    _choice_prompt,
-    _free_text_parts,
     _gallery_memory,
     _gallery_question,
     _query_parts,
     load_task,
     parse_media_manifest,
 )
+from sensemem.benchmarks.eval_answers import _answer_many
+from sensemem.benchmarks.eval_backends import _BorrowedFaceBackend, _BorrowedSpeechBackend
 from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
 from sensemem.benchmarks.eval_config import (
     _fallback_reference_at,
@@ -93,7 +110,13 @@ from sensemem.benchmarks.eval_config import (
     _run_identifier,
     _seed_values,
 )
+from sensemem.benchmarks.eval_ingest import _ingest
+from sensemem.benchmarks.eval_inputs import _cache_namespace
+from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.eval_runner import run_loaded_task
+from sensemem.benchmarks.eval_runtime import MemoryFactory
+from sensemem.benchmarks.eval_samples import _ref_at_n
 from sensemem.benchmarks.eval_statistics import (
     ScoredValue,
     paired_comparison,
@@ -116,13 +139,11 @@ from sensemem.benchmarks.model_config import (
     default_benchmarks_root,
 )
 from sensemem.benchmarks.official_scorers import scorer_protocol, task_family
+from sensemem.benchmarks.prompts import _choice_prompt, _free_text_parts
+from sensemem.benchmarks.quality_support import _FixtureEmbedder
 from sensemem.benchmarks.task_catalog import TASKS, TaskSpec, expand
 from sensemem.configuration import OpenAIEmbeddingConfig, OpenAIGenerationConfig
-from sensemem.models.base import (
-    SpeechAnalysis,
-    SpeechBackend,
-    SpeechTurn,
-)
+from sensemem.models.base import SpeechBackend
 
 
 def _sample_fixture(example_id: int, answer: str | None = None) -> SampleResult:
@@ -248,23 +269,6 @@ def test_gallery_keeps_the_question_in_its_official_template_position(
 
 
 def test_catalog_covers_requested_benchmarks_and_groups() -> None:
-    assert {task.benchmark for task in TASKS.values()} == {
-        "AMA-Bench",
-        "ATM-Bench",
-        "EgoTempo",
-        "ES-MemEval",
-        "ICM-Bench",
-        "LoCoMo-Refined",
-        "LongMemEval-V2",
-        "M3-Bench",
-        "MM-Lifelong",
-        "MOSAIC",
-        "Mem-Gallery",
-        "MemLens",
-        "PersonaMem-v3",
-        "SuperMemory-VQA",
-        "VideoZeroBench",
-    }
     assert expand(("m3-bench", "atm-bench-main", "supermemory-vqa")) == (
         "m3-bench-robot",
         "m3-bench-web",
@@ -284,7 +288,6 @@ def test_catalog_covers_requested_benchmarks_and_groups() -> None:
         expand(("video-mme",))
     with pytest.raises(ValueError, match="unknown task"):
         expand(("memeye",))
-    assert expand(("es-memeval",)) == ("es-memeval-qa",)
     assert all(
         task.media_source.revision is None or len(task.media_source.revision) == 40
         for task in TASKS.values()
@@ -705,9 +708,9 @@ def test_benchmark_speech_backend_skips_video_without_an_audio_stream(
             calls.append(tuple(assets))
             return tuple(SpeechAnalysis((), ()) for _asset in assets)
 
-    monkeypatch.setattr(eval_module, "_has_audio", lambda path: path == audible)
+    monkeypatch.setattr(eval_backends_module, "_has_audio", lambda path: path == audible)
     monkeypatch.setattr(
-        eval_module,
+        eval_backends_module,
         "record_unmetered_model_usage",
         lambda *, request_count: skipped_request_counts.append(request_count),
     )
@@ -746,7 +749,7 @@ def test_benchmark_speech_backend_serves_prefetched_analyses_without_a_second_mo
                 SpeechAnalysis((SpeechTurn(0, 500, asset.name or "", "0"),), ()) for asset in assets
             )
 
-    monkeypatch.setattr(eval_module, "_has_audio", lambda path: True)
+    monkeypatch.setattr(eval_backends_module, "_has_audio", lambda path: True)
     backend = _BorrowedSpeechBackend(Backend())
 
     backend.prefetch((MemoryItem("ahead", (ahead,)),))
@@ -779,7 +782,9 @@ async def test_ingest_chunks_prefetch_the_next_chunk_before_writing_the_current_
 
     items = tuple(MemoryItem(str(index), (f"text {index}",)) for index in range(5))
 
-    await eval_module._ingest_chunks(ingest, items, batch_size=2, on_chunk=None, prefetch=prefetch)
+    await eval_ingest_module._ingest_chunks(
+        ingest, items, batch_size=2, on_chunk=None, prefetch=prefetch
+    )
 
     assert events == [
         "prefetch:2,3",
@@ -892,8 +897,8 @@ def test_response_cache_namespace_changes_with_the_answer_surface(
 def test_response_cache_namespace_changes_with_runner_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert eval_results_module.EVAL_SCHEMA_VERSION == 23
-    assert eval_module.EVAL_RUNNER_VERSION == "sensemem_eval_official_v26"
+    assert eval_results_module.EVAL_SCHEMA_VERSION == 25
+    assert eval_runtime_module.EVAL_RUNNER_VERSION == "sensemem_eval_official_v28"
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
 
@@ -903,7 +908,7 @@ def test_response_cache_namespace_changes_with_runner_recipe(
     )
     assert _cache_namespace(buffered_arguments, ModelConfig(), {"text": 1}) != before
 
-    monkeypatch.setattr(eval_module, "EVAL_RUNNER_VERSION", "next-runner-recipe")
+    monkeypatch.setattr(eval_inputs_module, "EVAL_RUNNER_VERSION", "next-runner-recipe")
 
     assert _cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
     assert (
@@ -924,7 +929,7 @@ def test_response_cache_namespace_changes_with_runner_recipe(
 
 def test_backend_pool_requires_an_explicit_embedding_configuration() -> None:
     with pytest.raises(ValueError, match="explicit embedding"):
-        eval_module._BackendPool(ModelConfig())
+        eval_backends_module._BackendPool(ModelConfig())
 
 
 def test_execution_requires_embedding_configuration_before_downloading_inputs(
@@ -951,13 +956,20 @@ def test_backend_pool_forwards_every_memory_setting_and_plugin(
     captured: dict[str, object] = {}
 
     class Recorder:
-        def __init__(self, _data_dir: object, **values: object) -> None:
-            captured.update(values)
+        @staticmethod
+        def from_plugins(
+            _data_dir: object, *, plugins: MemoryPlugins, settings: MemorySettings, tracer: Tracer
+        ) -> None:
+            del tracer
+            captured.update(
+                {entry.name: getattr(plugins, entry.name) for entry in fields(MemoryPlugins)}
+            )
+            captured["settings"] = settings
 
-    monkeypatch.setattr(eval_module, "Memory", Recorder)
-    monkeypatch.setattr(eval_module, "AsyncMemory", lambda memory: memory)
-    pool = object.__new__(eval_module._BackendPool)
-    settings = MemoryConfig(
+    monkeypatch.setattr(eval_backends_module, "Memory", Recorder)
+    monkeypatch.setattr(eval_backends_module, "AsyncMemory", lambda memory: memory)
+    pool = object.__new__(eval_backends_module._BackendPool)
+    settings = MemorySettings(
         evidence_budget_chars=4_242, minimum_relevance=0.11, recall_set_max_rows=17
     )
     # Every declared plugin slot gets its own distinguishable sentinel, so a dropped or
@@ -965,37 +977,18 @@ def test_backend_pool_forwards_every_memory_setting_and_plugin(
     backends = {entry.name: object() for entry in fields(MemoryPlugins)}
     pool._settings = settings
     pool._tracer = cast(Tracer, None)
-    for name, value in backends.items():
-        setattr(pool, f"_{name}", value)
+    pool._plugins = cast(MemoryPlugins, SimpleNamespace(**backends))
 
     pool.memory(tmp_path / "unused")
 
-    assert captured["config"] is settings
+    assert captured["settings"] is settings
     for name, value in backends.items():
         assert captured[name] is value, name
     # Deriving the forwarding from the dataclasses is only safe while every declared field names
     # a real constructor keyword; a field added without one would raise at call time instead.
-    declared = {entry.name for entry in fields(MemoryPlugins)} | {"config"}
+    declared = {entry.name for entry in fields(MemoryPlugins)} | {"settings"}
     unaccepted = declared - set(signature(Memory.__init__).parameters)
     assert not unaccepted, f"Memory.__init__ has no keyword for {sorted(unaccepted)}"
-
-
-def test_implementation_identity_tracks_editable_source_changes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    package = tmp_path / "sensemem"
-    benchmark = package / "benchmarks" / "eval.py"
-    benchmark.parent.mkdir(parents=True)
-    benchmark.write_text("RUNNER = 1\n", encoding="utf-8")
-    implementation = package / "memory.py"
-    implementation.write_text("RECIPE = 1\n", encoding="utf-8")
-    monkeypatch.setattr(eval_module, "__file__", str(benchmark))
-
-    identity = eval_module._implementation_identity()
-
-    assert eval_module._implementation_identity() == identity
-    implementation.write_text("RECIPE = 2\n", encoding="utf-8")
-    assert eval_module._implementation_identity() != identity
 
 
 def test_benchmark_device_lock_serializes_separate_processes(tmp_path: Path) -> None:
@@ -1060,7 +1053,7 @@ def test_benchmark_device_lock_can_be_disabled_for_manual_scheduling(tmp_path: P
 def test_configured_devices_are_locked_in_physical_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {
                 "provider": "sentence-transformers",
@@ -1082,7 +1075,7 @@ def test_configured_devices_are_locked_in_physical_order(
 
 
 def test_text_only_runs_do_not_lock_the_speech_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai", "model": "embed", "dimension": 4},
             "speech": {"provider": "funasr", "device": "cuda:1"},
@@ -1206,7 +1199,7 @@ def test_eval_config_reuses_the_declarative_memory_schema(
         loaded, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
     )
 
-    assert effective is not None and effective.generation is not None
+    assert effective is not None and isinstance(effective.generation, OpenAIGenerationConfig)
     assert effective.data_dir == Path("ignored-by-benchmark")
     assert getattr(effective.embedding, "device", None) == "cuda:1"
     assert effective.speech is not None
@@ -1225,7 +1218,7 @@ def test_eval_config_reuses_the_declarative_memory_schema(
         {"task": 4},
         memory_config=effective,
     )
-    recorded = eval_module._model_result(arguments, model, effective)
+    recorded = eval_report_module._model_result(arguments, model, effective)
     assert recorded["generation_model"] == model_id
     assert recorded["generation_temperature"] == temperature
     assert recorded["generation_seed"] == seed
@@ -1272,27 +1265,27 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
             raise AssertionError("a borrowed plugin must not close its owner")
 
     plugins = MemoryPlugins(embedder=Embedder(), answerer=Answerer(), reranker=Reranker())
-    settings = MemoryConfig(minimum_relevance=0.2)
+    settings = MemorySettings(minimum_relevance=0.2, reinforce_on_answer=True)
     resolved = SimpleNamespace(
         plugins=plugins,
         settings=settings,
         close=lambda: closed.append(True),
     )
-    configured: list[SenseMemConfig] = []
+    configured: list[MemorySpec] = []
 
-    def resolve(config: SenseMemConfig) -> object:
+    def resolve(config: MemorySpec) -> object:
         configured.append(config)
         return resolved
 
-    monkeypatch.setattr(eval_module, "resolve_memory_config", resolve)
-    memory_config = SenseMemConfig.model_validate(
+    monkeypatch.setattr(eval_backends_module, "build_memory_composition", resolve)
+    memory_config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai"},
         }
     )
 
-    pool = eval_module._BackendPool(
+    pool = eval_backends_module._BackendPool(
         ModelConfig(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})),
         memory_config=memory_config,
     )
@@ -1303,14 +1296,16 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
     assert pool._settings == replace(settings, reinforce_on_answer=False)
     assert settings.reinforce_on_answer is True
     assert pool._settings.reinforce_on_answer is False
-    assert configured[0].generation is not None
+    assert isinstance(configured[0].generation, OpenAIGenerationConfig)
     assert configured[0].generation.modalities == frozenset({Modality.TEXT, Modality.IMAGE})
-    assert pool._answerer is not None
-    assert pool._answerer.generation_capabilities == frozenset({Modality.TEXT, Modality.IMAGE})
-    assert isinstance(pool._reranker, base_module.RerankingBackend)
-    assert pool._reranker.reranking_capabilities == Reranker.reranking_capabilities
+    assert pool._plugins.answerer is not None
+    assert pool._plugins.answerer.generation_capabilities == frozenset(
+        {Modality.TEXT, Modality.IMAGE}
+    )
+    assert isinstance(pool._plugins.reranker, base_module.RerankingBackend)
+    assert pool._plugins.reranker.reranking_capabilities == Reranker.reranking_capabilities
     query = base_module.ModelInput(text="native media query")
-    assert pool._reranker.rerank(query, (query,)) == (0.5,)
+    assert pool._plugins.reranker.rerank(query, (query,)) == (0.5,)
 
     async def use_memory() -> None:
         async with pool.memory(tmp_path) as memory:
@@ -1319,7 +1314,7 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
             assert hits.hits[0].id == record.id
 
     asyncio.run(use_memory())
-    pool._embedder.close()
+    pool._plugins.embedder.close()
     assert closed == []
     pool.close()
     assert closed == [True]
@@ -1334,42 +1329,93 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
     A slot the pool never captures is silently absent: the artifact reports the configured
     composition while the run measures the default one.
     """
-    captured: dict[str, object] = {}
-    names = tuple(entry.name for entry in fields(MemoryPlugins))
-    plugins = SimpleNamespace(**{name: SimpleNamespace(marker=name) for name in names})
+    calls: list[str] = []
+    closed: list[str] = []
 
-    def embed(
-        inputs: Sequence[base_module.ModelInput], task: base_module.EmbedTask
-    ) -> tuple[tuple[float, ...], ...]:
-        return tuple((1.0, 0.0) for _ in inputs)
+    class Embedder(_FixtureEmbedder):
+        def close(self) -> None:
+            closed.append("embedder")
 
-    plugins.embedder.embed = embed
-    resolved = SimpleNamespace(
-        plugins=plugins,
-        settings=MemoryConfig(),
-        close=lambda: None,
+    class Computations(
+        DefaultQueryPolicy, DefaultCandidateSource, DefaultRankingPolicy, DefaultContextSelector
+    ):
+        name = "fixture"
+        space = "fixture-interpretation-v1"
+
+        def plan(self, request: QueryRequest) -> QueryRepresentationPlan:
+            calls.append("query")
+            return DefaultQueryPolicy.plan(self, request)
+
+        def search(self, request: CandidateRequest, reader: CandidateReadPort) -> CandidateBatch:
+            calls.append("candidates")
+            return DefaultCandidateSource.search(self, request, reader)
+
+        def rank(self, request: RankingRequest) -> tuple[RankingScore, ...]:
+            calls.append("ranking")
+            return DefaultRankingPolicy.rank(self, request)
+
+        def select(self, request: ContextSelectionRequest) -> ContextSelection:
+            calls.append("selection")
+            return DefaultContextSelector.select(self, request)
+
+        def process(self, input: base_module.ModelInput) -> StageResult:
+            del input
+            calls.append("stage")
+            return StageResult("The configured stage ran.")
+
+        def close(self) -> None:
+            closed.append("computations")
+
+    class Echo(BaseModel):
+        text: str
+
+    tool = Tool("echo", "Echo the supplied text", Echo, Echo, lambda value: value)
+    registry = ToolRegistry((tool,))
+    computations = Computations()
+    plugins = MemoryPlugins(
+        embedder=Embedder(),
+        query_policy=computations,
+        candidate_source=computations,
+        ranking_policy=computations,
+        context_selector=computations,
+        ingestion_stages=(computations,),
+        tools=registry,
     )
-
-    class Recorder:
-        def __init__(self, _data_dir: object, **values: object) -> None:
-            captured.update(values)
-
-    monkeypatch.setattr(eval_module, "resolve_memory_config", lambda _config: resolved)
-    monkeypatch.setattr(eval_module, "Memory", Recorder)
-    monkeypatch.setattr(eval_module, "AsyncMemory", lambda memory: memory)
-    pool = eval_module._BackendPool(
+    resolved = MemoryComposition(tmp_path, plugins, MemorySettings(minimum_relevance=0))
+    monkeypatch.setattr(eval_backends_module, "build_memory_composition", lambda _config: resolved)
+    pool = eval_backends_module._BackendPool(
         ModelConfig(),
-        memory_config=SenseMemConfig.model_validate({"embedding": {"provider": "openai"}}),
+        memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
     )
 
-    pool.memory(tmp_path)
+    async def use_memories() -> None:
+        for index in range(2):
+            async with pool.memory(tmp_path / f"unit-{index}") as memory:
+                record = await memory.add("The toolbox is blue.")
+                assert "The configured stage ran." in record.content
+                assert (await memory.search("toolbox")).hits[0].id == record.id
+                assert (await memory.compile("toolbox")).facts
+                borrowed = memory.tools
+                assert isinstance(borrowed, ToolRegistry) and borrowed is not registry
+                assert borrowed.definitions == registry.definitions
+                assert borrowed.get("echo") is tool
+                assert (await memory.call_tool("echo", {"text": "retained"})).output == {
+                    "text": "retained"
+                }
+                borrowed.close()
+                assert borrowed.execute(
+                    ToolCall("call-1", "echo", {"text": "still usable"})
+                ).output == {"text": "still usable"}
+            assert closed == []
+            assert not registry.closed and not tool.closed
 
-    for name in names:
-        borrowed = captured[name]
-        assert borrowed is not None, name
-        # Borrowed, not the owner itself: a per-store close must not close a shared backend.
-        assert borrowed is not getattr(plugins, name), name
-        assert getattr(borrowed, "marker", None) == name, name
+    try:
+        asyncio.run(use_memories())
+        assert {"query", "candidates", "ranking", "selection", "stage"} <= set(calls)
+    finally:
+        pool.close()
+    assert sorted(closed) == ["computations", "embedder"]
+    assert registry.closed and tool.closed
 
 
 def test_borrowed_reranker_preserves_protocol_scores_and_ownership(tmp_path: Path) -> None:
@@ -1388,7 +1434,7 @@ def test_borrowed_reranker_preserves_protocol_scores_and_ownership(tmp_path: Pat
         def close(self) -> None:
             pytest.fail("a borrowed reranker cannot close its owner")
 
-    borrowed = eval_module._BorrowedRerankingBackend(Reranker())
+    borrowed = eval_backends_module._BorrowedRerankingBackend(Reranker())
     assert isinstance(borrowed, base_module.RerankingBackend)
     assert borrowed.reranking_model == "fixed-reranker-revision"
     image = AssetRef(
@@ -1447,8 +1493,8 @@ def test_every_lent_backend_declares_each_method_only_capability_its_pool_has() 
     ]
     assert {protocol.__name__ for protocol in optional} >= {"RecallPlanningBackend"}
     proxies = (
-        eval_module._BorrowedBackend,
-        eval_module._BorrowedGenerationBackend,
+        eval_backends_module._BorrowedBackend,
+        eval_backends_module._BorrowedGenerationBackend,
         _BorrowedFaceBackend,
         _BorrowedSpeechBackend,
     )
@@ -1608,8 +1654,7 @@ async def test_memlens_question_date_is_a_reference_clock_not_query_text(tmp_pat
     await _answer_many(
         cast(AsyncMemory, Memory([])),
         (question,),
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(request_concurrency=1, recall_limit=5),
     )
 
     assert "Question date:" not in str(question.content[0])
@@ -1723,8 +1768,7 @@ async def test_answer_many_receives_the_fallback_reference_clock() -> None:
     await _answer_many(
         cast(AsyncMemory, Memory([])),
         loaded.units[0].questions,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(request_concurrency=1, recall_limit=5),
     )
 
     assert observed == [fallback]
@@ -1756,8 +1800,7 @@ async def test_answer_failure_preserves_the_product_retrieval_ranking(tmp_path: 
         await _answer_many(
             cast(AsyncMemory, Memory([])),
             (question,),
-            request_concurrency=1,
-            recall_limit=5,
+            options=EvaluationOptions(request_concurrency=1, recall_limit=5),
         )
     )[0]
     assert not isinstance(outcome, BaseException)
@@ -1768,7 +1811,7 @@ async def test_answer_failure_preserves_the_product_retrieval_ranking(tmp_path: 
         "1" * 64,
         (unit,),
     )
-    sample = eval_module._sample(
+    sample = eval_samples_module._sample(
         task,
         unit,
         question,
@@ -1819,7 +1862,7 @@ def test_a_provider_error_scores_the_answer_zero_and_keeps_retrieval(tmp_path: P
         ranked_source_ids_complete=True,
     )
 
-    sample = eval_module._sample(
+    sample = eval_samples_module._sample(
         task, unit, question, outcome, ingest_failures=0, predict_only=False, log_samples=False
     )
 
@@ -2212,7 +2255,6 @@ async def test_ingest_announces_the_first_failure_once_with_its_message(
                 stage="embed",
             )
 
-    monkeypatch.setattr(eval_module, "_first_ingest_failure_announced", False)
     items = tuple(MemoryItem(f"turn-{index}", ("content",)) for index in range(3))
 
     count = await _ingest(cast(AsyncMemory, Memory([])), items, batch_size=3)
@@ -2453,10 +2495,9 @@ async def test_runner_records_index_failure_without_recursive_ingest(tmp_path: P
             task,
             run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
             memory_factory=cast(MemoryFactory, lambda _path: Context()),
-            batch_size=4,
-            unit_concurrency=1,
-            request_concurrency=1,
-            recall_limit=1,
+            options=EvaluationOptions(
+                batch_size=4, unit_concurrency=1, request_concurrency=1, recall_limit=1
+            ),
             tracer=telemetry.tracer,
         )
         performance = telemetry.result("fixture", question_count=1)
@@ -2479,7 +2520,7 @@ async def test_ingest_preserves_event_time_and_source_interval() -> None:
         "occurred_at": (occurred,),
         "occurred_end": (None,),
         "metadata": ({"source_id": "clip-1", "start_seconds": 10.0, "end_seconds": 20.0},),
-        "memory_type": MemoryType.EPISODIC,
+        "memory_type": MemoryCategory.EPISODIC,
     }
 
 
@@ -2537,10 +2578,9 @@ async def test_runner_ingests_only_memory_available_at_each_cutoff(tmp_path: Pat
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=cast(MemoryFactory, factory),
-        batch_size=8,
-        unit_concurrency=1,
-        request_concurrency=2,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=8, unit_concurrency=1, request_concurrency=2, recall_limit=5
+        ),
         on_progress=lambda completed, total: progress.append((completed, total)),
     )
 
@@ -2632,10 +2672,9 @@ async def test_resume_ingests_only_what_the_killed_run_had_not_written(tmp_path:
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=_store_factory(interrupted, chunks=2),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -2646,10 +2685,9 @@ async def test_resume_ingests_only_what_the_killed_run_had_not_written(tmp_path:
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True),
         memory_factory=_store_factory(resumed),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -2674,10 +2712,9 @@ async def test_causal_ingest_retains_release_order_at_equal_boundaries(tmp_path:
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=_store_factory(events),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -2706,9 +2743,9 @@ def test_planned_ingest_count_stops_at_the_latest_cutoff() -> None:
         ),
     )
 
-    assert eval_module._planned_ingest_count(unit) == 2
+    assert eval_inputs_module._planned_ingest_count(unit) == 2
     assert (
-        eval_module._planned_ingest_count(
+        eval_inputs_module._planned_ingest_count(
             replace(
                 unit,
                 questions=(
@@ -2738,10 +2775,9 @@ async def test_ingest_progress_completes_even_when_a_cutoff_stops_short(tmp_path
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=_store_factory([]),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         on_progress=lambda completed, total: samples.append((completed, total)),
         on_ingest_progress=lambda completed, total: ingest.append((completed, total)),
     )
@@ -2784,10 +2820,9 @@ async def test_a_fully_cached_unit_completes_its_ingest_share_without_writing(
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=_store_factory(events),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         response_cache=cast(ResponseCache, Cache()),
         on_ingest_progress=lambda completed, total: ingest.append((completed, total)),
     )
@@ -2820,10 +2855,9 @@ async def test_concurrent_units_share_one_monotone_ingest_count(tmp_path: Path) 
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=_store_factory([]),
-        batch_size=2,
-        unit_concurrency=3,
-        request_concurrency=2,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=2, unit_concurrency=3, request_concurrency=2, recall_limit=5
+        ),
         on_ingest_progress=lambda completed, total: ingest.append((completed, total)),
     )
 
@@ -2848,10 +2882,9 @@ async def test_resumed_ingest_progress_starts_from_the_checkpoint(tmp_path: Path
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=_store_factory([], chunks=2),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -2860,10 +2893,9 @@ async def test_resumed_ingest_progress_starts_from_the_checkpoint(tmp_path: Path
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True),
         memory_factory=_store_factory([]),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
         on_ingest_progress=lambda completed, total: resumed.append((completed, total)),
     )
@@ -2884,17 +2916,16 @@ async def test_resume_rebuilds_a_store_that_ran_past_a_pending_cutoff(tmp_path: 
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
     stale = run.unit_dir("unit") / "leaked.sqlite3"
     stale.write_text("both memories", encoding="utf-8")
-    eval_module._IngestCheckpoint(run, "unit", "recipe").record(2, ())
+    eval_ingest_module._IngestCheckpoint(run, "unit", "recipe").record(2, ())
 
     events: list[str] = []
     await run_loaded_task(
         task,
         run=run,
         memory_factory=_store_factory(events),
-        batch_size=8,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=8, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -2913,17 +2944,16 @@ async def test_resume_distrusts_a_checkpoint_whose_store_is_gone(tmp_path: Path)
     )
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
     run.unit_dir("unit")
-    eval_module._IngestCheckpoint(run, "unit", "recipe").record(2, ())
+    eval_ingest_module._IngestCheckpoint(run, "unit", "recipe").record(2, ())
 
     events: list[str] = []
     await run_loaded_task(
         task,
         run=run,
         memory_factory=_store_factory(events),
-        batch_size=8,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=8, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -2934,17 +2964,16 @@ async def test_resume_distrusts_a_checkpoint_whose_store_is_gone(tmp_path: Path)
 async def test_resume_rebuilds_a_store_built_by_another_recipe(tmp_path: Path) -> None:
     task = _resumable_task(tmp_path, [MemoryItem("early", ("early",))], None)
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
-    eval_module._IngestCheckpoint(run, "unit", "recipe").record(1, ())
+    eval_ingest_module._IngestCheckpoint(run, "unit", "recipe").record(1, ())
 
     events: list[str] = []
     await run_loaded_task(
         task,
         run=run,
         memory_factory=_store_factory(events),
-        batch_size=8,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=8, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="another-embedder",
     )
 
@@ -2958,7 +2987,7 @@ async def test_ingest_checkpoint_carries_prior_write_failures_into_the_resumed_r
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
     data_dir = run.unit_dir("unit")
     (data_dir / "store.db").write_text("two memories", encoding="utf-8")
-    checkpoint = eval_module._IngestCheckpoint(run, "unit", "recipe")
+    checkpoint = eval_ingest_module._IngestCheckpoint(run, "unit", "recipe")
     detail = eval_results_module.FailureDetail(
         "early", "storage_failed", "disk_full", "write", "OSError"
     )
@@ -2971,7 +3000,7 @@ async def test_ingest_checkpoint_carries_prior_write_failures_into_the_resumed_r
         [detail],
     )
     # A note whose store is gone describes nothing, and one rebuilt store leaves no stale count.
-    stale = eval_module._IngestCheckpoint(run, "unit", "recipe-2")
+    stale = eval_ingest_module._IngestCheckpoint(run, "unit", "recipe-2")
     assert await stale.start((), (), memory_factory=factory, data_dir=data_dir) == (0, [])
     assert await checkpoint.start((), (), memory_factory=factory, data_dir=data_dir) == (0, [])
 
@@ -2983,7 +3012,7 @@ async def test_resume_leaves_a_store_another_run_owns_alone(tmp_path: Path) -> N
     owned = run.unit_dir("unit") / "store.sqlite3"
     owned.write_text("another run is writing here", encoding="utf-8")
     # A checkpoint from a different recipe is what sends this unit down the rebuild path.
-    eval_module._IngestCheckpoint(run, "unit", "other-recipe").record(1, ())
+    eval_ingest_module._IngestCheckpoint(run, "unit", "other-recipe").record(1, ())
 
     def occupied(path: Path) -> _FakeContext:
         # What `Memory` raises when another live instance owns the directory.
@@ -2998,10 +3027,9 @@ async def test_resume_leaves_a_store_another_run_owns_alone(tmp_path: Path) -> N
         task,
         run=run,
         memory_factory=cast(MemoryFactory, occupied),
-        batch_size=8,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=5,
+        options=EvaluationOptions(
+            batch_size=8, unit_concurrency=1, request_concurrency=1, recall_limit=5
+        ),
         ingest_digest="recipe",
     )
 
@@ -3030,29 +3058,29 @@ def test_ingest_digest_ignores_the_answer_model(tmp_path: Path) -> None:
         ),
     )
     embedding = OpenAIEmbeddingConfig(provider="openai", model="embed-1")
-    config = SenseMemConfig(
+    config = MemorySpec(
         embedding=embedding,
         generation=OpenAIGenerationConfig(provider="openai", model="answer-1"),
     )
 
-    digest = eval_module._ingest_digest(task, arguments, config)
+    digest = eval_inputs_module._ingest_digest(task, arguments, config)
 
     # Only the answer model moved, and no store's contents depend on it.
-    assert digest == eval_module._ingest_digest(
+    assert digest == eval_inputs_module._ingest_digest(
         task,
         arguments,
         config.model_copy(
             update={"generation": OpenAIGenerationConfig(provider="openai", model="answer-2")}
         ),
     )
-    assert digest != eval_module._ingest_digest(
+    assert digest != eval_inputs_module._ingest_digest(
         task,
         arguments,
         config.model_copy(update={"embedding": embedding.model_copy(update={"model": "embed-2"})}),
     )
     # `--deliberate` applies consolidation to the store itself, so a run that asks for it must
     # not resume into one built without it -- or the other way round.
-    assert digest != eval_module._ingest_digest(
+    assert digest != eval_inputs_module._ingest_digest(
         task,
         cast(
             eval_config_module._Arguments, SimpleNamespace(**vars(arguments) | {"deliberate": True})
@@ -3133,10 +3161,9 @@ async def test_runner_scores_the_actual_ranking_at_a_causal_cutoff(
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=cast(MemoryFactory, lambda _path: Context()),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=1,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=1
+        ),
     )
 
     assert len(samples) == 1
@@ -3196,10 +3223,9 @@ async def test_runner_allows_random_retrieval_at_a_causal_cutoff(tmp_path: Path)
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=cast(MemoryFactory, lambda _path: Context()),
-        batch_size=1,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=1,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=1
+        ),
         arms=(eval_arms_module._Arm("random", seed=7),),
     )
 
@@ -3262,10 +3288,9 @@ async def test_runner_applies_request_concurrency_across_units(tmp_path: Path) -
         task,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=cast(MemoryFactory, lambda _path: Context()),
-        batch_size=1,
-        unit_concurrency=2,
-        request_concurrency=1,
-        recall_limit=1,
+        options=EvaluationOptions(
+            batch_size=1, unit_concurrency=2, request_concurrency=1, recall_limit=1
+        ),
     )
 
     assert peak == 1
@@ -3341,10 +3366,9 @@ async def test_standalone_search_reopens_warm_stores_after_every_answer(
             task,
             run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
             memory_factory=cast(MemoryFactory, lambda path: Context(path)),
-            batch_size=1,
-            unit_concurrency=2,
-            request_concurrency=1,
-            recall_limit=3,
+            options=EvaluationOptions(
+                batch_size=1, unit_concurrency=2, request_concurrency=1, recall_limit=3
+            ),
             tracer=telemetry.tracer,
         )
         performance = telemetry.result("fixture", question_count=2)
@@ -3529,7 +3553,7 @@ async def test_standalone_search_reports_planned_error_when_store_reopen_fails(
 
     telemetry = EvaluationTelemetry()
     try:
-        await eval_module._measure_standalone_searches(
+        await eval_runner_module._measure_standalone_searches(
             task,
             slots=((sample,),),
             unit_paths=(tmp_path / "store",),
@@ -3580,8 +3604,7 @@ async def test_answer_many_latency_excludes_request_semaphore_wait() -> None:
                 EvalQuestion("slow", ("slow",), references=("A",)),
                 EvalQuestion("fast", ("fast",), references=("A",)),
             ),
-            request_concurrency=1,
-            recall_limit=1,
+            options=EvaluationOptions(request_concurrency=1, recall_limit=1),
         )
     )
     await asyncio.wait_for(slow_started.wait(), timeout=1)
@@ -3630,7 +3653,7 @@ async def test_answer_arms_preserves_completed_cache_when_cancelled(
     cache_path = tmp_path / "responses.db"
     cache = ResponseCache(cache_path, "run", "namespace")
     pending = asyncio.create_task(
-        eval_module._answer_arms(
+        eval_runner_module._answer_arms(
             cast(AsyncMemory, Memory([])),
             task,
             unit,
@@ -3639,21 +3662,23 @@ async def test_answer_arms_preserves_completed_cache_when_cancelled(
             context="",
             ingest_failures=ingest_failures,
             ingest_failure_details=(),
-            request_concurrency=2,
+            options=EvaluationOptions(
+                request_concurrency=2,
+                recall_limit=1,
+                predict_only=True,
+                log_samples=False,
+                stream_answers=False,
+            ),
             request_semaphore=asyncio.Semaphore(2),
-            recall_limit=1,
-            predict_only=True,
-            log_samples=False,
             response_cache=cache,
             on_sample_completed=completed.set,
-            stream_answers=False,
         )
     )
     try:
         await asyncio.wait_for(completed.wait(), timeout=1)
         assert not pending.done()
         answer = cache.get(
-            eval_module._cache_task(task, eval_arms_module.PRODUCT_ARM), "unit", "fast"
+            eval_inputs_module._cache_task(task, eval_arms_module.PRODUCT_ARM), "unit", "fast"
         )
         assert (answer is not None) is (ingest_failures == 0)
         if answer is not None:
@@ -3667,7 +3692,7 @@ async def test_answer_arms_preserves_completed_cache_when_cancelled(
 
     reopened = ResponseCache(cache_path, "run", "namespace")
     try:
-        task_key = eval_module._cache_task(task, eval_arms_module.PRODUCT_ARM)
+        task_key = eval_inputs_module._cache_task(task, eval_arms_module.PRODUCT_ARM)
         assert (reopened.get(task_key, "unit", "fast") is not None) is (ingest_failures == 0)
         assert reopened.get(task_key, "unit", "slow") is None
     finally:
@@ -3706,8 +3731,7 @@ async def test_answer_many_reports_each_completed_answer_immediately() -> None:
                 EvalQuestion("fast", ("fast",), references=("A",)),
                 EvalQuestion("slow", ("slow",), references=("A",)),
             ),
-            request_concurrency=2,
-            recall_limit=1,
+            options=EvaluationOptions(request_concurrency=2, recall_limit=1),
             on_answer=on_answer,
         )
     )
@@ -3762,8 +3786,7 @@ async def test_answer_many_reports_failed_outcome_immediately() -> None:
                 EvalQuestion("failed", ("failed",), references=("A",)),
                 EvalQuestion("slow", ("slow",), references=("A",)),
             ),
-            request_concurrency=2,
-            recall_limit=1,
+            options=EvaluationOptions(request_concurrency=2, recall_limit=1),
             on_complete=on_complete,
         )
     )
@@ -3827,17 +3850,19 @@ async def test_unit_preserves_answers_before_a_systemic_query_embedding_failure(
         (unit,),
     )
 
-    samples = await eval_module._run_unit(
+    samples = await eval_runner_module._run_unit(
         task,
         unit,
         tmp_path / "store",
         memory_factory=cast(MemoryFactory, lambda _path: Context()),
-        batch_size=1,
-        request_concurrency=1,
+        options=EvaluationOptions(
+            batch_size=1,
+            request_concurrency=1,
+            recall_limit=1,
+            predict_only=False,
+            log_samples=False,
+        ),
         request_semaphore=asyncio.Semaphore(1),
-        recall_limit=1,
-        predict_only=False,
-        log_samples=False,
         response_cache=None,
     )
 
@@ -3880,8 +3905,7 @@ async def test_generation_502_does_not_trigger_embedding_fail_fast() -> None:
             EvalQuestion(f"q{index}", (f"question {index}",), references=("A",))
             for index in range(2)
         ),
-        request_concurrency=1,
-        recall_limit=1,
+        options=EvaluationOptions(request_concurrency=1, recall_limit=1),
     )
 
     assert calls == 2
@@ -3963,10 +3987,9 @@ async def test_runner_reports_cached_progress_before_pending_answer_finishes(
                 task,
                 run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
                 memory_factory=cast(MemoryFactory, lambda _path: Context()),
-                batch_size=1,
-                unit_concurrency=1,
-                request_concurrency=2,
-                recall_limit=1,
+                options=EvaluationOptions(
+                    batch_size=1, unit_concurrency=1, request_concurrency=2, recall_limit=1
+                ),
                 response_cache=cast(ResponseCache, Cache()),
                 on_progress=on_progress,
                 on_activity=activities.append,
@@ -4012,7 +4035,7 @@ async def test_runner_removes_completed_unit_from_concurrent_activity(
             await release_slow.wait()
         return (_sample_fixture(1),)
 
-    monkeypatch.setattr(eval_module, "_run_unit", fake_run_unit)
+    monkeypatch.setattr(eval_runner_module, "_run_unit", fake_run_unit)
     task = LoadedTask(
         TaskSpec("fixture", "Fixture", "fixture.json", "v1", "owner/repo", "0" * 40),
         tmp_path / "fixture.json",
@@ -4032,10 +4055,9 @@ async def test_runner_removes_completed_unit_from_concurrent_activity(
             task,
             run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
             memory_factory=cast(MemoryFactory, lambda _path: None),
-            batch_size=1,
-            unit_concurrency=2,
-            request_concurrency=2,
-            recall_limit=1,
+            options=EvaluationOptions(
+                batch_size=1, unit_concurrency=2, request_concurrency=2, recall_limit=1
+            ),
             on_activity=observe_activity,
         )
     )
@@ -4072,8 +4094,7 @@ async def test_answer_many_preserves_structured_abstention() -> None:
         await _answer_many(
             cast(AsyncMemory, Memory([])),
             (EvalQuestion("q", ("question",), references=("A",)),),
-            request_concurrency=1,
-            recall_limit=1,
+            options=EvaluationOptions(request_concurrency=1, recall_limit=1),
         )
     )[0]
 
@@ -4130,7 +4151,6 @@ _EXPECTED_BREAKDOWN_FIELDS: dict[str, tuple[str, ...]] = {
     "atm-bench": ("qtype",),
     "mem-gallery": ("point",),
     "longmemeval-v2": ("domain", "environment", "question_type"),
-    "es-memeval": ("capability",),
     "personamem-v3": ("task_family", "task_type"),
 }
 
@@ -4216,11 +4236,13 @@ def test_a_task_worded_refusal_counts_as_an_abstention() -> None:
         refusal="Insufficient information",
     )
 
-    assert eval_module._declined("Insufficient information", question)
-    assert eval_module._declined("Insufficient information.", question)
-    assert not eval_module._declined("She went to the market.", question)
+    assert eval_answers_module._declined("Insufficient information", question)
+    assert eval_answers_module._declined("Insufficient information.", question)
+    assert not eval_answers_module._declined("She went to the market.", question)
     # A task that mandates nothing must not have refusals invented for it.
-    assert not eval_module._declined("Insufficient information", replace(question, refusal=None))
+    assert not eval_answers_module._declined(
+        "Insufficient information", replace(question, refusal=None)
+    )
 
 
 def test_memlens_attaches_its_published_images_only_where_the_file_is_present(
@@ -4372,7 +4394,7 @@ def test_memlens_questions_declare_the_refusal_their_own_prompt_mandates(tmp_pat
     # Tied to the prompt text, so changing the mandated wording without the declaration fails.
     assert f'"{MEMLENS_QUERY_PROMPT.refusal}"' in MEMLENS_QUERY_PROMPT.text
     assert question.refusal == MEMLENS_QUERY_PROMPT.refusal
-    assert eval_module._declined(MEMLENS_QUERY_PROMPT.refusal, question)
+    assert eval_answers_module._declined(MEMLENS_QUERY_PROMPT.refusal, question)
 
 
 def test_mem_gallery_refusal_questions_declare_the_wording_their_constraint_mandates(
@@ -4432,10 +4454,10 @@ def test_mem_gallery_refusal_questions_declare_the_wording_their_constraint_mand
     # Tied to the constraint text, so changing the mandated wording without the declaration fails.
     assert MEM_GALLERY_REFUSAL_PROMPT.refusal in MEM_GALLERY_REFUSAL_PROMPT.text
     assert by_point["AR"].refusal == MEM_GALLERY_REFUSAL_PROMPT.refusal
-    assert eval_module._declined(MEM_GALLERY_REFUSAL_PROMPT.refusal, by_point["AR"])
+    assert eval_answers_module._declined(MEM_GALLERY_REFUSAL_PROMPT.refusal, by_point["AR"])
     # The other eight types are asked without that constraint, so they must not claim it.
     assert by_point["FR"].refusal is None
-    assert not eval_module._declined(MEM_GALLERY_REFUSAL_PROMPT.refusal, by_point["FR"])
+    assert not eval_answers_module._declined(MEM_GALLERY_REFUSAL_PROMPT.refusal, by_point["FR"])
 
 
 def test_eval_config_reads_yaml_and_splits_the_harness_section(tmp_path: Path) -> None:
@@ -4473,7 +4495,7 @@ benchmark:
     assert config is not None
     assert isinstance(config.embedding, OpenAIEmbeddingConfig)
     assert config.embedding.model == "local-embedder"
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.model == "configured-model"
     # The credential lives with the endpoint it authenticates, in the product block.
     assert config.generation.api_key is not None
@@ -4501,7 +4523,7 @@ def test_eval_config_still_reads_the_json_it_used_to_take(tmp_path: Path) -> Non
     config, overrides = eval_config_module._load_memory_config(path)
 
     assert config is not None
-    assert config.generation is not None
+    assert isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.model == "json-model"
     assert overrides == HarnessOverrides()
 
@@ -4560,6 +4582,8 @@ generation:
     auth_token: provider-body-secret
     nested:
       X-API-Key: nested-provider-secret
+settings:
+  reinforce_on_answer: true
 benchmark:
   judge:
     model: configured-judge
@@ -4752,7 +4776,7 @@ def test_eval_generation_credential_prefers_the_file_over_the_environment(
     )
 
     config, _ = _load_memory_config(declared)
-    assert config is not None and config.generation is not None
+    assert config is not None and isinstance(config.generation, OpenAIGenerationConfig)
     resolved = _model_config("", memory_config=config)
     assert resolved.generation_api_key == "file-key"
 
@@ -4777,7 +4801,7 @@ def test_eval_video_floor_has_exactly_one_home(tmp_path: Path) -> None:
 
     config, _ = _load_memory_config(path)
 
-    assert config is not None and config.generation is not None
+    assert config is not None and isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.min_video_seconds == 4.0
     resolved = _model_config("", memory_config=config)
     assert resolved.generation_min_video_seconds == 4.0
@@ -4897,7 +4921,7 @@ def test_eval_memory_config_survives_an_empty_gen_kwargs(tmp_path: Path) -> None
     )
 
     assert resolved is not None
-    assert resolved.generation is not None
+    assert isinstance(resolved.generation, OpenAIGenerationConfig)
     assert resolved.generation.extra_body is None
 
 
@@ -4910,12 +4934,12 @@ def test_eval_memory_config_pins_reinforcement_off_without_a_generation_section(
     environment reported `reinforce_on_answer: true` for a run that had it off.
     """
     # The file loader fills a default generation block, so the section-less shape is the one a
-    # host composes directly, which `resolve_memory_config` accepts.
-    config = SenseMemConfig(
+    # host composes directly, which `build_memory_composition` accepts.
+    config = MemorySpec(
         data_dir=tmp_path,
         embedding=OpenAIEmbeddingConfig(provider="openai"),
         generation=None,
-        settings=MemoryConfig(reinforce_on_answer=True),
+        settings=MemorySettings(reinforce_on_answer=True),
     )
     arguments = cast(
         eval_config_module._Arguments,
@@ -4951,8 +4975,8 @@ def test_committed_example_configuration_still_loads() -> None:
     config, overrides = _load_memory_config(example)
 
     assert config is not None
-    assert config.generation is not None
-    assert config.embedding.provider == "openai"
+    assert isinstance(config.generation, OpenAIGenerationConfig)
+    assert isinstance(config.embedding, OpenAIEmbeddingConfig)
     assert config.speech is not None
     # Formation is commented out in the template because enabling it costs an LLM call per write.
     assert config.formation is None
@@ -4987,7 +5011,7 @@ def test_committed_example_configuration_carries_no_usable_credential() -> None:
 
     config, overrides = _load_memory_config(example)
 
-    assert config is not None and config.generation is not None
+    assert config is not None and isinstance(config.generation, OpenAIGenerationConfig)
     assert isinstance(config.embedding, OpenAIEmbeddingConfig)
     secrets = [
         config.embedding.api_key,
@@ -5079,7 +5103,7 @@ def test_eval_resolved_generation_keeps_an_env_only_credential(
         config, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
     )
 
-    assert resolved is not None and resolved.generation is not None
+    assert resolved is not None and isinstance(resolved.generation, OpenAIGenerationConfig)
     assert resolved.generation.api_key is not None
     assert resolved.generation.api_key.get_secret_value() == "environment-key"
 
@@ -5103,7 +5127,7 @@ def test_eval_resolved_generation_still_prefers_a_declared_credential(tmp_path: 
         config, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
     )
 
-    assert resolved is not None and resolved.generation is not None
+    assert resolved is not None and isinstance(resolved.generation, OpenAIGenerationConfig)
     assert resolved.generation.api_key is not None
     assert resolved.generation.api_key.get_secret_value() == "file-key"
 
@@ -5251,23 +5275,23 @@ def test_backend_pool_hands_the_configured_video_floor_to_the_resolved_models(
     file-driven run takes. A floor recorded on `ModelConfig` alone would be reported in
     `results.jsonl` while short videos still went to the endpoint whole.
     """
-    configured: list[SenseMemConfig] = []
+    configured: list[MemorySpec] = []
 
-    def resolve(config: SenseMemConfig) -> object:
+    def resolve(config: MemorySpec) -> object:
         configured.append(config)
         raise _StopResolving
 
-    monkeypatch.setattr(eval_module, "resolve_memory_config", resolve)
-    memory_config = SenseMemConfig.model_validate(
+    monkeypatch.setattr(eval_backends_module, "build_memory_composition", resolve)
+    memory_config = MemorySpec.model_validate(
         {"embedding": {"provider": "openai"}, "generation": {"provider": "openai"}}
     )
 
     with pytest.raises(_StopResolving):
-        eval_module._BackendPool(
+        eval_backends_module._BackendPool(
             ModelConfig(generation_min_video_seconds=2.5), memory_config=memory_config
         )
 
-    assert configured[0].generation is not None
+    assert isinstance(configured[0].generation, OpenAIGenerationConfig)
     assert configured[0].generation.min_video_seconds == 2.5
 
 
@@ -5275,14 +5299,14 @@ def test_backend_pool_leaves_an_unset_video_floor_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An absent harness floor must not overwrite one the memory document declares itself."""
-    configured: list[SenseMemConfig] = []
+    configured: list[MemorySpec] = []
 
-    def resolve(config: SenseMemConfig) -> object:
+    def resolve(config: MemorySpec) -> object:
         configured.append(config)
         raise _StopResolving
 
-    monkeypatch.setattr(eval_module, "resolve_memory_config", resolve)
-    memory_config = SenseMemConfig.model_validate(
+    monkeypatch.setattr(eval_backends_module, "build_memory_composition", resolve)
+    memory_config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "generation": {"provider": "openai", "min_video_seconds": 4.0},
@@ -5290,9 +5314,9 @@ def test_backend_pool_leaves_an_unset_video_floor_alone(
     )
 
     with pytest.raises(_StopResolving):
-        eval_module._BackendPool(ModelConfig(), memory_config=memory_config)
+        eval_backends_module._BackendPool(ModelConfig(), memory_config=memory_config)
 
-    assert configured[0].generation is not None
+    assert isinstance(configured[0].generation, OpenAIGenerationConfig)
     assert configured[0].generation.min_video_seconds == 4.0
 
 
@@ -5965,13 +5989,7 @@ def test_only_the_tasks_whose_protocol_credits_no_abstention_ask_for_a_guess() -
 
 
 def test_only_personamem_answers_through_the_compile_surface() -> None:
-    """The one task whose queries want an assistant's response, not a fact read from memory.
-
-    `Memory.ask` uses no outside knowledge and abstains on thin evidence, which on the
-    2026-09-11 baseline left 84 % of PersonaMem-v3's proactive rows and 42-46 % of its agentic
-    and chatbot rows refused, every one scored zero. Every other task asks for something its
-    memories contain, and its abstentions are part of what it measures.
-    """
+    """PersonaMem generates assistant responses; the other tasks answer from memory evidence."""
     from sensemem.benchmarks.prompts import COMPILE_SURFACE_TASKS, task_answer_surface
     from sensemem.benchmarks.task_catalog import TASKS
 

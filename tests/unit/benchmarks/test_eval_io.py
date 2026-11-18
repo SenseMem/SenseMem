@@ -9,7 +9,7 @@ import stat
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, fields
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Barrier, Event, Lock
@@ -19,16 +19,16 @@ from typing import Any, cast
 
 import pytest
 
-import sensemem.benchmarks.eval as eval_module
 import sensemem.benchmarks.eval_adapters as eval_adapters
-from sensemem import MemoryConfig, MemoryPlugins, Modality, SenseMemConfig
+from sensemem import EmbeddingBackend, MemoryPlugins, MemorySettings, MemorySpec, Modality
 from sensemem._telemetry import MODEL_MODULE, SPAN_KIND, mark_model_requests, model_span
 from sensemem.benchmarks import eval_arms as eval_arms_module
+from sensemem.benchmarks import eval_backends as eval_backends_module
 from sensemem.benchmarks import eval_config as eval_config_module
 from sensemem.benchmarks import eval_results as eval_results_module
+from sensemem.benchmarks import eval_samples as eval_samples_module
 from sensemem.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
 from sensemem.benchmarks.download import _snapshot, acquire_media
-from sensemem.benchmarks.eval import _cache_task
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
@@ -36,13 +36,9 @@ from sensemem.benchmarks.eval_adapters import (
     MemoryItem,
     load_task,
 )
-from sensemem.benchmarks.eval_cache import (
-    CachedAnswer,
-    DescriptionCache,
-    EvidenceInterval,
-    ResponseCache,
-    _answer,
-)
+from sensemem.benchmarks.eval_cache import CachedAnswer, DescriptionCache, ResponseCache, _answer
+from sensemem.benchmarks.eval_evidence import EvidenceInterval
+from sensemem.benchmarks.eval_inputs import _cache_task
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_TASK,
     BENCHMARK_TASK_SPAN,
@@ -60,8 +56,8 @@ from sensemem.benchmarks.prepare_media import (
     prepare_task_media,
 )
 from sensemem.benchmarks.task_catalog import TASKS, MediaSource, TaskSpec
+from sensemem.content import AssetRef
 from sensemem.models.base import ModelInput
-from sensemem.types import AssetRef
 
 
 def _media_spec() -> TaskSpec:
@@ -425,7 +421,7 @@ def test_atm_query_does_not_expose_answer_type_or_labels(tmp_path: Path) -> None
     assert all(item.refusal == "Unknown" for item in unit.questions)
 
 
-def test_response_cache_merges_run_shards_into_the_shared_cache(tmp_path: Path) -> None:
+def test_response_cache_publishes_writes_before_close_and_persists_them(tmp_path: Path) -> None:
     answer = CachedAnswer(
         "A",
         0.75,
@@ -454,6 +450,12 @@ def test_response_cache_merges_run_shards_into_the_shared_cache(tmp_path: Path) 
     second.close()
     first.close()
 
+    reopened = ResponseCache(tmp_path / "responses", "run-c", "namespace")
+    try:
+        assert reopened.get("task", "unit", "question") == answer
+    finally:
+        reopened.close()
+
     assert (tmp_path / "responses" / "cache.db").is_file()
     assert (tmp_path / "responses" / "runs" / "run-a" / "cache.db").is_file()
     if os.name == "posix":
@@ -477,7 +479,7 @@ def test_response_cache_write_uses_the_selected_arm_namespace() -> None:
     )
     outcome = eval_results_module._AnswerOutcome("Answer", 1.0, 0.5, (), ())
 
-    eval_module._cache_outcome(
+    eval_samples_module._cache_outcome(
         cast(Any, cache),
         task,
         unit,
@@ -500,6 +502,7 @@ def test_response_cache_write_uses_the_selected_arm_namespace() -> None:
         "trace_id",
         "answer_span_id",
         "excerpt_evidence",
+        "projection_evidence",
     ],
 )
 def test_response_cache_requires_current_answer_fields(missing: str) -> None:
@@ -1092,7 +1095,7 @@ def test_a_cached_description_is_reused_instead_of_described_again(tmp_path: Pat
     backend = _CountingDescriber()
     cache = DescriptionCache(tmp_path / "descriptions.db", backend.vision_model)
     try:
-        describer = eval_module._CachedVisionDescriber(cast(Any, backend), cache)
+        describer = eval_backends_module._CachedVisionDescriber(cast(Any, backend), cache)
 
         first = describer.describe((first_input,))
         # A partially cached batch still costs exactly one request, for the misses only.
@@ -1116,7 +1119,7 @@ def test_description_cache_tracks_only_actual_model_misses(tmp_path: Path) -> No
     cache = DescriptionCache(tmp_path / "descriptions.db", backend.vision_model)
     telemetry = EvaluationTelemetry()
     try:
-        describer = eval_module._CachedVisionDescriber(cast(Any, backend), cache)
+        describer = eval_backends_module._CachedVisionDescriber(cast(Any, backend), cache)
         assert describer.describe((first_input,)) == ("caption for aaaa",)
         with telemetry.tracer.start_as_current_span(
             BENCHMARK_TASK_SPAN,
@@ -1193,16 +1196,18 @@ def test_a_description_cache_survives_the_process_that_wrote_it(tmp_path: Path) 
     first_backend = _CountingDescriber()
     cache = DescriptionCache(tmp_path / "descriptions.db", first_backend.vision_model)
     try:
-        eval_module._CachedVisionDescriber(cast(Any, first_backend), cache).describe((value,))
+        eval_backends_module._CachedVisionDescriber(cast(Any, first_backend), cache).describe(
+            (value,)
+        )
     finally:
         cache.close()
 
     second_backend = _CountingDescriber(prefix="different")
     reopened = DescriptionCache(tmp_path / "descriptions.db", second_backend.vision_model)
     try:
-        repeated = eval_module._CachedVisionDescriber(cast(Any, second_backend), reopened).describe(
-            (value,)
-        )
+        repeated = eval_backends_module._CachedVisionDescriber(
+            cast(Any, second_backend), reopened
+        ).describe((value,))
     finally:
         reopened.close()
 
@@ -1219,18 +1224,18 @@ def test_two_describer_models_do_not_share_one_cached_caption(tmp_path: Path) ->
     first_backend = _CountingDescriber(prefix="first-model")
     first = DescriptionCache(tmp_path / "descriptions.db", "caption-model")
     try:
-        original = eval_module._CachedVisionDescriber(cast(Any, first_backend), first).describe(
-            (value,)
-        )
+        original = eval_backends_module._CachedVisionDescriber(
+            cast(Any, first_backend), first
+        ).describe((value,))
     finally:
         first.close()
 
     second_backend = _CountingDescriber(prefix="second-model")
     second = DescriptionCache(tmp_path / "descriptions.db", "other-caption-model")
     try:
-        described = eval_module._CachedVisionDescriber(cast(Any, second_backend), second).describe(
-            (value,)
-        )
+        described = eval_backends_module._CachedVisionDescriber(
+            cast(Any, second_backend), second
+        ).describe((value,))
     finally:
         second.close()
 
@@ -1251,8 +1256,8 @@ def test_the_description_cache_is_opened_only_for_a_configured_vision_slot(
         ),
     )
     embedding = {"provider": "openai", "model": "tiny-test", "dimension": 4}
-    without = SenseMemConfig.model_validate({"data_dir": tmp_path, "embedding": embedding})
-    described = SenseMemConfig.model_validate(
+    without = MemorySpec.model_validate({"data_dir": tmp_path, "embedding": embedding})
+    described = MemorySpec.model_validate(
         {"data_dir": tmp_path, "embedding": embedding, "vision": {"provider": "openai"}}
     )
 
@@ -1282,24 +1287,24 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
     value = _description_input(tmp_path, "e" * 64)
     cache_path = tmp_path / "cache" / "descriptions.db"
 
-    def pool(describer: _CountingDescriber) -> eval_module._BackendPool:
+    def pool(describer: _CountingDescriber) -> eval_backends_module._BackendPool:
         resolved = SimpleNamespace(
-            plugins=SimpleNamespace(
-                **{
-                    field.name: {
-                        "vision_describer": describer,
-                        "embedder": SimpleNamespace(embed=lambda *_args, **_kwargs: ((1.0, 0.0),)),
-                    }.get(field.name)
-                    for field in fields(MemoryPlugins)
-                }
+            plugins=MemoryPlugins(
+                embedder=cast(
+                    EmbeddingBackend,
+                    SimpleNamespace(embed=lambda *_args, **_kwargs: ((1.0, 0.0),)),
+                ),
+                vision_describer=describer,
             ),
-            settings=MemoryConfig(),
+            settings=MemorySettings(),
             close=lambda: None,
         )
-        monkeypatch.setattr(eval_module, "resolve_memory_config", lambda _config: resolved)
-        return eval_module._BackendPool(
+        monkeypatch.setattr(
+            eval_backends_module, "build_memory_composition", lambda _config: resolved
+        )
+        return eval_backends_module._BackendPool(
             ModelConfig(),
-            memory_config=SenseMemConfig.model_validate({"embedding": {"provider": "openai"}}),
+            memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
             description_cache=cache_path,
         )
 
@@ -1308,8 +1313,8 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
         cache = built._description_cache
         assert cache is not None and cache.space == describer.vision_space
         try:
-            assert built._vision_describer is not None
-            return built._vision_describer.describe((value,))
+            assert built._plugins.vision_describer is not None
+            return built._plugins.vision_describer.describe((value,))
         finally:
             built.close()
 

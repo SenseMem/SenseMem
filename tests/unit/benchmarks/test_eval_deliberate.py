@@ -26,16 +26,16 @@ from sensemem import (
     MemoryTrigger,
 )
 from sensemem.benchmarks import eval as eval_module
-from sensemem.benchmarks.eval import (
-    MemoryFactory,
-    run_loaded_task,
-)
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
     LoadedTask,
     MemoryItem,
 )
+from sensemem.benchmarks.eval_ingest import IngestRunState
+from sensemem.benchmarks.eval_options import EvaluationOptions
+from sensemem.benchmarks.eval_runner import run_loaded_task
+from sensemem.benchmarks.eval_runtime import MemoryFactory
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.task_catalog import TaskSpec
 
@@ -129,7 +129,7 @@ def _task(tmp_path: Path) -> LoadedTask:
     )
 
 
-async def _run(tmp_path: Path, *, deliberate: bool) -> list[str]:
+async def _run(tmp_path: Path, *, deliberate: bool, run_state: IngestRunState) -> list[str]:
     events: list[str] = []
 
     class Context:
@@ -142,35 +142,38 @@ async def _run(tmp_path: Path, *, deliberate: bool) -> list[str]:
     _memory = cast(AsyncMemory, _Memory(events))
     await run_loaded_task(
         _task(tmp_path),
+        run_state=run_state,
         run=BenchmarkRun(tmp_path / "stores", "fixture", "run"),
         memory_factory=cast(MemoryFactory, lambda _path: Context()),
-        batch_size=4,
-        unit_concurrency=1,
-        request_concurrency=1,
-        recall_limit=1,
-        deliberate=deliberate,
+        options=EvaluationOptions(
+            batch_size=4,
+            unit_concurrency=1,
+            request_concurrency=1,
+            recall_limit=1,
+            deliberate=deliberate,
+        ),
     )
     return events
 
 
 @pytest.mark.asyncio
 async def test_the_loop_runs_after_ingest_and_before_the_questions(tmp_path: Path) -> None:
-    eval_module._deliberation_applied = 0
+    run_state = IngestRunState()
 
-    events = await _run(tmp_path, deliberate=True)
+    events = await _run(tmp_path, deliberate=True, run_state=run_state)
 
     assert events == ["add:2", "deliberate", "ask:question"]
-    assert eval_module._deliberation_applied == 3
+    assert run_state.operations_applied == 3
 
 
 @pytest.mark.asyncio
 async def test_the_loop_is_off_by_default(tmp_path: Path) -> None:
-    eval_module._deliberation_applied = 0
+    run_state = IngestRunState()
 
-    events = await _run(tmp_path, deliberate=False)
+    events = await _run(tmp_path, deliberate=False, run_state=run_state)
 
     assert "deliberate" not in events
-    assert eval_module._deliberation_applied == 0
+    assert run_state.operations_applied == 0
 
 
 def test_deliberate_is_refused_without_a_configured_consolidation_backend(

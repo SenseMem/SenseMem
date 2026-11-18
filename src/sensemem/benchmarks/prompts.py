@@ -1,10 +1,12 @@
-"""Official query wordings owned by the benchmark adapters, not by the product.
+"""Query instructions owned by the benchmark adapters, not by the product.
 
-These reproduce each dataset's published instruction so a run is comparable with the
-leaderboard. They are deliberately kept out of `sensemem.prompts`: nothing on the
-observe/recall path may read them, and they must never influence the shared answer policy.
+Dataset-specific templates reproduce their published instruction so a run is comparable with
+the leaderboard. Generic question wrappers belong here too. These remain outside
+`sensemem.prompts`: the product observe/recall path cannot read them or use them to change
+its shared answer policy.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -85,23 +87,6 @@ MEMLENS_QUERY_PROMPT = PromptSpec(
         '{question}\n\nIf the memories are insufficient, answer exactly "Insufficient information".'
     ),
     refusal="Insufficient information",
-)
-
-ES_MEMEVAL_QA_QUERY_PROMPT = PromptSpec(
-    name="es_memeval_qa_query",
-    version="es_memeval_qa_query_v1",
-    purpose="Apply the ES-MemEval QA answer and abstention contract.",
-    used_by="sensemem.benchmarks.eval_adapters._es_memeval",
-    # The upstream runner wraps the same three requirements in a longer system
-    # example. This compact transport keeps their semantics while avoiding a
-    # false claim that SenseMem presents an in-request `Relevant Memory`
-    # block: evidence is supplied through Memory.ask instead.
-    text=(
-        "Answer the question concisely and accurately using only the retrieved memories. "
-        'If the memories do not contain the answer, respond exactly "unknown".\n\n'
-        "Question: {question}"
-    ),
-    refusal="unknown",
 )
 
 
@@ -262,3 +247,25 @@ PERSONAMEM_V3_QUERY_PROMPT = PromptSpec(
     # conversation, where a row has one, is prepended as context.
     text="{question}",
 )
+
+
+def _choice_prompt(question: str, choices: Sequence[str]) -> str:
+    options = "\n".join(
+        f"{label}. {choice}" for label, choice in zip("ABCDEFGHIJ", choices, strict=False)
+    )
+    labels = ", ".join("ABCDEFGHIJ"[: len(choices)])
+    return (
+        f"Select the best answer using only the memories. Reply with one letter ({labels}).\n"
+        f"Question: {question}\n{options}\nAnswer:"
+    )
+
+
+_FREE_TEXT_INSTRUCTION = "Answer concisely using only the memories."
+
+
+def _free_text_prompt(question: str) -> str:
+    return f"{_FREE_TEXT_INSTRUCTION}\nQuestion: {question}\nAnswer:"
+
+
+def _free_text_parts(question: str) -> tuple[str, str]:
+    return question, f"{_FREE_TEXT_INSTRUCTION}\nAnswer:"

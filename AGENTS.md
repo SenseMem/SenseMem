@@ -14,6 +14,10 @@ SenseMem is a Python package under `src/sensemem/`.
 - Keep durable local storage and search adapters in `infrastructure/local/`; `store/` is one
   `LocalStore` over one connection pool with one attribute per table family.
 - Keep model clients in `models/` and protocol adapters in `api/`.
+- Keep built-in model instructions and their text composition in pure `prompts/` components.
+  Kernel and adapters supply facts and settings; prompt components must not import their
+  implementations. Keep benchmark-only query, baseline, and judge prompts under `benchmarks/`,
+  reusing pinned official wording and preserving its recorded provenance.
 - Keep benchmark harnesses in `benchmarks/` or `src/sensemem/benchmarks/`.
 - Keep tests in `tests/unit/`, `tests/contracts/`, `tests/integration/`, and
   `tests/benchmarks/`.

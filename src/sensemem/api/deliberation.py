@@ -15,8 +15,9 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from typing import Protocol, runtime_checkable
 
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.control_values import ConsolidationReport
 from sensemem.exceptions import SenseMemError, ValidationError
-from sensemem.types import ConsolidationReport, MemoryCapabilities
 
 _LOGGER = logging.getLogger(__name__)
 

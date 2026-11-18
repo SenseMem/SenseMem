@@ -14,9 +14,10 @@ capture. Original media remains content-addressed in assets.
 | Value | Fields |
 | --- | --- |
 | `Blob` | `data`, `media_type`, `name` |
+| `ContentPart` | `kind` (`text`, `asset`, `audio_transcript`, `visual_description`, `model_interpretation`) and `value`; ordered text and asset IDs, with model-derived sections distinguished from original text |
 | `AssetRef` | `id`, `modality`, `media_type`, `size_bytes`, `sha256`, `name`, `path`; `is_resolved` property |
-| `StreamInput` | `content`, `occurred_at`, `occurred_end`, `metadata`, `memory_type`, `context`, `transcript`, `description` |
-| `MemoryRecord` | `id`, `content`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `assets`, `modality`, `memory_type`, `context`, `place_id`, `forgotten_at` |
+| `StreamInput` | `content`, `occurred_at`, `occurred_end`, `metadata`, `memory_type`, `context`, `transcript`, `description`, `interpretation` |
+| `MemoryRecord` | `id`, `content`, ordered `parts`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `assets`, `modality`, `memory_type`, `context`, `place_id`, `forgotten_at` |
 | `PendingCapture` | `memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting` |
 | `SearchHit` | all visible memory fields plus `score` |
 | `AnswerResult` | `answer`, `hits`, `abstained`, `abstention_reason` |
@@ -33,8 +34,22 @@ capture. Original media remains content-addressed in assets.
 | --- | --- |
 | `SpatialContext` | `frame_id`, `anchor`, `x`, `y`, `z`, `orientation_xyzw`, `position_uncertainty_m` |
 | `ObservationContext` | `basis`, `source_id`, `confidence`, `valid_from`, `valid_until`, `spatial`, `place_id` |
-| `MemoryContext` | `kind`, `basis`, `confidence`, `valid_from`, `valid_until`, `recorded_at`, `visible`, `retired_at`, `lineage_id`, `source_id`, `subject`, `predicate`, `value`, `evidence_ids`, `supersedes_id`, `model_id`, `recipe`, `identity_id`, `spatial`, `cue_modality`, `valence`, `arousal` |
+| `RecordSemantics` | `kind`, `basis`, `confidence`, `valid_from`, `valid_until`, `recorded_at`, `visible`, `retired_at`, `lineage_id`, `source_id`, `subject`, `predicate`, `value`, `evidence_ids`, `supersedes_id`, `model_id`, `recipe`, `identity_id`, `spatial`, `cue_modality`, `valence`, `arousal`, `affect_link`, `affect_witnesses` |
+| `AffectObjectRef` | Exactly one of `memory_id` or `identity_id`; elicitors require an event memory |
+| `AffectLink` | `affect_id`, `role` (`target` or `elicitor`), `object_ref`, `polarity="affirmed"` (`affirmed` or `denied`) |
+| `AffectWitness` | Original observation `source_id`, nonempty `reporter`, exact nonempty original-text `quote` |
 | `RetrievalScope` | `valid_at`, `known_at`, `near`, `radius_m`, `place_id`, `identity_id` |
+
+`ObservationContext.basis` describes the original source. Automatic extraction always produces
+`MODEL_INFERENCE`; a host-marked source does not confirm each model-extracted claim. Use an
+explicit typed host operation to confirm a claim as described in
+[claim authority](../typed-memory.md#state-replacement).
+
+`FormationProposal` accepts the same affect link and witnesses, plus optional batch-local
+`local_id`. References `proposal:<local_id>` are resolved within that observation's formation
+batch; they are never stored. Typed relations require the predicate matching their link role.
+See [affective memory](../affective-memory.md#emotional-targets-and-elicitors) for witness authority
+and the distinction between a target, an elicitor, and a co-occurring event.
 
 ## Identity and retention
 
@@ -56,8 +71,10 @@ capture. Original media remains content-addressed in assets.
 | Value | Fields |
 | --- | --- |
 | `ContextBudget` | `max_chars`, `max_items`, `max_media_items`, `memory_types`, `min_confidence`, `freshness`, `max_latency_ms`, `selected_proofs` |
-| `ContextProof` | `anchor_id`, complete `nodes`; derived `confidence`, `footprint`, `independent_of()`, and `render()` |
-| `ContextProofNode` | `memory_id`, `confidence`, `sources`, `capture_id` |
+| `ContextSupplement` | nonempty `content` and `source`, optional timezone-aware `observed_at` and `expires_at`; temporary external evidence supplied to `compile()`, never an implicit durable write |
+| `ContextProof` | `anchor_id`, complete `nodes`; derived `confidence`, structural `footprint`/`structurally_independent_of()`, and `render()` |
+| `ContextProofNode` | `memory_id`, `confidence`, `sources`, `capture_id`, `source_group_id` |
+| `ContextProofScoring` | `"capture_groups"` or `"independent_pair"`; the instance policy reported by compiled certificates |
 | `ContextConflict` | `lineage_id`, `subject`, `predicate`, `values`, `memory_ids` |
 | `ContextUnknown` | `kind` (a `ContextUnknownKind`), `detail` |
 | `NamedActor` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id`: an identity a currently visible naming assertion names, reached through a compiled bundle's `actors` evidence rather than the assertion itself |
@@ -66,10 +83,16 @@ capture. Original media remains content-addressed in assets.
 | `TextSpanPiece` | `role` (`context` or `body`), half-open `start_codepoint`, `end_codepoint`, exact `source_text`, and `sha256` |
 | `TextSpanSelector` | `parent_content_sha256`, `embedding_input_sha256`, `recipe_version`, ordered `pieces` |
 | `ContextExcerpt` | `source_memory_id`, structured `matched_index_id`, partial `content`, `selector`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id` |
+| `ContextProjection` | `source_memory_id`, ordered `parts` with original/derived roles and omitted asset positions, path-free `omitted_assets`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id`, and fixed `coverage="text_only"`; excludes native media and cannot satisfy a proof |
 | `ContextSymbol` | request-local `symbol`, `namespace`, `stable_id`, `coverage`, structural `roles`, and `selector` only for partial memory coverage |
-| `ContextCitation` | decoded `memory_id`, full or partial `coverage`, and `selector` exactly when partial; reference-only construction is rejected |
+| `ContextCitation` | decoded `memory_id`, full, partial, or text-only `coverage`, and `selector` exactly when partial; reference-only construction is rejected |
 | `ContextPresentation` | compact `text`, typed `symbols`, exact `chars`; pure `resolve()` identity decoding and eligibility-checking `resolve_citation()` |
-| `ContextBundle` | `goal`, `reference_at`, `budget`, `actors`, `relationships`, `scene`, `episodes`, `facts`, `procedures`, `affect`, `traits`, `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, `excerpts`, `proofs`; `hits` property, stable-ID `render()`, and opt-in `compact()` |
+| `ContextBundle` | `goal`, `reference_at`, `budget`, `actors`, `relationships`, `scene`, `episodes`, `facts`, `procedures`, `affect`, `traits`, `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, `excerpts`, `projections`, `proofs`, `proof_scoring`, admitted `supplements`, and `omitted_supplements`; `hits` property, stable-ID `render()`, and opt-in `compact()` |
+
+Supplements share the bundle's item and character budget. Their source labels remain external
+provenance and never become memory citation aliases or instructions. Excluded, expired, or stale
+supplements are counted separately from omitted memory candidates; see
+[context compilation](../context-compilation.md#temporary-context-from-an-application-or-agent).
 
 ## Control operations
 
@@ -79,14 +102,18 @@ capture. Original media remains content-addressed in assets.
 | `IdentityClaim` | `identity_id`, `name`, `relationship` |
 | `IdentityChange` | `identity_id`, `moved_ids` |
 | `MemoryOperationRecord` | `operation_id`, `operation`, `trigger`, `applied_at`, `model_id`, `recipe`, `created_ids`, `changed_ids`, `forgotten_ids`, `superseded`, `rolled_back_at`, `outcome`, `outcome_note` |
-| `ConsolidationCandidate` | `trigger`, `memory_ids`, `evidence_count` |
-| `ConsolidationReport` | `operations`, `rejected` as `(MemoryOperation, reason)` pairs, `weighed`, `rounds`, `skipped`, `model_calls`; `applied` property |
+| `QueryFailure` | `query`, `operation` (`search`, `compile`, `ask`), `memory_types`, `scope`, `reference_at`, `occurred_from`, `occurred_until` |
+| `ConsolidationCandidate` | `trigger`, `memory_ids`, `evidence_count`, optional `query_failure`; a failed request may have no nearby memory IDs |
+| `ConsolidationReport` | `operations`, `rejected` as `(MemoryOperation, reason)` pairs, `weighed`, `rounds`, `skipped`, `model_calls`, `unresolved_queries`; `applied` property |
 
 ## Stream packets and results
 
 | Value | Fields |
 | --- | --- |
 | `StreamEvent` | `phase`, `item`, `stream_id` |
+| `EventChunk` | `content` as one media `Blob` or two blobs pairing audio with image/video, timezone-aware `occurred_at` and `occurred_end`, `stream_id="default"`, `context=None`; normalized `media` tuple |
+| `EventObservation` | backend-ready `content: ModelInput`, `occurred_at`, `occurred_end` |
+| `EventSegment` | exclusive observation `end_chunk` offset, nonempty `summary`, `complete=True`; a final `complete=False` item carries unfinished context |
 | `StreamCommit` | `record`, `prefetch`, `retrieval_error`, `stream_id`, `pending_settlement` |
 | `PCMChunk` | `data`, `sample_rate_hz`, `channels`, `sample_width_bytes`, `stream_id`, `occurred_at` |
 | `VADPacket` | `active`, `stream_id`, `occurred_at` |
@@ -95,7 +122,9 @@ capture. Original media remains content-addressed in assets.
 | `VisionFrame` | `image`, `stream_id`, `occurred_at` |
 | `VisionPartial` | `text`, `stream_id`, `occurred_at` |
 | `SceneBoundary` | `boundary`, `stream_id`, `occurred_at` |
-| `PrefetchResult` | `hits` |
+| `PrefetchResult` | `hits`, `bundle` (`None` for search-only prefetch; compiled evidence when a budget is supplied) |
+| `PrefetchUpdate` | Request-local `revision` and its completed speculative `result` |
+| `ContextSourceResult` | `revision` returned by `AsyncContextSource.submit()` and immutable `supplements`; no stored memory or automatic pipeline execution |
 
 ## Composition values
 
@@ -121,13 +150,13 @@ if that is the quantity needed.
 | --- | --- |
 | `Modality` | `text`, `image`, `video`, `audio`, `omni` |
 | `AnswerPolicy` (literal alias) | `strict`, `best_effort` |
-| `MemoryType` | `semantic`, `episodic`, `procedural` |
+| `MemoryCategory` | `semantic`, `episodic`, `procedural` |
 | `RetrievalMode` | `hybrid`, `dense`, `lexical` |
 | `IndexQuantization` | `none`, `fp16`, `int8`, `rabitq` |
 | `AbstentionReason` | `no_evidence`, `insufficient_evidence` |
 | `RetrievalRejection` | `stale_index`, `occurrence_range`, `missing_memory`, `memory_type`, `minimum_relevance`, `ambiguity`, `limit` |
 | `EmbedTask` | `retrieval.query`, `retrieval.document` |
-| `MemoryKind` | `observation`, `entity`, `event`, `state`, `relation`, `affect`, `trait`, `response_policy` |
+| `RecordKind` | `observation`, `entity`, `event`, `state`, `relation`, `affect`, `trait`, `response_policy` |
 | `MemoryIntent` | `reinforce`, `consolidate`, `correct`, `forget`, `identify`, `consent`, `merge` |
 | `MemoryOutcome` | `confirmed`, `refuted` |
 | `ConsentState` | `granted`, `withheld`, `withdrawn` |
@@ -136,8 +165,8 @@ if that is the quantity needed.
 | `SpatialAnchor` | `observer`, `subject` |
 | `ContextUnknownKind` | `scope_empty`, `section_empty`, `budget_excluded`, `candidates_exhausted`, `modality_unsupported`, `stage_skipped`, `consent_withheld`, `evidence_unavailable` |
 | `ContextSymbolNamespace` | `memory`, `identity` |
-| `ContextSymbolCoverage` | `full`, `partial`, `reference_only` |
-| `ContextSymbolRole` | `hit`, `excerpt`, `evidence`, `affect_event`, `actor`, `observed_in`, `naming_assertion`, `conflict` |
+| `ContextSymbolRole` | `hit`, `excerpt`, `projection`, `evidence`, `affect_event`, `affect_focus`, `affect_object`, `actor`, `observed_in`, `naming_assertion`, `conflict` |
+| `ContextSymbolCoverage` | `full`, `partial`, `text_only`, `reference_only` |
 | `StreamPhase` | `update`, `final`, `cancel` |
 | `AudioBoundary` | `start`, `end`, `cancel` |
 | `VisionBoundary` | `start`, `end`, `cancel` |
@@ -180,12 +209,19 @@ The supported names exported by `sensemem` are:
 
 | Group | Names |
 | --- | --- |
-| `Memory` | `Memory`, `AsyncMemory`, `AsyncOmniPrefetch`, `AsyncCaptureStream`, `AsyncAudioStream`, `AsyncVisionStream` |
-| Composition | `SenseMemConfig`, `MemoryComposition`, `MemoryConfig`, `MemoryPlugins`, `resolve_memory_config` |
-| Content and records | `ContentAtom`, `ContentInput`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `MemoryContext`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `StreamCommit`, `SearchResult`, `PerceptionResult`, `PerceptionCoverage`, `PerceptionSkipReason`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextPresentation`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
-| Delivery certificates | `ContextProof`, `ContextProofNode` |
-| Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent` |
-| Enums and literal aliases | `AnswerPolicy`, `PerceptionKind`, `Modality`, `MemoryType`, `EvidenceBasis`, `MemoryKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
-| Backend protocols and values | `EmbeddingBackend`, `EmbeddingRoute`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `VisionAnalysisBackend`, `EmbeddingInputSupport`, `MediaSelectionBackend`, `SourceMetadataBackend`, `GenerationMediaBackend`, `GenerationRoutingBackend`, `VisualDescription`, `SpeakerName`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
-| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `VLLMReranker`, `OpenAIModels`, `GenerationRouter`, `EmbeddingRouter`, `EvidenceGeneration`, `GazetteerEnricher`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
+| `Memory` | `Memory`, `AsyncMemory`, `AsyncOmniPrefetch`, `AsyncContextSource`, `AsyncCaptureStream`, `AsyncAudioStream`, `AsyncVisionStream`, `AsyncEventStream` |
+| Composition | `MemorySpec`, `MemoryComposition`, `MemorySettings`, `MemoryPlugins`, `PluginConfig`, `PluginFactory`, `build_memory_composition` |
+| Ingestion stages | `IngestionStage`, `StageResult` |
+| Retrieval scoring | `RankingPolicy`, `DefaultRankingPolicy`, `RankingRequest`, `RankingCandidate`, `RankingMemory`, `RankingScore` |
+| Query planning | `QueryPolicy`, `DefaultQueryPolicy`, `QueryRequest`, `QueryRepresentationPlan` |
+| Candidate discovery | `CandidateSource`, `DefaultCandidateSource`, `CandidateRequest`, `CandidateReadPort`, `CandidateQuery`, `CandidateBatch`, `CandidateHit`, `MemoryCandidate` |
+| Context selection | `ContextSelector`, `DefaultContextSelector`, `ContextSelectionRequest`, `ContextSelection`, `ContextCandidate` |
+| Tools and agents | `Tool`, `RegisteredTool`, `ToolDefinition`, `ToolCall`, `ToolResult`, `ToolError`, `ToolRegistry`, `memory_tools`, `transcription_tool`, `AgentBackend`, `AgentStep`, `AgentTurn`, `AgentResult`, `AgentRunner`, `OpenAIAgent` |
+| Content and records | `ContentAtom`, `ContentInput`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `RecordSemantics`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `PrefetchUpdate`, `StreamCommit`, `SearchResult`, `PerceptionResult`, `PerceptionCoverage`, `PerceptionSkipReason`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextPresentation`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
+| Delivery certificates | `ContextProof`, `ContextProofNode`, `ContextProofScoring` |
+| Affective attribution | `AffectObjectRef`, `AffectLink`, `AffectWitness` |
+| Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent`, `EventChunk` |
+| Enums and literal aliases | `AnswerPolicy`, `PerceptionKind`, `Modality`, `MemoryCategory`, `EvidenceBasis`, `RecordKind`, `MemoryIntent`, `MemoryTrigger`, `SpatialAnchor`, `ContextUnknownKind`, `ContextSymbolNamespace`, `ContextSymbolCoverage`, `ContextSymbolRole`, `AbstentionReason`, `IndexQuantization`, `RetrievalMode`, `RetrievalRejection`, `StreamPhase`, `AudioBoundary`, `VisionBoundary`, `EmbedTask`, `MemoryOutcome`, `ConsentState` |
+| Backend protocols and values | `EmbeddingBackend`, `EmbeddingRoute`, `RerankingBackend`, `GenerationBackend`, `StreamingGenerationBackend`, `TranscriptionBackend`, `SpeechBackend`, `VisionDescriptionBackend`, `VisionAnalysisBackend`, `EmbeddingInputSupport`, `MediaSelectionBackend`, `SourceMetadataBackend`, `GenerationMediaBackend`, `GenerationRoutingBackend`, `VisualDescription`, `SpeakerName`, `FaceBackend`, `FormationBackend`, `ConsolidationBackend`, `EventSegmentationBackend`, `EventObservation`, `EventSegment`, `ModelInput`, `VisualRetrievalMatch`, `FormationInput`, `SpeechTurn`, `SpeakerEmbedding`, `SpeechAnalysis`, `FaceEmbedding`, `FaceAnalysis` |
+| Bundled adapters | `SentenceTransformersEmbedder`, `SentenceTransformersReranker`, `Qwen3VLReranker`, `VLLMReranker`, `OpenAIEmbedder`, `OpenAITranscriber`, `OpenAICompletion`, `GenerationRouter`, `EmbeddingRouter`, `EvidenceGeneration`, `GazetteerEnricher`, `OfflineGazetteer`, `OpenCVFaceAnalyzer`, `FunASRTranscriber`, `FunASRRecipe`, `DEFAULT_FUNASR_MODEL_ID`, `DEFAULT_FUNASR_RECIPE` |
 | Exceptions | `SenseMemError`, `ValidationError`, `MemoryNotFoundError`, `IdentityNotFoundError`, `ModelError`, `ModelOutputTruncatedError`, `StorageError`, `IndexUnavailableError` |

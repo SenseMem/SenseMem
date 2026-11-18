@@ -16,7 +16,7 @@ from sensemem import (
     AssetRef,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     SentenceTransformersEmbedder,
@@ -136,7 +136,7 @@ def test_embeddinggemma2_precision_and_tower_parity(
             minimum_cosine = min(minimum_cosine, float(np.sum(values * reference, axis=1).min()))
             assert minimum_cosine >= (0.999999 if dtype == "float32" else 0.999)
         with Memory(
-            tmp_path / name, embedder=embedder, config=MemoryConfig(minimum_relevance=0)
+            tmp_path / name, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
         ) as memory:
             records = [memory.add(text) for text in documents]
             scores: list[float] = []

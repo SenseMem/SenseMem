@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.metadata import (
     EVIDENCE_RECIPE_KEY,
+    INGESTION_RECIPE_KEY,
     STORE_METADATA_KEYS,
+    plan_ingestion_recipe,
     plan_metadata,
 )
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
+from sensemem.processing import IngestionStage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,13 +26,21 @@ _LOGGER = logging.getLogger(__name__)
 class Recovery:
     """Reconcile one exclusively owned directory before opening its search index."""
 
-    def __init__(self, *, storage: Storage, backends: Backends, settings: Settings) -> None:
+    def __init__(
+        self,
+        *,
+        storage: Storage,
+        backends: Backends,
+        settings: ResolvedSettings,
+        ingestion_stages: Sequence[IngestionStage],
+    ) -> None:
         self._store = storage.store
         self._backends = backends
         self._settings = settings
+        self._ingestion_recipe = tuple((stage.name, stage.space) for stage in ingestion_stages)
 
-    def prepare(self, index_path: Path) -> Backends:
-        """Validate durability and retain the recipe needed to read existing speech evidence."""
+    def reconcile_store(self, index_path: Path) -> Backends:
+        """Validate stored recipes, commit metadata and queue any derived-index rebuild."""
         expected = {
             STORE_METADATA_KEYS["model"]: self._backends.embedding_model,
             STORE_METADATA_KEYS["space"]: self._backends.space_id,
@@ -36,7 +48,7 @@ class Recovery:
             STORE_METADATA_KEYS["dimension"]: str(self._backends.embedding_dimension),
             STORE_METADATA_KEYS["index"]: self._settings.index_recipe,
             EVIDENCE_RECIPE_KEY: (
-                "independent-v1" if self._settings.independent_evidence else "complete-v1"
+                "independent-v2" if self._settings.independent_evidence else "complete-v2"
             ),
         }
         if self._backends.face_analyzer is not None:
@@ -44,6 +56,12 @@ class Recovery:
             expected[STORE_METADATA_KEYS["face_analysis"]] = self._backends.face_analysis_space
         missing = not index_path.exists()
         with translate_storage_errors("validate local store metadata"):
+            has_records = bool(self._store.records.list_memories(limit=1))
+            ingestion_updates = plan_ingestion_recipe(
+                self._ingestion_recipe,
+                previous=self._store.get_metadata(INGESTION_RECIPE_KEY),
+                has_records=has_records,
+            )
             stored = {key: self._store.get_metadata(key) for key in expected}
             transcription_key = STORE_METADATA_KEYS["transcription"]
             if (
@@ -65,15 +83,16 @@ class Recovery:
             plan = plan_metadata(
                 expected,
                 stored,
-                has_records=bool(self._store.records.list_memories(limit=1)),
+                has_records=has_records,
                 initializable=(face_keys if initializing_faces else frozenset())
                 | (frozenset({transcription_key}) if unused_transcription else frozenset()),
             )
         with translate_storage_errors("reconcile local store metadata"):
             if plan.rebuild_index and index_path.exists():
                 shutil.rmtree(index_path)
-            if plan.updates:
-                self._store.update_metadata(plan.updates)
+            updates = {**plan.updates, **ingestion_updates}
+            if updates:
+                self._store.update_metadata(updates)
         if missing or plan.rebuild_index:
             # Checkpoint before Zvec creates a directory. An interrupted collection open must
             # leave enough durable work to finish recovery even though that directory exists.

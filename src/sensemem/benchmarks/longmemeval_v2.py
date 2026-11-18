@@ -134,23 +134,3 @@ def load_longmemeval_v2_trajectories(
     if selected - trajectories.keys():
         raise ValueError("LongMemEval-V2 haystack references unknown trajectory IDs")
     return trajectories
-
-
-def question_prompt(question: LongMemEvalV2Question) -> str:
-    """Apply the upstream domain instruction using the SDK's query text surface."""
-    environment = (
-        "a web browsing environment that has a customized magento-based shopping website, "
-        "a customized magento-based shopping admin cms website, as well as a customized forum "
-        "website based on reddit/postmill"
-        if question.domain == "web"
-        else "a customized ServiceNow environment"
-    )
-    return (
-        f"You are an experienced colleague in {environment}. "
-        "Answer based on your memory of the environment. "
-        "If you do not know the answer, output exactly \\boxed{UNKNOWN}. "
-        "Do not guess. Never attempt to guess an answer if you are not sure. "
-        "If you believe the question's construction/premise is wrong, provide an "
-        "explanation in \\boxed{} explaining why the question is flawed.\n\n"
-        f"{question.question}"
-    )

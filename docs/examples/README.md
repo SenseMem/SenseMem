@@ -6,8 +6,11 @@ Choose a configuration for your evaluation, connect its model services, and run 
 Run repository commands from the repository root with the locked environment in
 [Contributing](../../CONTRIBUTING.md#setup).
 
-For runnable promotional demos and English video scripts, see
-[the three-demo guide](promo-demos.md).
+For SDK recipes with real public media, open the
+[best practices notebook](../../examples/best_practices.ipynb), fill in its API key and model
+settings, and execute the cells from the beginning. The notebook directly runs concurrent
+audio/video replay, semantic event formation, time-filtered recall, and playback of the
+original evidence. It uses the bundled [audio and video](../../examples/media/README.md).
 
 ## Choose an example
 
@@ -35,7 +38,6 @@ Edit the local copy before running it. Replace endpoint and model placeholders, 
 embedding dimension and declared modalities, select the tasks, and choose a new output directory.
 The annotated template selects full datasets; use `--limit 1` for an initial bounded run, noting
 that one unit can contain many questions.
-Model examples omit an explicit `revision`; local loaders resolve the Hub commit at load time.
 Keep the resolved model identity with results, and preserve compatible model/cache state when
 reopening a stored embedding space.
 

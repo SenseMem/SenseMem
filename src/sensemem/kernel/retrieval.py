@@ -2,33 +2,36 @@
 
 from __future__ import annotations
 
-import builtins
-import logging
 import re
 import unicodedata
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, closing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from itertools import chain
+from typing import Literal
 
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import mark_model_requests
+from sensemem.candidate_sources import CandidateRequest
+from sensemem.content import ContentInput
+from sensemem.control import dump_query_failure, query_failure_key
+from sensemem.control_values import QueryFailure
 from sensemem.exceptions import ModelError, SenseMemError
 from sensemem.infrastructure.local.scoring import max_cosine_part_scores, max_cosine_scores
 from sensemem.infrastructure.local.store import IndexCandidate, StoredEmbedding, StoredMemory
-from sensemem.infrastructure.local.zvec_index import IndexHit
+from sensemem.kernel.candidates import Candidates
 from sensemem.kernel.content import PreparedContent
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.embedding import DOCUMENT_TASK, MAX_RETRIEVAL_KEYS, Embedding
 from sensemem.kernel.evidence_windows import query_evidence_windows
-from sensemem.kernel.execution import Execution
 from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import Lifecycle, OperationAssets
 from sensemem.kernel.materialization import Materializer
 from sensemem.kernel.projection import Projection
+from sensemem.kernel.querying import Querying
 from sensemem.kernel.ranking import (
     IndexCandidates,
     SearchOutcome,
@@ -36,10 +39,6 @@ from sensemem.kernel.ranking import (
     extend_memory_type_traces,
     extend_missing_memory_traces,
     extend_ranked_traces,
-    lexical_query_terms,
-    merge_index_hits,
-    merge_lexical_routes,
-    merge_temporal_lexical_hits,
     parent_index_ids,
     parent_index_signals,
     qualified_candidates,
@@ -48,13 +47,8 @@ from sensemem.kernel.ranking import (
     search_outcome,
 )
 from sensemem.kernel.routing import has_derived_text, with_descriptions
-from sensemem.kernel.runtime import (
-    Index,
-    Storage,
-    translate_index_errors,
-    translate_storage_errors,
-)
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.runtime import Storage, translate_storage_errors
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.speech import Speech
 from sensemem.kernel.temporal import (
     intersect_occurrence_range,
@@ -73,24 +67,15 @@ from sensemem.kernel.validation import (
     validated_retrieval_scope,
 )
 from sensemem.kernel.vision import Vision
-from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.models.base import ModelInput
 from sensemem.models.reranking import reranking_scores
-from sensemem.types import (
-    ContentInput,
-    IndexQuantization,
-    MemoryType,
-    Modality,
-    RetrievalCandidateTrace,
-    RetrievalMode,
-    RetrievalScope,
-    SearchResult,
-    VisualRetrievalMatch,
-)
+from sensemem.query_policy import QueryRequest
+from sensemem.ranking_policy import RankingPolicy
+from sensemem.records import RetrievalCandidateTrace, SearchResult, VisualRetrievalMatch
+from sensemem.spatial import RetrievalScope
+from sensemem.types import IndexQuantization, MemoryCategory, Modality, RetrievalMode
 
 RERANK_CANDIDATES = 100
-
-_LOGGER = logging.getLogger(__name__)
-
 
 # Everything a recall query's normalization drops before two of them are called near-equal:
 # case, accents, punctuation, and whitespace runs. Deliberately lexical -- an embedding-based
@@ -146,9 +131,8 @@ class Retrieval(Traced):
         *,
         tracer: Tracer,
         storage: Storage,
-        index: Index,
         backends: Backends,
-        settings: Settings,
+        settings: ResolvedSettings,
         lifecycle: Lifecycle,
         hydrator: Hydrator,
         materializer: Materializer,
@@ -156,12 +140,13 @@ class Retrieval(Traced):
         vision: Vision,
         embedding: Embedding,
         projection: Projection,
-        execution: Execution,
+        ranking_policy: RankingPolicy,
+        candidates: Candidates,
+        querying: Querying,
     ) -> None:
         super().__init__(tracer)
         self._store = storage.store
         self._write_lock = storage.write_lock
-        self._index = index
         self._backends = backends
         self._settings = settings
         self._lifecycle = lifecycle
@@ -171,14 +156,19 @@ class Retrieval(Traced):
         self._vision = vision
         self._embedding = embedding
         self._projection = projection
-        self._execution = execution
+        self._ranking_policy = ranking_policy
+        self._candidates = candidates
+        self._query_mode = (
+            settings.retrieval_mode if candidates.requires_embeddings else RetrievalMode.LEXICAL
+        )
+        self._querying = querying
 
     def search(
         self,
         query: ContentInput,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
@@ -196,8 +186,9 @@ class Retrieval(Traced):
                 occurred_until,
             )
             scope = validated_retrieval_scope(scope)
+            memory_types = pushed_memory_types(optional_memory_type(memory_type))
             with self._trace("sensemem.content.prepare", kind="stage"):
-                prepared = self._materializer.prepare(query, assets)
+                prepared = self._materializer.materialize_content(query, assets)
             explicit_reference = resolved_reference_at(reference_at)
             reference, temporal_text = temporal_context(
                 prepared.text,
@@ -208,7 +199,7 @@ class Retrieval(Traced):
                 prepared,
                 limit=limit,
                 operation=assets,
-                memory_types=pushed_memory_types(optional_memory_type(memory_type)),
+                memory_types=memory_types,
                 reference_at=reference,
                 temporal_range=query_temporal_range(temporal_text, reference),
                 occurred_from=occurred_from,
@@ -218,7 +209,15 @@ class Retrieval(Traced):
                 capture_trace=explain,
             )
             self._speech.persist_transcripts(assets)
-            self.note_query_failure(prepared.text, failed=not outcome.hits)
+            self.note_query_failure(
+                prepared.text,
+                failed=not outcome.hits,
+                memory_types=memory_types,
+                scope=scope,
+                reference_at=reference,
+                occurred_from=occurred_from,
+                occurred_until=occurred_until,
+            )
             return SearchResult(hits=outcome.hits, trace=outcome.trace)
 
     def search_prepared(  # noqa: C901 - one shared retrieval plane
@@ -227,7 +226,7 @@ class Retrieval(Traced):
         *,
         limit: int,
         operation: OperationAssets,
-        memory_types: frozenset[MemoryType] | None,
+        memory_types: frozenset[MemoryCategory] | None,
         reference_at: datetime,
         temporal_range: tuple[datetime, datetime] | None,
         occurred_from: datetime | None,
@@ -237,9 +236,7 @@ class Retrieval(Traced):
         capture_trace: bool,
         capture_visual_matches: bool = False,
     ) -> SearchOutcome:
-        trace_candidates: builtins.list[RetrievalCandidateTrace] | None = (
-            [] if capture_trace else None
-        )
+        trace_candidates: list[RetrievalCandidateTrace] | None = [] if capture_trace else None
         query = self._prepare_query(
             prepared, operation, capture_visual_matches=capture_visual_matches
         )
@@ -247,6 +244,7 @@ class Retrieval(Traced):
         vectors, focused_text, image_queries = query.vectors, query.text, query.image_queries
         pool = self._candidate_pool(
             vectors,
+            query_text=focused_text,
             lexical_queries=query.lexical_queries,
             limit=limit,
             memory_types=memory_types,
@@ -283,15 +281,7 @@ class Retrieval(Traced):
             lexical_matches,
             matched_dense_index_ids,
         ) = parent_index_signals(candidates, documents)
-        # `lexical_relevance_by_rank` rather than `lexical_matches`, which holds the same memory
-        # ids in a set. Both mappings are filled in one pass over `documents`, so this preserves
-        # native lexical-route insertion order instead of following the interpreter's string hash
-        # seed. The visible effect is narrow -- `read_memories` does not
-        # order by its argument, so the ranking and the ranked part of the trace never depended on
-        # this, and the ranking sorts on `(-final_score, memory_id)` regardless -- but
-        # `extend_missing_memory_traces` walks these ids directly, so a stale-index candidate's
-        # position in `search(..., explain=True)` did. A trace is a debugging surface; two runs of one
-        # query on one library should print it in one order.
+        # Preserve lexical route order so missing-memory traces are stable across hash seeds.
         parent_ids = tuple(dict.fromkeys((*dense_relevance, *lexical_relevance_by_rank)))
         if not parent_ids:
             return search_outcome(
@@ -433,6 +423,9 @@ class Retrieval(Traced):
                     scoring_snapshot.close()
                 ranked, ranked_traces = rank_memories(
                     memories,
+                    policy=self._ranking_policy,
+                    query=focused_text,
+                    hydrated=tuple(self._hydrator.ranking_memory(memory) for memory in memories),
                     dense_relevance=dense_relevance,
                     dense_confidence=dense_confidence,
                     lexical_relevance_by_rank=lexical_relevance_by_rank,
@@ -508,15 +501,15 @@ class Retrieval(Traced):
         """Resolve required derivations and encode native, atomic and lexical query routes."""
         prepared = (
             self._speech.with_audio_transcripts(prepared, operation)
-            if self._settings.retrieval_mode is RetrievalMode.LEXICAL
-            else self._embedding.content(prepared, operation)
+            if self._query_mode is RetrievalMode.LEXICAL
+            else self._embedding.with_transcript_fallback(prepared, operation)
         )
         required_visuals = tuple(
             asset
             for asset in prepared.assets
             if Modality(asset.modality) in {Modality.IMAGE, Modality.VIDEO}
             and (
-                self._settings.retrieval_mode is RetrievalMode.LEXICAL
+                self._query_mode is RetrievalMode.LEXICAL
                 or Modality(asset.modality) not in self._backends.embedding_capabilities
             )
         )
@@ -545,68 +538,54 @@ class Retrieval(Traced):
                     if key in required_ids
                 },
             )
-        vectors: tuple[tuple[float, ...], ...] = ()
-        image_queries: tuple[tuple[str, tuple[float, ...]], ...] = ()
         text_parts = tuple(value for kind, value in prepared.canonical_parts if kind == "text")
         focused_text = text_parts[0] if len(text_parts) > 1 else prepared.text
-        # Lexical-only retrieval must not spend a remote query-embedding call.
-        if self._settings.retrieval_mode is not RetrievalMode.LEXICAL:
+        complete: tuple[ModelInput, ...] = ()
+        focused_inputs: tuple[ModelInput, ...] = ()
+        aggregate: ModelInput | None = None
+        if self._query_mode is not RetrievalMode.LEXICAL:
             focused = replace(
                 prepared,
                 text=focused_text,
                 canonical_parts=(("text", focused_text),) if focused_text else (),
             )
-            complete = self._embedding.inputs(prepared, maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS)
-            aggregate = self._embedding.route(prepared)
-            model_inputs = tuple(
-                dict.fromkeys(
-                    (
-                        *((aggregate,) if aggregate in complete else complete),
-                        *self._embedding.inputs(
-                            focused,
-                            maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS,
-                        ),
-                    )
-                )
+            complete = self._embedding.build_retrieval_inputs(
+                prepared, maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS
             )
-            encoded = self._embedding.embed(model_inputs, task=EmbedTask.QUERY)
-            vectors = tuple(dict.fromkeys(encoded))
-            if capture_visual_matches:
-                image_queries = tuple(
-                    (value.assets[0].id, vector)
-                    for value, vector in zip(model_inputs, encoded, strict=True)
-                    if not value.text
-                    and len(value.assets) == 1
-                    and value.assets[0].modality is Modality.IMAGE
-                )
-            if descriptions and Modality.TEXT in self._backends.embedding_capabilities:
-                try:
-                    described_vectors = self._embedding.embed(
-                        tuple(ModelInput(text=value) for value in descriptions),
-                        task=EmbedTask.QUERY,
-                    )
-                except ModelError as error:
-                    _LOGGER.warning("query description embedding failed: %s", error.reason)
-                else:
-                    vectors = tuple(dict.fromkeys((*vectors, *described_vectors)))
-        lexical_queries = tuple(
-            dict.fromkeys(
-                value for value in (focused_text, *descriptions) if lexical_query_terms(value)
+            aggregate = self._embedding.route_input(prepared)
+            focused_inputs = self._embedding.build_retrieval_inputs(
+                focused,
+                maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS,
             )
+        encoded = self._querying.encode(
+            QueryRequest(
+                content=self._hydrator.model_input(prepared),
+                mode=self._query_mode,
+                complete_inputs=complete,
+                aggregate=aggregate,
+                focused_text=focused_text,
+                focused_inputs=focused_inputs,
+                descriptions=descriptions,
+                embedding_capabilities=self._backends.embedding_capabilities,
+            ),
+            capture_visual_matches=capture_visual_matches,
         )
-        if self._settings.retrieval_mode is RetrievalMode.DENSE:
-            lexical_queries = ()
         return _QueryRepresentations(
-            prepared, focused_text, vectors, image_queries, lexical_queries
+            prepared,
+            encoded.text,
+            encoded.vectors,
+            encoded.image_queries,
+            encoded.lexical_queries,
         )
 
     def _candidate_pool(
         self,
         vectors: Sequence[Sequence[float]],
         *,
+        query_text: str,
         lexical_queries: Sequence[str],
         limit: int,
-        memory_types: frozenset[MemoryType] | None,
+        memory_types: frozenset[MemoryCategory] | None,
         temporal_range: tuple[datetime, datetime] | None,
         occurred_from: datetime | None,
         occurred_until: datetime | None,
@@ -635,28 +614,28 @@ class Retrieval(Traced):
             # between two yields must see the item it was just handed.
             self._projection.drain(force=True)
         while True:
-            with translate_index_errors("search memories"):
-                preferred_range = (
-                    None
-                    if temporal_range is None
-                    else intersect_occurrence_range(
-                        temporal_range,
-                        occurred_from,
-                        occurred_until,
-                    )
+            preferred_range = (
+                None
+                if temporal_range is None
+                else intersect_occurrence_range(
+                    temporal_range,
+                    occurred_from,
+                    occurred_until,
                 )
-                candidates = self._index_candidates(
-                    vectors,
-                    lexical_queries=lexical_queries,
-                    limit=candidate_limit,
-                    memory_types=memory_types,
-                    occurred_from=occurred_from,
-                    occurred_until=occurred_until,
-                    place_id=scope_place_id,
-                    identity_id=scope_identity_id,
-                    retrieval_mode=self._settings.retrieval_mode,
-                    preferred_range=preferred_range,
-                )
+            )
+            candidates = self._index_candidates(
+                vectors,
+                query_text=query_text,
+                lexical_queries=lexical_queries,
+                limit=candidate_limit,
+                memory_types=memory_types,
+                occurred_from=occurred_from,
+                occurred_until=occurred_until,
+                place_id=scope_place_id,
+                identity_id=scope_identity_id,
+                retrieval_mode=self._settings.retrieval_mode,
+                preferred_range=preferred_range,
+            )
             index_ids = tuple(
                 dict.fromkeys(hit.id for hit in (*candidates.dense, *candidates.lexical))
             )
@@ -703,13 +682,6 @@ class Retrieval(Traced):
                     known_at=None if scope is None else scope.known_at,
                     near=None if scope is None else scope.near,
                     radius_m=None if scope is None else scope.radius_m,
-                    # Passed here for consistency with every other scope axis, which all
-                    # reach both reads. This one is the survivor count that drives candidate
-                    # widening; no constructed corpus (30 or 120 memories) could make its
-                    # absence change a result, so it is unproven rather than proven needed.
-                    # Kept because omitting one axis at one of two sites is the anomaly a
-                    # reader would have to explain, and because narrowing a count can only
-                    # widen the search. The hydration site below is mutation-covered.
                     place_id=None if scope is None else scope.place_id,
                     identity_id=None if scope is None else scope.identity_id,
                     active_only=True,
@@ -724,9 +696,9 @@ class Retrieval(Traced):
         self,
         query: str,
         prepared: PreparedContent,
-        ranked: builtins.list[tuple[StoredMemory, float, float, bool]],
-        traces: builtins.dict[str, partial[RetrievalCandidateTrace]] | None,
-    ) -> builtins.list[tuple[StoredMemory, float, float, bool]]:
+        ranked: list[tuple[StoredMemory, float, float, bool]],
+        traces: dict[str, partial[RetrievalCandidateTrace]] | None,
+    ) -> list[tuple[StoredMemory, float, float, bool]]:
         """Score authoritative candidates in supported modalities without changing gates."""
         reranker = self._backends.reranker
         if reranker is None:
@@ -822,7 +794,7 @@ class Retrieval(Traced):
             documents = self._store.index.read_memory_index_documents(
                 tuple(memory.memory_id for memory in visual)
             )
-        by_memory: builtins.dict[str, builtins.list[StoredEmbedding]] = {}
+        by_memory: dict[str, list[StoredEmbedding]] = {}
         for document in documents:
             embedding = document.embedding
             if embedding.space_id == self._backends.space_id and embedding.task == DOCUMENT_TASK:
@@ -834,7 +806,7 @@ class Retrieval(Traced):
                 memory, by_memory.get(memory.memory_id, ())
             )
         )
-        result: builtins.list[VisualRetrievalMatch] = []
+        result: list[VisualRetrievalMatch] = []
         for query_id, query in queries:
             scores = max_cosine_scores(
                 (query,), ((embedding.embedding_id, embedding.values) for _, _, embedding in parts)
@@ -873,9 +845,10 @@ class Retrieval(Traced):
         self,
         vectors: Sequence[Sequence[float]],
         *,
+        query_text: str = "",
         lexical_queries: Sequence[str],
         limit: int,
-        memory_types: frozenset[MemoryType] | None,
+        memory_types: frozenset[MemoryCategory] | None,
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         place_id: str | None = None,
@@ -883,93 +856,43 @@ class Retrieval(Traced):
         retrieval_mode: RetrievalMode = RetrievalMode.HYBRID,
         preferred_range: tuple[datetime, datetime] | None = None,
     ) -> IndexCandidates:
-        # The index filter takes one type, so a set becomes one route per type rather than a
-        # post-filter over a shared window. Each type then gets the full `limit` of depth, which
-        # is what lets a request for a rare type reach records a common type outranks.
-        type_values: tuple[str | None, ...] = (
-            (None,)
-            if memory_types is None
-            else tuple(sorted(memory_type.value for memory_type in memory_types))
+        request = CandidateRequest(
+            query_text=query_text,
+            vectors=tuple(tuple(vector) for vector in vectors),
+            lexical_queries=tuple(lexical_queries),
+            limit=limit,
+            max_routes=max(
+                # Independent sources may split or stage routes without copying the default
+                # route count; every pass still has a finite native-read budget.
+                32,
+                (len(vectors) + len(lexical_queries))
+                * (1 if memory_types is None else len(memory_types))
+                * (1 if preferred_range is None else 2),
+            ),
+            mode=retrieval_mode,
+            memory_types=memory_types,
+            occurred_from=occurred_from,
+            occurred_until=occurred_until,
+            preferred_range=preferred_range,
         )
-        ranges = (
-            ((occurred_from, occurred_until),)
-            if preferred_range is None
-            else (
-                preferred_range,
-                (occurred_from, occurred_until),
-            )
-        )
-        calls: list[Callable[[], tuple[IndexHit, ...]]] = []
-        sizes = []
-        for occurred_from, occurred_until in ranges:
-            dense_calls = tuple(
-                partial(
-                    self._index.search,
-                    vector,
-                    limit=limit,
-                    space_id=self._backends.space_id,
-                    task=DOCUMENT_TASK,
-                    memory_type=value,
-                    occurred_from=occurred_from,
-                    occurred_until=occurred_until,
-                    place_id=place_id,
-                    identity_id=identity_id,
-                )
-                for value in type_values
-                for vector in vectors
-                if retrieval_mode is not RetrievalMode.LEXICAL
-            )
-            lexical_calls = (
-                tuple(
-                    partial(
-                        self._index.lexical_search,
-                        query,
-                        limit=limit,
-                        space_id=self._backends.space_id,
-                        task=DOCUMENT_TASK,
-                        memory_type=value,
-                        occurred_from=occurred_from,
-                        occurred_until=occurred_until,
-                        place_id=place_id,
-                        identity_id=identity_id,
-                    )
-                    for value in type_values
-                    for query in lexical_queries
-                )
-                if retrieval_mode is not RetrievalMode.DENSE
-                else ()
-            )
-            sizes.append((len(dense_calls), len(lexical_calls)))
-            calls.extend((*dense_calls, *lexical_calls))
-        with self._trace("sensemem.index.search", kind="stage") as span:
-            span.set_attribute("sensemem.index.route_count", len(calls))
-            if not calls:
-                return IndexCandidates(dense=(), lexical=(), exhausted=True)
-            routes = self._execution.index_routes(calls)
-        groups = []
-        offset = 0
-        for dense_count, lexical_count in sizes:
-            dense_routes = routes[offset : offset + dense_count]
-            offset += dense_count
-            lexical_routes = routes[offset : offset + lexical_count]
-            offset += lexical_count
-            groups.append(
-                IndexCandidates(
-                    dense=merge_index_hits(*dense_routes),
-                    lexical=merge_lexical_routes(lexical_routes),
-                    exhausted=all(len(route) < limit for route in (*dense_routes, *lexical_routes)),
-                )
-            )
-        if len(groups) == 1:
-            return groups[0]
-        preferred, fallback = groups
-        return IndexCandidates(
-            dense=merge_index_hits(preferred.dense, fallback.dense),
-            lexical=merge_temporal_lexical_hits(preferred.lexical, fallback.lexical),
-            exhausted=preferred.exhausted and fallback.exhausted,
+        return self._candidates.search(
+            request,
+            place_id=place_id,
+            identity_id=identity_id,
         )
 
-    def note_query_failure(self, text: str, *, failed: bool) -> None:
+    def note_query_failure(
+        self,
+        text: str,
+        *,
+        failed: bool,
+        memory_types: frozenset[MemoryCategory] | None = None,
+        scope: RetrievalScope | None = None,
+        reference_at: datetime | None = None,
+        occurred_from: datetime | None = None,
+        occurred_until: datetime | None = None,
+        operation: Literal["search", "compile", "ask"] = "search",
+    ) -> None:
         """Record one empty recall, which is the whole of the QUERY_FAILURE signal.
 
         The stored query is the owner's own words about their own memory, in their own memory
@@ -983,10 +906,20 @@ class Retrieval(Traced):
         normalized = _QUERY_SPACE.sub(" ", _QUERY_NOISE.sub(" ", folded)).strip()
         if not normalized:
             return
+        failure = QueryFailure(
+            query=text,
+            operation=operation,
+            memory_types=None if memory_types is None else tuple(sorted(memory_types)),
+            scope=scope,
+            reference_at=reference_at,
+            occurred_from=occurred_from,
+            occurred_until=occurred_until,
+        )
         with self._write_lock, translate_storage_errors("record a query failure"):
             self._store.control.record_query_failure(
                 text,
-                normalized,
+                query_failure_key(failure),
                 failed_at=datetime.now(timezone.utc),
                 keep=self._settings.query_failure_history,
+                context_json=dump_query_failure(failure),
             )

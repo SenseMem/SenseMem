@@ -24,11 +24,12 @@ from mcp import Client
 from sensemem import (
     ConsolidationReport,
     Memory,
-    MemoryConfig,
     MemoryOperation,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
     ModelError,
+    QueryFailure,
     ValidationError,
 )
 from sensemem.api.app import create_app
@@ -51,6 +52,7 @@ class _RecordingConsolidator(CueConsolidator):
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.triggers.append(trigger)
         return super().consolidate(evidence, trigger=trigger)
@@ -66,7 +68,7 @@ def _memory(tmp_path: Path, consolidator: object | None) -> Memory:
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=consolidator,  # type: ignore[arg-type]
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     )
 
 
@@ -131,6 +133,7 @@ class _SlowConsolidator(CueConsolidator):
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.started = True
         time.sleep(0.5)

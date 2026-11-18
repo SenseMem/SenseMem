@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import math
 import os
 from collections.abc import Callable, Iterator, Sequence
@@ -13,14 +12,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Condition, Thread
 
+from sensemem._capacity import Capacity
 from sensemem.exceptions import ModelError, StorageError, ValidationError
-from sensemem.infrastructure.local._capacity import Capacity
+from sensemem.identity import FaceObservation, SpeakerSegment
 from sensemem.infrastructure.local.assets import AssetStoreError
 from sensemem.infrastructure.local.store import SpeechPlan, StoredAsset
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.models.base import SpeechAnalysis
-from sensemem.perception import VisualDescription
-from sensemem.types import FaceObservation, SpeakerSegment
+from sensemem.perception import SpeechAnalysis, VisualDescription
+from sensemem.processing import StageResult
 
 _PROCESS_OPERATIONS = Capacity(128)
 _PROCESS_MODELS = Capacity(28)
@@ -29,8 +28,8 @@ _PROCESS_PAYLOAD = Capacity(512 * 1024 * 1024)
 
 @dataclass(slots=True)
 class OperationAssets:
-    leased: builtins.list[StoredAsset]
-    cleanup: builtins.list[StoredAsset]
+    leased: list[StoredAsset]
+    cleanup: list[StoredAsset]
     persisted: set[str]
     transcripts: dict[str, str]
     transcript_updates: dict[str, str]
@@ -39,11 +38,12 @@ class OperationAssets:
     face_observations: dict[str, tuple[FaceObservation, ...]]
     descriptions: dict[str, VisualDescription]
     query_descriptions: dict[str, VisualDescription | ModelError]
-    # Identity ID -> the name a caption's facts stated for that diarised speaker. Staged rather
+    # Identity ID -> inferred name and the source assets whose captions stated it. Staged rather
     # than applied on the spot: the naming assertion reindexes every memory that mentions the
     # person, and this write's own memory does not exist until it commits.
-    speaker_names: dict[str, str]
+    speaker_names: dict[str, tuple[str, set[str]]]
     speech_plans: list[SpeechPlan] = field(default_factory=list)
+    stage_results: dict[tuple[str, str, str], StageResult] = field(default_factory=dict)
     payload_bytes: int = 0
     # A naming fact that named nobody: a label no recognizer in this clip produced, an identity
     # that no longer exists by binding time, or a name that failed validation. Counted rather
@@ -271,7 +271,7 @@ class Lifecycle:
     def lease_assets(
         self,
         assets: Sequence[StoredAsset],
-        leased: builtins.list[StoredAsset],
+        leased: list[StoredAsset],
     ) -> None:
         unique = tuple({asset.asset_id: asset for asset in assets}.values())
         if not unique:

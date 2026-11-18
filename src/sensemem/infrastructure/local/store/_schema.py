@@ -7,7 +7,7 @@ import sqlite3
 from sensemem.infrastructure.local.store._codec import row_text
 from sensemem.infrastructure.local.store.errors import UnsupportedSchemaError
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 25
 
 
 REQUIRED_TABLES = frozenset(
@@ -24,7 +24,7 @@ REQUIRED_TABLES = frozenset(
         "identities",
         "identity_aliases",
         "identity_exemplars",
-        "identity_link_evidence",
+        "identity_rejections",
         "speech_analyses",
         "speech_segments",
         "visual_descriptions",
@@ -77,8 +77,6 @@ _TEXT_SELECTOR_SCHEMA = """
           REFERENCES embedding_text_selectors (embedding_id, selector_position) ON DELETE CASCADE
     );
 
-    CREATE INDEX embedding_text_span_pieces_embedding_idx
-        ON embedding_text_span_pieces (embedding_id, selector_position, piece_position);
 """
 
 
@@ -135,18 +133,14 @@ END;
 """
 
 
-_IDENTITY_LINK_EVIDENCE_SCHEMA = """
-CREATE TABLE identity_link_evidence (
-    voice_id TEXT NOT NULL REFERENCES identities (identity_id) ON DELETE CASCADE,
-    face_id TEXT NOT NULL REFERENCES identities (identity_id) ON DELETE CASCADE,
-    asset_id TEXT NOT NULL REFERENCES media_assets (asset_id) ON DELETE CASCADE,
+_IDENTITY_REJECTIONS_SCHEMA = """
+CREATE TABLE identity_rejections (
+    first_id TEXT NOT NULL REFERENCES identities (identity_id) ON DELETE CASCADE,
+    second_id TEXT NOT NULL REFERENCES identities (identity_id) ON DELETE CASCADE,
     created_at TEXT NOT NULL,
-    PRIMARY KEY (voice_id, face_id, asset_id)
+    PRIMARY KEY (first_id, second_id),
+    CHECK (first_id < second_id)
 );
-
-CREATE INDEX identity_link_evidence_face_idx ON identity_link_evidence (face_id);
-
-CREATE INDEX identity_link_evidence_asset_idx ON identity_link_evidence (asset_id);
 """
 
 
@@ -171,7 +165,7 @@ CREATE TABLE identity_aliases (
 
 CREATE INDEX identity_aliases_identity_idx ON identity_aliases (identity_id);
 
-{_IDENTITY_LINK_EVIDENCE_SCHEMA}
+{_IDENTITY_REJECTIONS_SCHEMA}
 
 CREATE TABLE identity_exemplars (
     identity_id TEXT NOT NULL REFERENCES identities (identity_id) ON DELETE CASCADE,
@@ -265,6 +259,14 @@ CREATE TABLE memory_semantics (
     ),
     valence REAL CHECK (valence IS NULL OR (valence >= -1.0 AND valence <= 1.0)),
     arousal REAL CHECK (arousal IS NULL OR (arousal >= 0.0 AND arousal <= 1.0)),
+    affect_id TEXT,
+    affect_role TEXT,
+    affect_object_memory_id TEXT,
+    affect_object_identity_id TEXT,
+    affect_polarity TEXT,
+    affect_witnesses_json TEXT NOT NULL DEFAULT '[]' CHECK (
+        json_valid(affect_witnesses_json) AND json_type(affect_witnesses_json) = 'array'
+    ),
     spatial_frame_id TEXT,
     spatial_anchor TEXT CHECK (
         spatial_anchor IS NULL OR spatial_anchor IN ('observer', 'subject')
@@ -278,6 +280,19 @@ CREATE TABLE memory_semantics (
     spatial_qw REAL,
     spatial_uncertainty_m REAL CHECK (
         spatial_uncertainty_m IS NULL OR spatial_uncertainty_m >= 0.0
+    ),
+    CHECK (
+        (affect_id IS NULL AND affect_role IS NULL
+         AND affect_object_memory_id IS NULL AND affect_object_identity_id IS NULL
+         AND affect_polarity IS NULL AND (kind = 'affect' OR affect_witnesses_json = '[]'))
+        OR
+        (kind = 'relation' AND affect_id IS NOT NULL AND length(trim(affect_id)) > 0
+         AND affect_role IS NOT NULL AND affect_role IN ('target', 'elicitor')
+         AND affect_polarity IS NOT NULL AND affect_polarity IN ('affirmed', 'denied')
+         AND ((affect_object_memory_id IS NOT NULL AND affect_object_identity_id IS NULL
+               AND length(trim(affect_object_memory_id)) > 0)
+              OR (affect_object_memory_id IS NULL AND affect_object_identity_id IS NOT NULL
+                  AND length(trim(affect_object_identity_id)) > 0)))
     ),
     CHECK (
         (spatial_frame_id IS NULL AND spatial_anchor IS NULL
@@ -294,6 +309,13 @@ CREATE INDEX memory_semantics_spatial_idx
     ON memory_semantics (spatial_frame_id, spatial_anchor, memory_id);
 CREATE INDEX memory_semantics_identity_idx
     ON memory_semantics (identity_id, memory_id);
+CREATE INDEX memory_semantics_affect_link_idx
+    ON memory_semantics (
+        affect_id, affect_role, affect_object_memory_id, affect_object_identity_id, memory_id
+    ) WHERE affect_id IS NOT NULL;
+CREATE INDEX memory_semantics_affect_identity_idx
+    ON memory_semantics (affect_object_identity_id, memory_id)
+    WHERE affect_object_identity_id IS NOT NULL;
 
 CREATE TABLE memory_versions (
     memory_id TEXT NOT NULL REFERENCES memory_semantics (memory_id) ON DELETE CASCADE,
@@ -419,6 +441,14 @@ _CONTROL_SCHEMA = """
     CREATE UNIQUE INDEX memory_operations_active_key_idx
         ON memory_operations (operation_key)
         WHERE rolled_back_at IS NULL;
+
+    CREATE INDEX memory_operations_retained_sources_idx
+        ON memory_operations (applied_at)
+        WHERE intent = 'consolidate' AND rolled_back_at IS NULL;
+
+    CREATE INDEX memory_operations_active_intent_idx
+        ON memory_operations (intent, operation_id)
+        WHERE rolled_back_at IS NULL;
 """
 
 
@@ -435,6 +465,7 @@ _SCHEDULER_SCHEMA = """
 CREATE TABLE memory_deliberations (
     deliberation_id INTEGER PRIMARY KEY AUTOINCREMENT,
     trigger TEXT NOT NULL CHECK (length(trim(trigger)) > 0),
+    query_failure_key TEXT,
     weighed_at TEXT NOT NULL,
     proposed INTEGER NOT NULL CHECK (proposed >= 0),
     applied INTEGER NOT NULL CHECK (applied >= 0),
@@ -454,6 +485,7 @@ CREATE INDEX memory_deliberation_memories_memory_idx
 CREATE TABLE query_failures (
     failure_id INTEGER PRIMARY KEY AUTOINCREMENT,
     query TEXT NOT NULL CHECK (length(trim(query)) > 0),
+    context_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(context_json)),
     normalized TEXT NOT NULL CHECK (length(normalized) > 0),
     failed_at TEXT NOT NULL
 );
@@ -511,6 +543,7 @@ BEGIN IMMEDIATE;
 CREATE TABLE memory_records (
     memory_id TEXT PRIMARY KEY,
     content TEXT NOT NULL,
+    parts_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(parts_json)),
     modality TEXT NOT NULL CHECK (modality IN ('text', 'image', 'video', 'audio', 'omni')),
     memory_type TEXT NOT NULL DEFAULT 'semantic'
         CHECK (memory_type IN ('semantic', 'episodic', 'procedural')),
@@ -570,9 +603,6 @@ CREATE TABLE search_index_queue (
     enqueued_at TEXT NOT NULL
 );
 
-CREATE INDEX search_index_queue_order_idx
-    ON search_index_queue (operation_id);
-
 {_SCHEDULER_SCHEMA}
 
 {_INDEX_TRIGGERS}
@@ -611,191 +641,3 @@ def create_schema(
         if connection.in_transaction:
             connection.rollback()
         raise
-
-
-def validate_text_selector_schema(connection: sqlite3.Connection) -> None:
-    """Reject a partial or incompatible selector projection before opening the store."""
-    expected_columns = {
-        "embedding_text_selectors": (
-            ("embedding_id", "TEXT", 1, 1),
-            ("selector_position", "INTEGER", 1, 2),
-            ("parent_content_sha256", "TEXT", 1, 0),
-            ("embedding_input_sha256", "TEXT", 1, 0),
-            ("recipe_version", "TEXT", 1, 0),
-        ),
-        "embedding_text_span_pieces": (
-            ("embedding_id", "TEXT", 1, 1),
-            ("selector_position", "INTEGER", 1, 2),
-            ("piece_position", "INTEGER", 1, 3),
-            ("role", "TEXT", 1, 0),
-            ("start_codepoint", "INTEGER", 1, 0),
-            ("end_codepoint", "INTEGER", 1, 0),
-            ("piece_sha256", "TEXT", 1, 0),
-        ),
-    }
-    for table, expected in expected_columns.items():
-        actual = tuple(
-            (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5]))
-            for row in connection.execute(f"PRAGMA table_info({table})")
-        )
-        if actual != expected:
-            raise UnsupportedSchemaError(f"local schema has an invalid {table} table")
-
-    selector_foreign_keys = tuple(
-        tuple(row[index] for index in range(8))
-        for row in connection.execute("PRAGMA foreign_key_list(embedding_text_selectors)")
-    )
-    if selector_foreign_keys != (
-        (0, 0, "embeddings", "embedding_id", "embedding_id", "NO ACTION", "CASCADE", "NONE"),
-    ):
-        raise UnsupportedSchemaError(
-            "local schema has invalid foreign keys on embedding_text_selectors"
-        )
-    piece_foreign_keys = tuple(
-        tuple(row[index] for index in range(8))
-        for row in connection.execute("PRAGMA foreign_key_list(embedding_text_span_pieces)")
-    )
-    if piece_foreign_keys != (
-        (
-            0,
-            0,
-            "embedding_text_selectors",
-            "embedding_id",
-            "embedding_id",
-            "NO ACTION",
-            "CASCADE",
-            "NONE",
-        ),
-        (
-            0,
-            1,
-            "embedding_text_selectors",
-            "selector_position",
-            "selector_position",
-            "NO ACTION",
-            "CASCADE",
-            "NONE",
-        ),
-    ):
-        raise UnsupportedSchemaError(
-            "local schema has invalid foreign keys on embedding_text_span_pieces"
-        )
-
-    indexes = {
-        str(row[1]): (bool(row[2]), str(row[3]), bool(row[4]))
-        for row in connection.execute("PRAGMA index_list(embedding_text_span_pieces)")
-        if row[1] is not None
-    }
-    if indexes.get("embedding_text_span_pieces_embedding_idx") != (False, "c", False):
-        raise UnsupportedSchemaError(
-            "local schema has invalid indexes on embedding_text_span_pieces"
-        )
-    index_columns = tuple(
-        str(row[2])
-        for row in connection.execute("PRAGMA index_info(embedding_text_span_pieces_embedding_idx)")
-    )
-    if index_columns != ("embedding_id", "selector_position", "piece_position"):
-        raise UnsupportedSchemaError(
-            "local schema has invalid indexes on embedding_text_span_pieces"
-        )
-
-    required_checks = {
-        "embedding_text_selectors": (
-            "check (selector_position >= 0)",
-            "check ( length(parent_content_sha256) = 64 and parent_content_sha256 not glob '*[^0-9a-f]*' )",
-            "check ( length(embedding_input_sha256) = 64 and embedding_input_sha256 not glob '*[^0-9a-f]*' )",
-            "check (length(trim(recipe_version)) > 0)",
-        ),
-        "embedding_text_span_pieces": (
-            "check (piece_position >= 0)",
-            "check (role in ('context', 'body'))",
-            "check (start_codepoint >= 0)",
-            "check (end_codepoint > start_codepoint)",
-            "check ( length(piece_sha256) = 64 and piece_sha256 not glob '*[^0-9a-f]*' )",
-        ),
-    }
-    for table, checks in required_checks.items():
-        row = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        sql = "" if row is None or row[0] is None else " ".join(str(row[0]).lower().split())
-        if any(" ".join(check.lower().split()) not in sql for check in checks):
-            raise UnsupportedSchemaError(f"local schema has invalid checks on {table}")
-
-
-def validate_evidence_clause_schema(connection: sqlite3.Connection) -> None:
-    """Reject incomplete or incompatible support tables before opening the store."""
-    expected_columns = {
-        "memory_evidence_clauses": (
-            "memory_id",
-            "clause_id",
-            "member_count",
-            "confidence",
-            "recorded_at",
-            "retired_at",
-        ),
-        "memory_evidence_clause_members": (
-            "memory_id",
-            "clause_id",
-            "source_memory_id",
-            "position",
-        ),
-        "memory_evidence_clause_versions": (
-            "memory_id",
-            "clause_id",
-            "version",
-            "confidence",
-            "recorded_at",
-            "retired_at",
-            "restores_version",
-        ),
-    }
-    for table, expected in expected_columns.items():
-        info = connection.execute(f"PRAGMA table_info({table})").fetchall()
-        actual = tuple(str(row[1]) for row in info)
-        if actual != expected:
-            raise UnsupportedSchemaError(f"local schema has an invalid {table} table")
-        expected_primary_key = {
-            "memory_evidence_clauses": (1, 2, 0, 0, 0, 0),
-            "memory_evidence_clause_members": (1, 2, 3, 0),
-            "memory_evidence_clause_versions": (1, 2, 3, 0, 0, 0, 0),
-        }[table]
-        if tuple(int(row[5]) for row in info) != expected_primary_key:
-            raise UnsupportedSchemaError(f"local schema has an invalid {table} primary key")
-
-    member_foreign_keys = connection.execute(
-        "PRAGMA foreign_key_list(memory_evidence_clause_members)"
-    ).fetchall()
-    version_foreign_keys = connection.execute(
-        "PRAGMA foreign_key_list(memory_evidence_clause_versions)"
-    ).fetchall()
-    for table, rows in (
-        ("memory_evidence_clause_members", member_foreign_keys),
-        ("memory_evidence_clause_versions", version_foreign_keys),
-    ):
-        target_pairs = {(str(row[3]), str(row[4])) for row in rows}
-        if {str(row[2]) for row in rows} != {"memory_evidence_clauses"} or target_pairs != {
-            ("memory_id", "memory_id"),
-            ("clause_id", "clause_id"),
-        }:
-            raise UnsupportedSchemaError(f"local schema has invalid foreign keys on {table}")
-    if any(str(row[3]) == "source_memory_id" for row in member_foreign_keys):
-        raise UnsupportedSchemaError("local schema must not cascade evidence clause source members")
-    expected_indexes = {
-        "memory_evidence_clauses": {"memory_evidence_clauses_current_idx": (False, False)},
-        "memory_evidence_clause_members": {
-            "memory_evidence_clause_members_source_idx": (False, False)
-        },
-        "memory_evidence_clause_versions": {
-            "memory_evidence_clause_versions_current_idx": (True, True)
-        },
-    }
-    for table, expected_index_shapes in expected_indexes.items():
-        indexes = {
-            str(row[1]): (bool(row[2]), bool(row[4]))
-            for row in connection.execute(f"PRAGMA index_list({table})")
-            if row[1] is not None
-        }
-        if any(indexes.get(name) != shape for name, shape in expected_index_shapes.items()):
-            raise UnsupportedSchemaError(f"local schema has invalid indexes on {table}")

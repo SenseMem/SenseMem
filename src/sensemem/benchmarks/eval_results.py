@@ -17,9 +17,9 @@ from sensemem import (
     AnswerPolicy,
     SenseMemError,
 )
-from sensemem.benchmarks.eval_cache import EvidenceInterval
+from sensemem.benchmarks.eval_evidence import EvidenceInterval
 
-EVAL_SCHEMA_VERSION = 23
+EVAL_SCHEMA_VERSION = 25
 DEFAULT_ARM = "sensemem"
 
 
@@ -125,19 +125,18 @@ def _transient_provider_failure(error: BaseException) -> bool:
     """Recognize a provider failure that time, not a different request, resolves."""
     try:
         import openai
-    except ImportError:  # pragma: no cover - every provider path imports the SDK first
-        transient: tuple[type[BaseException], ...] = ()
-        rate_limited: type[BaseException] | None = None
-    else:
-        transient = (openai.APIConnectionError, openai.InternalServerError)
-        rate_limited = openai.RateLimitError
+    except ImportError:
+        return any(
+            isinstance(current, SenseMemError) and current.reason in _TRANSIENT_REASONS
+            for current in _exception_chain(error)
+        )
     for current in _exception_chain(error):
         if isinstance(current, SenseMemError) and current.reason in _TRANSIENT_REASONS:
             return True
-        if rate_limited is not None and isinstance(current, rate_limited):
+        if isinstance(current, openai.RateLimitError):
             # Exhausted billing is a 429 too, and waiting never refills it.
-            return getattr(current, "code", None) != "insufficient_quota"
-        if isinstance(current, transient):
+            return current.code != "insufficient_quota"
+        if isinstance(current, (openai.APIConnectionError, openai.InternalServerError)):
             return True
     return False
 
@@ -219,6 +218,9 @@ class SampleResult:
     # full parent had been delivered.
     excerpt_source_ids: tuple[str, ...] = ()
     excerpt_evidence: tuple[EvidenceInterval, ...] = ()
+    # Text-only deliveries never certify inspection of native media or complete support.
+    projection_source_ids: tuple[str, ...] = ()
+    projection_evidence: tuple[EvidenceInterval, ...] = ()
     ref_at_300: float | None = None
     metrics: Mapping[str, float] = field(default_factory=dict)
     scorer_protocol: str | None = None
@@ -279,6 +281,8 @@ class SampleResult:
             "evidence": tuple(item.json() for item in self.evidence),
             "excerpt_source_ids": self.excerpt_source_ids,
             "excerpt_evidence": tuple(item.json() for item in self.excerpt_evidence),
+            "projection_source_ids": self.projection_source_ids,
+            "projection_evidence": tuple(item.json() for item in self.projection_evidence),
             "ref_at_300": self.ref_at_300,
             "metrics": dict(self.metrics),
             "scorer_protocol": self.scorer_protocol,
@@ -336,6 +340,8 @@ class _AnswerOutcome:
     compiled_items: int | None = None
     excerpt_source_ids: tuple[str, ...] = ()
     excerpt_evidence: tuple[EvidenceInterval, ...] = ()
+    projection_source_ids: tuple[str, ...] = ()
+    projection_evidence: tuple[EvidenceInterval, ...] = ()
     generation_evidence: tuple[EvidenceInterval, ...] | None = None
     trace_id: str | None = None
     answer_span_id: str | None = None
@@ -361,14 +367,8 @@ def _error_code(error: BaseException) -> str:
 
 
 def _failure_detail(error: BaseException, *, source_id: str | None = None) -> FailureDetail:
-    cause = error.__cause__ or error.__context__
-    seen = {id(error)}
-    while cause is not None and id(cause) not in seen:
-        seen.add(id(cause))
-        next_cause = cause.__cause__ or cause.__context__
-        if next_cause is None:
-            break
-        cause = next_cause
+    chain = _exception_chain(error)
+    cause = chain[-1] if len(chain) > 1 else None
     return FailureDetail(
         source_id=source_id,
         code=_error_code(error),

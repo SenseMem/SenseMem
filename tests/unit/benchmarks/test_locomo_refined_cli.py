@@ -12,7 +12,7 @@ from typing import ClassVar, cast
 
 import pytest
 
-from sensemem import AnswerResult, AsyncMemory, MemoryRecord, SearchHit, SenseMemConfig
+from sensemem import AnswerResult, AsyncMemory, MemoryRecord, MemorySpec, SearchHit
 from sensemem.benchmarks import locomo_refined_cli
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.locomo_refined import (
@@ -22,6 +22,7 @@ from sensemem.benchmarks.locomo_refined import (
 )
 from sensemem.benchmarks.locomo_refined_cli import _Arguments
 from sensemem.benchmarks.locomo_refined_runner import LoCoMoRefinedPrediction
+from sensemem.configuration import OpenAIGenerationConfig
 
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -101,7 +102,7 @@ class _FakePool:
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.closed = False
-        self.config = cast(SenseMemConfig, _kwargs["memory_config"])
+        self.config = cast(MemorySpec, _kwargs["memory_config"])
         self.instances.append(self)
 
     def memory(self, data_dir: Path) -> _FakeAsyncMemory:
@@ -125,7 +126,7 @@ async def test_environment_generation_controls_reach_the_configured_backend(
     await locomo_refined_cli._run_conversations(arguments, (_conversation("sample"),), run)
 
     generation = _FakePool.instances[0].config.generation
-    assert generation is not None and generation.api_key is not None
+    assert isinstance(generation, OpenAIGenerationConfig) and generation.api_key is not None
     assert generation.model == "configured-model"
     assert generation.api_key.get_secret_value() == "fixture-environment-key"
     assert generation.seed == 0 and generation.temperature == 0.0

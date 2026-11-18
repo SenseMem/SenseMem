@@ -20,13 +20,16 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     GenerationRouter,
+    IdentityChange,
     Memory,
-    MemoryConfig,
-    MemoryKind,
+    MemoryIntent,
     MemoryNotFoundError,
+    MemoryOperation,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
+    RecordKind,
     RetrievalMode,
     SentenceTransformersEmbedder,
     SpeakerEmbedding,
@@ -51,7 +54,7 @@ def test_lexical_media_query_uses_the_same_transcript_as_ingestion(
         embedder=Embedder(ALL) if native else Embedder(),
         transcriber=_FakeSpeech() if diarized else Transcriber(),
         answerer=Answerer(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.LEXICAL, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -71,7 +74,7 @@ def test_router_uses_stored_captions_when_the_perception_plugin_is_not_loaded(
         tmp_path,
         embedder=Embedder(ALL),
         answerer=GenerationRouter((reader,)),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         assert memory.ask("ALPHA-947").hits[0].id == source.id
         assert "registration desk" in reader.evidence[0][0].content
@@ -82,16 +85,16 @@ def test_router_uses_stored_captions_when_the_perception_plugin_is_not_loaded(
 def test_unplugged_speech_keeps_derived_evidence_and_recipe_guards(
     tmp_path: Path, diarized: bool
 ) -> None:
-    settings = MemoryConfig(minimum_relevance=0, ambiguity_margin=0)
+    settings = MemorySettings(minimum_relevance=0, ambiguity_margin=0)
     with Memory(
         tmp_path,
         embedder=Embedder(ALL),
         transcriber=_FakeSpeech() if diarized else Transcriber(),
-        config=settings,
+        settings=settings,
     ) as memory:
         source = memory.add(Blob(b"speech", "audio/wav"))
         identity_id = memory.perceive(source.id).speech[0].speaker_id if diarized else None
-    with Memory(tmp_path, embedder=Embedder(ALL), answerer=Answerer(), config=settings) as memory:
+    with Memory(tmp_path, embedder=Embedder(ALL), answerer=Answerer(), settings=settings) as memory:
         assert not memory.capabilities.transcription
         assert memory.get(source.id) == source
         assert memory.search("red wrench" if diarized else "ALPHA-947").hits[0].id == source.id
@@ -111,7 +114,7 @@ def test_unplugged_speech_keeps_derived_evidence_and_recipe_guards(
         tmp_path,
         embedder=Embedder(ALL),
         transcriber=_FakeSpeech() if diarized else Transcriber(),
-        config=settings,
+        settings=settings,
     ) as memory:
         assert memory.get(source.id).assets == source.assets
 
@@ -125,7 +128,7 @@ def test_lexical_visual_query_prepares_text_even_for_a_native_embedder(
         tmp_path,
         embedder=Embedder(ALL),
         vision_describer=Describer(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.LEXICAL, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -148,7 +151,7 @@ def test_partial_visual_derivation_does_not_hide_another_missing_asset(tmp_path:
         embedder=Embedder(ALL),
         vision_describer=describer,
         answerer=Answerer(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         first, second = Blob(b"first", "image/png"), Blob(b"second", "image/png")
         memory.add(first)
@@ -184,7 +187,7 @@ def test_atomic_query_routing_retains_all_text_parts(tmp_path: Path) -> None:
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0.8, ambiguity_margin=0
         ),
     ) as memory:
@@ -226,7 +229,7 @@ def test_naming_reindexes_concurrent_speech_without_blocking_search(
         tmp_path,
         embedder=Blocking(ALL),
         transcriber=_FakeSpeech(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             independent_evidence=independent, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:
@@ -303,20 +306,30 @@ def test_identity_link_reindex_keeps_unrelated_search_available(tmp_path: Path) 
         transcriber=_FakeSpeech(),
         face_analyzer=Faces(),
         answerer=RecordingAnswerer(ALL),
-        config=MemoryConfig(identity_link_min_assets=1, minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add(("ALPHA-947", Blob(b"face", "image/png")))
         memory.ask("ALPHA-947")
         voice = memory.add(("ALPHA-947", Blob(b"voice and face", "video/mp4")))
+        perceived = memory.perceive(voice.id)
+        face_id = perceived.faces[0].identity_id
+        voice_id = perceived.speech[0].speaker_id
+        assert voice_id is not None
         embedder.armed = True
         with ThreadPoolExecutor(max_workers=2) as pool:
-            linking = pool.submit(memory.ask, "ALPHA-947", limit=10)
+            linking = pool.submit(
+                memory.apply,
+                MemoryOperation(
+                    intent=MemoryIntent.MERGE,
+                    identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+                ),
+            )
             try:
                 assert entered.wait(5)
                 assert pool.submit(memory.search, "ALPHA-947").result(timeout=5).hits
             finally:
                 release.set()
-            assert linking.result(timeout=10).answer
+            assert linking.result(timeout=10).operation.intent is MemoryIntent.MERGE
         assert (
             memory.perceive(voice.id, kinds=frozenset({"speech"})).speech[0].speaker_id
             == memory.perceive(voice.id).faces[0].identity_id
@@ -330,7 +343,7 @@ def test_unrelated_audio_fallback_does_not_describe_native_query_images(tmp_path
         embedder=Embedder(frozenset({Modality.TEXT, Modality.IMAGE})),
         transcriber=Transcriber(),
         vision_describer=describer,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947")
         assert memory.search(
@@ -351,7 +364,7 @@ def test_video_question_keeps_both_speech_and_visual_representations(tmp_path: P
         transcriber=Words(),
         vision_describer=Describer(),
         answerer=reader,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947")
         assert memory.ask(("ALPHA-947", Blob(b"video", "video/mp4"))).answer
@@ -388,7 +401,7 @@ def test_perception_capture_formation_recall_and_deletion_share_one_source(tmp_p
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="The registration desk code is ALPHA-947",
                         subject="registration desk",
                         predicate="code",
@@ -409,14 +422,14 @@ def test_perception_capture_formation_recall_and_deletion_share_one_source(tmp_p
         vision_describer=Describer(),
         former=Former(),
         answerer=Answerer(),
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         source = memory.capture((Blob(b"image", "image/png"), Blob(b"speech", "audio/wav")))
         assert memory.settle(memory_ids=(source.id,)) == 1
         formed = next(
             record
             for record in memory.list().items
-            if record.context is not None and record.context.kind is MemoryKind.STATE
+            if record.context is not None and record.context.kind is RecordKind.STATE
         )
         assert formed.context is not None and formed.context.evidence_ids == (source.id,)
         hits = memory.search(Blob(b"query", "image/png")).hits

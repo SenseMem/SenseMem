@@ -54,27 +54,82 @@ compile(
     reference_at: datetime | None = None,
     scope: RetrievalScope | None = None,
     allow_partial_sources: bool = False,
+    supplements: Sequence[ContextSupplement] = (),
 ) -> ContextBundle
 ```
 
-Compilation makes one retrieval round with candidate depth `max(100, 3 * budget.max_items)`,
+Compilation starts with one retrieval round with candidate depth `max(100, 3 * budget.max_items)`,
 tripled when `min_confidence` or `freshness` is set. Each requested memory type gets its own
 index route; selecting every type uses the unfiltered route. Confidence and freshness filter
 the returned window. Scope, relative time, and authoritative SQLite visibility match search.
 
-Compilation uses one retrieval round and preserves conflicts for the host to resolve. It runs
-without answer generation, recall planning, or linked evidence expansion. Spoken-query preparation
+Compilation preserves conflicts for the host to resolve and never generates an answer.
+By default it uses only the original retrieval round. Spoken-query preparation
 may cache a transcript; an empty bundle records a bounded query-failure signal. Neither creates
 a memory record. Counts describe the candidate window, and a full window that still loses
 evidence reports `candidates_exhausted`.
+
+### Temporary context from an application or agent
+
+Pass completed tool results or agent observations as `ContextSupplement` values. They are
+request-local evidence with an explicit source, not memory records or instructions. Compilation
+does not embed, form, or persist them:
+
+```python
+from sensemem import ContextBudget, ContextSupplement
+
+bundle = memory.compile(
+    "What should I bring?",
+    budget=ContextBudget(max_chars=4000, max_items=8),
+    supplements=(ContextSupplement("Rain is forecast this afternoon.", source="weather-tool"),),
+)
+print(bundle.render())
+```
+
+The host decides whether and when to run its agent. An async supplier can use
+[`AsyncContextSource`](api/python-streams.md#asynccontextsource) while the pipeline continues,
+then pass its completed supplements to `AsyncMemory.compile()`. No background service is required.
+
+Supplements take character and item slots in submission order before stored evidence is packed.
+Stored assertions still require their complete evidence closures. Both sources share one budget;
+an oversized supplement is skipped so a later smaller one can fit. `observed_at` and `expires_at`
+must be timezone-aware when supplied. A supplement is excluded if it has expired at `reference_at`,
+has not yet been observed, or fails the requested freshness window; freshness requires an
+observation time. `bundle.supplements` holds the admitted values, and `omitted_supplements` plus
+`unknowns` explain exclusions. They do not count as memory citations, identity evidence, or
+selected proofs. `compact()` preserves their source labels without creating memory aliases.
+
+REST's `supplements` array and MCP's `compile_context` parameter accept the same fields.
+Keeping a supplement requires an explicit later `add()` or `capture()` chosen by the host.
+
+### Goal-directed recall
+
+With `recall_planning=True` and a planner-capable answerer, compilation also executes one bounded
+recall program for the goal. For a trip brief, that program can look separately for dates,
+passport expiry, and meal requirements. `recall_query_expansion=True` permits focused semantic
+queries; the same `recall_max_queries`, `recall_set_budget_chars`, and `recall_set_max_rows`
+limits used by answering apply. `evidence_expansion=True` additionally offers linked evidence.
+There are no answer generation or replanning rounds.
+
+Planned reads precede the original ranking for selection. No original hit reserves a mandatory
+budget slot, and the compiler applies its normal source closure, scope, consent, filters, and final budgets.
+Scores remain local to each query and are not fused. A deadline can skip planning before it starts;
+it does not cancel a running model request.
+
+An unavailable or invalid planner retains the original evidence and reports `stage_skipped`.
+Empty planned reads report `evidence_unavailable`; truncated or failed reads and supplemental
+limits report `candidates_exhausted`. These describe read execution, not a semantic verification
+of every requirement in the goal. A nonempty similarity result can still be irrelevant, and
+neither a successful program nor an empty `unknowns` list certifies a complete task brief.
+Evaluate coverage for the goals your agent serves and preserve these notes in its context.
 
 ## Budget
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `max_chars` | `16000` | Ceiling on priced grounding, including text and media weights |
-| `max_items` | `24` | Complete memories plus excerpts |
-| `max_media_items` | `None` | Media-part cap; `0` gives a text-only bundle |
+| `max_items` | `24` | Complete memories, excerpts, and admitted temporary supplements |
+| `max_media_items` | `None` | Delivered native-media cap; `0` permits text-only source projections |
 | `memory_types` | `None` | Exact type filter pushed into retrieval |
 | `min_confidence` | `0.0` | Typed confidence threshold; untyped observations count as `1.0` |
 | `freshness` | `None` | Positive `timedelta` relative to event end, event start, then creation time |
@@ -90,14 +145,48 @@ is in [0,1]. `reference_at` supplies the clock for relative time and freshness.
 | --- | --- |
 | Full memory line | Rendered line plus newline, including ID, confidence, and validity |
 | Excerpt line | Rendered line plus newline, including warning, source ID, and offsets |
+| Text-only projection | Complete rendered parts, source ID, role labels, and omitted-media declaration; no native-media weight |
 | Header and section headings | Rendered characters; the budget line is priced at its widest |
 | Image / audio / video asset | 2000 / 4000 / 12000 characters |
 | Asset with unresolved modality | 4000 characters |
 | Named/provisional actor and selected-proof lines | Rendered characters and their headings |
+| Temporary supplements | Rendered source, content, timestamps, and their section heading |
 
 These are conservative packing weights, not provider token counts. Repeated assets in distinct
 records may be charged more than once. A video needs at least 12000 characters plus its text.
 The header is mandatory; a ceiling below its goal-dependent minimum raises `ValidationError`.
+
+### Text-only sources for media
+
+The compiler tries complete media records first. A record with two videos costs at least 24000
+characters; two audio parts add another 8000. Such an event cannot enter the default
+16000-character bundle whole. When a raw observation has text parts, the compiler can instead
+deliver a `ContextProjection` in `bundle.projections`, under `Text-only sources`. This fallback
+also applies to `max_media_items=0`. It needs no `allow_partial_sources` option.
+
+A projection retains its `source_memory_id`, complete ordered `parts`, timestamps, context, and
+`coverage="text_only"`. Original text, derived transcripts, visual descriptions, and model
+interpretations retain their distinct roles. Every asset position remains an explicit omitted
+media placeholder; `omitted_assets` supplies unique asset descriptors without local paths.
+Repeated media positions stay repeated in `parts`. The projection does not contain native media.
+
+Each projection spends one item slot and its full rendered character cost, including role labels,
+warnings, and media placeholders. Text is not truncated. A media-only record with no text, or a
+projection whose complete text still exceeds the budget, remains excluded. `budget_excluded`
+reports omitted native-media parts. An empty `bundle.hits` can therefore accompany useful
+`bundle.projections`; it does not establish that retrieval found no memory.
+
+This fallback applies only to an observation whose required closure is that observation alone.
+It cannot replace a source required by a derived assertion, discharge a selected proof, or hide
+a required conflicting claim. Full hits, exact raw excerpts, and projections of one source are
+mutually exclusive. A later admission of the complete source replaces its projection atomically.
+Scope, consent, temporal visibility, and budget filters still apply. An omitted native identity
+observation does not add named or provisional actors by itself.
+
+An interpretation describes model output, not verified perception of its omitted originals.
+Keep the text-only citation coverage and warnings when consuming or compacting the bundle.
+Inspect native media separately or admit the complete record before claiming to have seen or
+heard it. A larger explicit budget is a full-delivery control, not a prerequisite for this fallback.
 
 `chars` upper-bounds priced grounding. Without diagnostic appendices,
 `len(bundle.render()) <= bundle.chars <= max_chars`. Conflict/unknown blocks and the
@@ -161,8 +250,37 @@ allowance. Their `limit` counts ranked anchors, not supporting records. See
 `ContextProof` contains acyclic `ContextProofNode` witnesses for complete AND assessments and
 raw captures. Count and confidence can require different witnesses, including three or four
 proofs together. Intermediate claims must justify their delivered confidence. Shared captures
-or intermediate assertions cannot corroborate one another; alternatives within one assessment
-do not establish independence.
+stay one group; alternative paths within one assessment do not establish another observation.
+
+`bundle.proof_scoring` reports the instance's existing evidence policy. It is not a compilation
+request option. The SDK, REST, MCP, full text, and compact text retain the same rule:
+
+| Rule | Count and score |
+| --- | --- |
+| `capture_groups` (default instance) | After excluding eligible naming conditions, singleton assessment members use their stored `source_group_id`. Each group contributes its maximum top-level assessment score; all groups combine by noisy-OR. Joint assessments remain one alternative with their maximum score. |
+| `independent_pair` (`independent_evidence=True`) | Complete path footprints establish independence. Confidence is the maximum single-path or independent-pair score, with every path capped by its lowest node confidence. |
+
+`ContextProofNode.source_group_id` is a SQLite-produced grouping declaration, separate from
+`capture_id`. A derived source with alternatives spanning several groups can keep its own record
+ID as its group even when delivery selects one alternative. The selected subset cannot recreate
+that full-store grouping. Group declarations must agree across witnesses; a capture leaf's group
+must match its capture. Grouping does not assert graph independence or calibrated probability.
+In particular, distinct multi-capture summaries can share ancestors in default mode. The
+independent policy still rejects those shared paths as independent corroboration.
+
+For a model inference bound to a stable identity, bundle validation uses its delivered typed
+contexts to recognize a matching host-confirmed naming condition. The complete naming proof
+remains required and delivered; its branch does not count as an experience observation. A
+capture shared through another observation path still prevents path independence. Inferred names,
+other identities, and host-confirmed targets keep their ordinary proof semantics.
+`ContextProof.structurally_independent_of()` compares complete structural footprints without this
+typed context, so it can return false for witnesses that a condition-aware bundle correctly accepts.
+No certificate field or AND member is removed.
+
+Default selection can deliver three or more singleton groups to justify the stored score;
+three assessments of .6 can therefore deliver .936. Independent selection retains the .84
+maximum-pair score for those same three assessments. No stored score or visibility threshold is
+changed to fit a delivery budget. Missing support or insufficient budget still withholds the claim.
 
 Stored and returned `evidence_ids` retain the full audit union. The **Selected proofs** section
 identifies delivered witnesses; references outside the bundle remain undelivered. Records count
@@ -175,14 +293,16 @@ alternatives produce unknowns; an uncertifiable or oversized witness union withh
 Historical `scope.known_at` retains full-closure delivery. This opt-in changes no stored record,
 schema, or default policy.
 
-![Complete support preserves AND premises, combines count and confidence witnesses, and charges shared sources once.](assets/tech-report/support-compilation.png)
+![Complete support preserves AND premises, combines count and confidence witnesses, and charges shared sources once.](assets/tech-report/support-compilation.gif)
 
-*From the SenseMem technical report, Figure 4. Panels (a–c) illustrate selected delivery
-certificates: every chosen AND assessment remains complete, and count and confidence can need
-different witnesses. The nine-to-three-record example uses `selected_proofs=True`; default
-compilation retains the full audit union. Panel (d) shows why shared sources can support more
-claims within the same item budget. These schematic record counts exclude character and media
-costs, which the compiler also enforces.*
+[View the static figure.](assets/tech-report/support-compilation.png)
+
+*The original technical-report Figure 4, animated in place. Panels (a–c) illustrate selected
+delivery certificates: every chosen AND assessment remains complete, and count and confidence
+can need different witnesses. The nine-to-three-record example uses `selected_proofs=True`;
+default compilation retains the full audit union. Panel (d) shows why shared sources support
+more claims within the same item budget. These schematic record counts exclude character,
+certificate-text, and media costs, which the compiler also enforces.*
 
 ## Exact raw excerpts
 
@@ -209,11 +329,12 @@ only if the complete full-record closure fits atomically; otherwise the assertio
 
 `bundle.compact()` returns a frozen `ContextPresentation` with text and request-local symbols:
 `mN` for memories, `iN` for identities. Symbols retain stable IDs, namespaces, structural roles,
-and full/partial/reference-only coverage. Keep the exact symbol table with each request.
+and full/partial/text-only/reference-only coverage. Keep the exact symbol table with each request.
 
 `resolve(symbol, namespace=...)` only decodes an alias. Unknown symbols or namespace mismatches
-raise `ValidationError`. `resolve_citation(symbol)` accepts full/partial memory citations and
-retains a partial selector; reference-only and identity aliases are rejected. Aliases grant no
+raise `ValidationError`. `resolve_citation(symbol)` accepts full, partial, and text-only memory
+citations. It retains a selector only for exact partial text; text-only coverage does not attest
+to omitted media. Reference-only and identity aliases are rejected. Aliases grant no
 retrieval, evidence, consent, or scope authority and cannot replace stable SDK IDs.
 
 Compaction follows selection. It leaves budgets, closure, `render()`, `hits`, and `document()`
@@ -249,6 +370,26 @@ at least one source observation under the same visibility/scope bounds. One batc
 selection resolves them; the deadline may skip it. Only IDs are carried: events take no extra
 item/character budget and do not enter `episodes` unless selected independently.
 **Shared observation means co-occurrence, not causation.**
+
+### Attribution delivery
+
+Typed `affect_target` and `affect_elicitor` relations enter `relationships` as separate claims.
+Their rendered lines show the focal affect, target/elicitor role, affirmed/denied polarity,
+object reference, basis, and any reporter/quote witnesses. An elicitor describes a sourced
+explanation; a model's inference is not rendered as an established cause.
+
+Before a ranked attribution or one of its dependent assertions can enter the bundle, the kernel
+reads all active scoped assertions for the same affect/role/object group from SQLite. This is an
+exact obligation lookup, so a low-ranked denial cannot disappear behind a high-ranked affirmation.
+Unrelated objects and roles do not become a second relevance route. The group and its required
+cue, object, and source evidence enter selection as one atomic closure; shared records count once.
+
+The bounded lookup can withhold a group when it is truncated, a peer's evidence is unavailable,
+or requested filters or consent prevent complete delivery. Item, character, and media limits
+also apply to the whole closure. A passed compilation deadline withholds attribution rather than
+returning an unchecked explanation. The bundle reports the applicable unknown; a cue that fits
+its own evidence closure can remain in `affect`. The compiler makes no model call for attribution.
+The existing optional `event_ids` hop retains its co-occurrence-only meaning.
 
 ## Conflicts
 

@@ -9,7 +9,6 @@ from pathlib import Path
 
 from sensemem.benchmarks.ama_bench import AMA_ADAPTER_VERSION, AMA_DATA_REVISION, AMA_DATA_SHA256
 from sensemem.benchmarks.atm_bench import ATM_BENCH_ADAPTER_VERSION
-from sensemem.benchmarks.es_memeval import ES_MEMEVAL_ADAPTER_VERSION
 from sensemem.benchmarks.icm_bench import ICM_ADAPTER_VERSION, ICM_DATA_REVISION
 from sensemem.benchmarks.longmemeval_v2 import LONGMEMEVAL_V2_ADAPTER_VERSION
 from sensemem.benchmarks.mosaic import (
@@ -80,7 +79,6 @@ _ATM = ("Jingbiao/ATM-Bench", "78e826dc07e97466b2f54443831ef9a83ab8b27c")
 _GALLERY = ("Ethan-Bei/Mem-Gallery", "af912daba984e896e253016b7c7e334ef92c2a6f")
 _ICM = ("ryanren0330/ICM-Bench", ICM_DATA_REVISION)
 _LONGMEMEVAL_V2 = ("xiaowu0162/longmemeval-v2", "f152293e235517d504809563c833d7190b8c713b")
-_ES_MEMEVAL = ("slptongji/ES-MemEval", "692624208acc077b8867698c1d6fcd998dee641a")
 _PERSONAMEM_V3 = (
     "bowen-upenn/PersonaMem-v3",
     "7b00a090b35b7293e6efeeb19494207f32b5a9ee",
@@ -364,19 +362,10 @@ TASKS: dict[str, TaskSpec] = {
             for tier in ("small", "medium")
         ),
         _task(
-            "es-memeval-qa",
-            "ES-MemEval",
-            "es-memeval/data/evo_emo.json",
-            ES_MEMEVAL_ADAPTER_VERSION,
-            _ES_MEMEVAL,
-            digest="f30698e87fddaeff51270a666c654da604f487a3456ec60d2b6ae08a6fecd420",
-            variant="qa",
-        ),
-        _task(
             "personamem-v3",
             "PersonaMem-v3",
             "personamem-v3/backend",
-            "personamem_v3_official_v1",
+            "personamem_v3_official_v3",
             _PERSONAMEM_V3,
             digest="57d2c06fa5d7d65d2b2472ab8bbf0512eb6e4d4265c85ee5b980283e6b174443",
             # `persona.html` is a 4.6 MB self-contained browsable rendering of
@@ -421,7 +410,6 @@ GROUPS: dict[str, tuple[str, ...]] = {
         if name.startswith("mm-lifelong-") and name != "mm-lifelong-month-train"
     ),
     "atm-bench": tuple(name for name in TASKS if name.startswith("atm-bench-")),
-    "es-memeval": ("es-memeval-qa",),
     "all": tuple(TASKS),
 }
 

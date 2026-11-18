@@ -19,11 +19,16 @@ import sensemem.infrastructure.local.store._identity as identity_module
 import sensemem.infrastructure.local.store.records as records_module
 from sensemem import (
     EvidenceBasis,
+    FaceAnalysis,
+    FaceEmbedding,
     IdentityProfile,
-    MemoryContext,
-    MemoryKind,
+    RecordKind,
+    RecordSemantics,
     SpatialAnchor,
     SpatialContext,
+    SpeakerEmbedding,
+    SpeechAnalysis,
+    SpeechTurn,
 )
 from sensemem.infrastructure.local import (
     DataDirectoryInUseError,
@@ -36,13 +41,6 @@ from sensemem.infrastructure.local import (
     UnsupportedSchemaError,
 )
 from sensemem.infrastructure.local.store import SCHEMA_VERSION
-from sensemem.models.base import (
-    FaceAnalysis,
-    FaceEmbedding,
-    SpeakerEmbedding,
-    SpeechAnalysis,
-    SpeechTurn,
-)
 
 _PARAMETER_BATCH_MODULES = (
     "_codec",
@@ -161,8 +159,8 @@ def _state_memory(
 ) -> StoredMemory:
     return replace(
         _memory(memory_id, f"preferred drink is {value}", created_at=recorded_at),
-        context=MemoryContext(
-            kind=MemoryKind.STATE,
+        context=RecordSemantics(
+            kind=RecordKind.STATE,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.9,
             valid_from=valid_from,
@@ -297,7 +295,7 @@ def test_schema_is_local_and_enforces_foreign_keys(tmp_path: Path) -> None:
             store.index.write_embedding(_embedding(memory_id="missing-memory"))
 
 
-@pytest.mark.parametrize("version", [1, 16, 17, 18, 19, 20, SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [1, 16, 17, 18, 19, 20, SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
 def test_other_schema_versions_are_refused_without_changing_durable_data(
     tmp_path: Path, version: int
 ) -> None:
@@ -1070,92 +1068,6 @@ def test_linked_identity_keeps_the_source_id_as_an_alias(tmp_path: Path) -> None
     assert speech[0].speaker_name == "Alicia"
 
 
-def test_identity_link_evidence_counts_one_row_per_distinct_asset(tmp_path: Path) -> None:
-    with LocalStore(tmp_path) as store:
-        clip = _video_asset(store, "clip")
-        other = _video_asset(store, "other")
-        face_id = _face_identity(store, clip, (1.0, 0.0))
-        voice_id = _voice_identity(store, clip, (0.0, 1.0))
-
-        assert store.identities.record_identity_link_evidence(voice_id, face_id, clip.asset_id) == 1
-        assert store.identities.record_identity_link_evidence(voice_id, face_id, clip.asset_id) == 1
-        assert (
-            store.identities.record_identity_link_evidence(voice_id, face_id, other.asset_id) == 2
-        )
-        assert (
-            store.identities.record_identity_link_evidence(
-                voice_id, "identity_missing", clip.asset_id
-            )
-            == 0
-        )
-        with pytest.raises(ValueError, match="stored media asset"):
-            store.identities.record_identity_link_evidence(
-                voice_id,
-                face_id,
-                sha256(b"never stored").hexdigest(),
-            )
-
-
-def test_merging_identities_repoints_link_evidence_onto_the_target(tmp_path: Path) -> None:
-    with LocalStore(tmp_path) as store:
-        clip = _video_asset(store, "clip")
-        left = _video_asset(store, "left")
-        right = _video_asset(store, "right")
-        face_id = _face_identity(store, clip, (1.0, 0.0))
-        first_voice_id = _voice_identity(store, clip, (1.0, 0.0))
-        second_voice_id = _voice_identity(store, right, (0.0, 1.0))
-        assert (
-            store.identities.record_identity_link_evidence(first_voice_id, face_id, clip.asset_id)
-            == 1
-        )
-        assert (
-            store.identities.record_identity_link_evidence(first_voice_id, face_id, left.asset_id)
-            == 2
-        )
-        assert (
-            store.identities.record_identity_link_evidence(second_voice_id, face_id, clip.asset_id)
-            == 1
-        )
-        assert (
-            store.identities.record_identity_link_evidence(second_voice_id, face_id, right.asset_id)
-            == 2
-        )
-
-        plan = store.identities.identity_link_plan(
-            first_voice_id,
-            second_voice_id,
-            allow_shared_modality=True,
-        )
-        assert plan is not None
-        target = store.identities.link_identities(
-            first_voice_id,
-            second_voice_id,
-            expected=plan,
-            allow_shared_modality=True,
-        )
-        assert target == plan.target_id
-        with closing(sqlite3.connect(store.database_path)) as connection:
-            rows = connection.execute(
-                """
-                SELECT voice_id, face_id, asset_id
-                FROM identity_link_evidence
-                ORDER BY voice_id, face_id, asset_id
-                """
-            ).fetchall()
-        # The collided clip row survives once and both plain rows follow the target.
-        assert rows == sorted(
-            [
-                (target, face_id, clip.asset_id),
-                (target, face_id, left.asset_id),
-                (target, face_id, right.asset_id),
-            ]
-        )
-        assert (
-            store.identities.record_identity_link_evidence(plan.source_id, face_id, clip.asset_id)
-            == 3
-        )
-
-
 def test_identity_link_plan_refuses_a_shared_modality_by_default(tmp_path: Path) -> None:
     with LocalStore(tmp_path) as store:
         clip = _video_asset(store, "clip")
@@ -1232,38 +1144,13 @@ def test_shared_modality_link_still_refuses_a_conflicting_name(tmp_path: Path) -
         assert store.identities.resolve_identity_id(fragment_id) == fragment_id
 
 
-def test_link_evidence_refuses_a_pair_that_is_already_one_identity(tmp_path: Path) -> None:
-    """An identity co-occurring with itself is not evidence, so it is never recorded."""
-    with LocalStore(tmp_path) as store:
-        clip = _video_asset(store, "clip")
-        face_id = _face_identity(store, clip, (1.0, 0.0))
-        voice_id = _voice_identity(store, clip, (1.0, 0.0))
-
-        assert store.identities.record_identity_link_evidence(voice_id, face_id, clip.asset_id) == 1
-        assert store.identities.record_identity_link_evidence(face_id, face_id, clip.asset_id) == 0
-        assert store.identities.link_identities(face_id, voice_id) == face_id
-        # Both arguments now resolve through the alias to one identity.
-        assert store.identities.record_identity_link_evidence(voice_id, face_id, clip.asset_id) == 0
-
-        with closing(sqlite3.connect(store.database_path)) as connection:
-            self_pairs = connection.execute(
-                "SELECT COUNT(*) FROM identity_link_evidence WHERE voice_id = face_id"
-            ).fetchone()[0]
-
-    assert self_pairs == 0
-
-
 def test_unlink_identity_returns_only_the_contributed_modality(tmp_path: Path) -> None:
     with LocalStore(tmp_path) as store:
         clip = _video_asset(store, "clip")
         face_id = _face_identity(store, clip, (1.0, 0.0))
         assert store.identities.register_identity(face_id, "Alice", relationship="sister") is True
         voice_id = _voice_identity(store, clip, (1.0, 0.0))
-        assert store.identities.record_identity_link_evidence(voice_id, face_id, clip.asset_id) == 1
         assert store.identities.link_identities(face_id, voice_id) == face_id
-        # Merging folds this pair's evidence into one identity paired with itself, which is
-        # meaningless and is dropped, so a merged pair records nothing further.
-        assert store.identities.record_identity_link_evidence(voice_id, face_id, clip.asset_id) == 0
 
         assert store.identities.unlink_identity(voice_id) == voice_id
         speech = store.media.read_speech(clip.asset_id, space_id="cam++:test")
@@ -1273,10 +1160,13 @@ def test_unlink_identity_returns_only_the_contributed_modality(tmp_path: Path) -
                 "SELECT identity_id, modality FROM identity_exemplars"
             ).fetchall()
             aliases = connection.execute("SELECT COUNT(*) FROM identity_aliases").fetchone()[0]
-            evidence = connection.execute("SELECT COUNT(*) FROM identity_link_evidence").fetchone()[
-                0
-            ]
+            rejected = connection.execute(
+                "SELECT first_id, second_id FROM identity_rejections"
+            ).fetchall()
         profile = store.identities.identity_profile(voice_id)
+
+        assert store.identities.identity_link_plan(face_id, voice_id) is None
+        assert store.identities.link_identities(face_id, voice_id) is None
 
     assert set(exemplars) == {(face_id, "face"), (voice_id, "voice")}
     assert speech is not None and speech[0].speaker_id == voice_id
@@ -1285,7 +1175,16 @@ def test_unlink_identity_returns_only_the_contributed_modality(tmp_path: Path) -
     assert faces[0].identity_name == "Alice"
     assert profile == IdentityProfile(identity_id=voice_id)
     assert aliases == 0
-    assert evidence == 0
+    assert rejected == [tuple(sorted((face_id, voice_id)))]
+
+    with LocalStore(tmp_path) as reopened:
+        assert reopened.identities.identity_link_plan(face_id, voice_id) is None
+        assert (
+            reopened.identities.link_identities(
+                face_id, voice_id, allow_rejected_pair=True, preferred_identity=face_id
+            )
+            == face_id
+        )
 
 
 def test_unlink_identity_refuses_an_alias_without_a_recorded_modality(tmp_path: Path) -> None:
@@ -1371,7 +1270,7 @@ def test_an_identity_another_asset_still_observes_survives_the_collection(tmp_pa
     assert speech is not None and speech[0].speaker_id == voice_id
 
 
-def test_collecting_one_asset_leaves_an_unlinked_identity_waiting_for_corroboration(
+def test_collecting_one_asset_leaves_an_unlinked_identity_with_its_templates(
     tmp_path: Path,
 ) -> None:
     """An identity `unlink_identity()` restored is untouched by an unrelated asset's collection."""
@@ -1382,7 +1281,7 @@ def test_collecting_one_asset_leaves_an_unlinked_identity_waiting_for_corroborat
         assert store.identities.link_identities(face_id, voice_id) == face_id
 
         # Reversing the merge after the recording is gone leaves two anonymous identities that
-        # hold exemplars and observe nothing, which is what continued ingestion re-corroborates.
+        # hold exemplars and observe nothing. Later ingestion may recognize them independently.
         _drop_asset(store, "clip", clip)
         assert store.identities.unlink_identity(voice_id) == voice_id
 
@@ -1632,8 +1531,8 @@ def test_evidence_and_projection_share_one_transaction_time(tmp_path: Path) -> N
     second = _memory("source-2", "second witness", created_at=recorded_at)
     entity = replace(
         _memory("entity", "the user", created_at=recorded_at),
-        context=MemoryContext(
-            kind=MemoryKind.ENTITY,
+        context=RecordSemantics(
+            kind=RecordKind.ENTITY,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.8,
             valid_from=None,
@@ -1846,7 +1745,7 @@ def _count_corpus() -> tuple[StoredMemory, ...]:
     )
 
 
-def _require_context(context: MemoryContext | None) -> MemoryContext:
+def _require_context(context: RecordSemantics | None) -> RecordSemantics:
     assert context is not None
     return context
 
@@ -1925,8 +1824,8 @@ def _naming_assertion(
     """One naming assertion, shaped the way `Memory.register_identity` writes it."""
     return replace(
         _memory(memory_id, f"{name} is a recognized person", created_at=recorded_at),
-        context=MemoryContext(
-            kind=MemoryKind.ENTITY,
+        context=RecordSemantics(
+            kind=RecordKind.ENTITY,
             basis=basis,
             confidence=1.0,
             valid_from=None,
@@ -1951,8 +1850,8 @@ def _bound_claim(
 ) -> StoredMemory:
     return replace(
         _memory(memory_id, "the neighbour prefers tea", created_at=recorded_at),
-        context=MemoryContext(
-            kind=MemoryKind.STATE,
+        context=RecordSemantics(
+            kind=RecordKind.STATE,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.9,
             valid_from=recorded_at,
@@ -1982,8 +1881,8 @@ def test_reactivated_deterministic_output_is_reindexed_and_retires_on_rollback(
     recorded_at = datetime(2026, 9, 3, 12, tzinfo=timezone.utc)
     derived = replace(
         _memory("derived", "the door is open", created_at=recorded_at),
-        context=MemoryContext(
-            kind=MemoryKind.STATE,
+        context=RecordSemantics(
+            kind=RecordKind.STATE,
             basis=EvidenceBasis.USER_STATEMENT,
             confidence=1.0,
             valid_from=None,
@@ -2227,26 +2126,9 @@ def test_provisional_identities_name_the_people_no_assertion_names(tmp_path: Pat
             (_embedding("e-naming-face", "naming-face"),),
         )
 
-        assert store.identities.identity_for_subject("  LI  ") == face_id
-        assert store.identities.identity_for_subject("nobody") is None
         assert store.identities.provisional_identities(("seen", "heard", "memory-missing")) == {
             "heard": (voice_id,)
         }
-
-
-def test_competing_names_on_one_identity_cannot_bind_either_subject(tmp_path: Path) -> None:
-    recorded_at = datetime(2026, 9, 3, 12, tzinfo=timezone.utc)
-    with LocalStore(tmp_path) as store:
-        seen = _video_asset(store, "seen")
-        identity_id = _face_identity(store, seen, (1.0, 0.0))
-        store.records.write_memories(
-            (
-                _naming_assertion("name-a", identity_id, "Alice", recorded_at=recorded_at),
-                _naming_assertion("name-b", identity_id, "Bob", recorded_at=recorded_at),
-            )
-        )
-        assert store.identities.identity_for_subject("Alice") is None
-        assert store.identities.identity_for_subject("Bob") is None
 
 
 def test_retiring_evidence_re_derives_the_columns_the_survivors_agree_on(tmp_path: Path) -> None:
@@ -2266,8 +2148,8 @@ def test_retiring_evidence_re_derives_the_columns_the_survivors_agree_on(tmp_pat
         _memory("entity", "the user", created_at=applied_at),
         place_id=None,
         metadata_json="{}",
-        context=MemoryContext(
-            kind=MemoryKind.ENTITY,
+        context=RecordSemantics(
+            kind=RecordKind.ENTITY,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.8,
             valid_from=None,
@@ -2315,7 +2197,7 @@ def test_named_actors_resolve_through_semantics_and_assets_but_never_self(
     """A memory's own bound assertion and its asset-keyed identity both surface a name.
 
     `named_actors` is the positive counterpart of `provisional_identities`: it reads the same
-    asset-keyed edge plus the semantic one `MemoryContext.identity_id` projects, restricted to
+    asset-keyed edge plus the semantic one `RecordSemantics.identity_id` projects, restricted to
     identities a naming assertion currently names, and it never reports the naming assertion's
     own memory back to itself.
     """
@@ -2425,6 +2307,47 @@ def test_the_current_schema_indexes_recalled_records(tmp_path: Path) -> None:
         ).fetchall()
 
     assert any("memory_records_accessed_idx" in str(row[3]) for row in plan)
+
+
+@pytest.mark.parametrize(
+    ("table", "query", "parameters", "primary_key"),
+    (
+        (
+            "embedding_text_span_pieces",
+            "SELECT embedding_id, selector_position, piece_position, role, "
+            "start_codepoint, end_codepoint, piece_sha256 FROM embedding_text_span_pieces "
+            "WHERE embedding_id IN (?) "
+            "ORDER BY embedding_id, selector_position, piece_position",
+            ("embedding-1",),
+            "sqlite_autoindex_embedding_text_span_pieces_",
+        ),
+        (
+            "search_index_queue",
+            "SELECT operation_id, embedding_id, action FROM search_index_queue "
+            "WHERE operation_id > ? ORDER BY operation_id LIMIT ?",
+            (0, 100),
+            "INTEGER PRIMARY KEY",
+        ),
+    ),
+    ids=("selectors", "outbox"),
+)
+def test_selector_and_outbox_reads_need_only_primary_key_indexes(
+    tmp_path: Path,
+    table: str,
+    query: str,
+    parameters: tuple[str | int, ...],
+    primary_key: str,
+) -> None:
+    with (
+        LocalStore(tmp_path) as store,
+        closing(sqlite3.connect(store.database_path)) as connection,
+    ):
+        indexes = connection.execute(f"PRAGMA index_list({table})").fetchall()
+        plan = connection.execute(f"EXPLAIN QUERY PLAN {query}", parameters).fetchall()
+
+    assert all(row[3] == "pk" for row in indexes)
+    assert any(primary_key in str(row[3]) for row in plan)
+    assert not any("TEMP B-TREE" in str(row[3]) for row in plan)
 
 
 def test_deleting_the_current_naming_assertion_restores_the_name_it_displaced(
@@ -2623,8 +2546,8 @@ def test_deleting_one_alternative_keeps_a_claim_supported_by_a_hidden_trait(
     recorded_at = datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
     trait = replace(
         _memory("trait", "the user is patient", created_at=recorded_at),
-        context=MemoryContext(
-            kind=MemoryKind.TRAIT,
+        context=RecordSemantics(
+            kind=RecordKind.TRAIT,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.8,
             valid_from=None,
@@ -3029,76 +2952,6 @@ def test_clause_reactivation_preserves_the_historical_inactive_gap(
         )
 
 
-@pytest.mark.parametrize(
-    ("corruption", "error"),
-    (
-        (
-            "ALTER TABLE memory_evidence_clauses RENAME COLUMN member_count TO member_total;",
-            "invalid memory_evidence_clauses table",
-        ),
-        (
-            """
-            DROP INDEX memory_evidence_clause_versions_current_idx;
-            DROP TABLE memory_evidence_clause_versions;
-            CREATE TABLE memory_evidence_clause_versions (
-                memory_id TEXT NOT NULL,
-                clause_id TEXT NOT NULL,
-                version INTEGER NOT NULL CHECK (version > 0),
-                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
-                recorded_at TEXT NOT NULL,
-                retired_at TEXT CHECK (retired_at IS NULL OR retired_at > recorded_at),
-                restores_version INTEGER CHECK (restores_version IS NULL OR restores_version > 0),
-                PRIMARY KEY (memory_id, clause_id),
-                FOREIGN KEY (memory_id, clause_id)
-                  REFERENCES memory_evidence_clauses (memory_id, clause_id) ON DELETE CASCADE
-            );
-            CREATE UNIQUE INDEX memory_evidence_clause_versions_current_idx
-                ON memory_evidence_clause_versions (memory_id, clause_id)
-                WHERE retired_at IS NULL;
-            """,
-            "invalid memory_evidence_clause_versions primary key",
-        ),
-        (
-            """
-            DROP INDEX memory_evidence_clause_members_source_idx;
-            DROP TABLE memory_evidence_clause_members;
-            CREATE TABLE memory_evidence_clause_members (
-                memory_id TEXT NOT NULL,
-                clause_id TEXT NOT NULL,
-                source_memory_id TEXT NOT NULL,
-                position INTEGER NOT NULL CHECK (position >= 0),
-                PRIMARY KEY (memory_id, clause_id, source_memory_id),
-                UNIQUE (memory_id, clause_id, position)
-            );
-            CREATE INDEX memory_evidence_clause_members_source_idx
-                ON memory_evidence_clause_members (source_memory_id, memory_id, clause_id);
-            """,
-            "invalid foreign keys on memory_evidence_clause_members",
-        ),
-        (
-            "DROP INDEX memory_evidence_clause_members_source_idx;",
-            "invalid indexes on memory_evidence_clause_members",
-        ),
-    ),
-    ids=("column", "primary-key", "foreign-key", "index"),
-)
-def test_current_schema_rejects_corrupt_evidence_clause_tables(
-    tmp_path: Path,
-    corruption: str,
-    error: str,
-) -> None:
-    with LocalStore(tmp_path) as store:
-        database_path = store.database_path
-    with closing(sqlite3.connect(database_path)) as connection:
-        connection.executescript(corruption)
-
-    with pytest.raises(UnsupportedSchemaError, match=error):
-        LocalStore(tmp_path)
-
-    with closing(sqlite3.connect(database_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-
-
 def _turn(
     memory_id: str,
     content: str,
@@ -3452,6 +3305,7 @@ def test_identity_id_for_name_resolves_through_a_merge_and_declines_a_stranger(
         assert store.identities.register_identity(full_id, "Li Hua") is True
 
         assert store.recall.identity_id_for_name("li hua") == full_id
+        assert store.recall.identity_id_for_name("  \uff2c\uff29 \uff28\uff35\uff21  ") == full_id
         assert store.recall.identity_id_for_name("LI  HUA") is None
         assert store.recall.identity_id_for_name("Someone Else") is None
         assert store.recall.identity_id_for_name("   ") is None

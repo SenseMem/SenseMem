@@ -1,12 +1,8 @@
 """Behaviour benchmark for the slow loop: `consolidate()`, `record_outcome()`, `rollback()`.
 
-Everything here drives the public SDK -- `Memory.add_many`, `Memory.apply`, `Memory.search`,
-`Memory.deliberate`, `Memory.operations`, `Memory.record_outcome`, `Memory.rollback`,
-`Memory.get` -- against a
-deterministic synthetic long run whose ground truth the scenario builder holds. That ground truth
-is what makes the quality metrics `docs/context-os.md` names computable at all: without knowing
-which observations were duplicates of each other, which assertion superseded which, and which
-records were gold, an operation log says only that operations happened.
+The public SDK ingests a seeded synthetic run with known duplicate groups, preference flips,
+and standing facts. These ground-truth labels make consolidation precision, contradiction
+recovery, false retirement, and rollback measurable.
 
 The scenario is sized so one deliberation window covers all of it. That is deliberate: the
 measurement is of the loop and of the consolidation backend, not of retrieval, and a candidate
@@ -25,19 +21,13 @@ from pathlib import Path
 
 import yaml
 
-from sensemem import MemoryConfig
-from sensemem.configuration import SenseMemConfig, resolve_memory_config
+from sensemem import MemorySettings
+from sensemem.configuration import MemorySpec, build_memory_composition
+from sensemem.control_values import MemoryIntent, MemoryOperationRecord, MemoryOutcome
 from sensemem.memory import Memory
 from sensemem.models.base import ConsolidationBackend, EmbeddingBackend, FormationInput
-from sensemem.types import (
-    EvidenceBasis,
-    FormationProposal,
-    MemoryIntent,
-    MemoryKind,
-    MemoryOperationRecord,
-    MemoryOutcome,
-    Modality,
-)
+from sensemem.semantics import FormationProposal
+from sensemem.types import Modality, RecordKind
 
 # The scenario's own clock. Fixed, so two runs of one seed ingest byte-identical occurrence times.
 _EPOCH = datetime(2026, 1, 6, 9, tzinfo=timezone.utc)
@@ -75,30 +65,24 @@ class _Ingest:
 
 
 class _PreferenceFormer:
-    """Make each injected first-person preference a user-stated functional claim."""
+    """Interpret the fixture's explicit preferences as model-inferred functional states."""
 
     formation_capabilities = frozenset({Modality.TEXT})
     formation_model = "control-plane-ground-truth"
-    formation_space = "control-plane-ground-truth:v1"
+    formation_space = "control-plane-ground-truth:v2"
 
     def form(self, inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]:
         proposals: list[tuple[FormationProposal, ...]] = []
         for item in inputs:
-            content = item.content.text.rstrip(".")
-            marker = (
-                " now says their only seat preference is "
-                if " now says their only seat preference is " in content
-                else " says their only seat preference is "
+            subject, marker, value = (
+                item.content.text.rstrip(".")
+                .replace(" now says ", " says ", 1)
+                .partition(" says their only seat preference is ")
             )
-            if marker not in content:
-                proposals.append(())
-                continue
-            subject, value = content.split(marker, 1)
             proposals.append(
                 (
                     FormationProposal(
-                        kind=MemoryKind.TRAIT,
-                        basis=EvidenceBasis.USER_STATEMENT,
+                        kind=RecordKind.STATE,
                         content=item.content.text,
                         subject=subject,
                         predicate="only-seat-preference",
@@ -106,6 +90,8 @@ class _PreferenceFormer:
                         confidence=0.9,
                     ),
                 )
+                if marker
+                else ()
             )
         return tuple(proposals)
 
@@ -116,7 +102,7 @@ class _PreferenceFormer:
 def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
     """Ingest one seeded synthetic long run and return its ground truth.
 
-    Each exclusive preference flip is formed as one user-stated trait per side in the same
+    Each exclusive preference flip is formed as one model-inferred state per side in the same
     `add_many` transaction. Both claims therefore stand for the loop to weigh, while the raw
     observations remain the benchmark's source evidence.
 
@@ -150,8 +136,13 @@ def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
         )
         built.gold.add(gold.id)
         built.duplicates.append(frozenset({first.id, second.id}))
-        stale_claim = _claim(memory, name, stale)
-        current_claim = _claim(memory, name, current)
+        claims = {
+            source_id: record.id
+            for record in memory.list(limit=100).items
+            if record.context is not None and record.context.kind is RecordKind.STATE
+            for source_id in record.context.evidence_ids
+        }
+        stale_claim, current_claim = claims[older.id], claims[newer.id]
         built.contradictions.append((stale_claim, current_claim))
         built.ingested.update(
             {gold.id, first.id, second.id, older.id, newer.id, stale_claim, current_claim}
@@ -172,22 +163,6 @@ def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
     )
 
 
-def _claim(memory: Memory, subject: str, value: str) -> str:
-    """Find one typed preference claim the deterministic scenario former just committed."""
-    for hit in memory.search(f"{subject} only seat preference {value}", limit=100).hits:
-        context = hit.context
-        if (
-            context is not None
-            and context.kind is MemoryKind.TRAIT
-            and context.basis is EvidenceBasis.USER_STATEMENT
-            and context.subject == subject
-            and context.predicate == "only-seat-preference"
-            and context.value == value
-        ):
-            return hit.id
-    raise RuntimeError(f"the control-plane scenario did not form {subject!r} preference {value!r}")
-
-
 def run_benchmark(
     data_dir: str | Path,
     *,
@@ -206,7 +181,7 @@ def run_benchmark(
         consolidator=consolidator,
         # The deliberation window must cover the whole scenario, and reinforcement must not make
         # one query's retrieval depend on which earlier one ran. Both are measurement policy.
-        config=MemoryConfig(minimum_relevance=0, reinforce_on_answer=False),
+        settings=MemorySettings(minimum_relevance=0, reinforce_on_answer=False),
     ) as memory:
         return evaluate_scenario(
             memory, persons=persons, seed=seed, limit=limit, max_rounds=max_rounds
@@ -371,7 +346,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     parser.add_argument("--persons", type=_positive_int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     arguments = parser.parse_args(argv)
-    composition = resolve_memory_config(_config(arguments.config))
+    composition = build_memory_composition(_config(arguments.config))
     try:
         consolidator = composition.plugins.consolidator
         if consolidator is None:
@@ -389,12 +364,12 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     return 0
 
 
-def _config(path: Path) -> SenseMemConfig:
+def _config(path: Path) -> MemorySpec:
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
         raise ValueError(f"configuration {path} must be a mapping")
     values = {name: value for name, value in document.items() if name != "benchmark"}
-    return SenseMemConfig.model_validate(values)
+    return MemorySpec.model_validate(values)
 
 
 def _positive_int(value: str) -> int:

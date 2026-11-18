@@ -9,10 +9,12 @@ from typing import cast
 
 from opentelemetry.trace import Tracer
 
+from sensemem._perception_codec import decode_description, encode_description
 from sensemem._telemetry import (
     VISION_BATCHES_FAILED,
     mark_model_requests,
 )
+from sensemem.content import AssetRef, Blob
 from sensemem.exceptions import ModelError, SenseMemError, ValidationError
 from sensemem.infrastructure.local.store import (
     StoredAsset,
@@ -20,8 +22,6 @@ from sensemem.infrastructure.local.store import (
 from sensemem.kernel.content import PreparedContent, asset_content
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.derived import (
-    decode_description,
-    encode_description,
     face_identity_text,
     has_stream_description,
     speaker_prose,
@@ -33,20 +33,12 @@ from sensemem.kernel.lifecycle import Lifecycle, OperationAssets
 from sensemem.kernel.materialization import Materializer
 from sensemem.kernel.routing import has_derived_text
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
-from sensemem.kernel.tracing import Traced
+from sensemem.kernel.settings import ResolvedSettings
+from sensemem.kernel.tracing import Traced, record_identity_yield
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
-from sensemem.models.base import (
-    FaceAnalysis,
-    ModelInput,
-    VisionAnalysisBackend,
-)
-from sensemem.perception import VisualDescription
-from sensemem.types import (
-    AssetRef,
-    Blob,
-    Modality,
-)
+from sensemem.models.base import ModelInput, VisionAnalysisBackend
+from sensemem.perception import FaceAnalysis, VisualDescription
+from sensemem.types import Modality
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,7 +52,7 @@ class Vision(Traced):
         tracer: Tracer,
         storage: Storage,
         backends: Backends,
-        settings: Settings,
+        settings: ResolvedSettings,
         lifecycle: Lifecycle,
         hydrator: Hydrator,
         materializer: Materializer,
@@ -273,7 +265,9 @@ class Vision(Traced):
         if not images:
             raise ValidationError("vision description requires at least one image")
         with self._lifecycle.operation(model_work=True) as operation:
-            prepared = tuple(self._materializer.prepare(image, operation) for image in images)
+            prepared = tuple(
+                self._materializer.materialize_content(image, operation) for image in images
+            )
             # One blob in, one asset out, so the cached captions line up with the inputs.
             asset_ids = tuple(content.assets[0].asset_id for content in prepared)
             with translate_storage_errors("read cached visual descriptions"):
@@ -404,14 +398,15 @@ class Vision(Traced):
                     )
         analyzed = {asset.asset_id for asset in missing}
         for asset in face_assets:
-            self._trace_identity_yield(
-                "sensemem.identity.faces",
-                tuple(
-                    (observation.identity_id, observation.identity_score)
-                    for observation in operation.face_observations[asset.asset_id]
-                ),
-                cached=asset.asset_id not in analyzed,
-            )
+            with self._trace("sensemem.identity.faces", kind="stage") as span:
+                record_identity_yield(
+                    span,
+                    tuple(
+                        (observation.identity_id, observation.identity_score)
+                        for observation in operation.face_observations[asset.asset_id]
+                    ),
+                    cached=asset.asset_id not in analyzed,
+                )
 
     def _analyze_faces(
         self,

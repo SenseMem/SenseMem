@@ -22,7 +22,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import ValidationError as PydanticValidationError
 
 import sensemem.configuration as configuration
-import sensemem.models.openai_sdk as openai_sdk
+import sensemem.models.openai_completion as completion_adapter
 import sensemem.recipes as recipes_module
 from sensemem import (
     AnswerPolicy,
@@ -33,21 +33,23 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryPlugins,
     MemoryRecord,
+    MemorySettings,
+    MemorySpec,
     MemoryTrigger,
     Modality,
     ObservationContext,
+    OpenAIEmbedder,
+    QueryFailure,
+    RecordKind,
     RetrievalMode,
     SearchHit,
-    SenseMemConfig,
 )
 from sensemem._telemetry import MODEL_MODULE, TOKEN_TOTAL, VISION_BATCHES_FAILED
-from sensemem.configuration import resolve_memory_config
+from sensemem.configuration import build_memory_composition
 from sensemem.exceptions import ValidationError
 from sensemem.kernel.contracts import declared_capabilities
 from sensemem.models.base import (
@@ -60,7 +62,7 @@ from sensemem.types import IndexQuantization
 
 
 def test_sentence_transformers_config_allows_omitting_revision() -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {"embedding": {"provider": "sentence-transformers", "model": "org/text"}}
     )
     assert isinstance(config.embedding, configuration.SentenceTransformersEmbeddingConfig)
@@ -108,7 +110,7 @@ def test_conflicting_retention_is_rejected_before_constructing_backends(
 
     monkeypatch.setattr(configuration, "_build_embedding", unexpected_build)
     with pytest.raises(ValidationError, match="declared both"):
-        resolve_memory_config(
+        build_memory_composition(
             {
                 "embedding": {"provider": "openai"},
                 "retention": {"media_days": 7},
@@ -120,7 +122,7 @@ def test_conflicting_retention_is_rejected_before_constructing_backends(
 def test_declarative_config_is_typed_strict_and_keeps_local_policy_separate(
     tmp_path: Path,
 ) -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "data_dir": tmp_path,
             "embedding": {
@@ -151,13 +153,13 @@ def test_declarative_config_is_typed_strict_and_keeps_local_policy_separate(
     assert isinstance(config.generation, configuration.OpenAIGenerationConfig)
     assert isinstance(config.speech, configuration.FunASRSpeechConfig)
     assert isinstance(config.face, configuration.OpenCVFaceConfig)
-    assert config.settings == MemoryConfig(
+    assert config.settings == MemorySettings(
         index_speech=True,
         index_quantization=IndexQuantization.FP16,
         retrieval_mode=RetrievalMode.LEXICAL,
     )
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai", "unexpected": True},
             }
@@ -190,7 +192,7 @@ def test_declarative_config_does_not_coerce_boolean_or_numeric_fields(
     config: dict[str, object],
 ) -> None:
     with pytest.raises(PydanticValidationError):
-        SenseMemConfig.model_validate(config)
+        MemorySpec.model_validate(config)
 
 
 @pytest.mark.parametrize(
@@ -207,7 +209,7 @@ def test_declarative_config_does_not_coerce_boolean_or_numeric_fields(
 )
 def test_openai_base_url_requires_an_absolute_http_url(base_url: str) -> None:
     with pytest.raises(PydanticValidationError, match="absolute HTTP or HTTPS URL"):
-        SenseMemConfig.model_validate({"embedding": {"provider": "openai", "base_url": base_url}})
+        MemorySpec.model_validate({"embedding": {"provider": "openai", "base_url": base_url}})
 
 
 def test_declarative_memory_settings_validate_every_range() -> None:
@@ -222,7 +224,7 @@ def test_declarative_memory_settings_validate_every_range() -> None:
     }
 
     with pytest.raises(PydanticValidationError) as failure:
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "settings": invalid,
@@ -238,9 +240,9 @@ def test_local_policy_defaults_stay_pinned_to_their_recorded_provenance() -> Non
     # Every default here is public contract, and two of them are calibration constants whose
     # provenance is recorded next to the field in `plugins.py`. Asserting the whole value means a
     # silent change to any single default fails here rather than only in a benchmark months later.
-    defaults = MemoryConfig()
+    defaults = MemorySettings()
 
-    assert defaults == MemoryConfig(
+    assert defaults == MemorySettings(
         index_speech=True,
         index_quantization=IndexQuantization.NONE,
         retrieval_mode=RetrievalMode.HYBRID,
@@ -248,18 +250,17 @@ def test_local_policy_defaults_stay_pinned_to_their_recorded_provenance() -> Non
         ambiguity_margin=0.01,
         evidence_budget_chars=24_000,
         decay_half_life_days=None,
-        reinforce_on_answer=True,
+        reinforce_on_answer=False,
         speaker_similarity=0.78,
         speaker_margin=0.05,
         face_similarity=0.363,
         face_margin=0.05,
-        identity_link_min_assets=2,
     )
     # The kernel and the declarative path must read the same defaults; a divergence would make
     # `Memory(...)` and `Memory.from_config({})` two different products.
     assert (
-        SenseMemConfig.model_validate({"embedding": {"provider": "openai"}}).settings
-        == MemoryConfig()
+        MemorySpec.model_validate({"embedding": {"provider": "openai"}}).settings
+        == MemorySettings()
     )
 
 
@@ -269,7 +270,7 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
 ) -> None:
     built: list[dict[str, object]] = []
 
-    # Stands in for `OpenAIModels`, which is one object implementing every completion role.
+    # Stands in for `OpenAICompletion`, which is one object implementing every completion role.
     class _Models(TinyEmbedder):
         generation_capabilities = frozenset({Modality.TEXT})
         formation_capabilities = frozenset({Modality.TEXT})
@@ -292,17 +293,17 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
         ) -> tuple[tuple[FormationProposal, ...], ...]:
             return tuple(() for _value in inputs)
 
-    def build(**values: object) -> object:
+    def build(_backend_type: object, **values: object) -> object:
         built.append(values)
         return _Models()
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     base = {"data_dir": tmp_path, "embedding": {"provider": "openai"}}
 
     # Configuring generation must not enable formation: a former is a model call per observation on
     # the write path, so it stays opt-in even when a bundled generation backend is already present.
-    assert SenseMemConfig.model_validate(base).formation is None
-    with_generation = configuration.resolve_memory_config(
+    assert MemorySpec.model_validate(base).formation is None
+    with_generation = configuration.build_memory_composition(
         {**base, "generation": {"provider": "openai"}}
     )
     try:
@@ -313,7 +314,7 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
 
     # Asking for one reaches `MemoryPlugins.former`, through its own build, with its own knobs.
     built.clear()
-    composition = configuration.resolve_memory_config(
+    composition = configuration.build_memory_composition(
         {**base, "formation": {"provider": "openai", "model": "gpt-5", "temperature": 0.0}}
     )
     try:
@@ -333,13 +334,11 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
     }
     # `video_limit` shapes an answer, not a formation proposal, so it is not part of this slot.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        SenseMemConfig.model_validate(
-            {**base, "formation": {"provider": "openai", "video_limit": 4}}
-        )
+        MemorySpec.model_validate({**base, "formation": {"provider": "openai", "video_limit": 4}})
     # The declarative name for the describer slot is `vision`, matching `generation` and
     # `formation`; the plugin field name is not a configuration key.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        SenseMemConfig.model_validate({**base, "vision_describer": {"provider": "openai"}})
+        MemorySpec.model_validate({**base, "vision_describer": {"provider": "openai"}})
 
 
 # One reply carrying the two capabilities the audit said only a former can supply: a bitemporal
@@ -444,7 +443,7 @@ def test_a_local_openai_compatible_server_fills_the_former_slot(
         _local_openai_server(_LOCAL_FORMATION_REPLY) as (answer_url, answer_requests),
         _local_openai_server(_LOCAL_FORMATION_REPLY) as (former_url, former_requests),
     ):
-        composition = configuration.resolve_memory_config(
+        composition = configuration.build_memory_composition(
             {
                 "data_dir": tmp_path,
                 "embedding": {"provider": "openai", "base_url": answer_url},
@@ -486,7 +485,7 @@ def test_a_local_openai_compatible_server_fills_the_former_slot(
     assert len(proposals) == 1
     trait, affect = proposals[0]
     assert (trait.kind, trait.subject, trait.predicate, trait.value) == (
-        MemoryKind.TRAIT,
+        RecordKind.TRAIT,
         "Ada",
         "prefers",
         "tea",
@@ -495,7 +494,7 @@ def test_a_local_openai_compatible_server_fills_the_former_slot(
     assert trait.valid_from == datetime(2026, 9, 1, 8, tzinfo=timezone.utc)
     assert trait.valid_until == datetime(2026, 9, 2, 8, tzinfo=timezone.utc)
     assert (affect.kind, affect.valence, affect.arousal, affect.cue_modality) == (
-        MemoryKind.AFFECT,
+        RecordKind.AFFECT,
         0.5,
         0.2,
         Modality.TEXT,
@@ -514,7 +513,7 @@ def test_a_local_former_still_needs_a_credential_in_the_environment(
         monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(openai.OpenAIError):
-        configuration.resolve_memory_config(
+        configuration.build_memory_composition(
             {
                 "data_dir": tmp_path,
                 "embedding": {"provider": "openai", "base_url": "http://127.0.0.1:1/v1"},
@@ -539,11 +538,11 @@ def test_builtin_openai_generation_config_maps_friendly_names_to_the_sdk_adapter
         SimpleNamespace(generation_capabilities=frozenset({Modality.TEXT}), close=lambda: None),
     )
 
-    def build(**values: object) -> GenerationBackend:
+    def build(_backend_type: object, **values: object) -> GenerationBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIGenerationConfig(
         provider="openai",
         model="gpt-5-mini",
@@ -578,11 +577,11 @@ def test_builtin_openai_generation_maps_on_demand_media_controls(
         SimpleNamespace(generation_capabilities=frozenset({Modality.TEXT}), close=lambda: None),
     )
 
-    def build(**values: object) -> GenerationBackend:
+    def build(_backend_type: object, **values: object) -> GenerationBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIGenerationConfig(
         provider="openai", media_policy="on_demand", media_max_items=3, media_max_tokens=4096
     )
@@ -600,11 +599,11 @@ def test_builtin_openai_generation_stream_is_explicitly_opt_in(
     captured: dict[str, object] = {}
     marker = cast(GenerationBackend, object())
 
-    def build(**values: object) -> GenerationBackend:
+    def build(_backend_type: object, **values: object) -> GenerationBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIGenerationConfig(provider="openai", stream=True)
 
     assert configuration._build_generation(spec) is marker
@@ -617,11 +616,11 @@ def test_builtin_openai_embedding_config_maps_friendly_names_to_the_sdk_adapter(
     captured: dict[str, object] = {}
     marker = object()
 
-    def build(**values: object) -> object:
+    def build(_backend_type: object, **values: object) -> object:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIEmbeddingConfig(
         provider="openai",
         model="tencent/WeMM-Embedding-2B",
@@ -708,7 +707,7 @@ def test_declarative_openai_embedding_rejects_a_model_that_declares_no_modality(
     # An empty set builds a Memory whose every write fails with "does not support: text". The
     # value is out of range, so it is refused here rather than at the first add.
     with pytest.raises(PydanticValidationError, match="too_short"):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {
                     "provider": "openai",
@@ -726,11 +725,11 @@ def test_builtin_openai_formation_config_maps_friendly_names_to_the_sdk_adapter(
     captured: dict[str, object] = {}
     marker = cast(FormationBackend, object())
 
-    def build(**values: object) -> FormationBackend:
+    def build(_backend_type: object, **values: object) -> FormationBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIFormationConfig(
         provider="openai",
         model="gpt-5-mini",
@@ -785,7 +784,7 @@ class _FormingEmbedder(TinyEmbedder):
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.ENTITY,
+                    kind=RecordKind.ENTITY,
                     content=f"Berlin is a city mentioned by {value.memory_id}.",
                     subject="Berlin",
                     predicate="is_a",
@@ -800,10 +799,10 @@ class _FormingEmbedder(TinyEmbedder):
 def _formation_stub(monkeypatch: pytest.MonkeyPatch) -> _FormingEmbedder:
     backend = _FormingEmbedder()
 
-    def build(**_values: object) -> _FormingEmbedder:
+    def build(_backend_type: object, **_values: object) -> _FormingEmbedder:
         return backend
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     return backend
 
 
@@ -835,7 +834,7 @@ def test_declarative_formation_slot_reaches_the_write_path(
     assert [record.content for record in derived] == [f"Berlin is a city mentioned by {source.id}."]
     context = derived[0].context
     assert context is not None
-    assert context.kind is MemoryKind.ENTITY
+    assert context.kind is RecordKind.ENTITY
     assert context.basis is EvidenceBasis.MODEL_INFERENCE
 
 
@@ -846,7 +845,7 @@ def test_declarative_formation_stays_off_unless_it_is_configured(
     non-extracting write path rather than opting a deployment in through some other slot."""
     backend = _formation_stub(monkeypatch)
 
-    composition = resolve_memory_config(
+    composition = build_memory_composition(
         {
             "data_dir": tmp_path,
             "embedding": {"provider": "openai", "model": "tiny-test", "dimension": 4},
@@ -856,7 +855,7 @@ def test_declarative_formation_stays_off_unless_it_is_configured(
     try:
         assert composition.plugins.former is None
         with Memory.from_plugins(
-            tmp_path, plugins=composition.plugins, config=composition.settings
+            tmp_path, plugins=composition.plugins, settings=composition.settings
         ) as memory:
             memory.add("Ada moved to Berlin in March.")
     finally:
@@ -870,7 +869,7 @@ def test_declarative_consolidation_slot_reaches_the_control_plane(
 ) -> None:
     """Without this slot the control plane needed a Python app loader to be reachable at all."""
     backend = _ConsolidatingEmbedder()
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", lambda **_v: backend)
+    monkeypatch.setattr(recipes_module, "_owned_openai", lambda _backend_type, **_v: backend)
 
     with Memory.from_config(
         {
@@ -895,18 +894,18 @@ def test_declarative_consolidation_stays_off_and_reuses_an_identical_client(
 ) -> None:
     built: list[object] = []
 
-    def build(**_values: object) -> _ConsolidatingEmbedder:
+    def build(_backend_type: object, **_values: object) -> _ConsolidatingEmbedder:
         built.append(_ConsolidatingEmbedder())
         return cast(_ConsolidatingEmbedder, built[-1])
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     generation = {"provider": "openai", "model": "gpt-5-mini"}
     base = {
         "data_dir": tmp_path,
         "embedding": {"provider": "openai", "model": "tiny-test", "dimension": 4},
     }
 
-    off = resolve_memory_config({**base, "generation": generation})
+    off = build_memory_composition({**base, "generation": generation})
     try:
         assert off.plugins.consolidator is None
         assert "consolidate" not in declared_capabilities(embedder=off.plugins.embedder).operations
@@ -914,7 +913,7 @@ def test_declarative_consolidation_stays_off_and_reuses_an_identical_client(
         off.close()
 
     built.clear()
-    shared = resolve_memory_config(
+    shared = build_memory_composition(
         {**base, "generation": generation, "consolidation": dict(generation)}
     )
     try:
@@ -925,7 +924,7 @@ def test_declarative_consolidation_stays_off_and_reuses_an_identical_client(
         shared.close()
 
     built.clear()
-    separate = resolve_memory_config(
+    separate = build_memory_composition(
         {
             **base,
             "generation": generation,
@@ -964,6 +963,7 @@ class _ConsolidatingEmbedder(TinyEmbedder):
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.shown.append(tuple(record.id for record in evidence))
         return tuple(
@@ -994,7 +994,7 @@ def test_composition_closes_the_optional_former(tmp_path: Path) -> None:
     composition = configuration.MemoryComposition(
         tmp_path,
         MemoryPlugins(embedder=TinyEmbedder(), former=former),
-        MemoryConfig(),
+        MemorySettings(),
     )
 
     composition.close()
@@ -1103,14 +1103,14 @@ def _openai_slot_stub(
 ) -> None:
     """Route the embedding slot to `TinyEmbedder` and every completion slot to the real adapter.
 
-    The point of this test is the wiring, so the describer has to be the bundled `OpenAIModels`
-    that `resolve_memory_config` really builds; only its HTTP transport is faked.
+    The point of this test is the wiring, so the describer has to be the bundled `OpenAICompletion`
+    that `build_memory_composition` really builds; only its HTTP transport is faked.
     """
 
-    def build(**values: object) -> object:
+    def build(_backend_type: object, **values: object) -> object:
         if "generation_model" not in values:
             return TinyEmbedder()
-        return openai_sdk.OpenAIModels(
+        return completion_adapter.OpenAICompletion(
             openai.OpenAI(
                 api_key="test-key",
                 base_url="https://vision.example.test/v1",
@@ -1120,7 +1120,7 @@ def _openai_slot_stub(
             **cast(Any, values),
         )
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
 
 
 def test_declarative_vision_slot_captions_an_image_into_the_lexical_document(
@@ -1212,7 +1212,7 @@ def test_the_vision_slot_stays_off_unless_it_is_configured(
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
         _openai_slot_stub(monkeypatch, http_client)
-        composition = resolve_memory_config(
+        composition = build_memory_composition(
             {
                 "data_dir": tmp_path,
                 "embedding": {"provider": "openai", "model": "tiny-test", "dimension": 4},
@@ -1222,7 +1222,7 @@ def test_the_vision_slot_stays_off_unless_it_is_configured(
         try:
             assert composition.plugins.vision_describer is None
             with Memory.from_plugins(
-                tmp_path, plugins=composition.plugins, config=composition.settings
+                tmp_path, plugins=composition.plugins, settings=composition.settings
             ) as memory:
                 picture = memory.add(Blob(b"bicycle-frame", "image/png"))
                 assert memory.get(picture.id).content == ""
@@ -1245,21 +1245,21 @@ def test_the_vision_slot_accepts_only_visual_modalities(tmp_path: Path) -> None:
 
     for modalities in (["text", "image"], ["audio"], []):
         with pytest.raises(PydanticValidationError):
-            SenseMemConfig.model_validate(
+            MemorySpec.model_validate(
                 {**base, "vision": {"provider": "openai", "modalities": modalities}}
             )
 
     # `video_limit` shapes an answer, not a caption, so it is not part of this slot either.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
-        SenseMemConfig.model_validate({**base, "vision": {"provider": "openai", "video_limit": 4}})
+        MemorySpec.model_validate({**base, "vision": {"provider": "openai", "video_limit": 4}})
 
-    described = SenseMemConfig.model_validate(
+    described = MemorySpec.model_validate(
         {**base, "vision": {"provider": "openai", "modalities": ["image", "video"]}}
     ).vision
-    assert described is not None
+    assert isinstance(described, configuration.OpenAIVisionConfig)
     assert described.modalities == frozenset({Modality.IMAGE, Modality.VIDEO})
     # Image alone by default: a video costs four sampled stills, so it is opted into.
-    assert SenseMemConfig.model_validate(
+    assert MemorySpec.model_validate(
         {**base, "vision": {"provider": "openai"}}
     ).vision.modalities == frozenset({Modality.IMAGE})  # type: ignore[union-attr]
 
@@ -1277,11 +1277,11 @@ def test_the_vision_slot_forwards_its_own_transport_controls(
     captured: dict[str, object] = {}
     marker = cast(VisionDescriptionBackend, object())
 
-    def build(**values: object) -> VisionDescriptionBackend:
+    def build(_backend_type: object, **values: object) -> VisionDescriptionBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIVisionConfig(
         provider="openai",
         model="qwen3.8-27b",
@@ -1373,11 +1373,11 @@ def test_builtin_openai_generation_maps_optional_request_byte_budget(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def build(**values: object) -> GenerationBackend:
+    def build(_backend_type: object, **values: object) -> GenerationBackend:
         captured.update(values)
         return cast(GenerationBackend, object())
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     configuration._build_generation(configuration.OpenAIGenerationConfig(provider="openai"))
     assert "generation_request_max_bytes" not in captured
     configuration._build_generation(
@@ -1393,17 +1393,21 @@ def test_generation_request_budget_requires_a_positive_integer(value: object) ->
             {"provider": "openai", "request_max_bytes": value}
         )
     with pytest.raises(ValidationError):
-        openai_sdk.OpenAIModels(generation_request_max_bytes=cast(int, value))
+        completion_adapter.OpenAICompletion(generation_request_max_bytes=cast(int, value))
 
 
 def test_routed_generation_owns_children_and_does_not_impersonate_consolidation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    built: list[openai_sdk.OpenAIModels] = []
+    built: list[object] = []
 
-    def build(**values: object) -> openai_sdk.OpenAIModels:
-        backend = openai_sdk.OpenAIModels(
+    def build(_backend_type: object, **values: object) -> object:
+        if _backend_type is OpenAIEmbedder:
+            embedding = TinyEmbedder()
+            built.append(embedding)
+            return embedding
+        backend = completion_adapter.OpenAICompletion(
             generation_capabilities=cast(
                 frozenset[Modality],
                 values.get(
@@ -1415,14 +1419,14 @@ def test_routed_generation_owns_children_and_does_not_impersonate_consolidation(
         built.append(backend)
         return backend
 
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes_module, "_owned_openai", build)
     generation = {
         "provider": "openai",
         "model": "fixture",
         "media_policy": "on_demand",
         "routes": [{"provider": "openai", "model": "visual", "modalities": ["text", "image"]}],
     }
-    composition = resolve_memory_config(
+    composition = build_memory_composition(
         {
             "data_dir": tmp_path,
             "embedding": {"provider": "openai"},
@@ -1448,12 +1452,12 @@ def test_failed_evidence_composition_closes_its_generation_client(
 ) -> None:
     closed: list[bool] = []
 
-    class Backend(openai_sdk.OpenAIModels):
+    class Backend(completion_adapter.OpenAICompletion):
         def close(self) -> None:
             closed.append(True)
 
     backend = Backend()
-    monkeypatch.setattr(recipes_module, "_owned_openai_models", lambda **_values: backend)
+    monkeypatch.setattr(recipes_module, "_owned_openai", lambda _backend_type, **_values: backend)
     spec = configuration.OpenAIGenerationConfig(
         provider="openai",
         offline_gazetteer=configuration.OfflineGazetteerConfig(

@@ -12,7 +12,7 @@ from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -65,7 +65,7 @@ def test_point_plan_does_not_apply_predicate_row_caps_to_ranked_tail(
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             retrieval_mode=RetrievalMode.DENSE,
             minimum_relevance=0,
@@ -137,7 +137,7 @@ def test_replanning_uses_the_current_predicate_without_accumulating_previous_pre
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             recall_query_expansion=True,
             recall_rounds=2,

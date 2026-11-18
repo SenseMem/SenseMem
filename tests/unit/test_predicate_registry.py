@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sensemem import EvidenceBasis, FormationProposal, MemoryKind, SpatialAnchor, SpatialContext
-from sensemem.kernel.formation import formation_context
+from sensemem import EvidenceBasis, FormationProposal, RecordKind, SpatialAnchor, SpatialContext
+from sensemem.kernel.formation_rules import formation_context, formation_memory_id
 from sensemem.kernel.predicates import PREDICATES, PredicateDefinition, resolve_predicate
 
 
@@ -13,7 +13,7 @@ def _lineage(
     predicate: str,
     *,
     value: str = "tea",
-    kind: MemoryKind = MemoryKind.STATE,
+    kind: RecordKind = RecordKind.STATE,
     basis: EvidenceBasis = EvidenceBasis.MODEL_INFERENCE,
     identity_id: str | None = None,
     spatial: SpatialContext | None = None,
@@ -59,13 +59,13 @@ def test_aliases_preserve_bound_identity_and_spatial_scope() -> None:
 
 
 def test_asserted_traits_can_still_override_inferred_traits_in_the_same_slot() -> None:
-    assert _lineage("preferred_drink", kind=MemoryKind.TRAIT) == _lineage(
-        "favorite_beverage", kind=MemoryKind.TRAIT, basis=EvidenceBasis.USER_STATEMENT
+    assert _lineage("preferred_drink", kind=RecordKind.TRAIT) == _lineage(
+        "favorite_beverage", kind=RecordKind.TRAIT, basis=EvidenceBasis.USER_STATEMENT
     )
 
 
-@pytest.mark.parametrize("kind", [MemoryKind.ENTITY, MemoryKind.EVENT, MemoryKind.RESPONSE_POLICY])
-def test_aliases_do_not_change_other_semantic_types(kind: MemoryKind) -> None:
+@pytest.mark.parametrize("kind", [RecordKind.ENTITY, RecordKind.EVENT, RecordKind.RESPONSE_POLICY])
+def test_aliases_do_not_change_other_semantic_types(kind: RecordKind) -> None:
     assert _lineage("preferred_drink", kind=kind) != _lineage("favorite_beverage", kind=kind)
 
 
@@ -88,3 +88,35 @@ def test_durable_predicate_keys_do_not_change_with_registry_maintenance() -> Non
     assert _lineage("unregistered") == (
         "453b5277a2b0628664f7504493f8143dbc67f99b6452f7f1cb7f633844e16f04"
     )
+
+
+def test_equivalent_labels_keep_the_same_claim_identity_and_lineage() -> None:
+    keys = []
+    for subject, value in (
+        ("Ana", "Tea"),
+        ("  ANA  ", "  tea  "),
+        ("\uff21\uff4e\uff41", "\uff34\uff45\uff41"),
+    ):
+        proposal = FormationProposal(
+            kind=RecordKind.TRAIT,
+            content="Ana prefers tea.",
+            subject=subject,
+            predicate="preferred_drink",
+            value=value,
+        )
+        context = formation_context(
+            None,
+            proposal,
+            model_id="predicate-fixture-v1",
+            recipe="predicate-fixture-v1",
+            recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        keys.append(
+            (
+                context.lineage_id,
+                formation_memory_id(
+                    "source", proposal, recipe="predicate-fixture-v1", context=context
+                ),
+            )
+        )
+    assert len(set(keys)) == 1

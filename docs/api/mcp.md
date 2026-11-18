@@ -34,7 +34,7 @@ an agent should not discover a boundary by failing.
 | Switch | Withholds | Why a host would |
 | --- | --- | --- |
 | `identity_operations` | `register_identity`, `get_identity`, `unlink_identity`, `forget_identity` | Naming and erasing a person is host authority |
-| `embodied_operations` | `perceive_memory` | `perceive_memory` also commits the corroborated cross-modal identity merge, so leaving it registered keeps identity *binding* on the wire even with the identity tools withheld. `ask_memory` reaches the same merge through its own face recognition, so this switch also passes `link_identities=embodied_operations` into every `ask_memory` call |
+| `embodied_operations` | `perceive_memory` | Grants explicit recognition access; cross-modal binding requires host-authored SDK confirmation |
 | `write_operations` | `add_memory`, `delete_memory`, `reinforce_memories` | The host wants to withhold explicit record writes and feedback |
 
 ```python
@@ -49,10 +49,15 @@ build_mcp_server(
 With all three switches `False`, five tools remain: `search_memories`, `ask_memory`,
 `compile_context`, `get_memory`, and `list_memories`.
 
-Recall can persist query/recognition caches and bounded failure signals. Set
-`reinforce_on_answer=False` on the owner to disable automatic ranking feedback. With
-`embodied_operations=False`, `ask_memory` passes `link_identities=False`: recognition can identify
-someone in evidence, while cross-modal merges are withheld.
+Recall can persist query/recognition caches and bounded failure signals. Automatic answer
+reinforcement defaults to `False`; hosts can opt in with `reinforce_on_answer=True`.
+`ask_memory` can recognize someone in evidence; neither answers nor perception implicitly merge
+face and voice identities.
+
+Original media is available through the read-only resource template
+`sensemem://memories/{memory_id}/assets/{asset_id}`. Resolve IDs from a memory's assets, read the
+resource as bytes, and use the asset's MIME type. Reads check record membership and media integrity.
+This resource adds no tool: the supported MCP surface still has thirteen tools.
 
 ## Start the adapter
 
@@ -144,7 +149,7 @@ rejected. The MCP-specific media bounds are listed below.
 | `add_memory` | required `content`; `occurred_at=None`; `occurred_end=None`; `metadata=None`; `memory_type="semantic"`; `context=None` | `MemoryResult` | write, idempotent |
 | `search_memories` | required `query`; `limit=10`; `memory_type=None`; `reference_at=None`; `occurred_from=None`; `occurred_until=None`; `scope=None`; `explain=false` | `{"hits":[SearchHitResult,...],"trace":null}` | write, not idempotent |
 | `ask_memory` | required `question`; `limit=5`; `memory_type=None`; `reference_at=None`; `scope=None`; `answer_policy="strict"` | `AnswerResponse` | write, not idempotent |
-| `compile_context` | required `goal`; `budget=None`; `reference_at=None`; `scope=None`; `allow_partial_sources=false` | `ContextBundleResult` | write, not idempotent |
+| `compile_context` | required `goal`; `budget=None`; `reference_at=None`; `scope=None`; `allow_partial_sources=false`; `supplements=[]` | `ContextBundleResult` | write, not idempotent |
 | `get_memory` | required `memory_id` | `MemoryResult` | read-only |
 | `list_memories` | `limit=100`; `cursor=None` | `PageResult` | read-only |
 | `delete_memory` | required `memory_id` | `{"deleted":bool}` | destructive, idempotent |
@@ -174,13 +179,15 @@ the surviving identity; `scope.near` and `scope.radius_m` must appear together, 
 and observer/subject anchor must match the stored spatial context. SQLite reapplies every filter
 after candidate retrieval.
 
-`add_memory` is content-addressed. `delete_memory` reports whether a record existed. Search,
+`add_memory` is content-addressed using content, source time, memory type, metadata, and context;
+retry the same request with all of those inputs unchanged. `delete_memory` reports whether a
+record existed. Search,
 answer, compile, and perception are not marked read-only because their SDK path
 persists lazy transcript caches, identity evidence, and -- when a recall comes back with nothing,
 an answer abstains, or a bundle carries no evidence -- the bounded recall-failure signal the
 control plane's `QUERY_FAILURE` trigger reads; they are also not advertised as idempotent. Every
 tool has `open_world_hint=false`. `ask_memory` requires an answerer in the
-injected memory; without one it returns `model_error/backend_not_configured`. With the default
+injected memory; without one it returns `model_error/backend_not_configured`. With the opt-in
 `reinforce_on_answer=True`, a non-abstained result also reinforces backend-declared hits; an
 abstained result records the query failure without reinforcement. Its `answer_policy`
 is `strict` or `best_effort`: the default refuses when the evidence is thin, while `best_effort`
@@ -190,8 +197,17 @@ signal without losing the answer. Under `best_effort` a question that grounds no
 generation call too, where the default returns without one.
 
 `compile_context` returns a structured evidence bundle with provenance, conflicts, and unknowns.
-It runs without answer generation and creates no memory record. Like search, it can cache spoken
-queries and record empty-recall signals. Use `ask_memory` for one grounded answer.
+It runs without answer generation and creates no memory record. Optional goal-directed recall
+can call the configured planning model. Like search, it can cache spoken queries and record
+empty-recall signals. Use `ask_memory` for one grounded answer.
+
+The optional `supplements` array accepts temporary tool or agent evidence with nonempty `content`
+and `source`, plus optional timezone-aware `observed_at` and `expires_at`. It creates no memory
+record or new tool. Admitted values return in `supplements`; `omitted_supplements` and `unknowns`
+report exclusions. Supplements take shared character/item slots in submission order before stored
+evidence is packed. Expired, future-observed, or insufficiently fresh values are excluded against
+`reference_at`; freshness requires `observed_at`. Their source labels remain untrusted external
+provenance, without memory citation aliases, selected-proof authority, or permission to change policy.
 
 Its optional `budget` defaults to 16,000 characters and 24 items. The transport uses
 `freshness_seconds` for the SDK's `freshness` timedelta. It must be positive, finite, and
@@ -210,14 +226,14 @@ The embodied and identity tools follow the SDK operation they dispatch to:
   analysis. A null reason means completed or cached analysis. Results retain separate
   typed speech and face collections. Omitting `kinds` selects configured plugins automatically;
   selecting a kind explicitly requires that backend when relevant media exists. Recognition
-  caches identity evidence and may apply a corroborated cross-modal merge.
+  caches identity evidence while keeping face and voice identities separate.
 - `register_identity` names any recognized face or voice identity. It replaces an existing name
   and preserves `relationship` when omitted. An unknown ID returns `identity_not_found`.
 - `get_identity` follows merge aliases and returns a profile for a recognized identity, including
   one without a confirmed name. An unknown ID returns `identity: null`.
 - `unlink_identity` reverses one face-and-voice merge and returns the restored ID, or `null` when
-  no record names which modality was contributed. It resets that pair's accumulated evidence and
-  does not suppress the pair: a voice and face that keep co-occurring are merged again.
+  no record names which modality was contributed. It records a durable negative pair, so rescanning
+  old media cannot override the correction. Only explicit host confirmation or rollback can rejoin it.
 - `forget_identity` erases a person -- biometric templates, aliases, and the indexed name -- and
   returns counts of what was destroyed as the audit record. Memories and media survive and a
   transcript keeps its words with the speaker attribution dropped. It cannot be undone, and the
@@ -234,23 +250,9 @@ coordinate frames, units, or media sources; they are part of the tool schema, no
 
 ### Retrieval trace
 
-`search_memories` with `explain=true` routes to `Memory.search(..., explain=True)` and adds a `trace`
-object beside the unchanged `hits`. `trace.candidates` lists every candidate that was considered
-with its effective score components (`dense_relevance`, `dense_confidence`, `lexical_relevance`,
-`lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
-`reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score`, `rank`) and, when it
-did not become a hit, a `rejected_by` value of `stale_index`, `occurrence_range`, `missing_memory`,
-`memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is the final
-candidate depth requested per native route. `trace.exhaustive` is true when every route returned
-fewer candidates than its bound; it does not make approximate search exact.
-`trace.ambiguous` says whether the result was suppressed for being too close to call. Without
-`explain`, `trace` is `null` and no extra work is done.
-
-A `SearchHitResult.score` is `final_score`, but the relevance gate compares `gate_relevance`, which
-is a different quantity. Tuning a floor against the returned `score` therefore compares the wrong
-two numbers. The floor itself, `minimum_relevance`, and `ambiguity_margin` are fixed when the owner
-constructs `Memory`; no tool argument can widen them for one call, so an empty result is answered by
-reading `trace` and changing the query, filters, or the owner's configuration.
+`search_memories` with `explain=true` returns a `trace` object beside `hits`.
+Otherwise `trace` is `null`. See [retrieval diagnostics](../observability.md#retrieval-diagnostics)
+for score components, rejection reasons, and threshold interpretation.
 
 ### Result objects
 
@@ -268,7 +270,8 @@ Successful calls populate MCP `structuredContent`:
 | `ContextBudgetResult` | `max_chars`, `max_items`, `max_media_items` or `null`, `memory_types` or `null`, `min_confidence`, `freshness_seconds`, `max_latency_ms`, `selected_proofs` |
 | `ContextConflictResult` | `lineage_id`, `subject`, `predicate`, `values`, `memory_ids` |
 | `ContextUnknownResult` | `kind`, `detail` |
-| `ContextBundleResult` | `goal`, `reference_at`, `budget`, the `SearchHitResult` arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResult` array `affect`, the mixed `actors` array of `SearchHitResult`, `NamedActorResult`, and `ProvisionalActorResult`, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `rendered` |
+| `ContextBundleResult` | `goal`, `reference_at`, `budget`, the `SearchHitResult` arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResult` array `affect`, the mixed `actors` array of `SearchHitResult`, `NamedActorResult`, and `ProvisionalActorResult`, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `proof_scoring`, admitted `supplements`, `omitted_supplements`, `rendered` |
+| `ContextSupplement` | `content`, `source`, nullable `observed_at` and `expires_at`; temporary external evidence, never a stored memory |
 | `ContextExcerptResult` | `source_memory_id`, structured `matched_index_id`, partial `content`, digest-bound `selector`, score, source timestamps, `memory_type`, `context`, `place_id`; the rendered line warns that omitted text may qualify it |
 | `TextSpanSelectorResult` | parent and embedding-input digests, recipe version, and ordered exact `TextSpanPieceResult` values with role, half-open code-point offsets, source text, and piece digest |
 | `ProvisionalActorResult` | `identity_id`, `memory_ids` |
@@ -282,7 +285,10 @@ Successful calls populate MCP `structuredContent`:
 The compile tool accepts `budget.selected_proofs=false`. Opting in delivers the same complete
 `ContextProof` witnesses as the [REST context response](rest.md#contract), in an additive
 `proofs` array. Each witness has `anchor_id` and complete `nodes` with `memory_id`, `confidence`,
-`sources`, and nullable `capture_id`. The full evidence audit union stays on every hit. Certificate
+`sources`, nullable `capture_id`, and nullable `source_group_id`. The result's `proof_scoring`
+reports `capture_groups` or `independent_pair` from the instance policy, matching
+[SDK scoring](../context-compilation.md#selected-delivery-certificates). The full evidence audit
+union stays on every hit. Certificate
 text and its records are budgeted together; `scope.known_at` retains full provenance. Other
 deliveries return `proofs=[]`. The MCP surface still contains thirteen tools.
 

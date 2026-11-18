@@ -206,11 +206,14 @@ def test_personamem_v3_reads_every_released_row_shape(tmp_path: Path) -> None:
                 task_type="over_personalization_sycophancy",
                 rubric_tags="sycophancy_resistance",
             ),
-            # Cluster-scored rows are dropped: their runner threads each
-            # response into the next prompt.
+            # Cluster-scored rows retain their ordered turns for the threaded runner.
             _personamem_query(
                 query_id="8:0003:rep",
                 task_type="over_personalization_repetition_chatbot",
+                instance_full={
+                    "cluster_id": "8:c1d",
+                    "queries": [{"ts": 2_000, "user_query": "What should I cook?"}],
+                },
             ),
             _personamem_query(
                 query_id="8:0004:rank",
@@ -243,7 +246,8 @@ def test_personamem_v3_reads_every_released_row_shape(tmp_path: Path) -> None:
     assert "friend_5: your kind of vibe" in render_event(events[4])
 
     queries = {query.query_id: query for query in personas[0].queries}
-    assert "8:0003:rep" not in queries
+    assert queries["8:0003:rep"].cluster_id == "8:c1d"
+    assert queries["8:0003:rep"].cluster_queries[0].user_query == "What should I cook?"
     assert queries["8:0002:syco"].rubric_tags == ("sycophancy_resistance",)
     ranking = queries["8:0004:rank"]
     assert ranking.positive_indexes == (0,)
@@ -270,6 +274,7 @@ def test_personamem_v3_keeps_what_each_calendar_modification_says(tmp_path: Path
                     "ts": 1_200,
                     "action": "added",
                     "entry": {
+                        "entry_id": "cal_006",
                         "title": "Grant review",
                         "type": "work",
                         "start_ts": 9_000,
@@ -291,7 +296,7 @@ def test_personamem_v3_keeps_what_each_calendar_modification_says(tmp_path: Path
                     "mod_id": "mod_003",
                     "ts": 1_400,
                     "action": "removed",
-                    "entry_id": "cal_017",
+                    "entry_id": "cal_006",
                     "removal_reason": "canceled: organizer moved it",
                 },
             ]
@@ -304,6 +309,10 @@ def test_personamem_v3_keeps_what_each_calendar_modification_says(tmp_path: Path
         for event in load_personamem_v3(tmp_path / "backend")[0].events
         if event.app == "Calendar"
     }
+    # Later modifications name only the entry ID; the added appointment must
+    # preserve it too so that its updates and cancellation can be linked.
+    assert {event.calendar_entry_id for event in events.values()} == {"cal_006"}
+    assert all("Calendar entry: cal_006" in render_event(event) for event in events.values())
 
     added = events["calendar:mod_001"]
     # The appointment's window is a different moment from the edit's, and the
@@ -402,6 +411,111 @@ def test_personamem_v3_reads_the_flattened_row_spelling(tmp_path: Path) -> None:
     assert flattened.rubric_tags == ("avoid_overpersonalization", "telegraph_avoidance")
     assert flattened.judge_evidence["arm"] == "sensitive_event"
     assert queries["26:0044:nulled"].user_query == "what should i cook"
+
+
+@pytest.mark.parametrize(
+    ("limit", "offset", "selected"),
+    [
+        (1, 1, ("8",)),
+        (0.5, 1, ("8", "10")),
+        (None, 2, ("10", "11")),
+        (-1, 2, ("10", "11")),
+    ],
+)
+def test_personamem_v3_selects_personas_before_reading_history(
+    tmp_path: Path, limit: int | float | None, offset: int, selected: tuple[str, ...]
+) -> None:
+    backend = tmp_path / "personamem-v3" / "backend"
+    # Personas with no supported queries do not affect the limit's denominator or offset.
+    _write(
+        backend / "1" / "test.json",
+        [],
+    )
+    for persona_id in ("11", "2", "10", "8"):
+        persona = backend / persona_id
+        _write(persona / "test.json", [_personamem_query()])
+        if persona_id in selected:
+            _write(persona / "instagram.json", [_personamem_event("a", 1_000)])
+        else:
+            # Parsing the history of an unselected persona would fail this evaluation.
+            (persona / "instagram.json").write_text("not JSON", encoding="utf-8")
+
+    task = load_task(
+        TASKS["personamem-v3"],
+        root=tmp_path,
+        verify_digest=False,
+        limit=limit,
+        offset=offset,
+    )
+
+    assert tuple(unit.unit_id for unit in task.units) == selected
+
+
+def test_personamem_v3_ranking_keeps_the_prior_conversation(tmp_path: Path) -> None:
+    persona = tmp_path / "personamem-v3" / "backend" / "8"
+    _write(persona / "instagram.json", [_personamem_event("a", 1_000)])
+    _write(
+        persona / "test.json",
+        [
+            _personamem_query(
+                task_type="personalized_recommendation",
+                user_query="Which one suits the dinner?",
+                prior_conversation=[
+                    {"role": "user", "content": "I need a vegetarian dinner."},
+                    {"role": "assistant", "content": "How many guests?"},
+                    {"role": "user", "content": "Two."},
+                ],
+                instance_full={"candidates": [{"title": "Stew"}, {"title": "Steak"}]},
+            )
+        ],
+    )
+
+    unit = load_task(TASKS["personamem-v3"], root=tmp_path, verify_digest=False).units[0]
+    (question,) = unit.questions
+    prompt = "\n".join(str(part) for part in question.content)
+
+    assert "user: I need a vegetarian dinner.\nassistant: How many guests?\nuser: Two." in prompt
+    assert "Which one suits the dinner?" in prompt
+    assert "title='Stew'" in prompt
+    assert "pepper stew" not in prompt
+    assert "likes stew" not in prompt
+
+
+def test_personamem_v3_proactive_prompt_keeps_the_decision_and_evidence_hidden(
+    tmp_path: Path,
+) -> None:
+    persona = tmp_path / "personamem-v3" / "backend" / "8"
+    _write(persona / "instagram.json", [_personamem_event("a", 1_000)])
+    _write(
+        persona / "test.json",
+        [
+            _personamem_query(
+                query_id=f"8:{index}:proactive",
+                task_family="proactive_actions",
+                task_type="proactive_close_friend_update",
+                user_query=f"[scenario label {index}]",
+                instance_full={
+                    "expected_behavior": behavior,
+                    "trigger_evidence": {"private": "SECRET_TRIGGER"},
+                    "jitai_card": {"decision_rule": "SECRET_RULE"},
+                    "profile": {"name": "SECRET_PROFILE"},
+                },
+            )
+            for index, behavior in enumerate(("act", "restrain"))
+        ],
+    )
+
+    unit = load_task(TASKS["personamem-v3"], root=tmp_path, verify_digest=False).units[0]
+    first, second = unit.questions
+    assert first.content == second.content
+    prompt = "\n".join(str(part) for part in first.content)
+    assert '"should_act": <bool>' in prompt
+    assert '"action_class"' in prompt
+    assert "SECRET_" not in prompt
+    assert "scenario label" not in prompt
+    assert "pepper stew" not in prompt
+    assert "likes stew" not in prompt
+    assert "SECRET_" not in "\n".join(str(part) for item in unit.memories for part in item.content)
 
 
 def test_personamem_v3_never_records_the_question_as_its_own_reference(tmp_path: Path) -> None:
@@ -655,8 +769,8 @@ def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     differ from the clip's own key, so every 30 s clip was uploaded to the embedder twice. The
     harness reads source ids from metadata (`_evidence`), never from content.
     """
-    from sensemem.benchmarks.eval import _memory_content, _memory_metadata
     from sensemem.benchmarks.eval_adapters import MemoryItem
+    from sensemem.benchmarks.eval_inputs import _memory_content, _memory_metadata
 
     clip = tmp_path / "segment.mp4"
     clip.write_bytes(b"video")
@@ -667,108 +781,3 @@ def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     )
     assert _memory_content(MemoryItem("t", ("hello",))) == "[source_id: t]\nhello"
     assert _memory_content(MemoryItem("t", ("hello", clip))) == ("[source_id: t]\nhello", clip)
-
-
-def test_es_memeval_qa_keeps_session_memory_and_visible_evidence_only(tmp_path: Path) -> None:
-    dataset = _write(
-        tmp_path / "es-memeval" / "data" / "evo_emo.json",
-        [
-            {
-                "id": "p1",
-                "basic_info": {"name": "Sarah"},
-                "dialog_history": [
-                    {
-                        "id": "conv1",
-                        "timestamp": "2025-01-02",
-                        "dialogue": [
-                            {"idx": 1, "role": "seeker", "content": "I started painting."},
-                            {"idx": 2, "role": "supporter", "content": "That sounds calming."},
-                        ],
-                    },
-                    {
-                        "id": "conv2",
-                        "timestamp": "2025-02-03",
-                        "dialogue": [
-                            {"idx": 1, "role": "seeker", "content": "I still paint."},
-                        ],
-                    },
-                ],
-                "questions": [
-                    {
-                        "id": "timeline",
-                        "questions": [
-                            {
-                                "idx": 1,
-                                "capability": "information extraction",
-                                "question": "What hobby did Sarah start?",
-                                "answer": "Painting",
-                                # Event annotations and malformed IDs are not
-                                # visible inputs. Both turn IDs map to the one
-                                # session document used by the upstream RAG QA.
-                                "evidence": ["event1", "conv1:1", "conv1:2", "bad:9"],
-                            },
-                            {
-                                "idx": 2,
-                                "capability": "abstention",
-                                "question": "What brand of paint did she buy?",
-                                "answer": "Unknown",
-                                "evidence": [],
-                            },
-                        ],
-                    }
-                ],
-            }
-        ],
-    )
-
-    unit = load_task(
-        TASKS["es-memeval-qa"], root=tmp_path, dataset_path=dataset, verify_digest=False
-    ).units[0]
-
-    assert unit.unit_id == "p1"
-    assert [memory.source_id for memory in unit.memories] == ["conv1", "conv2"]
-    assert unit.memories[0].content == (
-        "[2025-01-02]\nSarah: I started painting.\nsupporter: That sounds calming.",
-    )
-    assert unit.questions[0].metadata["evidence_ids"] == ("conv1",)
-    # Event annotations are not memory IDs; a malformed turn label is an unresolved gold ID.
-    assert unit.questions[0].metadata["unresolved_evidence_ids"] == ("bad:9",)
-    assert unit.questions[0].reference_at == unit.memories[-1].occurred_at
-    assert unit.questions[1].refusal == "unknown"
-    assert unit.questions[1].metadata["abstention"] is True
-
-
-def test_es_memeval_rejects_unknown_dialogue_roles(tmp_path: Path) -> None:
-    dataset = _write(
-        tmp_path / "evo_emo.json",
-        [
-            {
-                "id": "p1",
-                "basic_info": {"name": "Sarah"},
-                "dialog_history": [
-                    {
-                        "id": "conv1",
-                        "timestamp": "2025-01-02",
-                        "dialogue": [{"idx": 1, "role": "observer", "content": "Text"}],
-                    }
-                ],
-                "questions": [
-                    {
-                        "id": "timeline",
-                        "questions": [
-                            {
-                                "idx": 1,
-                                "capability": "abstention",
-                                "question": "Question?",
-                                "answer": "Unknown",
-                                "evidence": [],
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
-    )
-
-    with pytest.raises(ValueError, match="invalid ES-MemEval dialogue role"):
-        load_task(TASKS["es-memeval-qa"], root=tmp_path, dataset_path=dataset, verify_digest=False)

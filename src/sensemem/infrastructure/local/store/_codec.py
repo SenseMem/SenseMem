@@ -11,6 +11,9 @@ from functools import lru_cache
 from operator import mul
 from typing import Literal
 
+from pydantic import TypeAdapter
+
+from sensemem.content import ContentPart
 from sensemem.infrastructure.local.store.errors import StoredDataError
 from sensemem.infrastructure.local.store.rows import (
     IndexDocument,
@@ -19,9 +22,20 @@ from sensemem.infrastructure.local.store.rows import (
     StoredMemory,
     require_aware,
 )
-from sensemem.types import MemoryContext
+from sensemem.semantics import AffectWitness, RecordSemantics
+
+_CONTENT_PARTS = TypeAdapter(tuple[ContentPart, ...])
+_AFFECT_WITNESSES = TypeAdapter(tuple[AffectWitness, ...])
 
 SQLITE_PARAMETER_BATCH = 900
+
+
+def affect_witnesses_json(witnesses: tuple[AffectWitness, ...]) -> str:
+    return _AFFECT_WITNESSES.dump_json(witnesses).decode("utf-8")
+
+
+def affect_witnesses_from_json(value: str) -> tuple[AffectWitness, ...]:
+    return _AFFECT_WITNESSES.validate_json(value, strict=True)
 
 
 def prepare_write_batch(
@@ -34,12 +48,10 @@ def prepare_write_batch(
 ]:
     supplied_memories = tuple(memories)
     supplied_embeddings = tuple(embeddings)
-    if not supplied_memories and supplied_embeddings:
-        raise ValueError("embeddings require at least one written memory")
     memory_ids = [memory.memory_id for memory in supplied_memories]
-    if len(set(memory_ids)) != len(memory_ids):
-        raise ValueError("memory IDs must be unique")
     memory_id_set = set(memory_ids)
+    if len(memory_id_set) != len(memory_ids):
+        raise ValueError("memory IDs must be unique")
     if any(embedding.memory_id not in memory_id_set for embedding in supplied_embeddings):
         raise ValueError("all embeddings must belong to a written memory")
     embedding_ids = [embedding.embedding_id for embedding in supplied_embeddings]
@@ -55,7 +67,7 @@ def memory_from_row(
     row: sqlite3.Row,
     *,
     assets: tuple[StoredAsset, ...] = (),
-    context: MemoryContext | None = None,
+    context: RecordSemantics | None = None,
 ) -> StoredMemory:
     # Ranking repeatedly hydrates the same small text records. Key by the complete SQLite
     # row, including access/forgetting state, so any changed column misses immediately.
@@ -79,12 +91,13 @@ def _memory_from_row(
     row: sqlite3.Row,
     *,
     assets: tuple[StoredAsset, ...] = (),
-    context: MemoryContext | None = None,
+    context: RecordSemantics | None = None,
 ) -> StoredMemory:
     try:
         return StoredMemory(
             memory_id=row_text(row, "memory_id"),
             content=row_text(row, "content"),
+            parts=_CONTENT_PARTS.validate_json(row_text(row, "parts_json")),
             modality=row_text(row, "modality"),
             memory_type=row_text(row, "memory_type"),
             place_id=optional_row_text(row, "place_id"),

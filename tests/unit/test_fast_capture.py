@@ -24,12 +24,12 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryKind,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
     ObservationContext,
+    RecordKind,
     RetrievalScope,
     StreamInput,
     ValidationError,
@@ -94,7 +94,7 @@ class CountingFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.ENTITY,
+                    kind=RecordKind.ENTITY,
                     content="The user is an entity",
                     subject="user",
                     confidence=0.9,
@@ -126,7 +126,7 @@ def test_a_capture_is_durable_and_listable_but_only_searchable_once_settled(
         tmp_path,
         embedder=embedder,
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.capture("the spare key is in the blue toolbox")
 
@@ -149,7 +149,9 @@ def test_a_capture_is_durable_and_listable_but_only_searchable_once_settled(
 
 def test_repeating_a_capture_is_idempotent_and_still_calls_no_model(tmp_path: Path) -> None:
     embedder = CountingEmbedder()
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         first = memory.capture("red screwdriver in drawer two")
         second = memory.capture("red screwdriver in drawer two")
 
@@ -166,7 +168,7 @@ def test_repeating_a_capture_is_idempotent_and_still_calls_no_model(tmp_path: Pa
 
 def test_capture_preserves_place_and_uses_it_in_the_stable_id(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         kitchen = memory.capture(
             "the red toolbox is beside the door",
@@ -197,7 +199,7 @@ def test_adding_captured_content_settles_it_under_the_same_id(tmp_path: Path) ->
         tmp_path,
         embedder=embedder,
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         captured = memory.capture("the blue toolbox sits on the workbench")
         added = memory.add("the blue toolbox sits on the workbench")
@@ -223,7 +225,7 @@ def test_settling_stores_the_content_a_blocking_add_would_have_stored(tmp_path: 
         tmp_path / "deferred",
         embedder=CountingEmbedder(capabilities=text_only),
         transcriber=deferred_transcriber,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         captured = memory.capture(audio)
         assert deferred_transcriber.calls == 0
@@ -237,7 +239,7 @@ def test_settling_stores_the_content_a_blocking_add_would_have_stored(tmp_path: 
         tmp_path / "blocking",
         embedder=CountingEmbedder(capabilities=text_only),
         transcriber=CountingTranscriber(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         added = memory.add(audio)
 
@@ -249,7 +251,9 @@ def test_settling_stores_the_content_a_blocking_add_would_have_stored(tmp_path: 
 def test_a_model_failure_keeps_its_record_queued_and_names_it(tmp_path: Path) -> None:
     embedder = CountingEmbedder()
     embedder.poison = "unreachable"
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         healthy = memory.capture("a healthy observation")
         failing = memory.capture("an unreachable observation")
 
@@ -280,7 +284,9 @@ def test_a_poisoned_capture_neither_blocks_nor_hides_the_records_behind_it(
 ) -> None:
     embedder = CountingEmbedder()
     embedder.poison = "unreachable"
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         poisoned = memory.capture("an unreachable observation")
 
         for _attempt in range(3):
@@ -315,7 +321,7 @@ def test_capture_refuses_media_no_configured_model_will_ever_embed(tmp_path: Pat
     with Memory(
         tmp_path,
         embedder=CountingEmbedder(capabilities=frozenset({Modality.TEXT})),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         image = Blob(b"frame", "image/png", "frame.png")
         with pytest.raises(ModelError) as refusal:
@@ -334,7 +340,7 @@ def test_capture_refuses_media_no_configured_model_will_ever_embed(tmp_path: Pat
     with Memory(
         tmp_path,
         embedder=CountingEmbedder(capabilities=frozenset({Modality.TEXT, Modality.AUDIO})),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         image = Blob(b"frame", "image/png", "frame.png")
         with pytest.raises(ModelError) as refusal:
@@ -356,7 +362,7 @@ def test_an_add_that_crashed_before_forming_is_completed_by_the_next_settle(
     former = CountingFormer()
     embedder = CountingEmbedder()
     with Memory(
-        tmp_path, embedder=embedder, former=former, config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=embedder, former=former, settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         memory._formation.form_sources = crash  # type: ignore[method-assign]
         with pytest.raises(RuntimeError):
@@ -367,7 +373,7 @@ def test_an_add_that_crashed_before_forming_is_completed_by_the_next_settle(
     (queued,) = _queue_rows(tmp_path)
     embedded = embedder.calls
     with Memory(
-        tmp_path, embedder=embedder, former=former, config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=embedder, former=former, settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         assert [row.memory_id for row in memory.pending_captures()] == [queued[0]]
         # Settling an already-embedded row owes formation only; re-running the model stages would
@@ -382,7 +388,7 @@ def test_an_add_that_crashed_before_forming_is_completed_by_the_next_settle(
         derived = [
             item
             for item in memory.list().items
-            if item.context is not None and item.context.kind is MemoryKind.ENTITY
+            if item.context is not None and item.context.kind is RecordKind.ENTITY
         ]
         assert len(derived) == 1
 
@@ -400,7 +406,7 @@ def test_the_settle_span_reports_time_to_searchable_separately(tmp_path: Path) -
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         memory.capture("a healthy observation")
@@ -420,14 +426,14 @@ def test_the_settle_span_reports_time_to_searchable_separately(tmp_path: Path) -
 
 def test_a_capture_that_survived_a_crash_settles_under_a_new_owner(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         record = memory.capture("the fuse box is behind the coats")
 
     assert [row[0] for row in _queue_rows(tmp_path)] == [record.id]
 
     with Memory(
-        tmp_path, embedder=CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         assert len(memory.pending_captures()) == 1
         assert memory.settle() == 1
@@ -441,7 +447,7 @@ def test_async_capture_settle_and_pending_mirror_the_synchronous_surface(tmp_pat
             Memory(
                 tmp_path,
                 embedder=CountingEmbedder(),
-                config=MemoryConfig(minimum_relevance=0),
+                settings=MemorySettings(minimum_relevance=0),
             )
         ) as memory:
             record = await memory.capture("the ladder is in the garage")
@@ -484,13 +490,11 @@ async def test_async_stream_commits_lazily_and_preserves_capture_policy(
 def test_the_capture_operations_reach_the_command_line(tmp_path: Path) -> None:
     from sensemem import cli
 
-    assert {"capture", "settle", "pending_captures"} <= set(cli.OPERATIONS)
-    assert {"capture", "settle", "pending-captures"} <= set(cli.COMMANDS)
     assert {"capture", "settle", "pending-captures"} <= set(cli._LOCAL)
 
     parser = cli._parser()
     with Memory(
-        tmp_path, embedder=CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         record = memory.capture("the ladder is in the garage")
         reported = cli._LOCAL["pending-captures"](memory, parser.parse_args(["pending-captures"]))
@@ -516,7 +520,9 @@ def test_settle_names_records_on_the_command_line(tmp_path: Path) -> None:
     parser = cli._parser()
     embedder = CountingEmbedder()
     embedder.poison = "unreachable"
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         poisoned = memory.capture("an unreachable observation")
         for _attempt in range(3):
             with pytest.raises(ModelError):
@@ -546,7 +552,7 @@ def test_a_formation_failure_keeps_the_capture_queued_until_it_forms(tmp_path: P
         tmp_path,
         embedder=CountingEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.capture("the spare key is in the blue toolbox")
 
@@ -566,7 +572,7 @@ def test_a_formation_failure_keeps_the_capture_queued_until_it_forms(tmp_path: P
         derived = [
             item
             for item in memory.list().items
-            if item.context is not None and item.context.kind is MemoryKind.ENTITY
+            if item.context is not None and item.context.kind is RecordKind.ENTITY
         ]
         assert len(derived) == 1 and derived[0].context is not None
         assert derived[0].context.evidence_ids == (record.id,)
@@ -580,7 +586,7 @@ def test_settling_describes_an_image_a_text_only_embedder_cannot_take(tmp_path: 
         tmp_path,
         embedder=CountingEmbedder(capabilities=frozenset({Modality.TEXT})),
         vision_describer=describer,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.capture(("the red toolbox", Blob(b"frame", "image/png")))
         assert describer.inputs == []
@@ -609,7 +615,7 @@ def test_a_caption_derived_while_settling_is_reused_by_a_later_add(tmp_path: Pat
         tmp_path,
         embedder=CountingEmbedder(capabilities=frozenset({Modality.TEXT})),
         vision_describer=describer,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         captured = memory.capture(("the red toolbox", picture))
         assert describer.calls == 0
@@ -636,7 +642,7 @@ def test_settling_appends_derived_text_and_leaves_the_captured_evidence_intact(
         tmp_path,
         embedder=CountingEmbedder(capabilities=frozenset({Modality.TEXT})),
         transcriber=CountingTranscriber(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         captured = memory.capture((note, audio))
         assert captured.content == note
@@ -662,7 +668,7 @@ def test_pending_captures_name_the_stage_a_record_is_stopped_at(tmp_path: Path) 
         tmp_path,
         embedder=CountingEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.capture("the spare key is in the blue toolbox")
         (pending,) = memory.pending_captures()
@@ -686,7 +692,9 @@ def test_settle_can_name_the_records_it_runs_and_ignores_the_ceiling_for_them(
     tmp_path: Path,
 ) -> None:
     embedder = CountingEmbedder()
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         first = memory.capture("the ladder is in the garage")
         second = memory.capture("the fuse box is behind the coats")
 
@@ -719,7 +727,7 @@ def test_settle_can_name_the_records_it_runs_and_ignores_the_ceiling_for_them(
 
 def test_naming_records_rejects_ids_the_store_would_only_reject_later(tmp_path: Path) -> None:
     with Memory(
-        tmp_path, embedder=CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         record = memory.capture("the ladder is in the garage")
 
@@ -754,7 +762,9 @@ def test_two_concurrent_settles_never_run_the_models_over_one_record_twice(
     tmp_path: Path,
 ) -> None:
     embedder = SlowEmbedder()
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0)
+    ) as memory:
         record = memory.capture("the spare key is in the blue toolbox")
 
         started = threading.Barrier(2)
@@ -786,7 +796,7 @@ def test_a_capture_keeps_the_place_it_was_captured_in(tmp_path: Path) -> None:
     from every place-scoped question about the room it was captured in.
     """
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         record = memory.capture(
             "the kettle boiled dry again",
@@ -804,7 +814,7 @@ def test_a_capture_keeps_the_place_it_was_captured_in(tmp_path: Path) -> None:
 def test_settle_counts_only_the_rows_it_actually_settled(tmp_path: Path) -> None:
     """A row another writer settled first is not this pass's work, so it is not counted."""
     with Memory(
-        tmp_path, embedder=CountingEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=CountingEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         memory.capture("the spare key is in the blue toolbox")
         # What losing the race looks like from inside: the row is gone by the time this pass

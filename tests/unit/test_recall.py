@@ -7,21 +7,22 @@ from typing import cast
 
 import pytest
 
-from sensemem.infrastructure.local.store import RECALL_MAX_TERM_CHARS
+from sensemem.prompts.recall import recall_note
 from sensemem.recall import (
     _MAX_NEIGHBOR_ANCHORS,
     DEFAULT_MAX_ROWS,
-    RecallPlan,
+    RECALL_MAX_TERM_CHARS,
+    RecallProgram,
     RecallResult,
     RecallRows,
     RecallStep,
     RecallStepResult,
-    execute,
-    fallback_plan,
-    parse_recall_plan,
-    recall_note,
+    execute_recall_program,
+    fallback_recall_program,
+    parse_recall_program,
 )
-from sensemem.types import MemoryType, Modality, SearchHit
+from sensemem.records import SearchHit
+from sensemem.types import MemoryCategory, Modality
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 
@@ -70,7 +71,7 @@ class _Reader:
         occurred_from: datetime | None,
         occurred_until: datetime | None,
         modality: Modality | None,
-        memory_type: MemoryType | None,
+        memory_type: MemoryCategory | None,
         max_rows: int,
     ) -> RecallRows:
         self.calls.append(("match", (tuple(terms), any_of, modality, memory_type, max_rows)))
@@ -82,7 +83,7 @@ class _Reader:
         occurred_from: datetime,
         occurred_until: datetime,
         modality: Modality | None,
-        memory_type: MemoryType | None,
+        memory_type: MemoryCategory | None,
         max_rows: int,
     ) -> RecallRows:
         self.calls.append(("window", (occurred_from, occurred_until, modality, max_rows)))
@@ -116,9 +117,9 @@ class _Reader:
 
 def test_the_fallback_plan_is_todays_behaviour() -> None:
     """Every failure lands here, so this plan has to be one plain similarity search."""
-    plan = fallback_plan("who signed the lease?", k=7)
+    plan = fallback_recall_program("who signed the lease?", k=7)
 
-    assert plan == RecallPlan(
+    assert plan == RecallProgram(
         shape="point",
         steps=(RecallStep(op="similar", query="who signed the lease?", k=7),),
     )
@@ -145,7 +146,7 @@ def test_a_full_plan_parses_every_op_with_its_own_fields() -> None:
         }
     )
 
-    plan = parse_recall_plan(payload, reference_at=NOW)
+    plan = parse_recall_program(payload, reference_at=NOW)
 
     assert plan is not None
     assert plan.shape == "composite" and plan.exhaustive is True
@@ -224,7 +225,7 @@ def test_an_unrunnable_plan_falls_back_instead_of_running_something_else(
     The alternative -- dropping the part that did not parse -- would answer a set question from
     a silently smaller set and still report it as complete.
     """
-    assert parse_recall_plan(json.dumps(document), reference_at=NOW) is None
+    assert parse_recall_program(json.dumps(document), reference_at=NOW) is None
 
 
 @pytest.mark.parametrize(
@@ -232,7 +233,7 @@ def test_an_unrunnable_plan_falls_back_instead_of_running_something_else(
     ["", "   ", "not json", "[]", '"a string"', "null", '{"shape": "set"}'],
 )
 def test_output_that_is_not_a_plan_document_falls_back(payload: str) -> None:
-    assert parse_recall_plan(payload, reference_at=NOW) is None
+    assert parse_recall_program(payload, reference_at=NOW) is None
 
 
 def test_a_null_filter_is_accepted_where_the_op_cannot_honour_it() -> None:
@@ -246,7 +247,7 @@ def test_a_null_filter_is_accepted_where_the_op_cannot_honour_it() -> None:
         }
     )
 
-    plan = parse_recall_plan(payload, reference_at=NOW)
+    plan = parse_recall_program(payload, reference_at=NOW)
 
     assert plan is not None and plan.steps[0].modality is None
 
@@ -278,7 +279,7 @@ def test_a_magnitude_is_clamped_rather_than_refused(
         }
     )
 
-    plan = parse_recall_plan(payload, reference_at=NOW)
+    plan = parse_recall_program(payload, reference_at=NOW)
 
     assert plan is not None
     assert getattr(plan.steps[1], field) == expected
@@ -293,7 +294,7 @@ def test_a_naive_date_is_read_in_the_reference_clocks_zone() -> None:
         }
     )
 
-    plan = parse_recall_plan(payload, reference_at=NOW.astimezone(tokyo))
+    plan = parse_recall_program(payload, reference_at=NOW.astimezone(tokyo))
 
     assert plan is not None
     assert plan.steps[0].occurred_from == datetime(2024, 9, 1, tzinfo=tokyo)
@@ -312,7 +313,7 @@ def test_execute_unions_the_ops_with_exhaustive_rows_in_time_order_first() -> No
         window=(_hit("w-mid", minutes=0), _hit("m-early", minutes=-30)),
         similar=(_hit("s-top", minutes=90, score=0.99), _hit("m-late", minutes=30, score=0.9)),
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "set",
@@ -327,7 +328,7 @@ def test_execute_unions_the_ops_with_exhaustive_rows_in_time_order_first() -> No
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert [hit.id for hit in result.exhaustive] == ["m-early", "w-mid", "m-late"]
     assert [hit.id for hit in result.ranked] == ["s-top"]
@@ -350,7 +351,7 @@ def test_a_window_bound_to_an_earlier_step_reads_the_span_of_its_rows() -> None:
         match=(_hit("m-late", minutes=30), _hit("m-early", minutes=-30)),
         window=(_hit("w-1", minutes=0),),
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "set",
@@ -366,7 +367,7 @@ def test_a_window_bound_to_an_earlier_step_reads_the_span_of_its_rows() -> None:
     assert plan is not None
     assert plan.steps[1].time_of == 0
     assert plan.steps[1].occurred_from is None and plan.steps[1].occurred_until is None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     start, until = NOW - timedelta(minutes=30), NOW + timedelta(minutes=31)
     assert reader.calls[1] == ("time_span", ("m-late", "m-early"))
@@ -390,7 +391,7 @@ def test_execute_uses_the_reader_to_merge_same_time_rows_across_reads() -> None:
         match=(_hit("a-last"), _hit("m-middle")),
         window=(_hit("z-first"), _hit("a-last")),
     )
-    plan = RecallPlan(
+    plan = RecallProgram(
         shape="sequence",
         steps=(
             RecallStep(op="match", terms=("event",)),
@@ -398,7 +399,7 @@ def test_execute_uses_the_reader_to_merge_same_time_rows_across_reads() -> None:
         ),
     )
 
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert [hit.id for hit in result.exhaustive] == ["z-first", "m-middle", "a-last"]
     assert result.complete
@@ -412,7 +413,7 @@ def test_a_match_bound_to_a_step_that_read_no_dated_rows_reads_nothing() -> None
     """No span to derive means no read, never an unbounded one over the whole corpus."""
     undated = SearchHit(id="u-1", content="record", score=0.5, created_at=NOW)
     reader = _Reader(match=(undated,), window=(_hit("w-1"),))
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "set",
@@ -427,7 +428,7 @@ def test_a_match_bound_to_a_step_that_read_no_dated_rows_reads_nothing() -> None
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert [call[0] for call in reader.calls] == ["match", "time_span", "time_span"]
     assert [(step.op, step.rows) for step in result.executed] == [
@@ -453,7 +454,7 @@ def test_a_derived_span_is_read_once_per_anchor_and_a_bad_date_reads_nothing() -
             raise OverflowError("date value out of range")
 
     reader = _Overflowing(match=(_hit("m-1"),), window=(_hit("w-1"),))
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "set",
@@ -468,7 +469,7 @@ def test_a_derived_span_is_read_once_per_anchor_and_a_bad_date_reads_nothing() -
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert [call[0] for call in reader.calls] == ["match", "time_span"]
     assert [(step.op, step.rows, step.bounded) for step in result.executed] == [
@@ -494,19 +495,19 @@ def test_a_time_bound_that_names_no_earlier_step_is_not_a_plan(time: str) -> Non
         }
     )
 
-    assert parse_recall_plan(payload, reference_at=NOW) is None
+    assert parse_recall_program(payload, reference_at=NOW) is None
 
 
 def test_a_read_that_returned_its_whole_bound_is_not_complete() -> None:
     """Completeness is what licenses a count, so a truncated read has to say so."""
     reader = _Reader(match=tuple(_hit(f"m-{index}", minutes=index) for index in range(3)))
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps({"shape": "set", "steps": [{"op": "match", "terms": ["a"], "max_rows": 3}]}),
         reference_at=NOW,
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert result.executed[0].bounded is True
     assert result.complete is False
@@ -515,7 +516,9 @@ def test_a_read_that_returned_its_whole_bound_is_not_complete() -> None:
 def test_a_bounded_similarity_read_does_not_make_a_ranking_incomplete() -> None:
     reader = _Reader(similar=tuple(_hit(f"s-{index}") for index in range(4)))
 
-    result = execute(fallback_plan("q", k=4), reader, limit=4, active_records=1_000)
+    result = execute_recall_program(
+        fallback_recall_program("q", k=4), reader, limit=4, active_records=1_000
+    )
 
     assert result.executed[0].bounded is True
     assert result.complete is True
@@ -527,7 +530,7 @@ def test_neighbors_anchor_on_the_rows_the_named_step_returned() -> None:
         match=(_hit("m-1", minutes=0), _hit("m-2", minutes=10)),
         neighbors=(_hit("n-1", minutes=-5),),
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "sequence",
@@ -541,7 +544,7 @@ def test_neighbors_anchor_on_the_rows_the_named_step_returned() -> None:
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert reader.calls[1] == ("neighbors", (("m-1", "m-2"), 2, 0, DEFAULT_MAX_ROWS))
     assert [hit.id for hit in result.hits] == ["n-1", "m-1", "m-2"]
@@ -551,11 +554,11 @@ def test_neighbors_anchor_on_the_rows_the_named_step_returned() -> None:
 def test_recall_note_distinguishes_read_completeness_from_answer_membership(
     omitted: int, bounded: bool
 ) -> None:
-    plan = RecallPlan(
+    plan = RecallProgram(
         shape="set",
         steps=(RecallStep(op="similar", query="cards"), RecallStep(op="neighbors", of=0)),
     )
-    result = execute(
+    result = execute_recall_program(
         plan,
         _Reader(similar=(_hit("anchor"),), neighbors=(_hit("neighbor"),)),
         limit=12,
@@ -587,7 +590,7 @@ def test_recall_note_distinguishes_read_completeness_from_answer_membership(
 
 def test_a_step_whose_anchor_read_nothing_reads_nothing_itself() -> None:
     reader = _Reader(neighbors=(_hit("n-1"),))
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "sequence",
@@ -601,7 +604,7 @@ def test_a_step_whose_anchor_read_nothing_reads_nothing_itself() -> None:
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert [name for name, _arguments in reader.calls] == ["match"]
     assert result.hits == ()
@@ -613,7 +616,7 @@ def test_a_term_the_store_accepts_at_its_limit_still_plans() -> None:
         {"shape": "set", "steps": [{"op": "match", "terms": ["x" * RECALL_MAX_TERM_CHARS]}]}
     )
 
-    plan = parse_recall_plan(payload, reference_at=NOW)
+    plan = parse_recall_program(payload, reference_at=NOW)
 
     assert plan is not None
     assert plan.steps[0].terms == ("x" * RECALL_MAX_TERM_CHARS,)
@@ -635,7 +638,7 @@ def test_a_primitive_that_refuses_its_arguments_is_a_read_that_did_not_happen(
             raise ValueError("a term must be at most 200 characters")
 
     reader = Refusing(similar=(_hit("s-1"),))
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "composite",
@@ -649,7 +652,7 @@ def test_a_primitive_that_refuses_its_arguments_is_a_read_that_did_not_happen(
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=active_records)
+    result = execute_recall_program(plan, reader, limit=12, active_records=active_records)
 
     assert result.executed[0] == RecallStepResult(op="match", rows=0, bounded=True)
     assert result.complete is False
@@ -683,13 +686,13 @@ def test_a_predicate_that_selected_most_of_the_corpus_contributes_no_rows(
         match=tuple(_hit(f"m-{index}", minutes=index) for index in range(30)),
         selected={"match": selected},
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps({"shape": "set", "steps": [{"op": "match", "terms": ["caroline"]}]}),
         reference_at=NOW,
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=3, active_records=active)
+    result = execute_recall_program(plan, reader, limit=3, active_records=active)
 
     assert len(result.hits) == (0 if flooded else 30)
     assert result.executed[0].non_selective == (selected if flooded else 0)
@@ -703,13 +706,13 @@ def test_a_non_selective_step_tells_the_reader_what_it_holds_instead() -> None:
         entity=tuple(_hit(f"m-{index}", minutes=index) for index in range(30)),
         selected={"entity": 300},
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps({"shape": "entity", "steps": [{"op": "entity", "name": "Caroline"}]}),
         reference_at=NOW,
     )
 
     assert plan is not None
-    note = recall_note(execute(plan, reader, limit=3, active_records=600))
+    note = recall_note(execute_recall_program(plan, reader, limit=3, active_records=600))
 
     assert "records about Caroline matched too many records to enumerate (300 of 600)" in note
     assert "only the top-ranked records for the question are shown" in note
@@ -727,7 +730,7 @@ def test_a_neighbors_step_anchors_on_a_bounded_head_of_what_it_follows() -> None
         match=tuple(_hit(f"m-{index}", minutes=index) for index in range(50)),
         neighbors=(_hit("n-1", minutes=-5),),
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps(
             {
                 "shape": "sequence",
@@ -741,7 +744,7 @@ def test_a_neighbors_step_anchors_on_a_bounded_head_of_what_it_follows() -> None
     )
 
     assert plan is not None
-    execute(plan, reader, limit=12, active_records=1_000)
+    execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     anchors = cast(tuple[tuple[str, ...], int, int, int], reader.calls[1][1])[0]
     assert anchors == tuple(f"m-{index}" for index in range(_MAX_NEIGHBOR_ANCHORS))
@@ -759,13 +762,13 @@ def test_a_read_the_bound_truncated_stays_bounded_when_a_scope_drops_a_row() -> 
         match=(_hit("m-1", minutes=0),),
         selected={"match": 3},
     )
-    plan = parse_recall_plan(
+    plan = parse_recall_program(
         json.dumps({"shape": "set", "steps": [{"op": "match", "terms": ["a"], "max_rows": 3}]}),
         reference_at=NOW,
     )
 
     assert plan is not None
-    result = execute(plan, reader, limit=12, active_records=1_000)
+    result = execute_recall_program(plan, reader, limit=12, active_records=1_000)
 
     assert result.executed[0] == RecallStepResult(op="match", rows=1, bounded=True)
     assert result.complete is False

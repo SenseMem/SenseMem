@@ -3,7 +3,7 @@
 Control how SenseMem retrieves, packs evidence, ranks memories, and matches identities through
 the `settings` mapping. Each setting below lists its default and effect.
 
-For direct construction, pass `config=MemoryConfig(...)` to `Memory` or `Memory.from_plugins`.
+For direct construction, pass `settings=MemorySettings(...)` to `Memory` or `Memory.from_plugins`.
 Tracing uses the separate `tracer=` argument. [Configuration](../configuration.md) covers model slots.
 
 ## Retrieval and grounding
@@ -58,7 +58,7 @@ and the hard [compile budget](../context-compilation.md#budget) are separate con
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `recall_planning` | `False` | Ask the answerer for a bounded recall program |
+| `recall_planning` | `False` | Ask the answerer for a bounded recall program for answering or context compilation |
 | `recall_set_budget_chars` | `30000` | Supplemental matched/semantic allowance after mandatory evidence |
 | `recall_set_max_rows` | `60` | Cap matched set/sequence/entity rows, retaining the read's earliest rows |
 | `recall_rounds` | `2` | Answer-attempt ceiling; 1 disables follow-up |
@@ -138,11 +138,11 @@ predicate result or licensed total. Report counts of actual additions, not merel
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `formation_history_max_rows` | `0` | Read-only history per target; maximum 128 |
+| `formation_history_max_rows` | `8` | Read-only history per target; `0` disables, maximum 128 |
 | `formation_history_budget_chars` | `6000` | Positive whole-record content allowance |
 | `independent_evidence` | `False` | Store-pinned experimental AND/OR support projection |
 | `decay_half_life_days` | `None` | Positive query-time decay half-life |
-| `reinforce_on_answer` | `True` | Rank reinforcement of backend-declared non-abstained hits |
+| `reinforce_on_answer` | `False` | Opt-in ranking heuristic for backend-declared non-abstained hits; prefer explicit feedback after useful outcomes |
 | `memory_budget_records` | `None` | Active-record budget creating PRESSURE work; never automatic deletion |
 | `query_failure_window_seconds` | `3600.0` | Window for repeated near-equal empty recalls |
 | `query_failure_history` | `512` | Bounded retained empty-query signal rows |
@@ -160,7 +160,6 @@ See [formation history and retention](lifecycle.md), [independent evidence](../t
 | `speaker_margin` | `0.05` |
 | `face_similarity` | `0.363` |
 | `face_margin` | `0.05` |
-| `identity_link_min_assets` | `2` |
 
 Calibrate these matching thresholds for the intended devices and population. A high threshold
 fragments people; a low one can falsely merge them. Matching uses the best score

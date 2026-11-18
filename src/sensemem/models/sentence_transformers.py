@@ -7,6 +7,7 @@ import json
 import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from importlib import import_module
 from pathlib import Path
@@ -14,17 +15,18 @@ from typing import Literal, Protocol, cast
 
 from sensemem._telemetry import mark_model_requests, record_unmetered_model_usage
 from sensemem._validation import commit_revision, nonempty_text, optional_text, positive_int
+from sensemem.capabilities import EmbeddingRoute
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models._media import fetch_videos, load_mono_audio
 from sensemem.models.base import EmbedTask, ModelInput, _modalities
 from sensemem.models.reranking import reranking_inputs, reranking_scores
-from sensemem.types import EmbeddingRoute, Modality
+from sensemem.types import Modality
 
 _ATOMIC_MODALITIES = (Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO)
-_STANDARD_RECIPE = "sentence-transformers-standard-input-v1"
+_STANDARD_RECIPE = "sentence-transformers-ordered-input-v2"
 _EMBEDDINGGEMMA2_MODEL = "google/embeddinggemma-2"
 _EMBEDDINGGEMMA2_DIMENSIONS = (128, 256, 512, 768)
-_EMBEDDINGGEMMA2_RECIPE = "embeddinggemma2-text-prompts-pyav-audio16k-v2"
+_EMBEDDINGGEMMA2_RECIPE = "embeddinggemma2-ordered-text-prompts-pyav-audio16k-v3"
 
 
 class _EmbeddingMatrix(Protocol):
@@ -206,7 +208,17 @@ class SentenceTransformersEmbedder:
                 raise ModelError("EmbeddingGemma 2 does not declare its retrieval prompts")
             # ST applies batch prompts to media too; this model prefixes text only.
             batch = tuple(
-                ModelInput(text=prefix + value.text if value.text else "", assets=value.assets)
+                ModelInput(
+                    text=prefix + value.text if value.text else "",
+                    assets=value.assets,
+                    parts=tuple(
+                        replace(part, value=prefix + part.value)
+                        if part.kind != "asset"
+                        and all(earlier.kind == "asset" for earlier in value.parts[:position])
+                        else part
+                        for position, part in enumerate(value.parts)
+                    ),
+                )
                 for value in batch
             )
             encoding_kwargs["prompt"] = ""
@@ -264,18 +276,19 @@ class SentenceTransformersEmbedder:
             if kind not in self._capabilities:
                 raise ModelError(f"embedding model does not support {kind.value} input")
         parts: list[tuple[str, object]] = []
-        if value.text:
-            parts.append((Modality.TEXT.value, value.text))
-        # ModelInput owns the resolved-asset check.
-        parts.extend(
-            (
-                cast(Modality, asset.modality).value,
-                load_mono_audio(cast(Path, asset.path), sampling_rate=16000)
-                if self._model_id == _EMBEDDINGGEMMA2_MODEL and asset.modality is Modality.AUDIO
-                else str(asset.path),
-            )
-            for asset in value.assets
-        )
+        for item in value.ordered_content:
+            if isinstance(item, str):
+                parts.append((Modality.TEXT.value, item))
+            else:
+                parts.append(
+                    (
+                        cast(Modality, item.modality).value,
+                        load_mono_audio(cast(Path, item.path), sampling_rate=16000)
+                        if self._model_id == _EMBEDDINGGEMMA2_MODEL
+                        and item.modality is Modality.AUDIO
+                        else str(item.path),
+                    )
+                )
         modalities = tuple(modality for modality, _ in parts)
         if len(parts) == 1:
             modality, part = parts[0]

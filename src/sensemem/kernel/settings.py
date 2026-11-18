@@ -5,23 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sensemem._validation import unit_interval
+from sensemem._validation import positive_int, unit_interval
+from sensemem.control_values import RetentionPolicy
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.store import RECALL_MAX_ROWS
 from sensemem.kernel.metadata import index_recipe_for, validated_index_quantization
 from sensemem.kernel.validation import (
-    positive_int,
     positive_seconds,
     strict_bool,
     validated_decay_half_life,
     validated_retrieval_mode,
 )
-from sensemem.plugins import MemoryConfig
-from sensemem.types import IndexQuantization, RetentionPolicy, RetrievalMode
+from sensemem.recall import RECALL_MAX_ROWS
+from sensemem.settings import MemorySettings
+from sensemem.types import IndexQuantization, RetrievalMode
 
 
 @dataclass(frozen=True, slots=True)
-class Settings:
+class ResolvedSettings:
     """Validated local policy for one open memory, in the units the planes consume."""
 
     index_quantization: IndexQuantization
@@ -31,7 +31,6 @@ class Settings:
     speaker_margin: float
     face_similarity: float
     face_margin: float
-    identity_link_min_assets: int
     index_speech: bool
     independent_evidence: bool
     formation_history_max_rows: int
@@ -57,26 +56,21 @@ class Settings:
 
 
 def _expansion_max_rows(value: object) -> int:
-    """Bound the expansion read the way the store bounds every other recall read.
-
-    The value goes straight to `related_memories(max_rows=...)`, which refuses anything above
-    `RECALL_MAX_ROWS`. Unbounded here, a caller who set it high built a memory that opened fine
-    and then raised out of the store on every `ask`; policy is validated once, at wiring.
-    """
+    """Validate the expansion limit against the recall contract at assembly."""
     rows = positive_int(value, "evidence_expansion_max_rows")
     if rows > RECALL_MAX_ROWS:
         raise ValidationError(f"evidence_expansion_max_rows must be at most {RECALL_MAX_ROWS}")
     return rows
 
 
-def resolve_settings(config: MemoryConfig | None) -> Settings:
-    """Validate every `MemoryConfig` field once, at wiring, and fail before storage opens."""
+def resolve_settings(config: MemorySettings | None) -> ResolvedSettings:
+    """Validate every `MemorySettings` field once, at wiring, and fail before storage opens."""
     if config is None:
-        config = MemoryConfig()
-    elif not isinstance(config, MemoryConfig):
-        raise ValidationError("config must be a MemoryConfig value")
+        config = MemorySettings()
+    elif not isinstance(config, MemorySettings):
+        raise ValidationError("settings must be a MemorySettings value")
     quantization = validated_index_quantization(config.index_quantization)
-    settings = Settings(
+    settings = ResolvedSettings(
         index_quantization=quantization,
         index_recipe=index_recipe_for(quantization),
         retrieval_mode=validated_retrieval_mode(config.retrieval_mode),
@@ -84,9 +78,6 @@ def resolve_settings(config: MemoryConfig | None) -> Settings:
         speaker_margin=unit_interval(config.speaker_margin, "speaker_margin"),
         face_similarity=unit_interval(config.face_similarity, "face_similarity"),
         face_margin=unit_interval(config.face_margin, "face_margin"),
-        identity_link_min_assets=positive_int(
-            config.identity_link_min_assets, "identity_link_min_assets"
-        ),
         index_speech=strict_bool(config.index_speech, "index_speech"),
         independent_evidence=strict_bool(config.independent_evidence, "independent_evidence"),
         formation_history_max_rows=_history_max_rows(config.formation_history_max_rows),

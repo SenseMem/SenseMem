@@ -14,8 +14,17 @@ uv run --frozen sensemem-bench local-index \
 ```
 
 The directory must be absent or empty. Output is one JSON object with ingestion/optimization
-seconds, exact-search `recall_at_k`, p50/p95/p99 query latency, QPS, and SQLite/Zvec/total disk
-bytes. Use a fresh directory for each quantization mode.
+seconds, `recall_at_k`, p50/p95/p99 query latency, QPS, and SQLite/Zvec/total disk bytes.
+Recall compares native candidates with exhaustive cosine scores computed independently from
+the original FP32 embeddings in SQLite, including quantization loss. A quantized index's
+`exact=True` scan still uses quantized vectors and is not the reference population.
+Reference scoring runs outside the measured query latency. Use a fresh directory for each
+quantization mode.
+
+Output records installed dependency versions, runtime environment, and index configuration.
+Compare the same rows, dimensions, queries, seed, and index settings across versions or modes.
+To exercise RaBitQ graph search, use more than 1,000 rows; smaller optimized graphs can use
+linear search and miss regressions specific to graph traversal.
 
 This microbenchmark isolates SQLite and Zvec with synthetic vectors. Output records
 `scope: storage_microbenchmark`; use an `eval` run's `ingest` block to measure product
@@ -41,6 +50,8 @@ single-record writes; `add` measures writes alone. The output path must be new.
 JSONL reports successful throughput, successful and rejected p50/p95/p99 latency, rejection
 counts, CPU time, and final record counts. Every search validates its top hit; every acknowledged
 write is read back after contention. Unexpected failures stop the run.
+The first line records Python, platform, and installed SenseMem, Zvec, and NumPy versions;
+each case records its dimensions, quantization, and retrieval mode.
 
 | Option | Use |
 | --- | --- |
@@ -66,7 +77,8 @@ uv run --frozen sensemem-bench control-plane \
 
 This utility ignores the `benchmark` mapping. Its seeded fixture writes standing facts,
 paraphrases, and changed preferences, then creates two empty recalls as failure signals.
-Preference claims are fixture-created `TRAIT` records, so the measurement covers consolidation
+Preference claims are fixture-created model-inferred `STATE` records written together, so
+conflicting values remain available for consolidation. The measurement covers consolidation
 rather than formation quality.
 
 After `consolidate_pending()`, the runner scores applied operations and attempts rollback newest

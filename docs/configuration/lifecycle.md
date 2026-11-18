@@ -45,17 +45,23 @@ already completed under the same recipe. Formation is one completion per add or 
 - Response policies require host authorization with response-feedback basis; formation cannot
   grant them.
 
-### Optional formation history
+### Bounded formation history
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `formation_history_max_rows` | `0` | Off; at most 128 read-only background rows per target |
+| `formation_history_max_rows` | `8` | Read-only background rows per target; `0` disables, maximum 128 |
 | `formation_history_budget_chars` | `6000` | Positive combined content budget, excluding protocol overhead |
 
 History ends at the target's recording time, excludes batch targets and forgotten records, and
 keeps whole records; an oversized recent row stops selection. Typed versions are selected at that
 cutoff, with retirement status. No-known-version rows consume no window. It is recent background,
 not semantic history search or another formation target.
+
+The default lets the model reuse existing property keys and interpret changes against earlier
+claims. It sends bounded existing text to the configured formation provider, increasing input
+size and cost. Set `formation_history_max_rows: 0` to send only the current batch. Historical
+content remains untrusted; enabling history grants no consent or authority to retire a claim,
+and cannot make a hidden or retired assertion an active witness.
 
 Each target has one read-snapshot-grounded history. Identical ordered snapshots serialize once as
 read-only groups; different versions/provenance/truncation remain separate. Shared serialization
@@ -138,5 +144,5 @@ Start with `memory.apply_retention(dry_run=True)` and review its IDs/cascades be
 The CLI exposes `sensemem apply-retention`. Physical deletion cannot be rolled back.
 The [data-subject API](../api/python-identity.md#data-subject-rights) owns report fields and limits.
 
-Direct injection uses `MemoryConfig(retention=RetentionPolicy(...))`. Declarative files prefer
+Direct injection uses `MemorySettings(retention=RetentionPolicy(...))`. Declarative files prefer
 the top-level section; declaring retention there and inside settings is rejected.

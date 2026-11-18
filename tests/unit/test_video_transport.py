@@ -19,12 +19,16 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import sensemem.models.openai_sdk as backend
+import sensemem.models._openai_media as media
+import sensemem.models._openai_requests as requests
 from sensemem import Memory, Modality, ModelInput, SearchHit
+from sensemem.content import AssetRef
 from sensemem.evidence import answer_evidence_payloads
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.models.openai_sdk import OpenAIModels
-from sensemem.types import AssetRef
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.models.openai_embedding import OpenAIEmbedder
+from sensemem.models.openai_speech import OpenAITranscriber
+from sensemem.prompts import generation as prompts
 
 
 def _video(tmp_path: Path, *, name: str = "clip", oversized: bool = False) -> AssetRef:
@@ -71,22 +75,33 @@ def _client(transport: httpx.Client) -> OpenAI:
     )
 
 
-def _model(
+def _embedder(
     client: OpenAI,
     *,
     embedding_request_format: Literal["input", "messages"] = "input",
     vision_video_frames: int = 4,
-    generation_video_limit: int | None = 8,
-) -> OpenAIModels:
-    return OpenAIModels(
+) -> OpenAIEmbedder:
+    return OpenAIEmbedder(
         client,
         embedding_dimension=2,
         embedding_capabilities=frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
-        generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
         embedding_request_format=embedding_request_format,
+    )
+
+
+def _model(
+    client: OpenAI, *, vision_video_frames: int = 4, generation_video_limit: int | None = 8
+) -> OpenAICompletion:
+    return OpenAICompletion(
+        client,
+        generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
         vision_video_frames=vision_video_frames,
         generation_video_limit=generation_video_limit,
     )
+
+
+def _transcriber(client: OpenAI, *, vision_video_frames: int = 4) -> OpenAITranscriber:
+    return OpenAITranscriber(client)
 
 
 def _hit(video: AssetRef, *, content: str = "source transcript") -> SearchHit:
@@ -105,7 +120,7 @@ def test_real_video_sampler_preserves_configured_count_and_order(
     tmp_path: Path, count: int
 ) -> None:
     image = pytest.importorskip("PIL.Image")
-    urls = backend._video_frame_urls(_video(tmp_path), count=count)
+    urls = media._video_frame_urls(_video(tmp_path), count=count)
     assert urls is not None and len(urls) == count
     red = [
         image.open(BytesIO(base64.b64decode(url.partition(",")[2]))).getpixel((8, 8))[0]
@@ -116,20 +131,19 @@ def test_real_video_sampler_preserves_configured_count_and_order(
 
 
 def test_frame_count_changes_only_the_nondefault_vision_recipe() -> None:
-    default = OpenAIModels()
-    assert default.vision_space == OpenAIModels(vision_video_frames=4).vision_space
-    assert default.vision_space != OpenAIModels(vision_video_frames=8).vision_space
+    default = OpenAICompletion()
+    assert default.vision_space == OpenAICompletion(vision_video_frames=4).vision_space
+    assert default.vision_space != OpenAICompletion(vision_video_frames=8).vision_space
     assert (
-        OpenAIModels(vision_video_frames=8).vision_space
-        != OpenAIModels(vision_video_frames=16).vision_space
+        OpenAICompletion(vision_video_frames=8).vision_space
+        != OpenAICompletion(vision_video_frames=16).vision_space
     )
-    assert default.embedding_space == OpenAIModels(vision_video_frames=16).embedding_space
 
 
 @pytest.mark.parametrize("count", (True, 1, 65, 4.0))
 def test_invalid_frame_count_is_rejected(count: object) -> None:
     with pytest.raises(ValidationError, match="vision_video_frames"):
-        OpenAIModels(vision_video_frames=cast(Any, count))
+        OpenAICompletion(vision_video_frames=cast(Any, count))
 
 
 def test_vision_sends_the_configured_real_frame_count(tmp_path: Path) -> None:
@@ -151,7 +165,7 @@ def test_oversized_embedding_samples_only_that_source_and_preserves_the_original
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request_format: Literal["input", "messages"]
 ) -> None:
     small, large = _video(tmp_path, name="small"), _video(tmp_path, name="large", oversized=True)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
     calls = 0
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -171,7 +185,7 @@ def test_oversized_embedding_samples_only_that_source_and_preserves_the_original
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        model = _model(_client(transport), embedding_request_format=request_format)
+        model = _embedder(_client(transport), embedding_request_format=request_format)
         model.embed((ModelInput(assets=(small,)),))
         model.embed((ModelInput(assets=(small,)), ModelInput(assets=(large,))))
     assert calls == 2
@@ -191,10 +205,10 @@ def test_sampled_embeddings_bound_the_actual_parts_before_http(
     items: int,
 ) -> None:
     clip = _video(tmp_path)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", limit)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_BYTES", aggregate)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", limit)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_BYTES", aggregate)
     monkeypatch.setattr(
-        backend,
+        media,
         "_video_frame_urls",
         lambda *_args, **_kwargs: ("data:image/jpeg;base64," + "A" * 40,) * 4,
     )
@@ -206,7 +220,7 @@ def test_sampled_embeddings_bound_the_actual_parts_before_http(
         ) as transport,
         pytest.raises(ModelError) as failure,
     ):
-        _model(_client(transport), embedding_request_format=request_format).embed(
+        _embedder(_client(transport), embedding_request_format=request_format).embed(
             (ModelInput(assets=(clip,)),) * items
         )
     assert failure.value.reason == "payload_too_large"
@@ -216,15 +230,15 @@ def test_undecodable_oversized_embedding_never_sends_the_original(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clip = _video(tmp_path, oversized=True)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
-    monkeypatch.setattr(backend, "_video_frame_urls", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    monkeypatch.setattr(media, "_video_frame_urls", lambda *_args, **_kwargs: None)
     with (
         httpx.Client(
             transport=httpx.MockTransport(lambda _request: pytest.fail("oversized source was sent"))
         ) as transport,
         pytest.raises(ModelError) as failure,
     ):
-        _model(_client(transport)).embed((ModelInput(assets=(clip,)),))
+        _embedder(_client(transport)).embed((ModelInput(assets=(clip,)),))
     assert failure.value.reason == "payload_too_large"
 
 
@@ -232,9 +246,9 @@ def test_large_video_answer_prices_frames_reuses_decode_and_keeps_source_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clip = _video(tmp_path, oversized=True)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_BYTES", 30_000)
-    decode = backend._video_frame_urls
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_BYTES", 30_000)
+    decode = media._video_frame_urls
     calls = 0
 
     def decoded(
@@ -244,7 +258,7 @@ def test_large_video_answer_prices_frames_reuses_decode_and_keeps_source_ids(
         calls += 1
         return decode(asset, below_seconds=below_seconds, count=count)
 
-    monkeypatch.setattr(backend, "_video_frame_urls", decoded)
+    monkeypatch.setattr(media, "_video_frame_urls", decoded)
 
     def respond(request: httpx.Request) -> httpx.Response:
         content = json.loads(request.content)["messages"][1]["content"]
@@ -277,8 +291,8 @@ def test_video_limit_prevents_decoding_unselected_large_sources(
         _video(tmp_path, name="first", oversized=True),
         _video(tmp_path, name="second", oversized=True),
     )
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
-    decode = backend._video_frame_urls
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    decode = media._video_frame_urls
     seen: list[str] = []
 
     def decoded(
@@ -287,7 +301,7 @@ def test_video_limit_prevents_decoding_unselected_large_sources(
         seen.append(asset.id)
         return decode(asset, below_seconds=below_seconds, count=count)
 
-    monkeypatch.setattr(backend, "_video_frame_urls", decoded)
+    monkeypatch.setattr(media, "_video_frame_urls", decoded)
     with httpx.Client(transport=httpx.MockTransport(lambda _request: _reply())) as transport:
         result = _model(_client(transport), generation_video_limit=1).answer(
             ModelInput(text="What?"), (_hit(first), replace(_hit(second), id="second-memory"))
@@ -301,8 +315,8 @@ def test_undecodable_large_video_keeps_the_existing_text_only_omission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clip = _video(tmp_path, oversized=True)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
-    monkeypatch.setattr(backend, "_video_frame_urls", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    monkeypatch.setattr(media, "_video_frame_urls", lambda *_args, **_kwargs: None)
 
     def respond(request: httpx.Request) -> httpx.Response:
         content = json.loads(request.content)["messages"][1]["content"]
@@ -320,18 +334,18 @@ def test_short_video_sampling_label_still_respects_the_total_text_ceiling(
 ) -> None:
     clip = _video(tmp_path)
     question, hits = ModelInput(text="What?"), (_hit(clip),)
-    texts = backend._answer_text_parts(question, hits, answer_evidence_payloads(hits))
-    bare_label_bytes = len(backend._GROUNDED_SYSTEM_PROMPT.encode()) + sum(
+    texts = requests._answer_text_parts(question, hits, answer_evidence_payloads(hits))
+    bare_label_bytes = len(prompts._GROUNDED_SYSTEM_PROMPT.encode()) + sum(
         len(text.encode()) for text in (*texts, "attachment 1")
     )
-    monkeypatch.setattr(backend, "_MAX_GROUNDED_TEXT_BYTES", bare_label_bytes)
+    monkeypatch.setattr(requests, "_MAX_GROUNDED_TEXT_BYTES", bare_label_bytes)
     with (
         httpx.Client(
             transport=httpx.MockTransport(lambda _request: pytest.fail("oversized text was sent"))
         ) as transport,
         pytest.raises(ModelError, match="4 MiB"),
     ):
-        OpenAIModels(
+        OpenAICompletion(
             _client(transport),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
             generation_min_video_seconds=11.0,
@@ -342,12 +356,12 @@ def test_large_video_source_integrity_is_checked_before_sampling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clip = _video(tmp_path, oversized=True)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
     assert clip.path is not None
     with clip.path.open("ab") as output:
         output.write(b"changed")
     monkeypatch.setattr(
-        backend,
+        media,
         "_video_frame_urls",
         lambda *_args, **_kwargs: pytest.fail("changed source was decoded"),
     )
@@ -365,7 +379,7 @@ def test_oversized_video_ingestion_keeps_the_durable_original(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clip = _video(tmp_path, oversized=True)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 10_000)
     assert clip.path is not None
     original = clip.path.read_bytes()
 
@@ -376,7 +390,7 @@ def test_oversized_video_ingestion_keeps_the_durable_original(
 
     with (
         httpx.Client(transport=httpx.MockTransport(respond)) as transport,
-        Memory(tmp_path / "store", embedder=_model(_client(transport))) as memory,
+        Memory(tmp_path / "store", embedder=_embedder(_client(transport))) as memory,
     ):
         stored = memory.add(clip.path)
         durable = memory.get(stored.id).assets[0]

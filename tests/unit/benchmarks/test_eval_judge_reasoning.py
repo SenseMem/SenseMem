@@ -202,7 +202,7 @@ def test_judge_failure_zeros_judge_derived_metrics_without_erasing_local_metrics
     )
     assert scores["accuracy"] == scores["joint_partial@5"] == 0.0
     assert scores["retrieval_recall@5"] == 0.5
-    scores = judge_failure_scores("es-memeval", {"f1": 0.75, "llm_judge": 1.0})
+    scores = judge_failure_scores("mem-gallery", {"f1": 0.75, "llm_judge": 1.0})
     assert scores["f1"] == 0.75
     assert scores["llm_judge"] == 0.0
 

@@ -12,16 +12,9 @@ import pytest
 from _feature_support import TinyEmbedder
 from openai import OpenAI
 
-from sensemem import (
-    Blob,
-    FormationInput,
-    FormationProposal,
-    Memory,
-    MemoryKind,
-    ObservationContext,
-    OpenAIModels,
-)
-from sensemem.models.openai_sdk import _formation_content
+from sensemem import Blob, FormationInput, FormationProposal, Memory, ObservationContext, RecordKind
+from sensemem.models._openai_requests import _formation_content
+from sensemem.models.openai_completion import OpenAICompletion
 
 OBSERVED_AT = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 
@@ -129,13 +122,13 @@ def test_resolved_yesterday_survives_formation_persistence(tmp_path: Path) -> No
         httpx.Client(transport=httpx.MockTransport(respond)) as transport,
         OpenAI(api_key="fixture", http_client=transport, max_retries=0) as client,
     ):
-        former = OpenAIModels(client, generation_model="formation-clock-fixture")
+        former = OpenAICompletion(client, generation_model="formation-clock-fixture")
         with Memory(tmp_path, embedder=TinyEmbedder(), former=former) as memory:
             source = memory.add("I moved to Paris yesterday", occurred_at=OBSERVED_AT)
             event = next(
                 record
                 for record in memory.list().items
-                if record.context is not None and record.context.kind is MemoryKind.EVENT
+                if record.context is not None and record.context.kind is RecordKind.EVENT
             )
 
     assert event.context is not None

@@ -8,10 +8,11 @@ from typing import cast
 
 from opentelemetry import trace
 
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError
 from sensemem.infrastructure.local.gazetteer import OfflineGazetteer
-from sensemem.models._media import image_capture_metadata
-from sensemem.types import AssetRef, Modality
+from sensemem.infrastructure.local.media_metadata import image_capture_metadata
+from sensemem.types import Modality
 
 
 def _json_text(value: object) -> str:

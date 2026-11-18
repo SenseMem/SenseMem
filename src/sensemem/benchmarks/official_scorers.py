@@ -1,7 +1,5 @@
 """Official answer scorers used by the unified benchmark runner."""
 
-# ruff: noqa: RUF001 -- upstream prompts intentionally retain their published typography.
-
 from __future__ import annotations
 
 import ast
@@ -16,12 +14,24 @@ from functools import lru_cache
 from typing import Literal, Protocol, cast
 
 from sensemem.benchmarks._official import ama_scoring, mosaic_scoring
+from sensemem.benchmarks._official import personamem_v3_proactive as pm3_proactive
 from sensemem.benchmarks._official import personamem_v3_scoring as pm3
+from sensemem.benchmarks._official import personamem_v3_tasks as pm3_tasks
 from sensemem.benchmarks._official.atm_score import (
     deterministic_accuracy as atm_deterministic_accuracy,
 )
 from sensemem.benchmarks._official.atm_score import list_jaccard_score
 from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
+from sensemem.benchmarks._official.judge_prompts import (
+    _ATM_PROMPT,
+    _EGOTEMPO_PROMPT,
+    _GALLERY_PROMPT,
+    _LOCOMO_PROMPT,
+    _M3_PROMPT,
+    _M3_SYSTEM_PROMPT,
+    _MM_LIFELONG_SYSTEM,
+    _MM_LIFELONG_USER_PROMPT,
+)
 from sensemem.benchmarks._official.longmemeval_v2_scoring import (
     SCORER_VERSION as LONGMEMEVAL_V2_SCORER_VERSION,
 )
@@ -41,6 +51,10 @@ from sensemem.benchmarks._official.memlens_prompts import (
     build_judge_prompt as build_memlens_prompt,
 )
 from sensemem.benchmarks._official.memlens_prompts import get_task_key
+from sensemem.benchmarks._official.personamem_v3_prompts import (
+    _C1D_PREF_INVOCATION_JUDGE_PROMPT,
+    judge_new_suggestions_chatbot_prompt,
+)
 from sensemem.benchmarks.mosaic import (
     MOSAIC_SCORER_VERSION,
     mosaic_refusal,
@@ -52,7 +66,7 @@ from sensemem.benchmarks.videozerobench import (
     local_metrics,
 )
 
-SCORER_VERSION = "official_scorers_v6"
+SCORER_VERSION = "official_scorers_v8"
 
 
 class _Stemmer(Protocol):
@@ -83,7 +97,6 @@ class JudgePlan:
         "gallery",
         "longmemeval_v2",
         "personamem_v3",
-        "es_memeval",
         "ama_bench",
         "mosaic",
     ]
@@ -108,8 +121,7 @@ _PROTOCOLS = {
     "atm-bench": "atm_bench_scorer_ef4e5dff1a47_minimal_v3",
     "mem-gallery": "mem_gallery_scorer_a93959e1e978_v2",
     "longmemeval-v2": LONGMEMEVAL_V2_SCORER_VERSION,
-    "personamem-v3": "personamem_v3_rubric_7b00a090b35b_ranking_ad80a3b1b322",
-    "es-memeval": "es_memeval_qa_judge_692624208acc_v1",
+    "personamem-v3": "personamem_v3_ad80a3b1b322_v3",
 }
 
 _OFFICIAL_JUDGE_MODELS = {
@@ -127,7 +139,6 @@ _OFFICIAL_JUDGE_MODELS = {
     # `EVAL.md`: "the judge is a QueryLLM client on Azure gpt-5.5".
     "personamem-v3": "gpt-5.5",
     # `common_configurations.py` supplies this ID to every released QA script.
-    "es-memeval": "gpt-4o",
 }
 
 # Metrics the pinned upstream protocol reports itself. `metric_is_official` reads this registry
@@ -194,11 +205,56 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
             "telegraph_avoidance_fail",
             "privacy_leak_fail",
             "abstention_quality_0_10",
+            "current_city_grounded",
+            "stale_geo_anchor",
+            "geo_neutral_response",
+            "geo_shift_correctness",
+            "non_substantive_response",
+            "decision_correct",
+            "decision_score",
+            "content_word_count",
+            "content_length_ok",
+            "evidence_cited",
+            "trigger_detection_correctness",
+            "justification_quality",
+            "avoid_overpersonalization",
+            "voice_match",
+            "restraint_justification",
+            "negative_leakage",
+            "stale_preference_use",
+            "justification_score",
+            "proactive_action_score",
+            "alignment_score",
+            "passed",
+            "hard_fail",
+            "valid",
+            "query_score_0_10",
+            "fatigue_restraint_score",
+            "fatigue_overuse_rate",
+            "fatigue_passed",
+            "fatigue_violations",
+            "warmup_invocations",
+            "n_total",
+            "n_warmup",
+            "n_monitored",
+            "n_judge_failed",
+            "match_rate_at_3",
+            "matching_in_top1",
+            "mrr_matching",
+            "lifecycle_score",
+            "warning_issued",
+            "regex_warn",
+            "self_warn",
+            "must_mention_coverage",
+            "leak",
+            "correct_warn",
+            "correct_foil",
+            "correct",
+            "is_persona_safety",
+            "response_is_substantive",
+            "paired_correct",
         }
     ),
-    # The release also reports BERTScore. It is intentionally not calculated
-    # here because it requires a second learned scorer and model download.
-    "es-memeval": frozenset({"f1", "llm_judge", "judge_score_0_2"}),
 }
 
 # One family scores an open dimension vocabulary upstream: `score_unified_rubric` names every
@@ -230,15 +286,27 @@ _JUDGE_METRICS = {
             "telegraph_avoidance_fail",
             "privacy_leak_fail",
             "abstention_quality_0_10",
+            "trigger_detection_correctness",
+            "justification_quality",
+            "avoid_overpersonalization",
+            "voice_match",
+            "restraint_justification",
+            "negative_leakage",
+            "stale_preference_use",
+            "justification_score",
+            "proactive_action_score",
+            "alignment_score",
+            "passed",
+            "query_score_0_10",
+            "fatigue_restraint_score",
+            "fatigue_overuse_rate",
+            "fatigue_passed",
+            "fatigue_violations",
+            "warmup_invocations",
         }
     ),
-    "es-memeval": frozenset({"llm_judge", "judge_score_0_2"}),
 }
 
-# The pinned ES-MemEval repository has no declared license. Its judge wording
-# is therefore represented by a semantic transcription rather than copied
-# verbatim, which makes the result useful but not protocol-identical.
-_ADAPTED_JUDGE_PROTOCOLS = frozenset({"es-memeval"})
 
 # PersonaMem-v3 headline per task type, and the divisor that maps it onto the
 # internal 0-1 row value from which the official micro percentage is computed
@@ -249,6 +317,11 @@ _PERSONAMEM_HEADLINES: dict[str, tuple[str, float]] = {
     "preference_shift_followthrough": ("preference_shift_consistency", 10.0),
     "personal_qa_hallucination": ("abstention_quality_0_10", 10.0),
     "hidden_persona_implicit_qa": ("deep_motivation_alignment", 3.0),
+    "local_recommendation_geo_shift": ("geo_shift_correctness", 1.0),
+    "new_suggestions_chatbot": ("passed", 1.0),
+    "active_mistake_prevention": ("correct", 1.0),
+    "over_personalization_repetition_chatbot": ("query_score_0_10", 10.0),
+    "over_personalization_repetition_recsys": ("query_score_0_10", 10.0),
 }
 _PERSONAMEM_RUBRIC_HEADLINE = ("pr_combined_personalization_score", 10.0)
 # `task_registry.PRIMARY_METRIC` -- the column upstream's aggregator reads --
@@ -263,8 +336,7 @@ _PERSONAMEM_RANKING_HEADLINE = ("ndcg_at_5", 1.0)
 # `lifecycle_score` -- the delta between a paired pre-row's and post-row's
 # match rate -- which no single row can carry. It also has 2 to 5 targets per
 # row, so a top-1 recall, which divides by the target count, could never exceed
-# 0.5 there. It keeps its ranking diagnostics and takes no headline, like the
-# other paired families.
+# 0.5 there. Phase rows acquire their headline only after lifecycle pairing.
 _PERSONAMEM_PAIRED_RANKING = frozenset({"short_vs_long_term_lifecycle"})
 _RANKED_INDEXES = re.compile(r"ranked[ _]index(?:es|ices)?\s*[:=]?\s*\[([^\]]*)\]", re.IGNORECASE)
 _RANKED_JSON = re.compile(r'"ranked_indices"\s*:\s*\[([^\]]*)\]')
@@ -303,7 +375,6 @@ def task_primary_metric(task: str) -> str:
         "mem-gallery": "f1",
         "longmemeval-v2": "accuracy",
         "personamem-v3": "accuracy_pct_micro",
-        "es-memeval": "llm_judge",
     }[family]
 
 
@@ -358,8 +429,6 @@ def metric_is_official(task: str, metric: str, judge_model: str, *, uses_judge: 
     )
     if not requires_judge or not uses_judge:
         return True
-    if _family_or_none(task) in _ADAPTED_JUDGE_PROTOCOLS:
-        return False
     return judge_model_is_official(task, judge_model)
 
 
@@ -499,8 +568,6 @@ def local_scores(  # noqa: C901 - direct task dispatch mirrors official scorer f
         }
         scores.update(_gallery_retrieval(metadata, evidence_source_ids))
         return scores
-    if family == "es-memeval":
-        return {"f1": _es_memeval_f1(_es_memeval_prediction(prediction), references[0])}
     return {}
 
 
@@ -646,7 +713,7 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             "m3",
             (
                 (
-                    JudgeMessage("system", "You are an expert in video understanding."),
+                    JudgeMessage("system", _M3_SYSTEM_PROMPT),
                     JudgeMessage("user", prompt),
                 ),
             ),
@@ -677,9 +744,8 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             {"task_key": task_key},
         )
     if family == "mm-lifelong":
-        user = (
-            f"Question: {question}\nGroundtruth answer: {reference}\n"
-            f"Candidate answer: {prediction}\nYour response: "
+        user = _MM_LIFELONG_USER_PROMPT.format(
+            question=question, reference=reference, prediction=prediction
         )
         return JudgePlan(
             protocol,
@@ -706,23 +772,6 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
         )
     if family == "personamem-v3":
         return _personamem_plan(protocol, question, metadata, prediction)
-    if family == "es-memeval":
-        prompt = _ES_MEMEVAL_JUDGE_PROMPT.format(
-            question=question,
-            gold=reference,
-            prediction=_es_memeval_prediction(prediction),
-        )
-        return JudgePlan(
-            protocol,
-            "es_memeval",
-            (
-                (
-                    JudgeMessage("system", "You are a strict evaluator."),
-                    JudgeMessage("user", prompt),
-                ),
-            ),
-            16,
-        )
     if family == "mem-gallery":
         prompt = (
             _GALLERY_PROMPT.replace("{{question}}", question)
@@ -791,15 +840,6 @@ def parse_judge_response(  # noqa: C901 - mirrors seven incompatible upstream pa
     if plan.parser == "gallery":
         score = _gallery_judge_score(response)
         return {"llm_judge": 0.0 if score < 0.25 else 0.5 if score < 0.75 else 1.0}
-    if plan.parser == "es_memeval":
-        # The released parser takes the first digit 0, 1, or 2. Keep the raw
-        # table value and a normalized primary score for this runner's common
-        # 0-1 comparison and confidence-interval contract.
-        match = re.search(r"[0-2]", response)
-        if match is None:
-            raise ValueError("ES-MemEval judge did not return a 0-2 score")
-        es_score = float(match.group())
-        return {"llm_judge": es_score / 2.0, "judge_score_0_2": es_score}
     if plan.parser == "mosaic":
         mosaic_score, valid = mosaic_scoring.parse_judge_score(response)
         return {"judge_score": mosaic_score, **({} if valid else {"judge_parse_error": 1.0})}
@@ -824,6 +864,18 @@ def combine_judge_scores(
             ),
         )
         return {**plan.candidate_metrics[selected], **scores[selected]}
+    if (
+        plan.parser == "personamem_v3"
+        and plan.details.get("task_type") in pm3_tasks.CLUSTER_TASK_TYPES
+    ):
+        slots = cast(list[float | None], json.loads(plan.details["restraint_slots"]))
+        indexes = cast(list[int], json.loads(plan.details["call_slots"]))
+        for index, result in zip(indexes, scores, strict=True):
+            slots[index] = result.get("restraint_score")
+        return _personamem_headline(
+            plan.details["task_type"],
+            pm3_tasks.repetition_metrics(slots, int(plan.details["n_allowed_repetitions"])),
+        )
     if len(scores) == 1:
         return dict(scores[0])
     names = set().union(*(score.keys() for score in scores))
@@ -843,6 +895,8 @@ def _personamem_metric(task_type: str) -> tuple[str, float] | None:
     """
     if task_type in _PERSONAMEM_HEADLINES:
         return _PERSONAMEM_HEADLINES[task_type]
+    if task_type in pm3_proactive.TASK_TYPES:
+        return "proactive_action_score", 1.0
     if task_type in pm3.RUBRIC_HEADLINE_TASK_TYPES:
         return _PERSONAMEM_RUBRIC_HEADLINE
     if task_type in RANKING_TASK_TYPES and task_type not in _PERSONAMEM_PAIRED_RANKING:
@@ -853,11 +907,15 @@ def _personamem_metric(task_type: str) -> tuple[str, float] | None:
 def _personamem_judged(metadata: Mapping[str, object]) -> bool:
     """Report whether one row's headline needs -- and can have -- a judge call.
 
-    Ranking rows are scored deterministically against their frozen slate, so
-    they are excluded here even though they do have a headline.
+    Ranking and geographic-shift rows are scored deterministically, so they
+    are excluded here even though they do have a headline.
     """
     task_type = str(metadata.get("task_type", ""))
-    return task_type not in RANKING_TASK_TYPES and _personamem_metric(task_type) is not None
+    return (
+        task_type not in RANKING_TASK_TYPES
+        and task_type not in {"local_recommendation_geo_shift", "active_mistake_prevention"}
+        and _personamem_metric(task_type) is not None
+    )
 
 
 def _personamem_plan(
@@ -865,10 +923,46 @@ def _personamem_plan(
     question: str,
     metadata: Mapping[str, object],
     prediction: str,
-) -> JudgePlan:
+) -> JudgePlan | None:
     task_type = str(metadata.get("task_type", ""))
     evidence = metadata.get("judge_evidence")
     evidence = evidence if isinstance(evidence, Mapping) else {}
+    if task_type in pm3_tasks.CLUSTER_TASK_TYPES:
+        return _personamem_cluster_plan(protocol, task_type, prediction, evidence, metadata)
+    if task_type == "new_suggestions_chatbot":
+        if pm3_tasks.suggestion_metrics(prediction, evidence)["hard_fail"]:
+            return None
+        return JudgePlan(
+            protocol,
+            "personamem_v3",
+            (
+                (
+                    JudgeMessage(
+                        "user",
+                        judge_new_suggestions_chatbot_prompt(
+                            prediction,
+                            pm3._string(evidence, "gold_topic"),
+                            pm3_tasks.strings(evidence, "gold_hashtags"),
+                            pm3_tasks.strings(evidence, "fatigued_hashtags"),
+                            pm3_tasks.strings(evidence, "leak_set_hashtags"),
+                            pm3._string(evidence, "trigger_kind"),
+                        ),
+                    ),
+                ),
+            ),
+            details={"task_type": task_type},
+        )
+    if task_type in pm3_proactive.TASK_TYPES:
+        return JudgePlan(
+            protocol,
+            "personamem_v3",
+            ((JudgeMessage("user", pm3_proactive.build_judge_prompt(prediction, evidence)),),),
+            details={
+                "task_type": task_type,
+                "expected_behavior": pm3_proactive.expected_behavior(evidence),
+                "prediction": prediction,
+            },
+        )
     if task_type in pm3.OWN_JUDGE_TASK_TYPES:
         prompt = pm3.build_own_judge_prompt(task_type, evidence, prediction)
     else:
@@ -886,6 +980,56 @@ def _personamem_plan(
         "personamem_v3",
         ((JudgeMessage("user", prompt),),),
         details={"task_type": task_type},
+    )
+
+
+def _personamem_cluster_plan(
+    protocol: str,
+    task_type: str,
+    prediction: str,
+    evidence: Mapping[str, object],
+    metadata: Mapping[str, object],
+) -> JudgePlan | None:
+    calls: list[tuple[JudgeMessage, ...]] = []
+    slots: list[float | None] = []
+    indexes = []
+    tags = pm3_tasks.strings(
+        evidence,
+        "cluster_hashtags" if task_type.endswith("_recsys") else "target_hashtags",
+    )
+    for response in pm3_tasks.cluster_responses(prediction):
+        if not response["is_target"]:
+            continue
+        text = (
+            f"{response['title']} {response['caption']}".strip()
+            if task_type.endswith("_recsys")
+            else response["response"]
+        )
+        if not pm3_tasks.substantive(text):
+            slots.append(0.0)
+            continue
+        indexes.append(len(slots))
+        slots.append(None)
+        prompt = _C1D_PREF_INVOCATION_JUDGE_PROMPT.format(
+            target_pref=pm3._string(evidence, "target_pref")[:200],
+            primary_category=pm3._string(evidence, "primary_category") or "(none)",
+            target_hashtags=", ".join(f"#{tag.lstrip('#')}" for tag in tags[:8]) or "(none)",
+            user_query=response["user_query"][:240],
+            response=text[:800],
+        )
+        calls.append((JudgeMessage("user", prompt),))
+    if not calls:
+        return None
+    return JudgePlan(
+        protocol,
+        "personamem_v3",
+        tuple(calls),
+        details={
+            "task_type": task_type,
+            "restraint_slots": json.dumps(slots),
+            "call_slots": json.dumps(indexes),
+            "n_allowed_repetitions": str(metadata.get("n_allowed_repetitions", 2)),
+        },
     )
 
 
@@ -939,7 +1083,28 @@ def _personamem_evidence(question: str, metadata: Mapping[str, object]) -> str:
 def _personamem_judge_scores(plan: JudgePlan, response: str) -> dict[str, float]:
     task_type = plan.details.get("task_type", "")
     payload = pm3_json(response)
-    if task_type in pm3.OWN_JUDGE_TASK_TYPES:
+    if task_type in pm3_tasks.CLUSTER_TASK_TYPES:
+        value = payload.get("restraint_score")
+        if value is None and "invoked" in payload:
+            value = 0.0 if payload["invoked"] else 10.0
+        score = pm3._bounded(value, 0.0, 10.0)
+        return {} if score is None else {"restraint_score": score}
+    if task_type == "new_suggestions_chatbot":
+        value = pm3._bounded(payload.get("alignment_score"), 0.0, 3.0)
+        hard_fail = payload.get("hard_fail") is True
+        scores = {
+            "passed": float(value is not None and value >= 2.0 and not hard_fail),
+            "hard_fail": float(hard_fail),
+        }
+        if value is not None:
+            scores["alignment_score"] = value
+    elif task_type in pm3_proactive.TASK_TYPES:
+        scores = pm3_proactive.score(
+            plan.details["prediction"],
+            {"expected_behavior": plan.details["expected_behavior"]},
+            payload,
+        )
+    elif task_type in pm3.OWN_JUDGE_TASK_TYPES:
         scores = pm3.parse_own_judge(task_type, payload)
     else:
         scores = pm3.score_unified_rubric(task_type, payload)
@@ -974,10 +1139,74 @@ def pm3_json(response: str) -> Mapping[str, object]:
     return payload
 
 
-def _personamem_local(prediction: str, metadata: Mapping[str, object]) -> dict[str, float]:
-    """Score a ranking row deterministically against its frozen slate."""
-    if str(metadata.get("task_type", "")) not in RANKING_TASK_TYPES:
+def _personamem_local(  # noqa: C901 - direct dispatch keeps pinned task formulas auditable
+    prediction: str, metadata: Mapping[str, object]
+) -> dict[str, float]:
+    """Score deterministic PersonaMem rows without a model call."""
+    task_type = str(metadata.get("task_type", ""))
+    if task_type in pm3_tasks.CLUSTER_TASK_TYPES:
+        slots = [
+            None
+            if pm3_tasks.substantive(
+                f"{row['title']} {row['caption']}".strip()
+                if task_type.endswith("_recsys")
+                else row["response"]
+            )
+            else 0.0
+            for row in pm3_tasks.cluster_responses(prediction)
+            if row["is_target"]
+        ]
+        return _personamem_headline(
+            task_type,
+            pm3_tasks.repetition_metrics(
+                slots, cast(int, metadata.get("n_allowed_repetitions", 2))
+            ),
+        )
+    if task_type in {"new_suggestions_chatbot", "active_mistake_prevention"}:
+        evidence = metadata.get("judge_evidence")
+        if not isinstance(evidence, Mapping):
+            raise ValueError("PersonaMem-v3 task scoring requires instance evidence")
+        scores = (
+            pm3_tasks.suggestion_metrics(prediction, evidence)
+            if task_type == "new_suggestions_chatbot"
+            else pm3_tasks.mistake_metrics(prediction, evidence)
+        )
+        return _personamem_headline(task_type, scores)
+    if task_type in pm3_proactive.TASK_TYPES:
+        evidence = metadata.get("judge_evidence")
+        if not isinstance(evidence, Mapping):
+            raise ValueError("PersonaMem-v3 proactive scoring requires instance evidence")
+        scores = pm3_proactive.score(prediction, evidence)
+        # The upstream runner's judge-off fallback is a diagnostic; the official
+        # headline needs the judge's justification and hard-rule verdicts.
+        del scores["proactive_action_score"]
+        return scores
+    if task_type == "local_recommendation_geo_shift":
+        evidence = metadata.get("judge_evidence")
+        if not isinstance(evidence, Mapping):
+            raise ValueError("PersonaMem-v3 geo-shift scoring requires instance evidence")
+        try:
+            parsed = pm3_json(prediction)
+        except ValueError:
+            parsed = {}
+        response = parsed.get("response") or prediction
+        if not isinstance(response, str):
+            raise ValueError("PersonaMem-v3 geo-shift response must be text")
+        scores = pm3.compute_geo_shift_metrics(
+            response,
+            pm3._string(evidence, "current_city"),
+            pm3._string(evidence, "prior_city"),
+            pm3._string(evidence, "current_region"),
+        )
+        return _personamem_headline(task_type, scores)
+    if task_type not in RANKING_TASK_TYPES:
         return {}
+    return _personamem_ranking(prediction, metadata)
+
+
+def _personamem_ranking(prediction: str, metadata: Mapping[str, object]) -> dict[str, float]:
+    """Score the frozen candidate slate using the task's released gain rules."""
+    task_type = str(metadata.get("task_type", ""))
     count = metadata.get("candidate_count")
     if not isinstance(count, int) or count <= 0:
         return {}
@@ -986,10 +1215,15 @@ def _personamem_local(prediction: str, metadata: Mapping[str, object]) -> dict[s
     }
     if not positives:
         return {}
-    task_type = str(metadata.get("task_type", ""))
     ranked = _parse_ranking(
         prediction, count, identity_fallback=task_type == "at_ai_directive_followup"
     )
+    if task_type == "short_vs_long_term_lifecycle":
+        return {
+            "match_rate_at_3": len(positives & set(ranked[:3])) / 3.0,
+            "matching_in_top1": float(bool(ranked) and ranked[0] in positives),
+            "mrr_matching": pm3.mrr(ranked, positives),
+        }
     negatives = {
         index for index in _index_values(metadata, "negative_indexes") if 0 <= index < count
     }
@@ -1107,40 +1341,6 @@ def _locomo_f1(prediction: str, reference: str) -> float:
     if not overlap:
         return 0.0
     precision, recall = overlap / len(predicted), overlap / len(expected)
-    return 2 * precision * recall / (precision + recall)
-
-
-def _es_memeval_prediction(value: str) -> str:
-    """Apply the released QA runner's post-generation cleanup.
-
-    `str.strip("Answer:")` strips the character set `A n s w e r :` from both ends, not the
-    prefix, so `"seven"` becomes `"v"` and `"unknown"` becomes `"unknow"`. The released
-    `qa_experiment.py` does exactly this before its F1 and judge, and comparable numbers require
-    reproducing it rather than correcting it.
-    """
-    return value.replace("*", "").replace("#", "").strip("Answer:").strip()
-
-
-def _es_memeval_f1(prediction: str, reference: str) -> float:
-    """Reproduce ES-MemEval's set-overlap token F1.
-
-    Upstream deduplicates the overlap but divides by the original token counts,
-    so repeated words still affect precision and recall. Its implementation
-    raises on an empty answer before checking the overlap; a failed or empty
-    generation is a legitimate benchmark outcome here and receives zero.
-    """
-
-    def tokens(value: str) -> list[str]:
-        return re.sub(r"\W+", " ", value.lower()).strip().split()
-
-    expected, predicted = tokens(reference), tokens(prediction)
-    if not expected or not predicted:
-        return 0.0
-    common = set(expected) & set(predicted)
-    if not common:
-        return 0.0
-    precision = len(common) / len(predicted)
-    recall = len(common) / len(expected)
     return 2 * precision * recall / (precision + recall)
 
 
@@ -1335,230 +1535,3 @@ def _gallery_judge_score(value: str) -> float:
             if match is not None:
                 return float(match.group(1))
     raise ValueError("Mem-Gallery judge did not return a numeric score")
-
-
-# mem-eval-suite/LoCoMo_refined@887091190789e8d6760e70b9edd696539923dc4f
-_LOCOMO_PROMPT = """Your task is to label an answer as ’CORRECT’ or ’WRONG’ given:
-(1) a question,
-(2) a gold (ground truth) answer,
-(3) a generated answer.
-
-Core principle — Inclusion + Non-contradiction
-- Be GENEROUS: if the generated answer clearly includes the gold’s key content (or a clear paraphrase of the same content) and does not contradict it, mark CORRECT — even if extra details are added.
-- Mark WRONG only when the generated answer does not include the gold’s content, changes it, or contradicts it.
-
-TIME (strict granularity; relative form equivalence; no calendar math)
-- Granularity must match exactly: HOUR↔HOUR, DAY↔DAY, MONTH↔MONTH, YEAR↔YEAR.
-  Do not answer a gold at a different time unit — even if the numeric value overlaps. Do not answer a month-level gold with a specific day, nor a year with a specific month/day/hour, etc.
-  (e.g., gold = "July 26, 2019" [DAY]; generated = "2019-07-26 08:09:17" [includes Second] → WRONG)
-- Do NOT convert relative ↔ absolute. If the gold uses a relative time expression, the generated answer must also use a relative form (or a clear paraphrase of that same form), not a computed date/range.
-- Treat harmless modifiers in relative forms (e.g., “the/last/previous/just prior”) as equivalent when both the anchor date and the time unit are the same.
-
-- Lists of DISTINCT facts:
-- If the gold answer lists multiple distinct facts (joined by "and", commas, or slashes), the generated answer must cover **all** of them.
-- Extra non-contradictory items **generally count as WRONG**.
-    - Example: gold = A, B, C ; gen = A, B, C → CORRECT
-    - Example: gold = A, B, C ; gen = A, B, C, D → WRONG
-- Exception: If a gold element is elaborated or split into finer details in the generated answer (e.g., C → C, C′), it is still considered CORRECT.
-
-Preference/Benefit Questions (e.g., "what X likes/values most")
-- If gold lists multiple reasons/aspects, the generated answer only needs to include **any one** of them without contradiction to be CORRECT.
-
-Now it's time for the real question:
-Question: {question}
-Gold answer: {gold_answer}
-Generated answer: {generated_answer}
-
-Do NOT include both CORRECT and WRONG in your response, or it will break the evaluation script.
-
-Just return the label CORRECT or WRONG in a json format with the key as "label":
-
-```json
-{{
-    "label": "CORRECT" or "WRONG"
-}}
-```
-"""
-
-# ByteDance-Seed/m3-agent@0e3e41939bd8a0b66d756e7b7eb8d5fe9992da5c
-_M3_PROMPT = """You are provided with a question, a ground truth answer, and an answer from an agent model. Your task is to determine whether the ground truth answer can be logically inferred from the agent's answer, in the context of the question.
-
-Do not directly compare the surface forms of the agent answer and the ground truth answer. Instead, assess whether the meaning expressed by the agent answer supports or implies the ground truth answer. If the ground truth can be reasonably derived from the agent answer, return "Yes". If it cannot, return "No".
-
-Important notes:
-\t•\tDo not require exact wording or matching structure.
-\t•\tSemantic inference is sufficient, as long as the agent answer entails or implies the meaning of the ground truth answer, given the question.
-\t•\tOnly return "Yes" or "No", with no additional explanation or formatting.
-
-Input fields:
-\t•\tquestion: the question asked
-\t•\tground_truth_answer: the correct answer
-\t•\tagent_answer: the model's answer to be evaluated
-
-Now evaluate the following input:
-
-Input:
-\t•\tquestion: {question}
-\t•\tground_truth_answer: {ground_truth_answer}
-\t•\tagent_answer: {agent_answer}
-
-Output ('Yes' or 'No'):"""
-
-# google-research-datasets/egotempo@7022ba77b4d89f51cf34e499767995ccd5c90c7a
-_EGOTEMPO_PROMPT = """role: "system",
-content: "You are an intelligent chatbot designed for evaluating the correctness of AI assistant predictions for question-answer pairs.
-Your task is to compare the predicted answer with the ground-truth answer and determine if the predicted answer is correct or not. Here's how you can accomplish the task:
------##INSTRUCTIONS:
-- Focus on the correctness and accuracy of the predicted answer with the ground-truth.
-- Consider uncertain predictions, such as 'it is impossible to answer the question from the video', as incorrect, unless the ground truth answer also says that."
-role: "user",
-content: "Please evaluate the following video-based question-answer pair:
-Question: {question}
-Ground truth correct Answer: {answer}
-Predicted Answer: {prediction}
-Provide your evaluation as a correct/incorrect prediction along with the score where the score is an integer value between 0 (fully wrong) and 5 (fully correct). The middle score provides the percentage of correctness.
-Please generate the response in the form of a Python dictionary string with keys 'pred', 'score' and 'reason', where value of 'pred' is a string of 'correct' or 'incorrect',
-value of 'score' is in INTEGER, not STRING and value of 'reason' should provide the reason behind the decision."
-"""
-
-# MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443/eval_acc.py
-_MM_LIFELONG_SYSTEM = """As an AI assistant, your task is to evaluate a candidate answer in comparison to a given correct answer.
-The question itself, the correct “groundtruth” answer, and the candidate answer will be provided to you.
-The following is a comparison table of some proper nouns; matching any one of them is considered correct.
-
-You must FIRST provide a brief analysis explaining the semantic similarity between the groundtruth
-and the candidate answer.
-
-THEN, on a new line, output the final score.
-
-Scoring criteria (semantic similarity only):
-
-- 0: No similarity.
-  The candidate answer is completely irrelevant, contradictory, or does not address the question at all.
-
-- 1: Very low similarity.
-  The candidate answer mentions a related topic or keyword, but fails to answer the question
-  and does not convey the main meaning of the groundtruth.
-
-- 2: Low similarity.
-  The candidate answer addresses the question in a limited way, capturing some minor aspects,
-  but misses or misrepresents the core idea or key facts of the groundtruth.
-
-- 3: Moderate similarity.
-  The candidate answer captures the main idea of the groundtruth,
-  but omits several important details or includes noticeable inaccuracies.
-
-- 4: High similarity.
-  The candidate answer correctly captures the main idea and most key details of the groundtruth,
-  with only minor omissions, simplifications, or non-critical inaccuracies.
-
-- 5: Complete similarity.
-  The candidate answer is semantically equivalent to the groundtruth,
-  covering all essential information with no meaningful omissions or errors.
-
-Special Rules:
-
-- Hallucination-sensitive questions:
-Score 5 only if all required items are correct;
-if any item is incorrect, missing, or hallucinated, score 0 (no partial credit).
-
-- Time-duration questions:
-Allow errors within the range defined by the question; answers outside the range should receive score 0.
-
-Output format (strictly follow):
-Analysis:
-<your analysis>
-
-Final Score:
-<an integer from 0 to 5>"""
-
-# JingbiaoMei/ATM-Bench@ef4e5dff1a47ec71213a06e359f02753defa8fb1
-_ATM_PROMPT = (
-    "You are an evaluator, and you are given a task to evaluate a model predictions "
-    "with a given question. Let's follow the instructions step by step to make a "
-    "judgement.  1. As the first step, you need to check whether the prediction was really "
-    "answering the question.  2. If the model prediction does provide a meaningful answer, "
-    "judge whether the model Prediction matches the ground truth answer by reasoning according "
-    "to the following steps:  2.1: Always assume the ground truth is correct.  "
-    "2.2: Pay attention to theses special cases:  a. If the ground truth answer contains "
-    'numbers, the value of "accuracy" is true only if numbers in ground truth and numbers in '
-    'model predictions match very well; in case of math questions, "accuracy" is true only if '
-    "the numbers in model predictions EXACTLY matches the numbers in ground truth;  "
-    'b. If the ground truth answer contains time, and/or time range, "accuracy" is "true" only '
-    "if if times and time ranges in ground truth and model predictions match very well.  "
-    'c. If the ground truth answer contains a set of objects, "accuracy" is "true" if the model '
-    'prediction covers most of the objects in the ground truth; however, "accuracy" if "false" '
-    "if the  model prediction has a lot of objects that are not in the ground truth.  "
-    'd. If the ground truth is something similar to "I don\'t know", "accuracy" is "true" only '
-    "if the model prediction also implies the similar thing.  2.3: Even if the prediction "
-    'statement is reasonable, if it conflicts with or does not match the ground truth, "accuracy" '
-    'should be "false".  2.4. "Accuracy" is true if the ground truth information is covered by '
-    "the prediction. The prediction is allowed to provide more information but should not be "
-    "against the ground truth. If it is hard to  decide whether the prediction matches ground "
-    'truth, "accuracy" should be "false".  Think step by step following the instructions above, '
-    'and then make a judgment. Respond with only a single JSON blob with an "explanation" field '
-    'that has your short(less than 100 word) reasoning  steps and an "accuracy" field which is '
-    '"true" or "false".  Question: {{question}}  Ground truth: {{answer}}  '
-    "Prediction: {{prediction}}"
-)
-
-# slptongji/ES-MemEval@692624208acc077b8867698c1d6fcd998dee641a.
-# This is a compact semantic transcription of `QaExperiment.llm_as_a_judge`,
-# not copied source text. The upstream repository declares no software license
-# at the pinned revision; see `_official/NOTICE.md`.
-_ES_MEMEVAL_JUDGE_PROMPT = """Evaluate the model answer against the reference answer.
-
-Give 0 when it is wrong or irrelevant, 1 when it is partly correct but incomplete or vague, and 2 when it is completely correct and contextually accurate.
-
-Question: {question}
-Reference answer: {gold}
-Model answer: {prediction}
-
-Return one line only in this form: Score: X"""
-
-# YuanchenBei/Mem-Gallery@a93959e1e978a6a7d77798ae92c2ffe41c538c62
-_GALLERY_PROMPT = """You are an impartial judge evaluating the memory capabilities of an AI assistant with the question-answering task.
-Your task is to compare the Assistant's Answer against the Ground Truth and assign a score of 0, 0.25, 0.5, 0.75, or 1.
-
-### Scoring Rubric
-
-**Score 0 (Incorrect / Miss):**
-
-- The answer contradicts the Ground Truth.
-- For Yes/No questions: The answer has the wrong polarity (e.g., says "Yes" when Ground Truth is "No").
-- For Open-ended questions: The answer provides factually wrong information or hallucinations.
-- The assistant fails to provide the required information.
-
-**Score 0.25 (Poor / Tangential):**
-
-- The answer touches on the topic but misses the **core entity** or key value required.
-- The answer contains a mix of minor correct details and **significant hallucinations** or wrong associations.
-- The answer is excessively vague to the point of being useless (e.g., answering "a dog" instead of "a golden retriever").
-
-**Score 0.5 (Partial / Vague):**
-
-- The answer is technically correct, but lacks confidence or is incomplete.
-- The answer captures the **main entity or concept** correctly but misses a part of the required supporting details.
-- For Yes/No questions: The polarity is correct, but the reasoning is flawed (if have), or the assistant is uncertain (e.g., "I think it might be Yes").
-- For Open-ended questions: The answer is too general or misses key adjectives/details present in the Ground Truth.
-
-**Score 0.75 (Good / Minor Imperfection):**
-
-- The answer is largely accurate and captures the core information confidently.
-- It misses only **minor details** (e.g., specific adjectives or secondary details) that do not alter the main truth.
-- The answer contains all the correct information but includes unnecessary "fluff" or slight conversational filler that reduces precision.
-
-**Score 1 (Correct / Exact):**
-
-- The answer is accurate, precise, and confident.
-- For Yes/No questions: The polarity matches the Ground Truth perfectly.
-- For Open-ended questions: The answer contains **all** the core information and necessary details required by the Ground Truth without hallucinations.
-
-### Input Data
-Question: {{question}}
-Ground Truth: {{ground_truth}}
-Assistant Answer: {{model_output}}
-
-### Output Format
-Output strictly in the following JSON format:
-{"score": <0, 0.25, 0.5, 0.75, or 1>, "reasoning": "<short explanation>"}"""

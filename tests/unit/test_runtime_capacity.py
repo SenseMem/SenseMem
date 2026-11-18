@@ -217,21 +217,21 @@ async def test_cancelled_async_work_keeps_admission_until_it_stops(tmp_path: Pat
             return changed.wait_for(lambda: entered == 32, timeout=3)
 
     with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
-        tasks = [asyncio.create_task(memory._execution.run(blocked)) for _ in range(32)]
+        tasks = [asyncio.create_task(memory._execution.run_in_worker(blocked)) for _ in range(32)]
         try:
             assert await asyncio.to_thread(all_entered)
             tasks[0].cancel()
             with pytest.raises(asyncio.CancelledError):
                 await tasks[0]
             with pytest.raises(StorageError) as failure:
-                await memory._execution.run(lambda: 10)
+                await memory._execution.run_in_worker(lambda: 10)
             assert failure.value.reason == "capacity_exceeded"
             with Memory(tmp_path / "independent", embedder=TinyEmbedder()) as independent:
                 assert await AsyncMemory(independent).list() == independent.list()
         finally:
             release.set()
             await asyncio.gather(*tasks, return_exceptions=True)
-        assert await memory._execution.run(lambda: 10) == 10
+        assert await memory._execution.run_in_worker(lambda: 10) == 10
 
 
 @pytest.mark.asyncio

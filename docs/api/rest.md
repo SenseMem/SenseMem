@@ -8,7 +8,7 @@ Jump to [startup](#start-the-adapter), [content](#content-input), [endpoints](#e
 
 ## Surface
 
-The optional FastAPI adapter exposes thirteen `Memory` operations under `/v1`, or twenty-two when
+The optional FastAPI adapter exposes fourteen `Memory` operations under `/v1`, or twenty-three when
 the host builds it with `identity_operations=True` and `embodied_operations=True`. It validates
 transport input, calls the injected synchronous memory, and serializes the public SDK values; it
 is not a separate storage or retrieval implementation.
@@ -155,13 +155,14 @@ SDK validator and error contract.
 | `POST /v1/memories/search` | `searchMemories` | `QueryRequest` | `200 SearchResponse` |
 | `POST /v1/memories/reinforce` | `reinforceMemories` | `ReinforceRequest` | `200 ReinforceResponse` |
 | `GET /v1/memories/{memory_id}` | `getMemory` | non-empty path value | `200 MemoryResponse` |
+| `GET /v1/memories/{memory_id}/assets/{asset_id}` | `readAsset` | memory and asset IDs | `200` original binary media and MIME type |
 | `DELETE /v1/memories/{memory_id}` | `deleteMemory` | non-empty path value | `200 {"deleted":bool}` |
 | `POST /v1/answers` | `answer` | `AnswerRequest` | `200 AnswerResponse` |
 | `POST /v1/answers/stream` | `answerStream` | `AnswerRequest` | `200 text/event-stream` |
 | `POST /v1/context` | `compileContext` | `ContextRequest` | `200 ContextBundleResponse` |
 | `POST /v1/capture` | `captureMemory` | `MemoryCreate` | `201 MemoryResponse` |
 | `POST /v1/settle` | `settleCaptures` | `SettleRequest` | `200 {"settled":int}` |
-| `GET /v1/pending_captures` | `pendingCaptures` | `limit`, `memory_ids` query parameters | `200 {"items":[PendingCaptureResponse,...]}` |
+| `GET /v1/pending_captures` | `pendingCaptures` | `limit`, `memory_ids`, `cursor` query parameters | `200 {"items":[PendingCaptureResponse,...],"next_cursor":str\|null}` |
 
 The next nine exist only when the host enables the matching switch:
 
@@ -188,7 +189,8 @@ Request fields and defaults are:
 | `AnswerRequest` | required `question`; `limit=5`; `answer_policy="strict"`; optional `memory_type`, `reference_at`, `scope` |
 | `ConsentRequest` | required `state` (`granted`, `withheld`, or `withdrawn`); optional `note` |
 | `RetentionRequest` | `dry_run=false` |
-| `ContextRequest` | required `goal`; optional `budget`, `reference_at`, `scope`; `allow_partial_sources=false` |
+| `ContextRequest` | required `goal`; optional `budget`, `reference_at`, `scope`; `allow_partial_sources=false`; `supplements=[]` |
+| `ContextSupplementInput` | required nonempty `content` and `source`; optional timezone-aware `observed_at` and `expires_at` |
 | `ContextBudgetRequest` | `max_chars=16000`; `max_items=24`; `min_confidence=0.0`; `selected_proofs=false`; optional `max_media_items` (`0` for a text-only bundle); optional `memory_types` with at least one value; optional `freshness_seconds`; optional `max_latency_ms` |
 | `SettleRequest` | `limit=100`; `max_attempts=3`; optional `memory_ids` with 1–100 IDs |
 | `PerceptionRequest` | required `memory_id`; optional `kinds` array containing `"speech"` and/or `"faces"` |
@@ -279,25 +281,30 @@ Context-request budget:
     "min_confidence": 0.5,
     "freshness_seconds": 2592000,
     "max_latency_ms": 250
-  }
+  },
+  "reference_at": "2026-08-27T10:00:00Z",
+  "supplements": [
+    {
+      "content": "Rain is forecast this afternoon.",
+      "source": "weather-tool",
+      "observed_at": "2026-08-27T10:00:00Z"
+    }
+  ]
 }
 ```
 
 Creation is content-addressed and idempotent. Batch results preserve input order. Deletion is also
 idempotent: `deleted` reports whether a record existed. `ask` requires an answerer configured in
-the injected memory and, with the default `reinforce_on_answer=True`, reinforces backend-declared
-hits only when the answer does not abstain. Returned evidence alone does not establish utility;
+the injected memory. Answer reinforcement defaults to `False`; opting into `reinforce_on_answer=True`
+reinforces backend-declared hits only when the answer does not abstain. Returned evidence alone does not establish utility;
 see [reinforcement semantics](../memory-types-time-and-decay.md#decay-and-reinforcement).
 Explicit reinforcement is not idempotent: every call raises `access_count` for the named memories
 and moves the ranker's reinforcement factor, so a lost response must not be retried blindly.
 Unknown IDs are skipped, and `reinforced` counts the ones that existed.
 
-`answer` may run face recognition on a retrieved photo or video to identify who appears in it, the
-same as `perceiveMemory`, and that recognition can corroborate and commit a cross-modal identity
-merge. `POST /v1/answers` passes `Memory.ask(..., link_identities=embodied_operations)`, so a
-caller with recall access alone cannot acquire that merge authority through an answer unless the
-host has also opted `create_app` into `embodied_operations`: with the switch off, an answer may
-still identify who appears in the evidence, but the cross-modal bind is never committed.
+`answer` may recognize faces and voices in retrieved evidence, as `perceiveMemory` does. Neither
+operation merges those identities. Confirming a cross-modal binding requires an explicit
+host-authored SDK `MERGE`; `embodied_operations` grants recognition access only.
 
 `compileContext` returns a structured evidence bundle with conflicts and unknowns, without answer
 generation or new memory records. Retrieval can cache a spoken-query transcript and record an
@@ -306,10 +313,21 @@ empty-query signal. The transport expresses `ContextBudget.freshness` as `freshn
 `deadline_exceeded`. See [context compilation](../context-compilation.md) for selection and
 evidence-closure rules.
 
+`supplements` carries temporary results from the host's tools or agent. These are untrusted
+external evidence with explicit sources, never instructions or implicit memory writes.
+Admitted values return in `supplements`; `omitted_supplements` counts excluded values and
+`unknowns` gives the reason. Supplements reserve shared character/item slots in submission order
+before stored evidence is packed. Expired, future-observed, or insufficiently fresh values are
+excluded against `reference_at`; a freshness bound requires `observed_at`. The response preserves
+their sources and timestamps, separately from memory citations and selected proofs.
+
 `budget.selected_proofs` defaults to `false`. Enabling it adds complete current-knowledge witnesses
 in the response's `proofs` array, while retaining every hit's full `context.evidence_ids` audit
 union. Each proof has `anchor_id` and `nodes`; each node has `memory_id`, `confidence`, `sources`,
-and nullable `capture_id`. Certificate text and records spend the same character, item, and media
+nullable `capture_id`, and nullable `source_group_id`. `proof_scoring` reports `capture_groups` for
+the default instance or `independent_pair` for `independent_evidence=True`; it is a response field,
+not a request override. See [proof scoring](../context-compilation.md#selected-delivery-certificates).
+Certificate text and records spend the same character, item, and media
 budgets. Historical `scope.known_at` keeps full provenance. Disabled or historical delivery returns
 an empty `proofs` array. No endpoint changes.
 
@@ -328,7 +346,7 @@ The identity and embodied routes follow the SDK operation they dispatch to, exac
 `perceiveMemory` reads one stored memory's assets and returns typed speech and face collections.
 Omitting `kinds` selects configured recognition plugins automatically. An explicit selection
 requires the relevant backend and modality when applicable media exists. Text-only records
-return empty collections. The recognition path may commit a corroborated voice/face merge.
+return empty collections. Recognition keeps voice and face identities separate.
 `registerIdentity` asserts a name on the host's behalf as a
 versioned, reversible memory record and fails with `identity_not_found` for an unregistered ID;
 omitting `relationship` leaves any recorded relationship intact, and there is deliberately no way
@@ -341,24 +359,9 @@ gone.
 
 ### Retrieval trace
 
-`POST /v1/memories/search` with `"explain": true` routes to `Memory.search(..., explain=True)` and returns a
-`trace` object beside the unchanged `hits`. `trace.candidates` lists every candidate considered with
-its effective score components (`dense_relevance`, `dense_confidence`, `lexical_relevance`,
-`lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`,
-`reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score`, `rank`) and, when it
-did not become a hit, a `rejected_by` value of `stale_index`, `occurrence_range`, `missing_memory`,
-`memory_type`, `minimum_relevance`, `ambiguity`, or `limit`. `trace.candidate_limit` is the final
-candidate depth requested per native route. `trace.exhaustive` is true when every route returned
-fewer candidates than its bound; it does not make approximate search exact.
-`trace.ambiguous` says whether the result was suppressed for being too close to call. Without
-`explain`, `trace` is `null` and no extra work is done. A trace names candidates and scores only; it
-never carries evidence content.
-
-`SearchHitResponse.score` is the final ranking score, while the relevance gate compares
-`gate_relevance`, a different quantity, so a floor tuned against the returned `score` compares the
-wrong two numbers. `minimum_relevance` and `ambiguity_margin` are fixed when the owner constructs
-`Memory` and no request field can widen them for one call; an empty result is answered by reading
-`trace` and changing the query, the filters, or the owner's configuration.
+`POST /v1/memories/search` with `"explain": true` returns a `trace` object beside `hits`.
+Otherwise `trace` is `null`. See [retrieval diagnostics](../observability.md#retrieval-diagnostics)
+for score components, rejection reasons, and threshold interpretation.
 
 ### Response objects
 
@@ -390,7 +393,8 @@ wrong two numbers. `minimum_relevance` and `ambiguity_margin` are fixed when the
 | `TextSpanPieceResponse` | `role`, half-open `start_codepoint`, `end_codepoint`, exact `source_text`, `sha256` |
 | `TextSpanSelectorResponse` | `parent_content_sha256`, `embedding_input_sha256`, `recipe_version`, ordered `pieces` |
 | `ContextExcerptResponse` | `source_memory_id`, structured `matched_index_id`, partial `content`, `selector`, `score`, creation and occurrence times, `memory_type`, `context`, `place_id` |
-| `ContextBundleResponse` | `goal`, `reference_at`, `budget`, the hit arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResponse` array `affect`, the mixed `actors` array of hits, `NamedActorResponse`, and `ProvisionalActorResponse` objects, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `rendered` |
+| `ContextBundleResponse` | `goal`, `reference_at`, `budget`, the hit arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResponse` array `affect`, the mixed `actors` array of hits, `NamedActorResponse`, and `ProvisionalActorResponse` objects, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `proof_scoring`, admitted `supplements`, `omitted_supplements`, `rendered` |
+| `ContextSupplement` | `content`, `source`, nullable `observed_at` and `expires_at`; temporary external evidence, never a stored memory |
 | `ProvisionalActorResponse` | `identity_id`, `memory_ids`: one recognized person in the included evidence whom no visible naming assertion names |
 | `NamedActorResponse` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id`: one person a naming assertion names, reached through other evidence |
 | `AffectCueResponse` | every hit field plus `event_ids`: the events formed from the same observations the cue cites in its own `context.evidence_ids`, which is co-occurrence inside one capture and not an attributed cause |
@@ -413,7 +417,7 @@ generation call than the default on a question that grounds nothing, where `stri
 without calling the model. On `POST
 /v1/answers/stream` the deltas are the provider's own and may carry the marker; the terminal
 `result` event holds the cleaned answer. A response `context` is
-the authoritative `MemoryContext`: typed kind and basis, confidence, valid and transaction time,
+the authoritative `RecordSemantics`: typed kind and basis, confidence, valid and transaction time,
 visibility, lineage/source/evidence/supersession IDs, model recipe, optional
 subject/predicate/value, spatial pose, and affect cue fields. It is `null` on a raw record formed
 without typed context. `forgotten_at` is set on a cognitively forgotten record, which `get`

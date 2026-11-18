@@ -7,14 +7,13 @@ planes ask against declared capability rather than provider names.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 
 from sensemem._resources import Closable, present_resources, unique_resources
-from sensemem._validation import nonempty_text
+from sensemem._validation import nonempty_text, positive_int
+from sensemem.capabilities import MemoryCapabilities
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.kernel.content import PreparedContent, prepared_modalities
-from sensemem.kernel.validation import positive_int
 from sensemem.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
@@ -29,10 +28,7 @@ from sensemem.models.base import (
     _modalities,
     embedding_routes,
 )
-from sensemem.types import MemoryCapabilities, Modality
-
-_LOGGER = logging.getLogger(__name__)
-
+from sensemem.types import Modality
 
 _NO_TRANSCRIPTION_SPACE = "none:asr-v1"
 
@@ -56,28 +52,23 @@ def fallback_unsupported(
         fallback.add(Modality.VIDEO)
     if prepared.visual_description:
         fallback.update((Modality.IMAGE, Modality.VIDEO))
-    # This runs before any derived text exists, so it cannot be seen yet -- only its possibility.
-    # `rescuable` is the modality set a transcript or a visual description could still rescue,
-    # which is why a video reaching a video-less embedder is no longer fatal when the transcriber
-    # can read it. Empty by default, so a caller that does not pass it keeps the strict behaviour.
+    # Before derived text exists, callers name modalities their configured perception can read.
     fallback.update(rescuable)
     fatal = set(unsupported - fallback)
     if Modality.TEXT not in supported:
         fatal.update(unsupported & fallback)
+    if (
+        fatal == {Modality.TEXT}
+        and prepared.assets
+        and any(kind not in {"text", "asset"} for kind, _text in prepared.canonical_parts)
+        and not any(kind == "text" and text.strip() for kind, text in prepared.canonical_parts)
+    ):
+        fatal.clear()
     if fatal:
         names = ", ".join(sorted(modality.value for modality in fatal))
         raise ModelError(
             f"configured {operation} model does not support: {names}",
             reason="unsupported_modality",
-        )
-    if unsupported:
-        # Not fatal, but the whole capability of this modality now rides on a transcript or a
-        # description that may never arrive. Silent fallback is how media encoding has died
-        # unnoticed here before.
-        _LOGGER.warning(
-            "configured %s model does not support %s; falling back to derived text",
-            operation,
-            ", ".join(sorted(modality.value for modality in unsupported)),
         )
     return unsupported
 

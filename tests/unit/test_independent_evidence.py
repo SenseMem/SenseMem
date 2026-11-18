@@ -15,14 +15,14 @@ from sensemem import (
     EvidenceBasis,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryNotFoundError,
     MemoryOperation,
     MemoryOperationRecord,
     MemoryPlugins,
+    MemorySettings,
     ObservationContext,
+    RecordKind,
     StorageError,
     ValidationError,
 )
@@ -33,7 +33,7 @@ def _open(path: Path, independent: bool = True) -> Memory:
     return Memory.from_plugins(
         path,
         plugins=MemoryPlugins(embedder=TinyEmbedder()),
-        config=MemoryConfig(independent_evidence=independent, minimum_relevance=0),
+        settings=MemorySettings(independent_evidence=independent, minimum_relevance=0),
     )
 
 
@@ -59,7 +59,7 @@ def _derive(
             evidence_ids=sources,
             target_ids=sources if forget else (),
             proposal=FormationProposal(
-                kind=MemoryKind.TRAIT if trait else MemoryKind.RELATION,
+                kind=RecordKind.TRAIT if trait else RecordKind.RELATION,
                 basis=basis,
                 content=name,
                 subject="Ana",
@@ -219,13 +219,13 @@ def test_policy_requires_a_strict_boolean(tmp_path: Path, invalid: object) -> No
 
 
 def test_default_and_async_configuration(tmp_path: Path) -> None:
-    assert MemoryConfig().independent_evidence is False
+    assert MemorySettings().independent_evidence is False
 
     async def run() -> None:
         async with AsyncMemory.from_plugins(
             tmp_path,
             plugins=MemoryPlugins(embedder=TinyEmbedder()),
-            config=MemoryConfig(independent_evidence=True),
+            settings=MemorySettings(independent_evidence=True),
         ) as memory:
             await memory.add("async observation")
 

@@ -15,6 +15,7 @@ query instead.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from sensemem.benchmarks._contracts import ContractModel, Identifier, NonEmptyString
+from sensemem.benchmarks._official.personamem_v3_tasks import CLUSTER_TASK_TYPES
 
 # The five engagement logs, in the order their events are merged before the
 # chronological sort. `calendar.json` is a modification stream with a
@@ -47,23 +49,22 @@ RANKING_TASK_TYPES = frozenset(
     }
 )
 
-# Scored by a cluster runner that threads each response into the next prompt.
-# A harness that answers every question independently cannot reconstruct the
-# cluster, so these rows are dropped rather than scored under a protocol that
-# is not the official one.
-CLUSTER_TASK_TYPES = frozenset(
-    {
-        "over_personalization_repetition_chatbot",
-        "over_personalization_repetition_recsys",
-    }
-)
-
 
 class PersonaMemTurn(ContractModel):
     """One turn of a chatbot, companion, or direct-message conversation."""
 
     role: NonEmptyString
     content: str
+
+
+class PersonaMemClusterTurn(BaseModel):
+    """One ordered cluster request, including unscored intervening filler turns."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    ts: int
+    user_query: NonEmptyString
+    is_target: bool = True
 
 
 class PersonaMemEvent(ContractModel):
@@ -88,6 +89,7 @@ class PersonaMemEvent(ContractModel):
     # Calendar only: when the appointment is scheduled for, which is a
     # different moment from `occurred_at` -- that is when the calendar was
     # edited. `details` carries a removal reason or a rendered field diff.
+    calendar_entry_id: str = ""
     scheduled_start: AwareDatetime | None = None
     scheduled_end: AwareDatetime | None = None
     details: str = ""
@@ -127,6 +129,10 @@ class PersonaMemQuery(ContractModel):
     held_out_index: int | None = None
     positive_indexes: tuple[int, ...] = ()
     negative_indexes: tuple[int, ...] = ()
+    cluster_id: str = ""
+    cluster_queries: tuple[PersonaMemClusterTurn, ...] = ()
+    query_index: int | None = None
+    n_allowed_repetitions: int = 2
     # The published `instance_full` minus its slate and its build-time quality
     # checks. The official task-specific judges read their evidence straight
     # out of this record, so it is carried verbatim rather than re-modelled.
@@ -134,8 +140,15 @@ class PersonaMemQuery(ContractModel):
 
     @model_validator(mode="after")
     def require_user_query(self) -> PersonaMemQuery:
-        if not self.user_query.strip():
+        if not self.user_query.strip() and self.task_type not in {
+            "new_suggestions_chatbot",
+            "active_mistake_prevention",
+        }:
             raise ValueError("PersonaMem-v3 queries require a user query")
+        if self.task_type in CLUSTER_TASK_TYPES and (
+            not self.cluster_id or not self.cluster_queries
+        ):
+            raise ValueError("PersonaMem-v3 repetition queries require an identified cluster")
         return self
 
 
@@ -213,6 +226,7 @@ class _RawEvent(BaseModel):
 class _RawCalendarEntry(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    entry_id: str | None = None
     title: str | None = None
     type: str | None = None
     start_ts: int | None = None
@@ -251,6 +265,10 @@ class _RawInstance(BaseModel):
     hard_negative_idxs: list[int] = Field(default_factory=list)
     carveout_indices: list[int] = Field(default_factory=list)
     surface_decoy_indices: list[int] = Field(default_factory=list)
+    cluster_id: str = ""
+    queries: tuple[PersonaMemClusterTurn, ...] = ()
+    query_index: int | None = None
+    n_allowed_repetitions: int = Field(default=2, ge=0)
 
 
 class _RawPreference(BaseModel):
@@ -298,22 +316,28 @@ _EVENTS = TypeAdapter(list[_RawEvent])
 _QUERIES = TypeAdapter(list[_RawQuery])
 
 
-def load_personamem_v3(backend_root: Path) -> tuple[PersonaMemPersona, ...]:
-    """Load every persona directory under `backend/`, in numeric order."""
+def load_personamem_v3(
+    backend_root: Path, *, limit: int | float | None = None, offset: int = 0
+) -> tuple[PersonaMemPersona, ...]:
+    """Select supported personas in numeric order before parsing their engagement logs."""
     directories = sorted(
         (path for path in backend_root.iterdir() if (path / _TEST_FILE).is_file()),
         key=lambda path: (0, int(path.name), "") if path.name.isdigit() else (1, 0, path.name),
     )
-    personas = tuple(persona for persona in map(_persona, directories) if persona is not None)
-    if not personas:
+    supported = tuple(
+        (directory, queries) for directory in directories if (queries := _queries(directory))
+    )
+    if not supported:
         raise ValueError(f"PersonaMem-v3 backend contains no persona directories: {backend_root}")
-    return personas
+    if limit is None or limit == -1:
+        selected = supported[offset:]
+    else:
+        count = max(1, math.ceil(len(supported) * limit)) if limit < 1 else int(limit)
+        selected = supported[offset : offset + count]
+    return tuple(_persona(directory, queries) for directory, queries in selected)
 
 
-def _persona(directory: Path) -> PersonaMemPersona | None:
-    queries = _queries(directory)
-    if not queries:
-        return None
+def _persona(directory: Path, queries: tuple[PersonaMemQuery, ...]) -> PersonaMemPersona:
     events = [
         _event(raw, app)
         for filename, app in PERSONAMEM_V3_APPS
@@ -359,14 +383,7 @@ _EVIDENCE_EXCLUDED = frozenset(
 
 
 def _query(persona_id: str, raw: _RawQuery) -> PersonaMemQuery | None:
-    """Build one query, or drop the row.
-
-    A row is dropped when its task type is cluster-scored, or when no spelling
-    carries question text -- some rows publish `user_query` as null and hold
-    the question in the instance instead, and a few carry none at all.
-    """
-    if raw.task_type in CLUSTER_TASK_TYPES:
-        return None
+    """Resolve published query spellings, preserving intentional unprompted moments."""
     payload = raw.instance_full if raw.instance_full is not None else _instance_json(raw)
     instance = _RawInstance.model_validate(payload)
     user_query = (
@@ -375,7 +392,10 @@ def _query(persona_id: str, raw: _RawQuery) -> PersonaMemQuery | None:
         or _text_field(payload, "user_query")
         or _text_field(payload, "query_text")
     )
-    if not user_query.strip():
+    if not user_query.strip() and raw.task_type not in {
+        "new_suggestions_chatbot",
+        "active_mistake_prevention",
+    }:
         return None
     return PersonaMemQuery(
         query_id=raw.query_id,
@@ -412,6 +432,10 @@ def _query(persona_id: str, raw: _RawQuery) -> PersonaMemQuery | None:
             instance.carveout_indices,
             instance.surface_decoy_indices,
         ),
+        cluster_id=instance.cluster_id,
+        cluster_queries=instance.queries,
+        query_index=instance.query_index,
+        n_allowed_repetitions=instance.n_allowed_repetitions,
         judge_evidence={
             key: value for key, value in payload.items() if key not in _EVIDENCE_EXCLUDED
         },
@@ -513,6 +537,7 @@ def _calendar_event(modification: _RawCalendarModification) -> PersonaMemEvent:
         title=entry.title or modification.entry_id or "",
         content_type=entry.type or "",
         location=_location(entry.location),
+        calendar_entry_id=entry.entry_id or modification.entry_id or "",
         scheduled_start=None if entry.start_ts is None else _moment(entry.start_ts),
         scheduled_end=None if entry.end_ts is None else _moment(entry.end_ts),
         details=_calendar_details(modification),
@@ -568,6 +593,7 @@ def render_event(event: PersonaMemEvent) -> str:
         # the appointment kind on a calendar one; it is parsed for every event,
         # so it is rendered for every event too.
         ("Type", event.content_type),
+        ("Calendar entry", event.calendar_entry_id),
         ("Title", event.title),
         ("Caption", event.caption),
         ("Media", event.media_description),

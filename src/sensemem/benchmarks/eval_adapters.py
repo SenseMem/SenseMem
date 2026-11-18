@@ -22,6 +22,7 @@ from sensemem.benchmarks.mem_gallery import (
 )
 from sensemem.benchmarks.mosaic import MosaicSession
 from sensemem.benchmarks.personamem_v3 import PersonaMemQuery
+from sensemem.benchmarks.prompts import _choice_prompt, _free_text_parts, _free_text_prompt
 from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion
 from sensemem.benchmarks.task_catalog import TaskSpec
 from sensemem.kernel.temporal import temporal_context
@@ -657,12 +658,13 @@ def _videozerobench(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.videozerobench import level_queries, load_videozerobench
+    from sensemem.benchmarks._official.query_prompts import videozero_level_queries
+    from sensemem.benchmarks.videozerobench import load_videozerobench
 
     grouped: dict[str, list[EvalQuestion]] = {}
     for question in _selected(load_videozerobench(dataset), limit, offset):
         questions = grouped.setdefault(question.video_id, [])
-        for level, query in level_queries(question):
+        for level, query in videozero_level_queries(question):
             questions.append(
                 EvalQuestion(
                     f"{question.question_id}/level-{level}",
@@ -1235,6 +1237,7 @@ def _ama_bench(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
+    from sensemem.benchmarks._official.query_prompts import ama_question_prompt
     from sensemem.benchmarks.ama_bench import load_ama_bench
 
     del spec, resolver, root
@@ -1252,11 +1255,7 @@ def _ama_bench(
             tuple(
                 EvalQuestion(
                     question.question_uuid,
-                    (
-                        f"## Questions\nQuestion 1: {question.question}\n\n"
-                        "## Instructions\nProvide a direct and concise answer.\n\n"
-                        "Answer[1]: [your answer here]",
-                    ),
+                    (ama_question_prompt(question.question),),
                     references=(question.answer,),
                     source_question=question.question,
                     metadata={
@@ -1283,12 +1282,12 @@ def _longmemeval_v2(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
+    from sensemem.benchmarks._official.query_prompts import longmemeval_v2_question_prompt
     from sensemem.benchmarks.longmemeval_v2 import (
         LongMemEvalV2Question,
         load_longmemeval_v2_haystacks,
         load_longmemeval_v2_questions,
         load_longmemeval_v2_trajectories,
-        question_prompt,
     )
 
     questions = load_longmemeval_v2_questions(dataset)
@@ -1342,7 +1341,7 @@ def _longmemeval_v2(
         eval_questions = tuple(
             EvalQuestion(
                 question.id,
-                (question_prompt(question),)
+                (longmemeval_v2_question_prompt(question),)
                 + (() if question.image is None else (media.path(question.image, exact=True),)),
                 (question.answer,),
                 metadata={
@@ -1377,7 +1376,7 @@ def _mosaic(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks._official.mosaic_scoring import answer_system_prompt
+    from sensemem.benchmarks._official.mosaic_scoring import answer_query_prompt
     from sensemem.benchmarks.mosaic import load_mosaic
 
     units = []
@@ -1405,10 +1404,7 @@ def _mosaic(
             questions.append(
                 EvalQuestion(
                     question.question_id,
-                    (
-                        answer_system_prompt(question.question_type)
-                        + f"\nQuestion: {question.question}\nAnswer:",
-                    ),
+                    (answer_query_prompt(question.question_type, question.question),),
                     (question.answer, *question.answer_aliases),
                     metadata={
                         "persona_id": persona_id,
@@ -1479,81 +1475,6 @@ def _mosaic_memories(
     return tuple(memories), facts
 
 
-def _es_memeval(
-    _spec: TaskSpec,
-    dataset: Path,
-    _media: MediaResolver,
-    _root: Path,
-    limit: Limit,
-    offset: int,
-) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.es_memeval import load_es_memeval
-    from sensemem.benchmarks.prompts import ES_MEMEVAL_QA_QUERY_PROMPT
-
-    units = []
-    for seeker in _selected(load_es_memeval(dataset), limit, offset):
-        # ES-MemEval's published RAG QA baseline indexes one document per
-        # dialogue session. Preserve that granularity and its exact rendering:
-        # the seeker's name identifies human turns and "supporter" identifies
-        # assistant turns, while the date is prepended at retrieval time.
-        memories = tuple(
-            MemoryItem(
-                session.session_id,
-                (
-                    f"[{session.occurred_at.date().isoformat()}]\n"
-                    + "\n".join(
-                        f"{seeker.name if turn.role == 'seeker' else 'supporter'}: {turn.content}"
-                        for turn in session.turns
-                    ),
-                ),
-                occurred_at=session.occurred_at,
-            )
-            for session in seeker.sessions
-        )
-        turn_sessions = {
-            turn.source_id: session.session_id
-            for session in seeker.sessions
-            for turn in session.turns
-        }
-        questions = tuple(
-            EvalQuestion(
-                question.question_id,
-                (ES_MEMEVAL_QA_QUERY_PROMPT.text.format(question=question.question),),
-                (question.answer,),
-                metadata={
-                    "capability": question.capability,
-                    "question_group": question.group_id,
-                    # Upstream's session retrieval evaluator marks a session
-                    # relevant when any visible turn ID in it occurs in the
-                    # question's evidence list. Event annotations are scorer-side
-                    # data and never enter memory; a turn label that names no
-                    # stored turn is a malformed release ID and is reported the
-                    # way every adapter reports one, so `unresolved_gold_evidence_ids`
-                    # keeps exposing the vocabulary mismatch it exists for.
-                    "evidence_ids": tuple(
-                        dict.fromkeys(
-                            turn_sessions[value]
-                            for value in question.evidence
-                            if value in turn_sessions
-                        )
-                    ),
-                    "unresolved_evidence_ids": tuple(
-                        value
-                        for value in question.evidence
-                        if value not in turn_sessions and "event" not in value.casefold()
-                    ),
-                    "abstention": question.capability == "abstention",
-                    "retrieval_granularity": "session",
-                },
-                source_question=question.question,
-                refusal=ES_MEMEVAL_QA_QUERY_PROMPT.refusal,
-            )
-            for question in seeker.questions
-        )
-        units.append(EvalUnit(seeker.seeker_id, memories, questions))
-    return tuple(units)
-
-
 def _personamem_v3(
     _spec: TaskSpec,
     dataset: Path,
@@ -1574,7 +1495,7 @@ def _personamem_v3(
     )
 
     units = []
-    for persona in _selected(load_personamem_v3(dataset), limit, offset):
+    for persona in load_personamem_v3(dataset, limit=limit, offset=offset):
         memories = tuple(
             item
             for event in persona.events
@@ -1609,11 +1530,26 @@ def _personamem_question(
     ranking_template: str,
     query_template: str,
 ) -> EvalQuestion:
+    from sensemem.benchmarks._official import personamem_v3_proactive
+    from sensemem.benchmarks._official.personamem_v3_prompts import (
+        e5_prompt,
+        e6_active_mistake_prevention_prompt,
+        new_suggestions_chatbot_prompt,
+    )
+
     history = "\n".join(f"{turn.role}: {turn.content}" for turn in query.prior_conversation)
     question = query.user_query if not history else f"{history}\n\n{query.user_query}"
-    if query.task_type in ranking_task_types and query.candidates:
+    if query.task_type in personamem_v3_proactive.TASK_TYPES:
+        prompt = personamem_v3_proactive.build_prompt(query.judge_evidence)
+    elif query.task_type == "new_suggestions_chatbot":
+        prompt = new_suggestions_chatbot_prompt(query.judge_evidence)
+    elif query.task_type == "active_mistake_prevention":
+        prompt = e6_active_mistake_prevention_prompt(query.user_query)
+    elif query.task_type == "short_vs_long_term_lifecycle":
+        prompt = e5_prompt({**query.judge_evidence, "candidates": query.candidates}, None)
+    elif query.task_type in ranking_task_types and query.candidates:
         prompt = ranking_template.format(
-            query=query.user_query,
+            query=question,
             slate=render_candidates(query.candidates),
             count=len(query.candidates),
         )
@@ -1638,10 +1574,17 @@ def _personamem_question(
             "candidate_count": len(query.candidates),
             "positive_indexes": query.positive_indexes,
             "negative_indexes": query.negative_indexes,
+            "cluster_id": query.cluster_id,
+            "cluster_queries": tuple(
+                {"ts": turn.ts, "user_query": turn.user_query, "is_target": turn.is_target}
+                for turn in query.cluster_queries
+            ),
+            "query_index": query.query_index,
+            "n_allowed_repetitions": query.n_allowed_repetitions,
             "judge_evidence": query.judge_evidence,
         },
         reference_at=query.asked_at,
-        source_question=query.user_query[:_MAX_PART_CHARACTERS],
+        source_question=(query.user_query or prompt)[:_MAX_PART_CHARACTERS],
     )
 
 
@@ -1682,7 +1625,6 @@ _LOADERS = {
     "mem-gallery": _mem_gallery,
     "longmemeval-v2-small": _longmemeval_v2,
     "longmemeval-v2-medium": _longmemeval_v2,
-    "es-memeval-qa": _es_memeval,
     "personamem-v3": _personamem_v3,
 }
 
@@ -1839,22 +1781,3 @@ def _require_timestamped_media(
             f"{task_name} unit {unit_id} has causal questions; its --media-manifest parts "
             "must declare end_seconds"
         )
-
-
-def _choice_prompt(question: str, choices: Sequence[str]) -> str:
-    options = "\n".join(
-        f"{label}. {choice}" for label, choice in zip("ABCDEFGHIJ", choices, strict=False)
-    )
-    labels = ", ".join("ABCDEFGHIJ"[: len(choices)])
-    return (
-        f"Select the best answer using only the memories. Reply with one letter ({labels}).\n"
-        f"Question: {question}\n{options}\nAnswer:"
-    )
-
-
-def _free_text_prompt(question: str) -> str:
-    return f"Answer concisely using only the memories.\nQuestion: {question}\nAnswer:"
-
-
-def _free_text_parts(question: str) -> tuple[str, str]:
-    return question, "Answer concisely using only the memories.\nAnswer:"

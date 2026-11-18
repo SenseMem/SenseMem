@@ -23,9 +23,9 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from contextlib import AbstractContextManager
 from dataclasses import fields
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 from threading import RLock
 
@@ -34,21 +34,50 @@ from opentelemetry.trace import Tracer
 
 from sensemem._resources import close_quietly, unique_resources
 from sensemem._telemetry import TRACER_NAME
-from sensemem.configuration import SenseMemConfig, resolve_memory_config
+from sensemem.candidate_sources import CandidateSource, DefaultCandidateSource
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.configuration import (
+    MemorySpec,
+    PluginFactory,
+    build_memory_composition,
+)
+from sensemem.content import Blob, ContentInput
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_selection import ContextSelector, DefaultContextSelector
+from sensemem.context_values import ContextBudget, ContextSupplement
+from sensemem.control_values import (
+    ConsolidationCandidate,
+    ConsolidationReport,
+    ExportBundle,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryOutcome,
+    MemoryTrigger,
+    QueryFailure,
+    RetentionReport,
+)
 from sensemem.exceptions import (
     IndexUnavailableError,
     SenseMemError,
     StorageError,
     ValidationError,
 )
+from sensemem.identity import (
+    ConsentState,
+    IdentityErasure,
+    IdentityProfile,
+    PerceptionKind,
+    PerceptionResult,
+)
 from sensemem.infrastructure.local.assets import AssetStore
 from sensemem.infrastructure.local.store import LocalStore
 from sensemem.infrastructure.local.zvec_index import ZvecIndex, validate_index_configuration
 from sensemem.kernel.answering import Answering
+from sensemem.kernel.candidates import Candidates
 from sensemem.kernel.compilation import Compilation
 from sensemem.kernel.contracts import resolve_backends
 from sensemem.kernel.control_plane import ControlPlane
-from sensemem.kernel.embedding import Embedding
+from sensemem.kernel.embedding import DOCUMENT_TASK, Embedding
 from sensemem.kernel.execution import Execution
 from sensemem.kernel.formation import Formation
 from sensemem.kernel.hydration import Hydrator
@@ -56,7 +85,10 @@ from sensemem.kernel.identity import Identities
 from sensemem.kernel.ingestion import Ingestion
 from sensemem.kernel.lifecycle import Lifecycle
 from sensemem.kernel.materialization import Materializer
+from sensemem.kernel.processing import IngestionStages
 from sensemem.kernel.projection import Projection
+from sensemem.kernel.querying import Querying
+from sensemem.kernel.recall import Recall
 from sensemem.kernel.records import Records
 from sensemem.kernel.recovery import Recovery
 from sensemem.kernel.retrieval import Retrieval
@@ -67,6 +99,7 @@ from sensemem.kernel.runtime import (
 )
 from sensemem.kernel.settings import resolve_settings
 from sensemem.kernel.speech import Speech
+from sensemem.kernel.tools import Tools
 from sensemem.kernel.vision import Vision
 from sensemem.models.base import (
     ConsolidationBackend,
@@ -74,43 +107,30 @@ from sensemem.models.base import (
     FaceBackend,
     FormationBackend,
     GenerationBackend,
+    ModelInput,
     RecallPlanningBackend,
     RerankingBackend,
     SpeechBackend,
     TranscriptionBackend,
     VisionDescriptionBackend,
 )
-from sensemem.plugins import MemoryConfig, MemoryPlugins
-from sensemem.types import (
+from sensemem.plugins import MemoryPlugins, validate_computation_plugins
+from sensemem.processing import IngestionStage
+from sensemem.query_policy import DefaultQueryPolicy, QueryPolicy
+from sensemem.ranking_policy import DefaultRankingPolicy, RankingPolicy
+from sensemem.records import (
     AnswerChunk,
-    AnswerPolicy,
     AnswerResult,
-    ConsentState,
-    ConsolidationCandidate,
-    ConsolidationReport,
-    ContentInput,
-    ContextBudget,
-    ContextBundle,
-    ExportBundle,
-    IdentityErasure,
-    IdentityProfile,
-    MemoryCapabilities,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryOutcome,
     MemoryRecord,
-    MemoryTrigger,
-    MemoryType,
-    ObservationContext,
     Page,
     PendingCapture,
-    PerceptionKind,
-    PerceptionResult,
-    RetentionReport,
-    RetrievalScope,
     SearchResult,
-    StreamInput,
 )
+from sensemem.settings import MemorySettings
+from sensemem.spatial import ObservationContext, RetrievalScope
+from sensemem.stream_values import StreamInput
+from sensemem.tools import ToolRegistry, ToolResult
+from sensemem.types import AnswerPolicy, MemoryCategory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,25 +150,25 @@ class Memory:
         former: FormationBackend | None = None,
         consolidator: ConsolidationBackend | None = None,
         reranker: RerankingBackend | None = None,
-        config: MemoryConfig | None = None,
+        query_policy: QueryPolicy | None = None,
+        candidate_source: CandidateSource | None = None,
+        ranking_policy: RankingPolicy | None = None,
+        context_selector: ContextSelector | None = None,
+        ingestion_stages: tuple[IngestionStage, ...] = (),
+        tools: ToolRegistry | None = None,
+        settings: MemorySettings | None = None,
         tracer: Tracer | None = None,
     ) -> None:
-        self.data_dir = Path(data_dir).expanduser().resolve()
-        tracer = trace.get_tracer(TRACER_NAME) if tracer is None else tracer
-        self._settings = resolve_settings(config)
-        if (
-            self._settings.recall_planning
-            and answerer is not None
-            and not isinstance(answerer, RecallPlanningBackend)
-        ):
-            # Every planning failure resolves to the fallback plan on purpose, so an answerer that
-            # never declared `plan_recall` -- a wiring bug, not a planner failing -- would read
-            # exactly like a planner choosing nothing. Said once, here, not once per question.
-            _LOGGER.warning(
-                "recall_planning is on but the answerer cannot plan; every question runs the "
-                "fallback plan"
-            )
-
+        self._tools = tools if tools is not None else ToolRegistry()
+        self._ranking_policy = DefaultRankingPolicy() if ranking_policy is None else ranking_policy
+        self._query_policy = DefaultQueryPolicy() if query_policy is None else query_policy
+        self._candidate_source = (
+            DefaultCandidateSource() if candidate_source is None else candidate_source
+        )
+        self._context_selector = (
+            DefaultContextSelector() if context_selector is None else context_selector
+        )
+        self._ingestion_stages = ingestion_stages
         store: LocalStore | None = None
         execution: Execution | None = None
         injected = (
@@ -160,8 +180,37 @@ class Memory:
             consolidator,
             answerer,
             reranker,
+            self._query_policy,
+            self._candidate_source,
+            self._ranking_policy,
+            self._context_selector,
+            *ingestion_stages,
+            self._tools,
         )
         try:
+            if tools is not None and not isinstance(tools, ToolRegistry):
+                raise ValidationError("tools must be a ToolRegistry")
+            validate_computation_plugins(
+                self._ranking_policy,
+                self._context_selector,
+                self._ingestion_stages,
+                self._query_policy,
+                self._candidate_source,
+            )
+            self.data_dir = Path(data_dir).expanduser().resolve()
+            tracer = trace.get_tracer(TRACER_NAME) if tracer is None else tracer
+            self._tracer = tracer
+            self._settings = resolve_settings(settings)
+            if (
+                self._settings.recall_planning
+                and answerer is not None
+                and not isinstance(answerer, RecallPlanningBackend)
+            ):
+                # Planning deliberately falls back on failures; flag missing wiring at assembly.
+                _LOGGER.warning(
+                    "recall_planning is on but the answerer cannot plan; every question runs the "
+                    "fallback plan"
+                )
             self._backends = resolve_backends(
                 embedder=embedder,
                 answerer=answerer,
@@ -192,12 +241,14 @@ class Memory:
                 storage=self._storage,
             )
             self._execution = execution = Execution(lifecycle=self._lifecycle)
+            self._tool_execution = Tools(registry=self._tools, lifecycle=self._lifecycle)
             self._hydrator = Hydrator(
                 storage=self._storage,
             )
-            materializer = Materializer(
+            self._materializer = materializer = Materializer(
                 storage=self._storage,
                 lifecycle=self._lifecycle,
+                hydrator=self._hydrator,
             )
             self._lifecycle.collect_orphan_assets(scan_physical=True)
             index_path = self.data_dir / "zvec"
@@ -205,7 +256,8 @@ class Memory:
                 storage=self._storage,
                 backends=self._backends,
                 settings=self._settings,
-            ).prepare(index_path)
+                ingestion_stages=self._ingestion_stages,
+            ).reconcile_store(index_path)
         except BaseException:
             close_quietly(*injected, execution, store)
             raise
@@ -258,10 +310,27 @@ class Memory:
             hydrator=self._hydrator,
             materializer=materializer,
         )
+        querying = Querying(
+            tracer=tracer,
+            policy=self._query_policy,
+            embedding=embedding,
+            capabilities=self._backends.capabilities,
+        )
         self._retrieval = Retrieval(
+            querying=querying,
+            candidates=Candidates(
+                tracer=tracer,
+                source=self._candidate_source,
+                store=self._store,
+                index=self._index,
+                execution=self._execution,
+                space_id=self._backends.space_id,
+                task=DOCUMENT_TASK,
+                dimension=self._backends.embedding_dimension,
+            ),
+            ranking_policy=self._ranking_policy,
             tracer=tracer,
             storage=self._storage,
-            index=self._index,
             backends=self._backends,
             settings=self._settings,
             lifecycle=self._lifecycle,
@@ -271,7 +340,6 @@ class Memory:
             embedding=embedding,
             vision=self._vision,
             projection=self._projection,
-            execution=self._execution,
         )
         self._formation = Formation(
             tracer=tracer,
@@ -298,6 +366,9 @@ class Memory:
             execution=self._execution,
         )
         self._ingestion = Ingestion(
+            processing=IngestionStages(
+                tracer=tracer, stages=self._ingestion_stages, hydrator=self._hydrator
+            ),
             tracer=tracer,
             storage=self._storage,
             backends=self._backends,
@@ -313,6 +384,14 @@ class Memory:
             identities=self._identities,
             execution=self._execution,
         )
+        self._recall = Recall(
+            tracer=tracer,
+            store=self._store,
+            settings=self._settings,
+            hydrator=self._hydrator,
+            retrieval=self._retrieval,
+            planner=answerer if isinstance(answerer, RecallPlanningBackend) else None,
+        )
         self._answering = Answering(
             tracer=tracer,
             storage=self._storage,
@@ -326,16 +405,20 @@ class Memory:
             retrieval=self._retrieval,
             execution=self._execution,
             identities=self._identities,
+            recall=self._recall,
         )
         self._compilation = Compilation(
+            context_selector=self._context_selector,
             tracer=tracer,
             storage=self._storage,
+            settings=self._settings,
             backends=self._backends,
             lifecycle=self._lifecycle,
             hydrator=self._hydrator,
             materializer=materializer,
             speech=speech,
             retrieval=self._retrieval,
+            recall=self._recall,
         )
         self._control = ControlPlane(
             tracer=tracer,
@@ -347,6 +430,7 @@ class Memory:
             materializer=materializer,
             projection=self._projection,
             retrieval=self._retrieval,
+            embedding=embedding,
             formation=self._formation,
             identities=self._identities,
         )
@@ -374,7 +458,7 @@ class Memory:
         data_dir: str | Path = ".sensemem",
         *,
         plugins: MemoryPlugins,
-        config: MemoryConfig | None = None,
+        settings: MemorySettings | None = None,
         tracer: Tracer | None = None,
     ) -> Memory:
         """Open memory from an explicit capability bundle and local policy."""
@@ -384,28 +468,25 @@ class Memory:
             data_dir,
             tracer=tracer,
             **{field.name: getattr(plugins, field.name) for field in fields(plugins)},
-            config=config,
+            settings=settings,
         )
 
     @classmethod
     def from_config(
         cls,
-        config: SenseMemConfig | Mapping[str, object],
+        config: MemorySpec | Mapping[str, object],
         *,
+        factories: Mapping[str, PluginFactory] | None = None,
         tracer: Tracer | None = None,
     ) -> Memory:
         """Open memory from validated declarative configuration."""
-        resolved = resolve_memory_config(config)
-        try:
-            return cls.from_plugins(
-                resolved.data_dir,
-                plugins=resolved.plugins,
-                config=resolved.settings,
-                tracer=tracer,
-            )
-        except BaseException:
-            resolved.close()
-            raise
+        composition = build_memory_composition(config, factories=factories)
+        return cls.from_plugins(
+            composition.data_dir,
+            plugins=composition.plugins,
+            settings=composition.settings,
+            tracer=tracer,
+        )
 
     def __enter__(self) -> Memory:
         self._lifecycle.require_open()
@@ -421,7 +502,7 @@ class Memory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         """Add one native or mixed-modal memory and return its stable record."""
@@ -441,7 +522,7 @@ class Memory:
         occurred_at: Sequence[datetime | None] | None = None,
         occurred_end: Sequence[datetime | None] | None = None,
         metadata: Sequence[Mapping[str, object] | None] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: Sequence[ObservationContext | None] | None = None,
     ) -> tuple[MemoryRecord, ...]:
         """Add memories in one model batch and one SQLite transaction."""
@@ -461,7 +542,7 @@ class Memory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
         """Commit one memory without calling any model; `settle()` makes it searchable.
@@ -514,6 +595,7 @@ class Memory:
         *,
         limit: int = 100,
         memory_ids: Sequence[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[PendingCapture, ...]:
         """Return up to `limit` records whose deferred work is not finished, oldest first.
 
@@ -522,7 +604,7 @@ class Memory:
         whether specific records are still waiting: one that is absent from the result is not
         pending, which means it is settled or was never stored, and `get()` tells the two apart.
         """
-        return self._ingestion.pending_captures(limit=limit, memory_ids=memory_ids)
+        return self._ingestion.pending_captures(limit=limit, memory_ids=memory_ids, cursor=cursor)
 
     def add_stream(
         self,
@@ -547,7 +629,7 @@ class Memory:
         query: ContentInput,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
@@ -571,10 +653,9 @@ class Memory:
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> AnswerResult:
         """Answer a native or mixed-modal question only from retrieved memories.
@@ -586,12 +667,8 @@ class Memory:
         `abstained` and `abstention_reason`, so a caller whose protocol gives no credit for
         "unknown" gets a usable answer without losing the confidence signal.
 
-        `link_identities` gates the one write `ask` can otherwise reach: when a retrieved image
-        or video corroborates a voice-and-face pair, face recognition still runs to identify who
-        answers the question, but with `link_identities=False` the corroborated bind is never
-        committed -- no MERGE row, no new identity link. A host that withholds embodied MCP
-        tools passes `link_identities=False` here too, so recall access alone never carries
-        merge authority.
+        Recognition keeps voice and face identities separate. Only a host-authored
+        `apply(MemoryOperation(intent=MemoryIntent.MERGE, identity=...))` confirms a binding.
         """
         return self._answering.ask(
             question,
@@ -599,7 +676,6 @@ class Memory:
             memory_type=memory_type,
             reference_at=reference_at,
             scope=scope,
-            link_identities=link_identities,
             answer_policy=answer_policy,
         )
 
@@ -608,18 +684,16 @@ class Memory:
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> Generator[AnswerChunk, None, AnswerResult]:
         """Answer as `ask()` does, but yield the answer while the model is still producing it.
 
         Retrieval runs to completion before the first chunk; only generation is incremental. The
         terminal chunk carries the same `AnswerResult` `ask()` returns, and a backend without
-        `stream_answer` still yields its whole answer as one delta. `link_identities` means what
-        it means on `ask()`, which is this method drained.
+        `stream_answer` still yields its whole answer as one delta.
 
         Reading to the terminal chunk releases everything the answer held, so stopping there
         needs no cleanup. Abandoning the stream mid-answer leaves one operation open until the
@@ -631,7 +705,6 @@ class Memory:
             memory_type=memory_type,
             reference_at=reference_at,
             scope=scope,
-            link_identities=link_identities,
             answer_policy=answer_policy,
         )
 
@@ -643,6 +716,7 @@ class Memory:
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
         allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
     ) -> ContextBundle:
         """Compile one bounded, structured context bundle for a goal."""
         return self._compilation.compile(
@@ -651,7 +725,24 @@ class Memory:
             reference_at=reference_at,
             scope=scope,
             allow_partial_sources=allow_partial_sources,
+            supplements=supplements,
         )
+
+    @property
+    def tools(self) -> ToolRegistry:
+        """The shared capability catalog for application pipelines and borrowed agent runners."""
+        self._lifecycle.require_open()
+        return self._tools
+
+    def call_tool(
+        self, name: str, arguments: Mapping[str, object], *, call_id: str = ""
+    ) -> ToolResult:
+        """Run one registered capability under this instance's operation lifecycle."""
+        return self._tool_execution.call(name, arguments, call_id=call_id)
+
+    def prepare_input(self, content: ContentInput) -> AbstractContextManager[ModelInput]:
+        """Lease model-ready media for a custom computation without creating a memory record."""
+        return self._materializer.lease_model_input(content)
 
     @property
     def capabilities(self) -> MemoryCapabilities:
@@ -665,6 +756,16 @@ class Memory:
     def get(self, memory_id: str) -> MemoryRecord:
         """Return one memory or raise `MemoryNotFoundError`."""
         return self._records.get(memory_id)
+
+    def read_asset(self, memory_id: str, asset_id: str) -> Blob:
+        """Read and verify original media belonging to a retained memory."""
+        return self._records.read_asset(memory_id, asset_id)
+
+    def replay_sources(self, destination: Memory) -> Generator[MemoryRecord, None, None]:
+        """Re-ingest active originals and retired originals supporting live knowledge."""
+        if destination is self:
+            raise ValidationError("replay destination must be a different memory instance")
+        return self._records.replay_sources(destination)
 
     def perceive(
         self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
@@ -710,7 +811,7 @@ class Memory:
         the only path that writes one.
 
         `WITHHELD` and `WITHDRAWN` restrain the kernel identically from the next observation on:
-        `faces()`, `speech()`, and `ask(link_identities=True)` stop enrolling new face and voice
+        `perceive()` and `ask()` stop enrolling new face and voice
         exemplars for this person and stop merging their voice and face identities, and
         `compile()` leaves them out of the actors section and says so with a `CONSENT_WITHHELD`
         unknown. Recognition against exemplars already held is deliberately untouched: a
@@ -734,14 +835,13 @@ class Memory:
     def unlink_identity(self, alias_id: str) -> str | None:
         """Reverse one recorded face-and-voice merge, restoring ``alias_id`` as its own identity.
 
-        Cross-modal binding infers that one voice and one face belong to the same person from
-        their co-occurrence, which corroboration makes unlikely to be wrong but cannot make
-        impossible. Returns the restored identity ID, or None when the merge is not reversible
+        Cross-modal binding requires an explicit host-confirmed MERGE operation. Returns the
+        restored identity ID, or None when the merge is not reversible
         because no record names which modality was contributed. The restored identity keeps no
         name or relationship; the identity it was merged into keeps both.
 
-        This resets the pair's accumulated evidence; it does not suppress the pair. If the same
-        voice and face keep co-occurring, they will be corroborated and merged again.
+        The split durably rejects the pair. Rescanning old or new assets cannot merge it again;
+        another explicit host confirmation or rollback of the split can override that rejection.
 
         A split is the `CORRECT` half of the control plane's "correct or split" intent, so it
         commits with its own log row: it shows up in `operations()` and `rollback()` of that row
@@ -805,6 +905,7 @@ class Memory:
         query: ContentInput | None = None,
         limit: int = 32,
         trigger: MemoryTrigger = MemoryTrigger.MANUAL,
+        query_failure: QueryFailure | None = None,
     ) -> ConsolidationReport:
         """Process one explicit or selected evidence set in a single pass."""
         return self._control.consolidate(
@@ -812,6 +913,7 @@ class Memory:
             query=query,
             limit=limit,
             trigger=trigger,
+            query_failure=query_failure,
         )
 
     def consolidate_pending(
@@ -958,12 +1060,7 @@ class Memory:
 
     def close(self, *, timeout_seconds: float = 30.0) -> None:
         """Close model, index, and SQLite resources; repeated calls are harmless."""
-        # A constructor that failed before wiring already closed what it had opened and left
-        # nothing here to close, so this is the same no-op a closed instance gets.
-        lifecycle: Lifecycle | None = getattr(self, "_lifecycle", None)
-        if lifecycle is None:
-            return
-        lifecycle.close(self._finish_close, timeout_seconds=timeout_seconds)
+        self._lifecycle.close(self._finish_close, timeout_seconds=timeout_seconds)
 
     def _finish_close(self) -> None:
         try:
@@ -993,7 +1090,18 @@ class Memory:
     def _close_resources(self) -> builtins.list[Exception]:
         failures: builtins.list[Exception] = []
         for resource in unique_resources(
-            (self._execution, *self._backends.resources(), self._index, self._store)
+            (
+                self._execution,
+                self._tools,
+                self._ranking_policy,
+                self._query_policy,
+                self._candidate_source,
+                self._context_selector,
+                *self._ingestion_stages,
+                *self._backends.resources(),
+                self._index,
+                self._store,
+            )
         ):
             try:
                 resource.close()
@@ -1016,21 +1124,22 @@ class AsyncMemory:
         data_dir: str | Path = ".sensemem",
         *,
         plugins: MemoryPlugins,
-        config: MemoryConfig | None = None,
+        settings: MemorySettings | None = None,
         tracer: Tracer | None = None,
     ) -> AsyncMemory:
         """Open async memory from an explicit capability bundle and local policy."""
-        return cls(Memory.from_plugins(data_dir, plugins=plugins, config=config, tracer=tracer))
+        return cls(Memory.from_plugins(data_dir, plugins=plugins, settings=settings, tracer=tracer))
 
     @classmethod
     def from_config(
         cls,
-        config: SenseMemConfig | Mapping[str, object],
+        config: MemorySpec | Mapping[str, object],
         *,
+        factories: Mapping[str, PluginFactory] | None = None,
         tracer: Tracer | None = None,
     ) -> AsyncMemory:
         """Open async memory from validated declarative configuration."""
-        return cls(Memory.from_config(config, tracer=tracer))
+        return cls(Memory.from_config(config, factories=factories, tracer=tracer))
 
     async def __aenter__(self) -> AsyncMemory:
         self._memory._lifecycle.require_open()
@@ -1046,10 +1155,10 @@ class AsyncMemory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.add,
             content,
             occurred_at=occurred_at,
@@ -1066,10 +1175,10 @@ class AsyncMemory:
         occurred_at: Sequence[datetime | None] | None = None,
         occurred_end: Sequence[datetime | None] | None = None,
         metadata: Sequence[Mapping[str, object] | None] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: Sequence[ObservationContext | None] | None = None,
     ) -> tuple[MemoryRecord, ...]:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.add_many,
             contents,
             occurred_at=occurred_at,
@@ -1086,10 +1195,10 @@ class AsyncMemory:
         occurred_at: datetime | None = None,
         occurred_end: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
-        memory_type: MemoryType = MemoryType.SEMANTIC,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.capture,
             content,
             occurred_at=occurred_at,
@@ -1106,7 +1215,7 @@ class AsyncMemory:
         max_attempts: int = 3,
         memory_ids: Sequence[str] | None = None,
     ) -> int:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.settle,
             limit=limit,
             max_attempts=max_attempts,
@@ -1118,15 +1227,16 @@ class AsyncMemory:
         *,
         limit: int = 100,
         memory_ids: Sequence[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[PendingCapture, ...]:
-        return await self._memory._execution.run(
-            self._memory.pending_captures, limit=limit, memory_ids=memory_ids
+        return await self._memory._execution.run_in_worker(
+            self._memory.pending_captures, limit=limit, memory_ids=memory_ids, cursor=cursor
         )
 
     async def _write_stream_item(
         self, content: ContentInput | StreamInput, *, capture: bool, index: int | None = None
     ) -> MemoryRecord:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory._ingestion.add_stream_item, content, index=index, capture=capture
         )
 
@@ -1148,14 +1258,14 @@ class AsyncMemory:
         query: ContentInput,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
         scope: RetrievalScope | None = None,
         explain: bool = False,
     ) -> SearchResult:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.search,
             query,
             limit=limit,
@@ -1172,20 +1282,18 @@ class AsyncMemory:
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> AnswerResult:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.ask,
             question,
             limit=limit,
             memory_type=memory_type,
             reference_at=reference_at,
             scope=scope,
-            link_identities=link_identities,
             answer_policy=answer_policy,
         )
 
@@ -1194,10 +1302,9 @@ class AsyncMemory:
         question: ContentInput,
         *,
         limit: int = 5,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
-        link_identities: bool = True,
         answer_policy: AnswerPolicy = "strict",
     ) -> AsyncGenerator[AnswerChunk, None]:
         """Answer as `ask()` does, yielding chunks as the model produces them.
@@ -1217,7 +1324,6 @@ class AsyncMemory:
             memory_type=memory_type,
             reference_at=reference_at,
             scope=scope,
-            link_identities=link_identities,
             answer_policy=answer_policy,
         )
         return self._memory._execution.pump(stream)
@@ -1230,15 +1336,32 @@ class AsyncMemory:
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
         allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
     ) -> ContextBundle:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.compile,
             goal,
             budget=budget,
             reference_at=reference_at,
             scope=scope,
             allow_partial_sources=allow_partial_sources,
+            supplements=supplements,
         )
+
+    @property
+    def tools(self) -> ToolRegistry:
+        return self._memory.tools
+
+    async def call_tool(
+        self, name: str, arguments: Mapping[str, object], *, call_id: str = ""
+    ) -> ToolResult:
+        return await self._memory._execution.run_in_worker(
+            self._memory.call_tool, name, arguments, call_id=call_id
+        )
+
+    def prepare_input(self, content: ContentInput) -> AbstractContextManager[ModelInput]:
+        """Return a synchronous media scope; async hosts run the whole custom stage in a worker."""
+        return self._memory.prepare_input(content)
 
     @property
     def capabilities(self) -> MemoryCapabilities:
@@ -1246,12 +1369,29 @@ class AsyncMemory:
         return self._memory.capabilities
 
     async def get(self, memory_id: str) -> MemoryRecord:
-        return await self._memory._execution.run(self._memory.get, memory_id)
+        return await self._memory._execution.run_in_worker(self._memory.get, memory_id)
+
+    async def read_asset(self, memory_id: str, asset_id: str) -> Blob:
+        return await self._memory._execution.run_in_worker(
+            self._memory.read_asset, memory_id, asset_id
+        )
+
+    async def replay_sources(self, destination: AsyncMemory) -> AsyncIterator[MemoryRecord]:
+        records = self._memory.replay_sources(destination._memory)
+        try:
+            while (
+                record := await self._memory._execution.run_in_worker(next, records, None)
+            ) is not None:
+                yield record
+        finally:
+            records.close()
 
     async def perceive(
         self, memory_id: str, *, kinds: frozenset[PerceptionKind] | None = None
     ) -> PerceptionResult:
-        return await self._memory._execution.run(self._memory.perceive, memory_id, kinds=kinds)
+        return await self._memory._execution.run_in_worker(
+            self._memory.perceive, memory_id, kinds=kinds
+        )
 
     async def register_identity(
         self,
@@ -1260,23 +1400,23 @@ class AsyncMemory:
         *,
         relationship: str | None = None,
     ) -> None:
-        await self._memory._execution.run(
-            partial(
-                self._memory.register_identity,
-                identity_id,
-                name,
-                relationship=relationship,
-            )
+        await self._memory._execution.run_in_worker(
+            self._memory.register_identity,
+            identity_id,
+            name,
+            relationship=relationship,
         )
 
     async def identity(self, identity_id: str) -> IdentityProfile | None:
-        return await self._memory._execution.run(self._memory.identity, identity_id)
+        return await self._memory._execution.run_in_worker(self._memory.identity, identity_id)
 
     async def unlink_identity(self, alias_id: str) -> str | None:
-        return await self._memory._execution.run(self._memory.unlink_identity, alias_id)
+        return await self._memory._execution.run_in_worker(self._memory.unlink_identity, alias_id)
 
     async def forget_identity(self, identity_id: str) -> IdentityErasure:
-        return await self._memory._execution.run(self._memory.forget_identity, identity_id)
+        return await self._memory._execution.run_in_worker(
+            self._memory.forget_identity, identity_id
+        )
 
     async def record_consent(
         self,
@@ -1285,12 +1425,12 @@ class AsyncMemory:
         *,
         note: str | None = None,
     ) -> MemoryOperationRecord | None:
-        return await self._memory._execution.run(
-            partial(self._memory.record_consent, identity_id, state, note=note)
+        return await self._memory._execution.run_in_worker(
+            self._memory.record_consent, identity_id, state, note=note
         )
 
     async def consent(self, identity_id: str) -> ConsentState | None:
-        return await self._memory._execution.run(self._memory.consent, identity_id)
+        return await self._memory._execution.run_in_worker(self._memory.consent, identity_id)
 
     async def export(
         self,
@@ -1298,17 +1438,17 @@ class AsyncMemory:
         identity_id: str | None = None,
         memory_ids: Sequence[str] | None = None,
     ) -> ExportBundle:
-        return await self._memory._execution.run(
-            partial(self._memory.export, identity_id=identity_id, memory_ids=memory_ids)
+        return await self._memory._execution.run_in_worker(
+            self._memory.export, identity_id=identity_id, memory_ids=memory_ids
         )
 
     async def apply_retention(self, *, dry_run: bool = False) -> RetentionReport:
-        return await self._memory._execution.run(
-            partial(self._memory.apply_retention, dry_run=dry_run)
+        return await self._memory._execution.run_in_worker(
+            self._memory.apply_retention, dry_run=dry_run
         )
 
     async def reinforce(self, memory_ids: Sequence[str]) -> int:
-        return await self._memory._execution.run(self._memory.reinforce, memory_ids)
+        return await self._memory._execution.run_in_worker(self._memory.reinforce, memory_ids)
 
     async def consolidation_candidates(
         self,
@@ -1316,12 +1456,12 @@ class AsyncMemory:
         limit: int = 32,
         idle: bool = False,
     ) -> tuple[ConsolidationCandidate, ...]:
-        return await self._memory._execution.run(
-            partial(self._memory.consolidation_candidates, limit=limit, idle=idle)
+        return await self._memory._execution.run_in_worker(
+            self._memory.consolidation_candidates, limit=limit, idle=idle
         )
 
     async def apply(self, operation: MemoryOperation) -> MemoryOperationRecord:
-        return await self._memory._execution.run(self._memory.apply, operation)
+        return await self._memory._execution.run_in_worker(self._memory.apply, operation)
 
     async def record_outcome(
         self,
@@ -1330,8 +1470,8 @@ class AsyncMemory:
         *,
         note: str | None = None,
     ) -> bool:
-        return await self._memory._execution.run(
-            partial(self._memory.record_outcome, operation_id, outcome, note=note)
+        return await self._memory._execution.run_in_worker(
+            self._memory.record_outcome, operation_id, outcome, note=note
         )
 
     async def consolidate(
@@ -1341,44 +1481,46 @@ class AsyncMemory:
         query: ContentInput | None = None,
         limit: int = 32,
         trigger: MemoryTrigger = MemoryTrigger.MANUAL,
+        query_failure: QueryFailure | None = None,
     ) -> ConsolidationReport:
-        return await self._memory._execution.run(
-            partial(
-                self._memory.consolidate,
-                evidence_ids=evidence_ids,
-                query=query,
-                limit=limit,
-                trigger=trigger,
-            )
+        return await self._memory._execution.run_in_worker(
+            self._memory.consolidate,
+            evidence_ids=evidence_ids,
+            query=query,
+            limit=limit,
+            trigger=trigger,
+            query_failure=query_failure,
         )
 
     async def consolidate_pending(
         self, *, limit: int = 32, max_rounds: int = 4, idle: bool = False
     ) -> ConsolidationReport:
-        return await self._memory._execution.run(
+        return await self._memory._execution.run_in_worker(
             self._memory.consolidate_pending, limit=limit, max_rounds=max_rounds, idle=idle
         )
 
     async def forget(self, memory_ids: Sequence[str]) -> MemoryOperationRecord | None:
-        return await self._memory._execution.run(self._memory.forget, memory_ids)
+        return await self._memory._execution.run_in_worker(self._memory.forget, memory_ids)
 
     async def rollback(self, operation_id: int) -> bool:
-        return await self._memory._execution.run(self._memory.rollback, operation_id)
+        return await self._memory._execution.run_in_worker(self._memory.rollback, operation_id)
 
     async def operations(self, *, limit: int = 100) -> tuple[MemoryOperationRecord, ...]:
-        return await self._memory._execution.run(partial(self._memory.operations, limit=limit))
+        return await self._memory._execution.run_in_worker(self._memory.operations, limit=limit)
 
     async def list(self, *, limit: int = 100, cursor: str | None = None) -> Page:
-        return await self._memory._execution.run(self._memory.list, limit=limit, cursor=cursor)
+        return await self._memory._execution.run_in_worker(
+            self._memory.list, limit=limit, cursor=cursor
+        )
 
     async def delete(self, memory_id: str) -> bool:
-        return await self._memory._execution.run(self._memory.delete, memory_id)
+        return await self._memory._execution.run_in_worker(self._memory.delete, memory_id)
 
     async def reindex(self) -> int:
-        return await self._memory._execution.run(self._memory.reindex)
+        return await self._memory._execution.run_in_worker(self._memory.reindex)
 
     async def optimize(self) -> None:
-        await self._memory._execution.run(self._memory.optimize)
+        await self._memory._execution.run_in_worker(self._memory.optimize)
 
     async def close(self, *, timeout_seconds: float = 30.0) -> None:
         await self._memory._lifecycle.close_async(

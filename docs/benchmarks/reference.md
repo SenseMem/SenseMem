@@ -164,7 +164,7 @@ use the matching hypergeometric expectation.
 | Gold-source coverage | Tasks |
 | --- | --- |
 | Exact source IDs | LoCoMo-Refined, ATM-Bench, Mem-Gallery |
-| Session groups | MemLens; ES-MemEval at published session retrieval granularity |
+| Session groups | MemLens |
 | Clip IDs, possibly incomplete | ICM-Bench |
 | Temporal/spatial labels, not joined source-record IDs | VideoZeroBench, MM-Lifelong; SuperMemory-VQA retains video IDs without gold clip groups |
 | No compatible source labels, or a degenerate single-clip pool | AMA-Bench, LongMemEval-V2, M3-Bench, PersonaMem-v3, EgoTempo |
@@ -190,7 +190,13 @@ Samples join `quality_diagnostics` by sample, trace, and answer-span IDs:
 | `answer` | Score, abstention, product error, and scorer error |
 
 Source-group coverage is unknown when labels or observations are missing or unresolved. Partial
-excerpts are not credited as full sources. Even complete source coverage does not prove the
+excerpts and text-only media projections are not credited as full sources. Projection records
+appear separately in `projection_source_ids` and `projection_evidence`, including after response
+cache restoration. Organization diagnostics list mapped labels under `text_only_source_ids`.
+If a projection has no source label in its typed context, its memory ID remains recorded but its
+dataset source mapping stays unknown. Complete, excerpt, projection, and temporary-context items
+all count toward `compile_bundle_items`; omitted native media never counts as delivered media.
+Even complete source coverage does not prove the
 required fact reached the reader: `fact_span_coverage` and `causal_attribution` remain `null`.
 Prepared-request success does not establish provider perception or correct reasoning. Cached
 answers retain original trace IDs but have no fresh prepared-request telemetry.
@@ -221,11 +227,14 @@ and reviewer revisions with real annotations; the scripted example is not a mode
 
 ## Results and failures
 
-Artifacts use schema `23` and runner `sensemem_eval_official_v25`. `results.jsonl` contains one
+Artifacts use schema `24` and runner `sensemem_eval_official_v27`. `results.jsonl` contains one
 run record with task/arm rows; `samples.jsonl` contains predictions; resolved `config.yaml` omits
 credentials and unconstrained provider fields. `--log-samples` adds original questions, prompts,
 references, and raw judge responses. An in-progress `samples.partial.jsonl` is a task-level crash
 copy with no result digest, removed when final artifacts land.
+
+The runner lends the complete configured plugin set to each isolated SDK instance, including
+query, candidate, ranking, context-selection, ingestion, and tool plugins.
 
 Transport, rate-limit, and HTTP 5xx failures retry with exponential backoff for up to ten minutes.
 Only the successful attempt is timed. After retry exhaustion, generation failures score zero;
@@ -333,6 +342,9 @@ but refuses final `results.jsonl`/`samples.jsonl`. Cache namespaces include ques
 model/configuration identities, arm budgets, answer policy, and deliberation. Cached and resumed
 runs cannot supply performance baselines.
 
+Caches and checkpoints use explicit protocol versions. When changing SDK behavior or prompts
+that affect stored content or answers, increment `EVAL_RUNNER_VERSION` before reusing them.
+
 ## Export AMA-Bench submissions
 
 Complete a judged `ama-bench` run with the official `Qwen/Qwen3-32B` judge and `--limit all`:
@@ -365,23 +377,3 @@ uv run --frozen sensemem-bench locomo-refined \
 
 The sibling `.manifest.jsonl` records digests, model identities, counts, platform, and isolated
 store paths. Existing artifacts need `--overwrite`; existing run stores need `--resume`.
-
-## Rejudge ICM predictions
-
-Rejudge logged answers without opening models for ingestion or regenerating predictions:
-
-```bash
-uv run --frozen python -m sensemem.benchmarks.rejudge_icm \
-  --predictions icm-samples.jsonl --annotations icm-questions.jsonl \
-  --output icm-rejudged.json --model gpt-4o-mini
-```
-
-Inputs must contain only current-schema ICM rows with original questions and references retained
-by `--log-samples`. Annotations join by ID and must match both text and references. Output retains
-prediction hashes, prior scores/protocols, new judge identity, and input hashes; existing output
-is protected. Judge failures are unscored, empty predictions score zero, and failed generation or
-ingestion is skipped. Report all denominators and compare within the same judge protocol.
-
-The command uses `OPENAI_API_KEY`; override with `--api-key-env` and `--base-url` as needed.
-Only judge calls are made. A non-official judge is labelled as a proxy; rejudging cannot change
-the input protocol the reader originally received.

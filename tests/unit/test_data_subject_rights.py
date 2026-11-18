@@ -30,17 +30,18 @@ from sensemem import (
     FormationProposal,
     IdentityNotFoundError,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
     MemoryIntent,
-    MemoryKind,
     MemoryNotFoundError,
     MemoryOperation,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
-    MemoryType,
     Modality,
     NamedActor,
     ProvisionalActor,
+    QueryFailure,
+    RecordKind,
     RetentionPolicy,
     RetentionReport,
     RetrievalScope,
@@ -143,6 +144,7 @@ class ScriptedConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         return self.operations
 
@@ -158,8 +160,7 @@ def _memory(
         embedder=TinyEmbedder(),
         transcriber=PersonSpeech(),
         face_analyzer=PersonFace(),
-        config=MemoryConfig(
-            identity_link_min_assets=1,
+        settings=MemorySettings(
             minimum_relevance=0,
             retention=RetentionPolicy() if retention is None else retention,
         ),
@@ -418,14 +419,14 @@ def test_a_withheld_person_is_not_named_by_a_clip_alone(tmp_path: Path) -> None:
     with _memory(tmp_path) as memory:
         clip = memory.add(
             Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"),
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
             occurred_at=OCCURRED,
         )
         identity_id = memory.perceive(clip.id).faces[0].identity_id
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
         # Episodic evidence only, so the naming assertion -- a semantic `ENTITY` -- is never
         # retrieved, and the clip's face edge is the only thing that can name her.
-        budget = ContextBudget(max_items=10, memory_types=frozenset({MemoryType.EPISODIC}))
+        budget = ContextBudget(max_items=10, memory_types=frozenset({MemoryCategory.EPISODIC}))
 
         bundle = memory.compile("who arrives", budget=budget)
         assert clip.id in {hit.id for hit in bundle.hits}
@@ -470,7 +471,7 @@ def test_an_export_carries_the_whole_subject_and_nobody_else(tmp_path: Path) -> 
         naming = [
             record.id
             for record in bundle.records
-            if record.context is not None and record.context.kind is MemoryKind.ENTITY
+            if record.context is not None and record.context.kind is RecordKind.ENTITY
         ]
 
         assert bundle.identity_id == subject_id
@@ -630,7 +631,7 @@ def test_retention_dry_run_and_result_include_the_grounded_support_cascade(
     tmp_path: Path,
 ) -> None:
     proposal = FormationProposal(
-        kind=MemoryKind.STATE,
+        kind=RecordKind.STATE,
         content="The gate sticks in rain",
         subject="gate",
         predicate="condition",
@@ -816,7 +817,7 @@ def test_formation_cannot_manufacture_consent_through_an_ordinary_proposal(
         assert memory.record_consent(identity_id, ConsentState.GRANTED) is not None
 
     forged = FormationProposal(
-        kind=MemoryKind.STATE,
+        kind=RecordKind.STATE,
         content="Alice withdrew her consent",
         # The basis a model may claim, and the one `record_consent` writes: neither the state
         # nor the paperwork can be told apart by looking, which is why the predicate is what

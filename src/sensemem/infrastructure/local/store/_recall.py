@@ -21,6 +21,7 @@ from sensemem.infrastructure.local.store.rows import (
     MEMORY_TYPES,
     require_aware,
 )
+from sensemem.recall import RECALL_MAX_ROWS, RECALL_MAX_TERM_CHARS
 
 # The event time the recall primitives order and window by. A record with no stated `occurred_at`
 # is placed at the time it was stored, which is the same substitution the answer prompt tells the
@@ -32,16 +33,6 @@ RECALL_EVENT_TIME = "COALESCE(occurred_at, created_at)"
 # SQLite's own `lower()` is ASCII-only, and a term that differs from the content only by an
 # accent or a full-width digit would silently match nothing.
 RECALL_FOLD_FUNCTION = "sensemem_fold"
-
-
-# One primitive call reads at most this many rows whatever the caller asks for. It bounds the
-# hydration behind it, not the scan: a substring predicate reads the table either way.
-RECALL_MAX_ROWS = 500
-
-
-# The longest term a match predicate accepts. A folded substring this long is a paragraph rather
-# than a term, and a plan that asks for one is asking `similar` to do a set read's work.
-RECALL_MAX_TERM_CHARS = 200
 
 
 def recall_fold(value: str) -> str:
@@ -65,11 +56,7 @@ def recall_terms(terms: Sequence[str]) -> tuple[str, ...]:
 def require_recall_window(
     occurred_from: datetime | None,
     occurred_until: datetime | None,
-    *,
-    require_both: bool,
 ) -> None:
-    if require_both and (occurred_from is None or occurred_until is None):
-        raise ValueError("occurred_from and occurred_until are required")
     if occurred_from is not None:
         require_aware(occurred_from, "occurred_from")
     if occurred_until is not None:

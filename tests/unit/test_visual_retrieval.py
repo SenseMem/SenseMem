@@ -16,7 +16,7 @@ from sensemem import (
     Blob,
     EmbedTask,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     SearchHit,
@@ -69,7 +69,7 @@ def test_ask_preserves_image_only_provenance_without_an_extra_model_call(tmp_pat
         tmp_path,
         embedder=backend,
         answerer=backend,
-        config=MemoryConfig(recall_planning=False, evidence_budget_chars=None),
+        settings=MemorySettings(recall_planning=False, evidence_budget_chars=None),
     ) as memory:
         near = [
             memory.add(
@@ -106,7 +106,7 @@ def test_ask_preserves_image_only_provenance_without_an_extra_model_call(tmp_pat
 def test_stale_index_ids_and_missing_index_do_not_create_matches_or_reembed(tmp_path: Path) -> None:
     backend = VisualBackend()
     with Memory(
-        tmp_path, embedder=backend, answerer=backend, config=MemoryConfig(recall_planning=False)
+        tmp_path, embedder=backend, answerer=backend, settings=MemorySettings(recall_planning=False)
     ) as memory:
         live = memory.add(("Current source", Blob(b"near-live", "image/png", "near-live.png")))
         stale = memory.add(("Removed source", Blob(b"near-stale", "image/png", "near-stale.png")))
@@ -120,7 +120,7 @@ def test_stale_index_ids_and_missing_index_do_not_create_matches_or_reembed(tmp_
     shutil.rmtree(tmp_path / "zvec")
     before = backend.embedding_calls
     with Memory(
-        tmp_path, embedder=backend, answerer=backend, config=MemoryConfig(recall_planning=False)
+        tmp_path, embedder=backend, answerer=backend, settings=MemorySettings(recall_planning=False)
     ) as memory:
         assert backend.embedding_calls == before
         memory.ask(Blob(b"query", "image/png", "query.png"), limit=3)
@@ -133,7 +133,7 @@ def test_stale_index_ids_and_missing_index_do_not_create_matches_or_reembed(tmp_
 def test_incomplete_stored_key_layout_does_not_guess_an_asset_mapping(tmp_path: Path) -> None:
     backend = VisualBackend()
     with Memory(
-        tmp_path, embedder=backend, answerer=backend, config=MemoryConfig(recall_planning=False)
+        tmp_path, embedder=backend, answerer=backend, settings=MemorySettings(recall_planning=False)
     ) as memory:
         source = memory.add(("Source label", Blob(b"near", "image/png", "near.png")))
         with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as db, db:
@@ -147,7 +147,7 @@ def test_search_and_text_ask_do_not_read_visual_document_vectors(
 ) -> None:
     backend = VisualBackend()
     with Memory(
-        tmp_path, embedder=backend, answerer=backend, config=MemoryConfig(recall_planning=False)
+        tmp_path, embedder=backend, answerer=backend, settings=MemorySettings(recall_planning=False)
     ) as memory:
         memory.add(("Source", Blob(b"near", "image/png", "near.png")))
 
@@ -167,13 +167,13 @@ def test_image_matches_keep_physical_directory_isolation(tmp_path: Path) -> None
             tmp_path / "first",
             embedder=first,
             answerer=first,
-            config=MemoryConfig(recall_planning=False),
+            settings=MemorySettings(recall_planning=False),
         ) as a,
         Memory(
             tmp_path / "second",
             embedder=second,
             answerer=second,
-            config=MemoryConfig(recall_planning=False),
+            settings=MemorySettings(recall_planning=False),
         ) as b,
     ):
         left = a.add(("First source", Blob(b"near-left", "image/png", "near-left.png")))

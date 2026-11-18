@@ -7,10 +7,16 @@ from types import SimpleNamespace
 import pytest
 from test_independent_evidence import _derive, _open, _root
 
-from sensemem import ContextBudget, ContextProof, ContextProofNode, ValidationError
-from sensemem.api.app import ContextBundleResponse
+from sensemem import (
+    ContextBudget,
+    ContextProof,
+    ContextProofNode,
+    EvidenceBasis,
+    ObservationContext,
+    ValidationError,
+)
 from sensemem.api.content import ContextBudgetInput, context_budget
-from sensemem.api.mcp import ContextBundleResult
+from sensemem.api.responses import ContextBundleResponse
 from sensemem.kernel.corroboration import (
     Assessment,
     EvidenceNode,
@@ -18,6 +24,186 @@ from sensemem.kernel.corroboration import (
     independent_support,
 )
 from sensemem.kernel.proofs import certificates, proof_support, select_certificates
+
+
+def test_default_three_group_score_uses_only_the_delivered_assessments() -> None:
+    nodes = {key: EvidenceNode(key, source_group_id=key) for key in ("a", "b", "c")}
+    nodes["target"] = EvidenceNode(
+        None,
+        assessments=tuple(Assessment((key,), 0.6) for key in nodes),
+        source_group_id="target",
+    )
+    proofs, clipped = certificates(nodes, "target")
+    assert not clipped
+    assert proof_support(proofs, scoring="capture_groups") == pytest.approx((3, 0.936))
+    assert proof_support(proofs, scoring="independent_pair") == pytest.approx((2, 0.84))
+    selected = select_certificates(
+        proofs,
+        SupportSummary(2, 0.936, False),
+        dict.fromkeys(nodes, 1),
+        scoring="capture_groups",
+    )
+    assert len(selected) == 3
+    assert proof_support(selected[:-1], scoring="capture_groups")[1] == pytest.approx(0.84)
+
+
+def test_default_group_score_keeps_assessment_confidence_and_joint_alternatives() -> None:
+    nodes = {
+        "a": EvidenceNode("shared", confidence=0.4, source_group_id="shared"),
+        "b": EvidenceNode("shared", confidence=0.4, source_group_id="shared"),
+        "c": EvidenceNode("other", source_group_id="other"),
+        "target": EvidenceNode(
+            None,
+            assessments=(
+                Assessment(("a",), 0.6),
+                Assessment(("b",), 0.6),
+                Assessment(("a", "c"), 0.9),
+            ),
+            source_group_id="target",
+        ),
+    }
+    proofs, _ = certificates(nodes, "target")
+    assert {proof.confidence for proof in proofs} == {0.4}
+    assert proof_support(proofs, scoring="capture_groups") == pytest.approx((1, 0.9))
+    assert proof_support(proofs, scoring="independent_pair") == pytest.approx((1, 0.4))
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_default_removes_only_a_top_level_naming_condition(direct: bool) -> None:
+    nodes = {
+        "name": EvidenceNode("registration", source_group_id="registration"),
+        "summary": EvidenceNode(
+            None,
+            assessments=(Assessment(("name",), 0.8),),
+            source_group_id="registration",
+        ),
+        "target": EvidenceNode(
+            None,
+            assessments=(Assessment(("name" if direct else "summary",), 0.6),),
+            source_group_id="registration",
+        ),
+    }
+    proofs, _ = certificates(nodes, "target")
+    conditions = frozenset({"name"})
+    assert proof_support(proofs, conditions, scoring="capture_groups") == pytest.approx(
+        (0, 0.0) if direct else (1, 0.6)
+    )
+    assert proof_support(proofs, conditions, scoring="independent_pair") == (0, 0.0)
+
+
+@pytest.mark.parametrize("independent", [False, True])
+def test_sdk_three_default_groups_can_deliver_their_projected_confidence(
+    tmp_path: Path, independent: bool
+) -> None:
+    with _open(tmp_path, independent) as memory:
+        roots = tuple(_root(memory, f"Independent long-term report {index}") for index in range(3))
+        target = _derive(memory, (roots[0],), "calm", trait=True).created_ids[0]
+        latest = None
+        for root in roots[1:]:
+            latest = _derive(memory, (root,), "calm", trait=True)
+        context = memory.get(target).context
+        assert context is not None and context.visible
+        assert context.confidence == pytest.approx(0.84 if independent else 0.936)
+        bundle = memory.compile(
+            "calm", budget=ContextBudget(max_items=20, max_chars=40_000, selected_proofs=True)
+        )
+        assert target in {hit.id for hit in bundle.hits}
+        assert bundle.proof_scoring == ("independent_pair" if independent else "capture_groups")
+        witnesses = tuple(proof for proof in bundle.proofs if proof.anchor_id == target)
+        assert len(witnesses) == (2 if independent else 3)
+        capture = next(node for node in witnesses[0].nodes if node.capture_id is not None)
+        with pytest.raises(ValidationError, match="source_group_id must match"):
+            replace(capture, source_group_id="different-capture")
+        assert proof_support(witnesses, scoring=bundle.proof_scoring)[1] == pytest.approx(
+            context.confidence
+        )
+        if not independent:
+            with pytest.raises(ValidationError, match="confidence"):
+                replace(
+                    bundle, proofs=tuple(proof for proof in bundle.proofs if proof != witnesses[0])
+                )
+            with pytest.raises(ValidationError, match="confidence"):
+                replace(bundle, proof_scoring="independent_pair")
+            with pytest.raises(ValidationError, match="source_group_id"):
+                replace(
+                    bundle,
+                    proofs=(
+                        replace(
+                            witnesses[0],
+                            nodes=tuple(
+                                replace(node, source_group_id=None)
+                                if node.memory_id == target
+                                else node
+                                for node in witnesses[0].nodes
+                            ),
+                        ),
+                        *witnesses[1:],
+                    ),
+                )
+            with pytest.raises(ValidationError, match="consistent source_group_id"):
+                replace(
+                    bundle,
+                    proofs=(
+                        replace(
+                            witnesses[0],
+                            nodes=tuple(
+                                replace(node, source_group_id="conflicting-group")
+                                if node.memory_id == target
+                                else node
+                                for node in witnesses[0].nodes
+                            ),
+                        ),
+                        *witnesses[1:],
+                    ),
+                )
+            too_small = memory.compile(
+                "calm", budget=ContextBudget(max_items=3, max_chars=40_000, selected_proofs=True)
+            )
+            assert target not in {hit.id for hit in too_small.hits}
+            assert too_small.unknowns
+        assert latest is not None and memory.rollback(latest.operation_id)
+        restored = memory.compile(
+            "calm", budget=ContextBudget(max_items=20, max_chars=40_000, selected_proofs=True)
+        )
+        standing = next(hit for hit in restored.hits if hit.id == target)
+        assert standing.context is not None
+        assert standing.context.confidence == pytest.approx(0.84)
+    with _open(tmp_path, independent) as reopened:
+        restored = reopened.compile(
+            "calm", budget=ContextBudget(max_items=20, max_chars=40_000, selected_proofs=True)
+        )
+        assert target in {hit.id for hit in restored.hits}
+
+
+def test_sdk_default_preserves_low_confidence_raw_capture_and_derived_or_group(
+    tmp_path: Path,
+) -> None:
+    with _open(tmp_path, independent=False) as memory:
+        roots = tuple(
+            memory.add(
+                f"Independent report {index}",
+                context=ObservationContext(basis=EvidenceBasis.OBSERVATION, confidence=0.4),
+            ).id
+            for index in range(3)
+        )
+        summary = _derive(memory, (roots[0],), "combined report").created_ids[0]
+        _derive(memory, (roots[1],), "combined report")
+        target = _derive(memory, (summary,), "calm", trait=True).created_ids[0]
+        _derive(memory, (roots[2],), "calm", trait=True)
+        bundle = memory.compile(
+            "calm", budget=ContextBudget(max_items=20, max_chars=40_000, selected_proofs=True)
+        )
+        assert target in {hit.id for hit in bundle.hits}
+        assert bundle.proof_scoring == "capture_groups"
+        delivered = next(hit for hit in bundle.hits if hit.id == target)
+        assert delivered.context is not None and delivered.context.confidence == pytest.approx(0.84)
+        assert {
+            node.source_group_id
+            for proof in bundle.proofs
+            for node in proof.nodes
+            if node.memory_id == summary
+        } == {summary}
+        assert max(proof.confidence for proof in bundle.proofs if proof.anchor_id == target) == 0.4
 
 
 def test_count_and_confidence_can_require_three_separate_witnesses() -> None:
@@ -124,7 +310,7 @@ def test_sdk_delivers_certificates_without_rewriting_the_audit_union(
         assert selected.chars <= selected.budget.max_chars
         assert "## Selected proofs" in selected.compact().text
         assert target not in selected.compact().text
-        for model in (ContextBundleResponse, ContextBundleResult):
+        for model in (ContextBundleResponse,):
             wire = model.model_validate(selected.document()).model_dump(mode="json")
             assert wire["budget"]["selected_proofs"] is True
             assert wire["proofs"][0]["anchor_id"] == target

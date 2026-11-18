@@ -17,7 +17,8 @@ from sensemem.models.base import (
     SourceMetadataBackend,
     StreamingGenerationBackend,
 )
-from sensemem.types import AnswerPolicy, AnswerResult, Modality, SearchHit
+from sensemem.records import AnswerResult, SearchHit
+from sensemem.types import AnswerPolicy, Modality
 
 
 class EvidenceGeneration:
@@ -70,7 +71,7 @@ class EvidenceGeneration:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        question, hits = self.prepare(question, hits)
+        question, hits = self._prepare_evidence(question, hits)
         return self._backend.answer(
             question, hits, answer_policy=answer_policy, exhaustive=exhaustive
         )
@@ -83,7 +84,7 @@ class EvidenceGeneration:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> Generator[str, None, AnswerResult]:
-        question, hits = self.prepare(question, hits)
+        question, hits = self._prepare_evidence(question, hits)
         if isinstance(self._backend, StreamingGenerationBackend):
             return (
                 yield from self._backend.stream_answer(
@@ -99,9 +100,10 @@ class EvidenceGeneration:
         yield result.answer
         return result
 
-    def prepare(
+    def _prepare_evidence(
         self, question: ModelInput, hits: Sequence[SearchHit]
     ) -> tuple[ModelInput, tuple[SearchHit, ...]]:
+        """Enrich source metadata and run configured media selection before generation."""
         assets = (
             self._backend.grounding_assets(question, hits)
             if self._enricher is not None and isinstance(self._backend, GenerationMediaBackend)

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sensemem import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem import EvidenceBasis, RecordKind, RecordSemantics
 from sensemem.infrastructure.local import LocalStore, StoredMemory
 from sensemem.infrastructure.local.store import datetime_text
 from sensemem.infrastructure.local.store._selection import read_memory_contexts
@@ -28,8 +28,8 @@ def test_expired_records_do_not_hide_valid_records_behind_the_limit(
                 occurred_at=start + timedelta(minutes=index),
                 created_at=start,
                 updated_at=start,
-                context=MemoryContext(
-                    kind=MemoryKind.OBSERVATION,
+                context=RecordSemantics(
+                    kind=RecordKind.OBSERVATION,
                     basis=EvidenceBasis.OBSERVATION,
                     confidence=1.0,
                     recorded_at=start,
@@ -95,8 +95,8 @@ def test_context_hydration_decodes_only_the_selected_version(
                 metadata_json="{}",
                 created_at=start,
                 updated_at=start,
-                context=MemoryContext(
-                    kind=MemoryKind.OBSERVATION,
+                context=RecordSemantics(
+                    kind=RecordKind.OBSERVATION,
                     basis=EvidenceBasis.OBSERVATION,
                     confidence=1 / 16,
                     recorded_at=start,
@@ -166,8 +166,8 @@ def test_a_typed_record_without_an_eligible_version_cannot_become_untyped(
                 metadata_json="{}",
                 created_at=start,
                 updated_at=start,
-                context=MemoryContext(
-                    kind=MemoryKind.OBSERVATION,
+                context=RecordSemantics(
+                    kind=RecordKind.OBSERVATION,
                     basis=EvidenceBasis.OBSERVATION,
                     confidence=0.5,
                     recorded_at=now + timedelta(days=1) if exclusion == "unknown" else start,

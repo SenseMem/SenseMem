@@ -11,7 +11,7 @@ from typing import cast
 
 import pytest
 
-from sensemem import Blob, Memory, MemoryConfig, Modality, RetrievalMode
+from sensemem import Blob, Memory, MemorySettings, Modality, RetrievalMode
 from sensemem.exceptions import ModelError
 from sensemem.models.base import EmbedTask, ModelInput
 
@@ -74,7 +74,7 @@ def test_query_vision_recovers_ocr_support_through_independent_routes(
         tmp_path,
         embedder=embedder,
         vision_describer=describer,
-        config=MemoryConfig(query_vision=True, retrieval_mode=mode, ambiguity_margin=0),
+        settings=MemorySettings(query_vision=True, retrieval_mode=mode, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947 registration desk")
         memory.add("an unrelated blue poster")
@@ -102,7 +102,7 @@ def test_query_descriptions_never_persist_as_assets_captions_or_memories(tmp_pat
         tmp_path,
         embedder=embedder,
         vision_describer=describer,
-        config=MemoryConfig(query_vision=True, ambiguity_margin=0),
+        settings=MemorySettings(query_vision=True, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947 registration desk")
         before = memory.list().items
@@ -128,7 +128,7 @@ def test_query_vision_is_explicit_and_text_queries_cost_no_description(
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        config=MemoryConfig(query_vision=enabled),
+        settings=MemorySettings(query_vision=enabled),
     ) as memory:
         memory.add("a blue poster")
         memory.search("a poster")
@@ -138,7 +138,9 @@ def test_query_vision_is_explicit_and_text_queries_cost_no_description(
 
 
 def test_query_vision_without_a_describer_preserves_native_image_search(tmp_path: Path) -> None:
-    with Memory(tmp_path, embedder=_Embedder(), config=MemoryConfig(query_vision=True)) as memory:
+    with Memory(
+        tmp_path, embedder=_Embedder(), settings=MemorySettings(query_vision=True)
+    ) as memory:
         target = memory.add("a blue poster")
         assert memory.search(Blob(b"query", "image/png")).hits[0].id == target.id
 
@@ -155,7 +157,7 @@ def test_invalid_query_descriptions_fail_open_and_never_log_provider_content(
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        config=MemoryConfig(query_vision=True),
+        settings=MemorySettings(query_vision=True),
     ) as memory:
         target = memory.add("a blue poster")
         assert memory.search(Blob(b"query", "image/png")).hits[0].id == target.id
@@ -169,12 +171,14 @@ def test_query_description_cache_lives_for_one_operation_only(tmp_path: Path, fa
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        config=MemoryConfig(query_vision=True),
+        settings=MemorySettings(query_vision=True),
     ) as memory:
         memory.add("a blue poster")
         query = Blob(b"query", "image/png")
         with memory._lifecycle.operation(model_work=True) as operation:
-            prepared = memory._retrieval._materializer.prepare((query, query), operation)
+            prepared = memory._retrieval._materializer.materialize_content(
+                (query, query), operation
+            )
             for _ in range(2):
                 memory._retrieval.search_prepared(
                     prepared,
@@ -206,7 +210,7 @@ def test_a_long_caption_does_not_dilute_the_original_lexical_query(
         tmp_path,
         embedder=_Embedder(),
         vision_describer=describer,
-        config=MemoryConfig(query_vision=True, ambiguity_margin=0),
+        settings=MemorySettings(query_vision=True, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947")
         memory.add("a silent grey room")
@@ -226,7 +230,7 @@ def test_description_embedding_failure_keeps_native_query_and_lexical_anchors(
         tmp_path,
         embedder=embedder,
         vision_describer=_Describer(),
-        config=MemoryConfig(query_vision=True, retrieval_mode=mode, ambiguity_margin=0),
+        settings=MemorySettings(query_vision=True, retrieval_mode=mode, ambiguity_margin=0),
     ) as memory:
         target = memory.add("ALPHA-947")
         native = memory.add("an unrelated blue poster")
@@ -243,7 +247,7 @@ def test_visible_text_is_an_independent_query_anchor(tmp_path: Path) -> None:
         tmp_path,
         embedder=embedder,
         vision_describer=_Describer((caption,)),
-        config=MemoryConfig(query_vision=True),
+        settings=MemorySettings(query_vision=True),
     ) as memory:
         memory.add("ALPHA-947 registration desk")
         memory.search(Blob(b"query", "image/png"))
@@ -257,7 +261,7 @@ def test_query_description_cannot_change_the_original_occurrence_bounds(tmp_path
         tmp_path,
         embedder=_Embedder(),
         vision_describer=_Describer((caption,)),
-        config=MemoryConfig(query_vision=True, ambiguity_margin=0),
+        settings=MemorySettings(query_vision=True, ambiguity_margin=0),
     ) as memory:
         memory.add("ALPHA-947 old desk", occurred_at=datetime(2001, 6, 1, tzinfo=timezone.utc))
         target = memory.add(

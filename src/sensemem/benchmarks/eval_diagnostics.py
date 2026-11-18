@@ -6,7 +6,7 @@ import statistics
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast
 
-from sensemem.benchmarks.eval_cache import EvidenceInterval
+from sensemem.benchmarks.eval_evidence import EvidenceInterval
 from sensemem.benchmarks.official_scorers import GOLD_SOURCE_KEYS, gold_source_groups
 
 if TYPE_CHECKING:
@@ -60,6 +60,9 @@ def quality_diagnostics(sample: SampleResult) -> dict[str, object]:
         observed=sample.generation_evidence is not None,
         partial_source_ids=list(
             dict.fromkeys(item.source_id for item in sample.excerpt_evidence if item.source_id)
+        ),
+        text_only_source_ids=list(
+            dict.fromkeys(item.source_id for item in sample.projection_evidence if item.source_id)
         ),
     )
     request = sample.grounding_request

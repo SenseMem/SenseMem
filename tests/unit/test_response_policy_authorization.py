@@ -23,14 +23,15 @@ from sensemem import (
     FormationProposal,
     IdentityClaim,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
-    MemoryType,
     ObservationContext,
+    QueryFailure,
+    RecordKind,
     ValidationError,
 )
 
@@ -39,7 +40,7 @@ OCCURRED = datetime(2026, 3, 4, tzinfo=timezone.utc)
 
 def _policy(subject: str = "Ana") -> FormationProposal:
     return FormationProposal(
-        kind=MemoryKind.RESPONSE_POLICY,
+        kind=RecordKind.RESPONSE_POLICY,
         content=f"Answer {subject} briefly.",
         subject=subject,
         predicate="response_style",
@@ -60,7 +61,7 @@ class PolicyFormer:
             (
                 _policy(),
                 FormationProposal(
-                    kind=MemoryKind.ENTITY,
+                    kind=RecordKind.ENTITY,
                     content="Ana is a person",
                     subject="Ana",
                     confidence=0.9,
@@ -84,6 +85,7 @@ class PolicyConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         del trigger
         return (
@@ -108,7 +110,11 @@ class OperationConsolidator:
         self.before_propose: Callable[[], None] | None = None
 
     def consolidate(
-        self, evidence: Sequence[MemoryRecord], *, trigger: MemoryTrigger
+        self,
+        evidence: Sequence[MemoryRecord],
+        *,
+        trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         if self.before_propose is not None:
             self.before_propose()
@@ -142,7 +148,7 @@ def test_model_cannot_change_an_authorized_policy(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, other = _observations(memory, "Ana asked for brief answers", "Ana repeats it")
         policy = _apply_policy(memory, source.id)
@@ -159,7 +165,7 @@ def test_model_cannot_change_an_authorized_policy(
                 ),
                 proposal=(
                     FormationProposal(
-                        kind=MemoryKind.EVENT, content="Ana asked for less.", confidence=0.9
+                        kind=RecordKind.EVENT, content="Ana asked for less.", confidence=0.9
                     )
                     if intent is MemoryIntent.CONSOLIDATE
                     else None
@@ -184,7 +190,7 @@ def test_model_cannot_forget_a_policy_ancestor_and_preserves_unrelated_work(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        config=MemoryConfig(
+        settings=MemorySettings(
             minimum_relevance=0, independent_evidence=independent, memory_budget_records=1
         ),
     ) as memory:
@@ -194,7 +200,7 @@ def test_model_cannot_forget_a_policy_ancestor_and_preserves_unrelated_work(
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=(source.id,),
                 proposal=FormationProposal(
-                    kind=MemoryKind.EVENT, content="Ana requested concise replies.", confidence=0.9
+                    kind=RecordKind.EVENT, content="Ana requested concise replies.", confidence=0.9
                 ),
             )
         )
@@ -231,7 +237,7 @@ def test_model_cannot_implicitly_supersede_a_policy_ancestor(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, new = _observations(memory, "Ana lives in Paris", "Ana moved to Rome")
         ancestor = memory.apply(
@@ -239,7 +245,7 @@ def test_model_cannot_implicitly_supersede_a_policy_ancestor(
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=(source.id,),
                 proposal=FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content="Ana lives in Paris.",
                     subject="Ana",
                     predicate="home",
@@ -254,7 +260,7 @@ def test_model_cannot_implicitly_supersede_a_policy_ancestor(
             intent=MemoryIntent.CONSOLIDATE,
             evidence_ids=(new.id,),
             proposal=FormationProposal(
-                kind=MemoryKind.STATE,
+                kind=RecordKind.STATE,
                 content="Ana lives in Rome.",
                 subject="Ana",
                 predicate="home",
@@ -289,7 +295,7 @@ def test_model_cannot_mutate_policy_support_or_replace_it_during_consolidation(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         source, other = _observations(memory, "Ana requested brief replies", "A separate request")
         ancestor = memory.apply(
@@ -297,7 +303,7 @@ def test_model_cannot_mutate_policy_support_or_replace_it_during_consolidation(
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=(source.id,),
                 proposal=FormationProposal(
-                    kind=MemoryKind.EVENT, content="Ana requested brevity.", confidence=0.9
+                    kind=RecordKind.EVENT, content="Ana requested brevity.", confidence=0.9
                 ),
             )
         )
@@ -317,7 +323,7 @@ def test_model_cannot_mutate_policy_support_or_replace_it_during_consolidation(
                 ),
                 proposal=(
                     FormationProposal(
-                        kind=MemoryKind.EVENT, content="A replacement summary.", confidence=0.9
+                        kind=RecordKind.EVENT, content="A replacement summary.", confidence=0.9
                     )
                     if intent is MemoryIntent.CONSOLIDATE
                     else None
@@ -341,7 +347,7 @@ class ReplacingFormer:
     def __init__(self) -> None:
         self.proposals: tuple[FormationProposal, ...] = (
             FormationProposal(
-                kind=MemoryKind.STATE,
+                kind=RecordKind.STATE,
                 content="Ana lives in Paris.",
                 subject="Ana",
                 predicate="home",
@@ -363,7 +369,7 @@ class BatchReplacingFormer(ReplacingFormer):
             (
                 *self.proposals,
                 FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content=f"Ben lives in {value.content.text}.",
                     subject="Ben",
                     predicate="home",
@@ -384,7 +390,7 @@ def test_refusing_policy_replacement_preserves_independent_batch_state_conflicts
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         memory.add("Madrid", occurred_at=OCCURRED)
         ancestor = next(
@@ -395,7 +401,7 @@ def test_refusing_policy_replacement_preserves_independent_batch_state_conflicts
         policy = _apply_policy(memory, ancestor.id)
         former.proposals = (
             FormationProposal(
-                kind=MemoryKind.STATE,
+                kind=RecordKind.STATE,
                 content="Ana lives in Rome.",
                 subject="Ana",
                 predicate="home",
@@ -425,9 +431,7 @@ def test_host_can_reinforce_a_naming_assertion_supporting_a_response_policy(tmp_
         embedder=TinyEmbedder(),
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
-        config=MemoryConfig(
-            independent_evidence=True, identity_link_min_assets=1, minimum_relevance=0
-        ),
+        settings=MemorySettings(independent_evidence=True, minimum_relevance=0),
     ) as memory:
         sources = tuple(
             memory.add(
@@ -437,6 +441,8 @@ def test_host_can_reinforce_a_naming_assertion_supporting_a_response_policy(tmp_
             for index in range(3)
         )
         identity_id = memory.perceive(sources[0].id).faces[0].identity_id
+        for source in sources[1:]:
+            assert memory.perceive(source.id).faces[0].identity_id == identity_id
         claim = IdentityClaim(identity_id=identity_id, name="Ana")
         naming_operations = [
             memory.apply(
@@ -461,7 +467,7 @@ def test_host_can_reinforce_a_naming_assertion_supporting_a_response_policy(tmp_
         assert set(naming_context.evidence_ids) == {source.id for source in sources}
         policy_context = memory.get(policy.id).context
         assert policy_context is not None
-        assert policy_context.kind is MemoryKind.RESPONSE_POLICY
+        assert policy_context.kind is RecordKind.RESPONSE_POLICY
         assert policy_context.basis is EvidenceBasis.RESPONSE_FEEDBACK
         assert policy_context.retired_at is None
 
@@ -475,18 +481,18 @@ def test_automatic_formation_refuses_policy_replacement_and_keeps_valid_siblings
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         memory.add("Ana lives in Paris", occurred_at=OCCURRED)
         ancestor = next(
             record
             for record in memory.list().items
-            if record.context is not None and record.context.kind is MemoryKind.STATE
+            if record.context is not None and record.context.kind is RecordKind.STATE
         )
         policy = _apply_policy(memory, ancestor.id)
         former.proposals = (
             FormationProposal(
-                kind=MemoryKind.STATE,
+                kind=RecordKind.STATE,
                 content="Ana lives in Rome.",
                 subject="Ana",
                 predicate="home",
@@ -494,7 +500,7 @@ def test_automatic_formation_refuses_policy_replacement_and_keeps_valid_siblings
                 confidence=0.9,
             ),
             FormationProposal(
-                kind=MemoryKind.EVENT, content="A separate supported event.", confidence=0.9
+                kind=RecordKind.EVENT, content="A separate supported event.", confidence=0.9
             ),
         )
 
@@ -517,7 +523,7 @@ def test_policy_created_during_model_work_is_protected_by_the_apply_transaction(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=backend,
-        config=MemoryConfig(minimum_relevance=0, independent_evidence=independent),
+        settings=MemorySettings(minimum_relevance=0, independent_evidence=independent),
     ) as memory:
         (source,) = _observations(memory, "Ana requested brief replies")
 
@@ -548,7 +554,7 @@ def _policies(memory: Memory) -> list[MemoryRecord]:
     return [
         record
         for record in memory.list(limit=100).items
-        if record.context is not None and record.context.kind is MemoryKind.RESPONSE_POLICY
+        if record.context is not None and record.context.kind is RecordKind.RESPONSE_POLICY
     ]
 
 
@@ -557,15 +563,15 @@ def test_a_response_policy_a_former_proposes_is_refused(tmp_path: Path) -> None:
         tmp_path,
         embedder=TinyEmbedder(),
         former=PolicyFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         _observations(memory, "Ana asked for shorter answers")
 
         assert _policies(memory) == []
-        assert memory.search("briefly", limit=10, memory_type=MemoryType.PROCEDURAL).hits == ()
+        assert memory.search("briefly", limit=10, memory_type=MemoryCategory.PROCEDURAL).hits == ()
         # The refusal costs that one proposal: its sibling from the same observation stands.
         assert any(
-            record.context is not None and record.context.kind is MemoryKind.ENTITY
+            record.context is not None and record.context.kind is RecordKind.ENTITY
             for record in memory.list(limit=100).items
         )
 
@@ -575,7 +581,7 @@ def test_a_response_policy_a_consolidator_proposes_is_refused(tmp_path: Path) ->
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=PolicyConsolidator(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first, second = _observations(memory, "Ana asked for less", "Ana asked for less again")
 
@@ -591,7 +597,7 @@ def test_a_host_authored_response_policy_is_stored_as_response_feedback(tmp_path
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=PolicyConsolidator(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first, second = _observations(memory, "Ana asked for less", "Ana asked for less again")
 
@@ -606,14 +612,16 @@ def test_a_host_authored_response_policy_is_stored_as_response_feedback(tmp_path
 
         derived = memory.get(record.created_ids[0])
         assert derived.context is not None
-        assert derived.context.kind is MemoryKind.RESPONSE_POLICY
+        assert derived.context.kind is RecordKind.RESPONSE_POLICY
         # The authorization the record names, not the `MODEL_INFERENCE` default it was built with.
         assert derived.context.basis is EvidenceBasis.RESPONSE_FEEDBACK
         assert derived.context.visible is True
-        assert derived.memory_type is MemoryType.PROCEDURAL
+        assert derived.memory_type is MemoryCategory.PROCEDURAL
         assert [
             hit.id
-            for hit in memory.search("briefly", limit=10, memory_type=MemoryType.PROCEDURAL).hits
+            for hit in memory.search(
+                "briefly", limit=10, memory_type=MemoryCategory.PROCEDURAL
+            ).hits
         ] == [derived.id]
         assert [procedure.id for procedure in memory.compile("briefly").procedures] == [derived.id]
 
@@ -627,7 +635,7 @@ def test_a_logged_response_policy_replays_as_the_duplicate_it_is(tmp_path: Path)
     as already applied.
     """
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         first, second = _observations(memory, "Ana asked for less", "Ana asked for less again")
         operation = MemoryOperation(
@@ -660,7 +668,7 @@ def test_a_response_policy_proposal_still_cannot_claim_an_observation() -> None:
     """The generic rule stands: nothing formed may claim to have been observed directly."""
     with pytest.raises(ValidationError):
         FormationProposal(
-            kind=MemoryKind.RESPONSE_POLICY,
+            kind=RecordKind.RESPONSE_POLICY,
             content="Answer Ana briefly.",
             basis=EvidenceBasis.OBSERVATION,
             subject="Ana",

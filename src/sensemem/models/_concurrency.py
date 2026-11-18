@@ -14,15 +14,12 @@ def ordered_calls(calls: Sequence[Callable[[], _T]], *, concurrency: int = 4) ->
     with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="sensemem-model") as pool:
         futures: list[Future[_T]] = []
         pending: set[Future[_T]] = set()
-        try:
-            for call in calls:
-                if len(pending) == concurrency:
-                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                    for completed in done:
-                        completed.result()
-                future = pool.submit(copy_context().run, call)
-                futures.append(future)
-                pending.add(future)
-        finally:
-            wait(futures)
+        for call in calls:
+            if len(pending) == concurrency:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for completed in done:
+                    completed.result()
+            future = pool.submit(copy_context().run, call)
+            futures.append(future)
+            pending.add(future)
         return tuple(future.result() for future in futures)

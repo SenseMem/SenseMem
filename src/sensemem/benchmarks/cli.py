@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from importlib import import_module
 from importlib.metadata import version
+from typing import cast
 
 USAGE_EXIT_CODE = 2
 INTERRUPT_EXIT_CODE = 130
@@ -63,9 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return USAGE_EXIT_CODE
 
     try:
-        handler = import_module(runner[0]).main
-        result = handler(arguments[1:], prog=f"{PROGRAM} {command}")
-        return result if isinstance(result, int) else 0
+        handler = cast(Callable[..., int], import_module(runner[0]).main)
+        return handler(arguments[1:], prog=f"{PROGRAM} {command}")
     except KeyboardInterrupt:
         print(f"{PROGRAM} {command}: interrupted", file=sys.stderr)
         return INTERRUPT_EXIT_CODE

@@ -8,12 +8,13 @@ from sensemem import (
     EmbedTask,
     FormationProposal,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryRecord,
     MemoryTrigger,
     Modality,
     ModelInput,
+    QueryFailure,
+    RecordKind,
 )
 
 ATOMIC_MODALITIES = frozenset(value for value in Modality if value is not Modality.OMNI)
@@ -62,10 +63,11 @@ class CueConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         del trigger
         over_trait = any(
-            record.context is not None and record.context.kind is MemoryKind.TRAIT
+            record.context is not None and record.context.kind is RecordKind.TRAIT
             for record in evidence
         )
         return (
@@ -73,7 +75,7 @@ class CueConsolidator:
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=tuple(record.id for record in evidence),
                 proposal=FormationProposal(
-                    kind=MemoryKind.TRAIT,
+                    kind=RecordKind.TRAIT,
                     content=(
                         "The user needs reassurance"
                         if over_trait

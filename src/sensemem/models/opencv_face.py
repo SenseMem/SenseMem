@@ -14,9 +14,10 @@ from typing import Protocol, cast
 
 from sensemem._telemetry import mark_model_requests, record_unmetered_model_usage
 from sensemem._validation import positive_int, unit_interval
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.models.base import FaceAnalysis, FaceEmbedding
-from sensemem.types import AssetRef, Modality
+from sensemem.perception import FaceAnalysis, FaceEmbedding
+from sensemem.types import Modality
 
 
 class _Image(Protocol):
@@ -227,9 +228,7 @@ class OpenCVFaceAnalyzer:
         return FaceAnalysis(tuple(faces))
 
     def _frames(self, cv: _OpenCV, asset: AssetRef) -> Iterator[tuple[int | None, _Image]]:
-        path = asset.path
-        if path is None:
-            raise ValidationError("face asset path is missing")
+        path = cast(Path, asset.path)
         if asset.modality is Modality.IMAGE:
             image = cv.imread(str(path))
             if image is None:

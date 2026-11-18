@@ -12,9 +12,9 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryKind,
+    MemorySettings,
     ObservationContext,
+    RecordKind,
     RetrievalScope,
     SpatialAnchor,
     SpatialContext,
@@ -31,7 +31,7 @@ class EntityFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.ENTITY,
+                    kind=RecordKind.ENTITY,
                     content="The observed object is a red toolbox",
                     subject="red toolbox",
                 ),
@@ -61,7 +61,7 @@ def test_spatial_search_is_exact_within_one_coordinate_frame(tmp_path: Path) -> 
     )
 
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         nearby = memory.add(
             "red toolbox",
@@ -157,7 +157,7 @@ def test_formed_semantics_do_not_merge_across_spatial_frames(tmp_path: Path) -> 
         tmp_path,
         embedder=TinyEmbedder(),
         former=EntityFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("red toolbox in map", context=ObservationContext(spatial=map_pose))
         memory.add("red toolbox in camera", context=ObservationContext(spatial=camera_pose))
@@ -165,7 +165,7 @@ def test_formed_semantics_do_not_merge_across_spatial_frames(tmp_path: Path) -> 
         entities = [
             hit.context
             for hit in memory.search("observed red toolbox", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
+            if hit.context is not None and hit.context.kind is RecordKind.ENTITY
         ]
 
         assert len(entities) == 2
@@ -185,7 +185,7 @@ def test_a_symbolic_place_scopes_retrieval_and_needs_no_former(tmp_path: Path) -
     silently skipped the default composition entirely.
     """
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         kitchen = memory.add(
             "the kettle boiled dry again",
@@ -236,7 +236,7 @@ def test_a_sparse_place_keeps_widening_instead_of_stopping_early(tmp_path: Path)
     nothing from the room that was asked about -- the under-return this axis exists to avoid.
     """
     with Memory(
-        tmp_path, embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         # Ranked above the target simply by being added first; the embedder is uninformative.
         for index in range(30):

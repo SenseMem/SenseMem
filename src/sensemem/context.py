@@ -9,38 +9,48 @@ Authoritative visibility and scope were applied by the retrieval path that produ
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 from time import perf_counter
 from types import MappingProxyType
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
-from sensemem.exceptions import ValidationError
-from sensemem.types import (
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_rendering import (
     _MAX_CUE_IDS,
-    CONTEXT_READING_GUIDE,
-    KIND_MEMORY_TYPES,
-    AffectCue,
-    ContextBudget,
-    ContextBundle,
-    ContextConflict,
-    ContextExcerpt,
-    ContextProof,
-    ContextUnknown,
-    ContextUnknownKind,
-    EvidenceBasis,
-    MemoryContext,
-    MemoryKind,
-    MemoryType,
-    Modality,
-    NamedActor,
-    ProvisionalActor,
-    SearchHit,
     render_excerpt_line,
     render_hit_line,
     render_named_actor_line,
+    render_projection_line,
     render_provisional_actor_line,
+    render_supplement_line,
 )
+from sensemem.context_selection import (
+    ContextCandidate,
+    ContextSelection,
+    ContextSelectionRequest,
+    ContextSelector,
+    DefaultContextSelector,
+)
+from sensemem.context_values import (
+    AffectCue,
+    ContextBudget,
+    ContextConflict,
+    ContextExcerpt,
+    ContextProjection,
+    ContextProof,
+    ContextProofScoring,
+    ContextSupplement,
+    ContextUnknown,
+    ContextUnknownKind,
+    NamedActor,
+    ProvisionalActor,
+)
+from sensemem.evidence import AffectLinkKey, affect_link_key, functional_lineage
+from sensemem.exceptions import ValidationError
+from sensemem.prompts import context as context_prompts
+from sensemem.records import SearchHit
+from sensemem.types import CATEGORY_BY_KIND, MemoryCategory, Modality, RecordKind
 
 # One (identity_id, name, naming_assertion_id) edge a memory carries to a currently named
 # identity. `naming_assertion_id` is `None` only when a caller cannot cite it cheaply.
@@ -71,31 +81,31 @@ _SECTIONS: tuple[str, ...] = (
     "traits",
 )
 # A typed kind decides the section first; an untyped or generic record falls back to its type.
-_KIND_SECTIONS: Mapping[MemoryKind, str] = MappingProxyType(
+_KIND_SECTIONS: Mapping[RecordKind, str] = MappingProxyType(
     {
-        MemoryKind.ENTITY: "actors",
-        MemoryKind.RELATION: "relationships",
-        MemoryKind.STATE: "scene",
-        MemoryKind.AFFECT: "affect",
-        MemoryKind.TRAIT: "traits",
+        RecordKind.ENTITY: "actors",
+        RecordKind.RELATION: "relationships",
+        RecordKind.STATE: "scene",
+        RecordKind.AFFECT: "affect",
+        RecordKind.TRAIT: "traits",
     }
 )
-_TYPE_SECTIONS: Mapping[MemoryType, str] = MappingProxyType(
+_TYPE_SECTIONS: Mapping[MemoryCategory, str] = MappingProxyType(
     {
-        MemoryType.SEMANTIC: "facts",
-        MemoryType.EPISODIC: "episodes",
-        MemoryType.PROCEDURAL: "procedures",
+        MemoryCategory.SEMANTIC: "facts",
+        MemoryCategory.EPISODIC: "episodes",
+        MemoryCategory.PROCEDURAL: "procedures",
     }
 )
 # Which memory types can reach each section at all. A kind-keyed section is fed by whatever type
 # a formed record of that kind is stored as, a type-keyed one by its own type. This is what lets a
 # `memory_types` filter name the sections it emptied instead of only the types it dropped: kind
 # `affect` is stored `episodic`, so a `{semantic}` request cannot fill `affect` however it ranks.
-_SECTION_MEMORY_TYPES: Mapping[str, frozenset[MemoryType]] = MappingProxyType(
+_SECTION_MEMORY_TYPES: Mapping[str, frozenset[MemoryCategory]] = MappingProxyType(
     {
         name: frozenset(
             {
-                KIND_MEMORY_TYPES.get(kind, MemoryType.SEMANTIC)
+                CATEGORY_BY_KIND.get(kind, MemoryCategory.SEMANTIC)
                 for kind, section in _KIND_SECTIONS.items()
                 if section == name
             }
@@ -106,18 +116,12 @@ _SECTION_MEMORY_TYPES: Mapping[str, frozenset[MemoryType]] = MappingProxyType(
 )
 # Why a candidate the retrieval kernel returned never became a bundle line. Reported as counts
 # under `unknowns` so a caller reading a thin bundle knows which bound produced it.
-_EXCLUSIONS: Mapping[str, str] = MappingProxyType(
-    {
-        "memory_types": "outside the requested memory types",
-        "min_confidence": "below the requested minimum confidence",
-        "freshness": "older than the requested freshness window",
-    }
-)
+_EXCLUSION_REASONS = ("memory_types", "min_confidence", "freshness")
 # One asserted value: the value, the memory asserting it, and that memory's subject and predicate.
 _Claim: TypeAlias = tuple[str, str, str | None, str | None]
 # Resolves affect memory IDs to the event IDs their own observations also formed. The compiler
 # calls it once, for the affect entries the budget actually bought, and never past the deadline.
-_CoDerivedEvents: TypeAlias = Callable[[Sequence[str]], Mapping[str, Sequence[str]]]
+_CoDerivedEventResolver: TypeAlias = Callable[[Sequence[str]], Mapping[str, Sequence[str]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +175,38 @@ def excerpt_cost(excerpt: ContextExcerpt) -> int:
     return len(render_excerpt_line(excerpt)) + 1
 
 
+def projection_cost(projection: ContextProjection) -> int:
+    """Price the complete labelled text delivery and its omitted-media declaration."""
+    return len(render_projection_line(projection)) + 1
+
+
+def _text_projection(hit: SearchHit) -> ContextProjection | None:
+    context = hit.context
+    if (
+        not hit.assets
+        or not any(part.kind != "asset" for part in hit.parts)
+        or (
+            context is not None
+            and (context.kind is not RecordKind.OBSERVATION or context.evidence_ids)
+        )
+    ):
+        return None
+    return ContextProjection(
+        source_memory_id=hit.id,
+        parts=hit.parts,
+        omitted_assets=tuple(
+            {asset.id: replace(asset, path=None) for asset in hit.assets}.values()
+        ),
+        score=hit.score,
+        created_at=hit.created_at,
+        occurred_at=hit.occurred_at,
+        occurred_end=hit.occurred_end,
+        memory_type=hit.memory_type,
+        context=context,
+        place_id=hit.place_id,
+    )
+
+
 def named_actor_cost(actor: NamedActor) -> int:
     """Return what one named-actor line costs, priced exactly as `render_named_actor_line`
     renders it, so the price and the text can never drift apart.
@@ -191,16 +227,26 @@ def _actor_cost(entry: NamedActor | ProvisionalActor) -> int:
     return provisional_actor_cost(entry)
 
 
-def _frame_cost(goal: str, reference_at: datetime, budget: ContextBudget) -> int:
+def _frame_cost(
+    goal: str,
+    reference_at: datetime,
+    budget: ContextBudget,
+    proof_scoring: ContextProofScoring = "independent_pair",
+) -> int:
     """Return an upper bound on the fixed header `render()` writes above the first section."""
     return (
         len(f"# Context: {goal}")
-        + len(CONTEXT_READING_GUIDE)
+        + len(context_prompts.CONTEXT_READING_GUIDE)
         + len(f"Reference time: {reference_at.isoformat()}")
         # `chars` cannot have more digits than `max_chars`, nor `included` than `max_items`.
         + len(
             f"Budget: {budget.max_chars}/{budget.max_chars} chars,"
             f" {budget.max_items}/{budget.max_items} items"
+        )
+        + (
+            len(context_prompts.proof_scoring_line(proof_scoring)) + 1
+            if budget.selected_proofs
+            else 0
         )
         + 4
     )
@@ -211,7 +257,53 @@ def _heading_cost(section: str) -> int:
     return len(section) + 5
 
 
-def compile_context(
+def _select_supplements(
+    supplements: Sequence[ContextSupplement],
+    budget: ContextBudget,
+    reference_at: datetime,
+    overhead: int,
+) -> tuple[tuple[ContextSupplement, ...], int, tuple[ContextUnknown, ...]]:
+    """Admit temporary evidence in submission order and reserve its shared budget."""
+    selected: list[ContextSupplement] = []
+    exclusions: dict[str, int] = {}
+    for supplement in supplements:
+        reason = None
+        if supplement.expires_at is not None and supplement.expires_at <= reference_at:
+            reason = "expired"
+        elif supplement.observed_at is not None and supplement.observed_at > reference_at:
+            reason = "future"
+        elif budget.freshness is not None and (
+            supplement.observed_at is None
+            or reference_at - supplement.observed_at > budget.freshness
+        ):
+            reason = "freshness"
+        cost = len(render_supplement_line(supplement)) + 1
+        if not selected:
+            cost += _heading_cost("temporary context (untrusted)")
+        if reason is None and (
+            len(selected) >= budget.max_items or overhead + cost > budget.max_chars
+        ):
+            reason = "budget"
+        if reason is not None:
+            exclusions[reason] = exclusions.get(reason, 0) + 1
+            continue
+        selected.append(supplement)
+        overhead += cost
+    unknowns = tuple(
+        ContextUnknown(
+            kind=(
+                ContextUnknownKind.BUDGET_EXCLUDED
+                if reason == "budget"
+                else ContextUnknownKind.EVIDENCE_UNAVAILABLE
+            ),
+            detail=context_prompts.supplements_excluded(count, reason),
+        )
+        for reason, count in exclusions.items()
+    )
+    return tuple(selected), overhead, unknowns
+
+
+def compile_context(  # noqa: C901 - filters, closed selection, and deadlines share one bundle budget
     goal: str,
     hits: Sequence[SearchHit],
     *,
@@ -222,9 +314,12 @@ def compile_context(
     candidate_limit: int | None = None,
     provisional: Mapping[str, Sequence[str]] = MappingProxyType({}),
     named: Mapping[str, Sequence[NamedActorLink]] = MappingProxyType({}),
-    co_derived_events: _CoDerivedEvents | None = None,
+    resolve_co_derived_event_ids: _CoDerivedEventResolver | None = None,
     closures: Sequence[EvidenceClosure] | None = None,
     excerpts: Mapping[str, ContextExcerpt] = MappingProxyType({}),
+    supplements: Sequence[ContextSupplement] = (),
+    context_selector: ContextSelector | None = None,
+    proof_scoring: ContextProofScoring = "independent_pair",
 ) -> ContextBundle:
     """Partition, filter, and budget ranked hits into one bundle.
 
@@ -247,7 +342,7 @@ def compile_context(
     has left after the ranked hits: it is included when it fits and dropped, not appended for
     free, when it does not.
 
-    `co_derived_events` resolves affect memory IDs to the event IDs formed from the same
+    `resolve_co_derived_event_ids` resolves affect memory IDs to the event IDs formed from the same
     observations, under the same visibility the hits were hydrated with. It is called once, with
     the affect entries the budget actually bought, and not at all once the deadline has passed:
     the hop is optional enrichment, like conflict detection. The edge is co-occurrence inside
@@ -256,13 +351,40 @@ def compile_context(
     started_at = perf_counter() if started_at is None else started_at
     excluded: dict[str, int] = {}
     candidates: list[SearchHit] = []
+    withheld_attributions: set[AffectLinkKey] = set()
     for hit in hits:
         reason = _rejection(hit, budget, reference_at)
         if reason is None:
             candidates.append(hit)
         else:
             excluded[reason] = excluded.get(reason, 0) + 1
-    overhead = _frame_cost(goal, reference_at, budget)
+            key = affect_link_key(hit)
+            if key is not None:
+                withheld_attributions.add(key)
+    if withheld_attributions:
+        candidates = [
+            hit for hit in candidates if affect_link_key(hit) not in withheld_attributions
+        ]
+        closures = (
+            None
+            if closures is None
+            else tuple(
+                closure
+                for closure in closures
+                if all(
+                    affect_link_key(member) not in withheld_attributions
+                    for member in closure.members
+                )
+            )
+        )
+        unknowns = (
+            *unknowns,
+            ContextUnknown(
+                kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
+                detail=context_prompts.AFFECT_FILTERED,
+            ),
+        )
+    overhead = _frame_cost(goal, reference_at, budget, proof_scoring)
     if overhead > budget.max_chars:
         # `max_chars` bounds the header too, so a budget it alone overruns has no bundle that
         # satisfies it: `_select` would buy nothing and the four framing lines would still be
@@ -273,6 +395,15 @@ def compile_context(
             f"budget max_chars must be at least {overhead} to fit this goal's context header",
             subject="budget",
         )
+    selected_supplements, overhead, supplement_unknowns = _select_supplements(
+        supplements, budget, reference_at, overhead
+    )
+    unknowns = (*unknowns, *supplement_unknowns)
+    # Explicit temporary evidence takes its slots first; memory evidence still enters only as
+    # complete closures. A zero remaining item budget skips selection, without manufacturing a
+    # ContextBudget whose public positive-item constraint would be false.
+    remaining_items = budget.max_items - len(selected_supplements)
+    selection_budget = replace(budget, max_items=max(1, remaining_items))
     # An affect entry becomes an `AffectCue`: the same hit, plus the events its evidence also
     # formed. The conversion happens before the pricing, not after it, because a cue renders its
     # basis, cue modality, valence, arousal, and evidence IDs on the line: pricing the plain hit
@@ -283,31 +414,27 @@ def compile_context(
         for candidate in candidates
         if (excerpt := excerpts.get(candidate.id)) is not None
     }
+    projection_candidates = {
+        candidate.id: projection
+        for candidate in candidates
+        if (projection := _text_projection(candidate)) is not None
+    }
+    candidate_by_id = {candidate.id: candidate for candidate in reversed(candidates)}
     closure_by_anchor = {
         closure.anchor.id: EvidenceClosure(
-            anchor=next(hit for hit in candidates if hit.id == closure.anchor.id),
+            anchor=candidate_by_id[closure.anchor.id],
             members=tuple(
-                _affect_cue(
-                    next(
-                        (candidate for candidate in candidates if candidate.id == member.id), member
-                    ),
-                    (),
-                )
-                if _section(
-                    next(
-                        (candidate for candidate in candidates if candidate.id == member.id), member
-                    )
-                )
-                == "affect"
-                else next(
-                    (candidate for candidate in candidates if candidate.id == member.id), member
-                )
+                candidate_by_id[member.id]
+                if member.id in candidate_by_id
+                else _affect_cue(member, ())
+                if _section(member) == "affect"
+                else member
                 for member in closure.members
             ),
             proofs=closure.proofs,
         )
         for closure in closures or ()
-        if any(hit.id == closure.anchor.id for hit in candidates)
+        if closure.anchor.id in candidate_by_id
     }
     has_conflicts = bool(_conflicts(candidates, frozenset(hit.id for hit in candidates)))
     all_singletons = len(closure_by_anchor) == len(candidates) and all(
@@ -315,6 +442,7 @@ def compile_context(
     )
     closed_mode = closures is not None and (
         any(closure.proofs for closure in closure_by_anchor.values())
+        or any(affect_link_key(candidate) is not None for candidate in candidates)
         or not (all_singletons and not has_conflicts)
     )
     selected_closures, peer_withheld = (
@@ -327,16 +455,24 @@ def compile_context(
             *unknowns,
             ContextUnknown(
                 kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                detail=(
-                    f"{peer_withheld} ranked assertions were withheld because a conflicting"
-                    " assertion's required evidence was unavailable"
-                ),
+                detail=(context_prompts.conflicting_evidence_unavailable(peer_withheld)),
             ),
         )
-    sections, selected_excerpts, selected_proofs = (
-        _select_closures(selected_closures, budget, overhead, excerpt_candidates)
-        if closed_mode
-        else (*_select(candidates, budget, overhead, excerpt_candidates), ())
+    context_selector = DefaultContextSelector() if context_selector is None else context_selector
+    sections, selected_excerpts, selected_projections, selected_proofs, unproposed = _select(
+        selected_closures
+        if closed_mode and remaining_items
+        else tuple(EvidenceClosure(hit, (hit,)) for hit in candidates)
+        if remaining_items
+        else (),
+        goal=goal,
+        budget=selection_budget,
+        reference_at=reference_at,
+        overhead=overhead,
+        excerpts=excerpt_candidates,
+        projections=projection_candidates,
+        closed_evidence=closed_mode,
+        context_selector=context_selector,
     )
     # The deadline is checked here, between section assembly and the optional enrichment that
     # follows it. Nothing already computed is discarded and no stage is cut in half, so a bundle
@@ -345,8 +481,8 @@ def compile_context(
     # The hop is resolved only for the entries that were bought, so the read it costs is bounded
     # by the budget rather than by how deep retrieval ranked.
     hops: Mapping[str, Sequence[str]] = MappingProxyType({})
-    if co_derived_events is not None and not skipped and sections["affect"]:
-        hops = co_derived_events(tuple(hit.id for hit in sections["affect"]))
+    if resolve_co_derived_event_ids is not None and not skipped and sections["affect"]:
+        hops = resolve_co_derived_event_ids(tuple(hit.id for hit in sections["affect"]))
     if hops:
         # A resolved hop lengthens a line `_select` has already priced, so selection runs again
         # over the cues it will render. An affect entry the second pass buys instead carries no
@@ -366,16 +502,61 @@ def compile_context(
             for closure in selected_closures
         )
         # Affect hops annotate rather than support records, so closed selection stays unchanged.
-        sections, selected_excerpts, selected_proofs = (
-            _select_closures(selected_closures, budget, overhead, excerpt_candidates)
-            if closed_mode
-            else (*_select(candidates, budget, overhead, excerpt_candidates), ())
+        sections, selected_excerpts, selected_projections, selected_proofs, unproposed = _select(
+            selected_closures
+            if closed_mode and remaining_items
+            else tuple(EvidenceClosure(hit, (hit,)) for hit in candidates)
+            if remaining_items
+            else (),
+            goal=goal,
+            budget=selection_budget,
+            reference_at=reference_at,
+            overhead=overhead,
+            excerpts=excerpt_candidates,
+            projections=projection_candidates,
+            closed_evidence=closed_mode,
+            context_selector=context_selector,
         )
-    # Every candidate in this section was converted above; the branch keeps the declared type
-    # total rather than asserting it.
-    affect = tuple(
-        hit if isinstance(hit, AffectCue) else _affect_cue(hit, ()) for hit in sections["affect"]
-    )
+    if any(
+        affect_link_key(hit) is not None for section in sections.values() for hit in section
+    ) and _past_deadline(budget, started_at):
+        skipped = True
+        withheld_anchors = {
+            closure.anchor.id
+            for closure in selected_closures
+            if any(affect_link_key(member) is not None for member in closure.members)
+        }
+        candidates = [
+            hit
+            for hit in candidates
+            if hit.id not in withheld_anchors and affect_link_key(hit) is None
+        ]
+        selected_closures = tuple(
+            closure for closure in selected_closures if closure.anchor.id not in withheld_anchors
+        )
+        sections, selected_excerpts, selected_projections, selected_proofs, unproposed = _select(
+            selected_closures
+            if closed_mode and remaining_items
+            else tuple(EvidenceClosure(hit, (hit,)) for hit in candidates)
+            if remaining_items
+            else (),
+            goal=goal,
+            budget=selection_budget,
+            reference_at=reference_at,
+            overhead=overhead,
+            excerpts=excerpt_candidates,
+            projections=projection_candidates,
+            closed_evidence=closed_mode,
+            context_selector=context_selector,
+        )
+        unknowns = (
+            *unknowns,
+            ContextUnknown(
+                kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
+                detail=context_prompts.AFFECT_DEADLINE,
+            ),
+        )
+    affect = cast(tuple[AffectCue, ...], sections["affect"])
     # Rank order, not section order: `_lineage_conflict` pairs each value with the highest-ranked
     # memory asserting it, so a lineage whose claims land in different sections must still be read
     # by score. `ContextBundle.hits` sorts the same way.
@@ -395,11 +576,12 @@ def compile_context(
                 in (
                     {member.id for section in sections.values() for member in section}
                     | {excerpt.source_memory_id for excerpt in selected_excerpts}
+                    | {projection.source_memory_id for projection in selected_projections}
                 )
             }
         )
         if closed_mode
-        else len(candidates) - len(included) - len(selected_excerpts)
+        else len(candidates) - len(included) - len(selected_excerpts) - len(selected_projections)
     )
     # Conflict detection reads every candidate the filters kept, not only what the budget bought,
     # so dropping one side of a disagreement for want of a slot cannot make it disappear.
@@ -411,17 +593,40 @@ def compile_context(
             frozenset(hit.id for hit in included),
         )
     )
-    selected_evidence: tuple[SearchHit | ContextExcerpt, ...] = (*included, *selected_excerpts)
+    selected_evidence: tuple[SearchHit | ContextExcerpt | ContextProjection, ...] = (
+        *included,
+        *selected_excerpts,
+        *selected_projections,
+    )
+    selector_omitted = len(
+        unproposed
+        - {hit.id for hit in included}
+        - {excerpt.source_memory_id for excerpt in selected_excerpts}
+        - {projection.source_memory_id for projection in selected_projections}
+    )
+    if selector_omitted:
+        unknowns = (
+            *unknowns,
+            ContextUnknown(
+                kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
+                detail=context_prompts.selector_excluded(selector_omitted),
+            ),
+        )
     occurred_from, occurred_until = _occurred_range(selected_evidence)
     elapsed_ms = _elapsed_ms(started_at)
     # Actor lines are priced and fit in after the ranked hits, into whatever `_select` left of
     # `max_chars`: `_bundle_chars` already bounds that at or below `max_chars`, so this can
     # never push the total over it. A named identity is never also reported provisional, even
     # if a stale `provisional` entry still names it.
-    base_chars = _bundle_chars(overhead, sections, selected_excerpts, selected_proofs)
-    named_actors = _named_actors(selected_evidence, named)
+    base_chars = _bundle_chars(
+        overhead, sections, (*selected_excerpts, *selected_projections), selected_proofs
+    )
+    # Omitted native media cannot establish that the reader was supplied an identity
+    # observation. Only existing full/exact-excerpt delivery can populate actor links.
+    actor_evidence: tuple[SearchHit | ContextExcerpt, ...] = (*included, *selected_excerpts)
+    named_actors = _named_actors(actor_evidence, named)
     provisional_actors = _provisional_actors(
-        selected_evidence,
+        actor_evidence,
         provisional,
         exclude=frozenset(actor.identity_id for actor in named_actors),
     )
@@ -460,8 +665,9 @@ def compile_context(
             budget,
             sections,
             selected_excerpts,
+            selected_projections,
             excluded,
-            omitted,
+            omitted - selector_omitted,
             skipped=skipped,
             exhausted=(
                 candidate_limit is not None
@@ -482,7 +688,11 @@ def compile_context(
             budget.max_latency_ms is not None and elapsed_ms > budget.max_latency_ms
         ),
         excerpts=selected_excerpts,
+        projections=selected_projections,
         proofs=selected_proofs,
+        proof_scoring=proof_scoring,
+        supplements=tuple(selected_supplements),
+        omitted_supplements=len(supplements) - len(selected_supplements),
     )
 
 
@@ -514,66 +724,81 @@ def _anchor(hit: SearchHit) -> datetime:
 
 
 def _select(
-    candidates: Sequence[SearchHit],
+    closures: Sequence[EvidenceClosure],
+    *,
+    goal: str,
     budget: ContextBudget,
+    reference_at: datetime,
     overhead: int,
-    excerpts: Mapping[str, ContextExcerpt] = MappingProxyType({}),
-) -> tuple[dict[str, tuple[SearchHit, ...]], tuple[ContextExcerpt, ...]]:
-    """Rank decides the top half of `max_items`; the bottom half seats the sections it missed.
-
-    Section diversity must not cost rank readability. A floor slot per section at a small budget
-    lets a rank-fifty trait evict a rank-two episode, and a bundle that no longer reads by score
-    is worse than one missing a section. So the floor round runs only when the bottom half of
-    `max_items` can seat every section the candidates span; below that, rank decides all of it.
-    """
-    sections: dict[str, list[SearchHit]] = {name: [] for name in _SECTIONS}
-    selected_excerpts: list[ContextExcerpt] = []
-    taken: set[str] = set()
-    represented: set[str] = set()
-    used = overhead
-    media = 0
-    head = -(-budget.max_items // 2)
-    spanned = {_section(hit) for hit in candidates}
-    rounds: tuple[tuple[int, bool], ...] = (
-        ((head, False), (budget.max_items, True), (budget.max_items, False))
-        if budget.max_items - head >= len(spanned)
-        else ((budget.max_items, False),)
+    excerpts: Mapping[str, ContextExcerpt],
+    projections: Mapping[str, ContextProjection],
+    closed_evidence: bool,
+    context_selector: ContextSelector,
+) -> tuple[
+    dict[str, tuple[SearchHit, ...]],
+    tuple[ContextExcerpt, ...],
+    tuple[ContextProjection, ...],
+    tuple[ContextProof, ...],
+    frozenset[str],
+]:
+    """Validate a selector's anchor proposal and admit only original complete evidence."""
+    by_id: dict[str, EvidenceClosure] = {}
+    for closure in closures:
+        by_id.setdefault(closure.anchor.id, closure)
+    candidates = []
+    for closure in by_id.values():
+        sections: dict[str, list[SearchHit]] = {name: [] for name in _SECTIONS}
+        for member in closure.members:
+            sections[_section(member)].append(member)
+        excerpt = excerpts.get(closure.anchor.id) if len(closure.members) == 1 else None
+        projection = projections.get(closure.anchor.id) if len(closure.members) == 1 else None
+        candidates.append(
+            ContextCandidate(
+                hit=closure.anchor,
+                section=_section(closure.anchor),
+                chars=bundle_cost(closure.anchor),
+                section_chars=_heading_cost(_section(closure.anchor)),
+                required_ids=tuple(member.id for member in closure.members),
+                closure_chars=_bundle_chars(
+                    0,
+                    {name: tuple(section) for name, section in sections.items()},
+                    proofs=closure.proofs,
+                ),
+                closure_media_items=sum(len(member.assets) for member in closure.members),
+                excerpt_chars=None if excerpt is None else excerpt_cost(excerpt),
+                projection_chars=None if projection is None else projection_cost(projection),
+            )
+        )
+    selection = context_selector.select(
+        ContextSelectionRequest(
+            goal=goal,
+            candidates=tuple(candidates),
+            budget=budget,
+            reference_at=reference_at,
+            reserved_chars=overhead,
+            excerpt_section_chars=_heading_cost("partial sources"),
+            projection_section_chars=_heading_cost("text-only sources"),
+            closed_evidence=closed_evidence,
+        )
     )
-    for ceiling, floor in rounds:
-        for hit in candidates:
-            if len(taken) >= ceiling:
-                break
-            section = _section(hit)
-            if hit.id in taken or (floor and section in represented):
-                continue
-            if budget.max_media_items is not None and (
-                media + len(hit.assets) > budget.max_media_items
-            ):
-                continue
-            cost = bundle_cost(hit) + (0 if sections[section] else _heading_cost(section))
-            # One oversized hit does not close the bundle: a cheaper lower-ranked candidate can
-            # still fit, and `omitted` reports everything the budget could not buy.
-            if used + cost > budget.max_chars:
-                excerpt = excerpts.get(hit.id)
-                if excerpt is None:
-                    continue
-                partial_heading = 0 if selected_excerpts else _heading_cost("partial sources")
-                partial_cost = excerpt_cost(excerpt) + partial_heading
-                if used + partial_cost > budget.max_chars:
-                    continue
-                selected_excerpts.append(excerpt)
-                taken.add(hit.id)
-                represented.add(section)
-                used += partial_cost
-                continue
-            sections[section].append(hit)
-            taken.add(hit.id)
-            represented.add(section)
-            used += cost
-            media += len(hit.assets)
+    if not isinstance(selection, ContextSelection) or not isinstance(selection.diversify, bool):
+        raise ValidationError("context selector must return ContextSelection")
+    proposed = selection.anchor_ids
+    if not isinstance(proposed, tuple) or any(not isinstance(item, str) for item in proposed):
+        raise ValidationError("context selector must return a tuple of candidate anchor IDs")
+    if len(set(proposed)) != len(proposed):
+        raise ValidationError("context selector returned duplicate candidate anchor IDs")
+    if any(memory_id not in by_id for memory_id in proposed):
+        raise ValidationError("context selector returned an unknown candidate anchor ID")
     return (
-        {name: tuple(section) for name, section in sections.items()},
-        tuple(selected_excerpts),
+        *_select_closures(
+            tuple(by_id[memory_id] for memory_id in proposed),
+            budget,
+            overhead,
+            {**excerpts, **projections},
+            diversify=selection.diversify and not closed_evidence,
+        ),
+        frozenset(by_id).difference(proposed),
     )
 
 
@@ -589,6 +814,22 @@ def _expand_conflict_closures(  # noqa: C901 - fixed-point conflict closure is o
     representatives: dict[str, tuple[str, ...]] = {}
     for conflict in _conflicts(candidates, frozenset(hit.id for hit in candidates)):
         representatives[conflict.lineage_id] = conflict.memory_ids
+    attribution_peers: dict[AffectLinkKey, list[str]] = {}
+    for candidate in candidates:
+        key = affect_link_key(candidate)
+        if key is not None:
+            attribution_peers.setdefault(key, []).append(candidate.id)
+
+    def required_peers(hit: SearchHit) -> tuple[str, ...]:
+        context = hit.context
+        lineage_peers = (
+            ()
+            if context is None or context.lineage_id is None
+            else representatives.get(context.lineage_id, ())
+        )
+        key = affect_link_key(hit)
+        return (*lineage_peers, *(() if key is None else attribution_peers.get(key, ())))
+
     expanded = []
     withheld = 0
     for anchor in candidates:
@@ -600,13 +841,7 @@ def _expand_conflict_closures(  # noqa: C901 - fixed-point conflict closure is o
         # Conflict edges are equivalence edges rather than provenance: following them does not
         # create a bad cycle.  Iterate to a fixed point so a dependency which is itself one side
         # of an eligible candidate conflict cannot enter alone.
-        pending = [
-            peer_id
-            for member in members.values()
-            if (member_context := member.context) is not None
-            and member_context.lineage_id is not None
-            for peer_id in representatives.get(member_context.lineage_id, ())
-        ]
+        pending = [peer_id for member in members.values() for peer_id in required_peers(member)]
         examined: set[str] = set()
         while pending:
             peer_id = pending.pop()
@@ -622,9 +857,7 @@ def _expand_conflict_closures(  # noqa: C901 - fixed-point conflict closure is o
             for member in peer.members:
                 if member.id not in members:
                     members[member.id] = member
-                member_context = member.context
-                if member_context is not None and member_context.lineage_id is not None:
-                    pending.extend(representatives.get(member_context.lineage_id, ()))
+                pending.extend(required_peers(member))
             proofs.update(dict.fromkeys(peer.proofs))
         if members:
             expanded.append(EvidenceClosure(anchor, tuple(members.values()), tuple(proofs)))
@@ -633,81 +866,133 @@ def _expand_conflict_closures(  # noqa: C901 - fixed-point conflict closure is o
     return tuple(expanded), withheld
 
 
+@dataclass(slots=True)
+class _Admission:
+    """One authoritative ledger for record, proof, media, and partial-source admission."""
+
+    budget: ContextBudget
+    overhead: int
+    partial_sources: Mapping[str, ContextExcerpt | ContextProjection]
+    sections: dict[str, list[SearchHit]] = field(
+        default_factory=lambda: {name: [] for name in _SECTIONS}
+    )
+    taken: set[str] = field(default_factory=set)
+    media: int = 0
+    selected_partials: dict[str, ContextExcerpt | ContextProjection] = field(default_factory=dict)
+    selected_proofs: dict[ContextProof, None] = field(default_factory=dict)
+
+    def admit(self, closure: EvidenceClosure) -> bool:
+        marginal = tuple(member for member in closure.members if member.id not in self.taken)
+        media_cost = sum(len(member.assets) for member in marginal)
+        replacing = {member.id for member in marginal if member.id in self.selected_partials}
+        proposed_sections = {name: list(section) for name, section in self.sections.items()}
+        for member in marginal:
+            proposed_sections[_section(member)].append(member)
+        proposed_partials = tuple(
+            source
+            for memory_id, source in self.selected_partials.items()
+            if memory_id not in replacing
+        )
+        item_count = len(self.taken) + len(marginal) + len(proposed_partials)
+        cost = _bundle_chars(
+            self.overhead,
+            {name: tuple(section) for name, section in proposed_sections.items()},
+            proposed_partials,
+            tuple(dict.fromkeys((*self.selected_proofs, *closure.proofs))),
+        )
+        full_fits = (
+            item_count <= self.budget.max_items
+            and (
+                self.budget.max_media_items is None
+                or self.media + media_cost <= self.budget.max_media_items
+            )
+            and cost <= self.budget.max_chars
+        )
+        if full_fits:
+            self.sections = proposed_sections
+            for memory_id in replacing:
+                self.selected_partials.pop(memory_id)
+            self.taken.update(member.id for member in marginal)
+            self.media += media_cost
+            self.selected_proofs.update(dict.fromkeys(closure.proofs))
+            return True
+        if (
+            len(closure.members) != 1
+            or closure.anchor.id in self.taken
+            or closure.anchor.id in self.selected_partials
+        ):
+            return False
+        source = self.partial_sources.get(closure.anchor.id)
+        if source is None:
+            return False
+        proposed_partials = (*self.selected_partials.values(), source)
+        if len(self.taken) + len(proposed_partials) > self.budget.max_items:
+            return False
+        if (
+            _bundle_chars(
+                self.overhead,
+                {name: tuple(section) for name, section in self.sections.items()},
+                proposed_partials,
+                tuple(self.selected_proofs),
+            )
+            > self.budget.max_chars
+        ):
+            return False
+        self.selected_partials[closure.anchor.id] = source
+        return True
+
+
 def _select_closures(
     closures: Sequence[EvidenceClosure],
     budget: ContextBudget,
     overhead: int,
-    excerpts: Mapping[str, ContextExcerpt] = MappingProxyType({}),
-) -> tuple[dict[str, tuple[SearchHit, ...]], tuple[ContextExcerpt, ...], tuple[ContextProof, ...]]:
-    """Greedily admit ranked evidence closures, counting each materialized hit once.
-
-    Unlike the singleton selector, the diversity half-round is deliberately absent: an anchor's
-    support must not lose to a lower-ranked singleton merely because its closure spans slots.
-    """
-    sections: dict[str, list[SearchHit]] = {name: [] for name in _SECTIONS}
-    taken: set[str] = set()
-    media = 0
-    selected_excerpts: dict[str, ContextExcerpt] = {}
-    selected_proofs: dict[ContextProof, None] = {}
-    for closure in closures:
-        marginal = tuple(member for member in closure.members if member.id not in taken)
-        replacing = {member.id for member in marginal if member.id in selected_excerpts}
-        proposed_sections = {name: list(section) for name, section in sections.items()}
-        for member in marginal:
-            proposed_sections[_section(member)].append(member)
-        proposed_excerpts = tuple(
-            excerpt
-            for memory_id, excerpt in selected_excerpts.items()
-            if memory_id not in replacing
-        )
-        item_count = len(taken) + len(marginal) + len(proposed_excerpts)
-        media_cost = sum(len(member.assets) for member in marginal)
-        cost = _bundle_chars(
-            overhead,
-            {name: tuple(section) for name, section in proposed_sections.items()},
-            proposed_excerpts,
-            tuple(dict.fromkeys((*selected_proofs, *closure.proofs))),
-        )
-        full_fits = (
-            item_count <= budget.max_items
-            and (budget.max_media_items is None or media + media_cost <= budget.max_media_items)
-            and cost <= budget.max_chars
-        )
-        if full_fits:
-            sections = proposed_sections
-            for memory_id in replacing:
-                selected_excerpts.pop(memory_id)
-            taken.update(member.id for member in marginal)
-            media += media_cost
-            selected_proofs.update(dict.fromkeys(closure.proofs))
-            continue
-        if (
-            len(closure.members) != 1
-            or closure.anchor.id in taken
-            or closure.anchor.id in selected_excerpts
-        ):
-            continue
-        excerpt = excerpts.get(closure.anchor.id)
-        if excerpt is None:
-            continue
-        proposed_excerpts = (*selected_excerpts.values(), excerpt)
-        if len(taken) + len(proposed_excerpts) > budget.max_items:
-            continue
-        if (
-            _bundle_chars(
-                overhead,
-                {name: tuple(section) for name, section in sections.items()},
-                proposed_excerpts,
-                tuple(selected_proofs),
-            )
-            > budget.max_chars
-        ):
-            continue
-        selected_excerpts[closure.anchor.id] = excerpt
+    partial_sources: Mapping[str, ContextExcerpt | ContextProjection] = MappingProxyType({}),
+    *,
+    diversify: bool = False,
+) -> tuple[
+    dict[str, tuple[SearchHit, ...]],
+    tuple[ContextExcerpt, ...],
+    tuple[ContextProjection, ...],
+    tuple[ContextProof, ...],
+]:
+    """Own budget admission, including diversity rounds and partial-source replacement."""
+    admission = _Admission(budget, overhead, partial_sources)
+    represented: set[str] = set()
+    head = -(-budget.max_items // 2)
+    sections_available = {_section(closure.anchor) for closure in closures}
+    rounds = (
+        ((head, False), (budget.max_items, True), (budget.max_items, False))
+        if diversify and budget.max_items - head >= len(sections_available)
+        else ((budget.max_items, False),)
+    )
+    for ceiling, floor in rounds:
+        for closure in closures:
+            section = _section(closure.anchor)
+            if diversify:
+                if len(admission.taken) + len(admission.selected_partials) >= ceiling:
+                    break
+                if (
+                    closure.anchor.id in admission.taken
+                    or closure.anchor.id in admission.selected_partials
+                ):
+                    continue
+                if floor and section in represented:
+                    continue
+            if admission.admit(closure):
+                represented.add(section)
     return (
-        {name: tuple(section) for name, section in sections.items()},
-        tuple(selected_excerpts.values()),
-        tuple(selected_proofs),
+        {name: tuple(section) for name, section in admission.sections.items()},
+        tuple(
+            source
+            for source in admission.selected_partials.values()
+            if isinstance(source, ContextExcerpt)
+        ),
+        tuple(
+            source
+            for source in admission.selected_partials.values()
+            if isinstance(source, ContextProjection)
+        ),
+        tuple(admission.selected_proofs),
     )
 
 
@@ -728,10 +1013,14 @@ def _affect_cue(hit: SearchHit, event_ids: Sequence[str]) -> AffectCue:
 def _bundle_chars(
     overhead: int,
     sections: Mapping[str, tuple[SearchHit, ...]],
-    excerpts: Sequence[ContextExcerpt] = (),
+    partial_sources: Sequence[ContextExcerpt | ContextProjection] = (),
     proofs: Sequence[ContextProof] = (),
 ) -> int:
     """Return what this bundle charged against `max_chars`, priced exactly as `_select` did."""
+    excerpts = tuple(source for source in partial_sources if isinstance(source, ContextExcerpt))
+    projections = tuple(
+        source for source in partial_sources if isinstance(source, ContextProjection)
+    )
     return (
         overhead
         + sum(
@@ -742,6 +1031,12 @@ def _bundle_chars(
         + (
             _heading_cost("partial sources") + sum(excerpt_cost(excerpt) for excerpt in excerpts)
             if excerpts
+            else 0
+        )
+        + (
+            _heading_cost("text-only sources")
+            + sum(projection_cost(projection) for projection in projections)
+            if projections
             else 0
         )
         + (
@@ -764,6 +1059,7 @@ def _unknowns(
     budget: ContextBudget,
     sections: Mapping[str, tuple[SearchHit, ...]],
     excerpts: Sequence[ContextExcerpt],
+    projections: Sequence[ContextProjection],
     excluded: Mapping[str, int],
     omitted: int,
     *,
@@ -774,12 +1070,22 @@ def _unknowns(
 ) -> tuple[ContextUnknown, ...]:
     """Name what the request implied and this bundle does not carry, in one stable order."""
     found = list(supplied)
+    if projections:
+        media_count = sum(
+            part.kind == "asset" for projection in projections for part in projection.parts
+        )
+        found.append(
+            ContextUnknown(
+                kind=ContextUnknownKind.BUDGET_EXCLUDED,
+                detail=(context_prompts.text_only_delivery(len(projections), media_count)),
+            )
+        )
     found.extend(
         ContextUnknown(
             kind=ContextUnknownKind.BUDGET_EXCLUDED,
-            detail=f"{excluded[reason]} candidates {text}",
+            detail=context_prompts.candidates_excluded(excluded[reason], reason),
         )
-        for reason, text in _EXCLUSIONS.items()
+        for reason in _EXCLUSION_REASONS
         if excluded.get(reason)
     )
     if omitted:
@@ -787,8 +1093,9 @@ def _unknowns(
             ContextUnknown(
                 kind=ContextUnknownKind.BUDGET_EXCLUDED,
                 detail=(
-                    f"{omitted} candidates did not fit {budget.max_items} items"
-                    f" and {budget.max_chars} chars"
+                    context_prompts.budget_excluded(
+                        omitted, max_items=budget.max_items, max_chars=budget.max_chars
+                    )
                 ),
             )
         )
@@ -796,28 +1103,22 @@ def _unknowns(
         found.append(
             ContextUnknown(
                 kind=ContextUnknownKind.BUDGET_EXCLUDED,
-                detail=f"{actor_excluded} actor lines did not fit {budget.max_chars} chars",
+                detail=context_prompts.actors_excluded(actor_excluded, budget.max_chars),
             )
         )
     if exhausted:
         found.append(
             ContextUnknown(
                 kind=ContextUnknownKind.CANDIDATES_EXHAUSTED,
-                detail=(
-                    f"retrieval filled its {candidate_limit} candidate window, so the counts"
-                    " above bound what this window held and not what the store holds"
-                ),
+                detail=(context_prompts.candidate_window_exhausted(candidate_limit)),
             )
         )
-    found.extend(_section_empty(budget, sections, excerpts))
+    found.extend(_section_empty(budget, sections, excerpts, projections))
     if skipped:
         found.append(
             ContextUnknown(
                 kind=ContextUnknownKind.STAGE_SKIPPED,
-                detail=(
-                    "conflict detection and the affect evidence hop were skipped after the"
-                    f" {budget.max_latency_ms} ms deadline passed"
-                ),
+                detail=(context_prompts.enrichment_deadline(budget.max_latency_ms)),
             )
         )
     return tuple(sorted(found, key=lambda item: (item.kind.value, item.detail)))
@@ -827,6 +1128,7 @@ def _section_empty(
     budget: ContextBudget,
     sections: Mapping[str, tuple[SearchHit, ...]],
     excerpts: Sequence[ContextExcerpt],
+    projections: Sequence[ContextProjection],
 ) -> tuple[ContextUnknown, ...]:
     """Name each section a `memory_types` request left empty, and why it is empty.
 
@@ -836,7 +1138,7 @@ def _section_empty(
     request excluded -- or one the filter admits and no record of that type reached the bundle
     at all (`feeds.isdisjoint(present)`). The second variant is deliberately narrower than "this
     section is empty": a kind-keyed section (`actors`, `scene`, `affect`, `traits`) that is empty
-    while a *different* section already carries a record of the same underlying `MemoryType`
+    while a *different* section already carries a record of the same underlying `MemoryCategory`
     stays silent, because flagging it would be noise in most bundles -- the type was not missing,
     it just formed into another kind.
     """
@@ -845,26 +1147,25 @@ def _section_empty(
         return ()
     present = frozenset(hit.memory_type for section in sections.values() for hit in section)
     present |= frozenset(excerpt.memory_type for excerpt in excerpts)
+    present |= frozenset(projection.memory_type for projection in projections)
     found: list[ContextUnknown] = []
     for name in _SECTIONS:
         if sections[name]:
             continue
         feeds = _SECTION_MEMORY_TYPES[name]
         if feeds.isdisjoint(requested):
-            detail = (
-                f"the {name} section is empty: memory_types kept only"
-                f" {_type_names(requested)}, and {name} carries only"
-                f" {_type_names(feeds)} memory"
+            detail = context_prompts.section_type_excluded(
+                name, requested=_type_names(requested), feeds=_type_names(feeds)
             )
         elif feeds <= requested and feeds.isdisjoint(present):
-            detail = f"the {name} section is empty: no {_type_names(feeds)} memory was included"
+            detail = context_prompts.section_no_memory(name, _type_names(feeds))
         else:
             continue
         found.append(ContextUnknown(kind=ContextUnknownKind.SECTION_EMPTY, detail=detail))
     return tuple(found)
 
 
-def _type_names(memory_types: frozenset[MemoryType]) -> str:
+def _type_names(memory_types: frozenset[MemoryCategory]) -> str:
     return ", ".join(memory_type.value for memory_type in sorted(memory_types))
 
 
@@ -875,11 +1176,9 @@ def _conflicts(
     lineages: dict[str, list[_Claim]] = {}
     for hit in hits:
         context = hit.context
-        if context is None or not _has_functional_lineage(context):
+        if context is None or (functional := functional_lineage(context)) is None:
             continue
-        lineage_id, value = context.lineage_id, context.value
-        if lineage_id is None or value is None:
-            continue
+        lineage_id, value = functional
         lineages.setdefault(lineage_id, []).append(
             (value, hit.id, context.subject, context.predicate)
         )
@@ -889,13 +1188,6 @@ def _conflicts(
         for lineage_id, claims in lineages.items()
         if any(memory_id in included_ids for _value, memory_id, _subject, _predicate in claims)
         and (conflict := _lineage_conflict(lineage_id, claims)) is not None
-    )
-
-
-def _has_functional_lineage(context: MemoryContext) -> bool:
-    """Match the claims whose write contract gives one standing value per lineage."""
-    return context.kind is MemoryKind.STATE or (
-        context.kind is MemoryKind.TRAIT and context.basis is EvidenceBasis.USER_STATEMENT
     )
 
 
@@ -916,7 +1208,7 @@ def _lineage_conflict(lineage_id: str, claims: Sequence[_Claim]) -> ContextConfl
 
 
 def _occurred_range(
-    hits: Sequence[SearchHit | ContextExcerpt],
+    hits: Sequence[SearchHit | ContextExcerpt | ContextProjection],
 ) -> tuple[datetime | None, datetime | None]:
     spans = tuple(
         (hit.occurred_at, hit.occurred_end or hit.occurred_at)
@@ -928,7 +1220,7 @@ def _occurred_range(
     return min(start for start, _end in spans), max(end for _start, end in spans)
 
 
-def _frames(hits: Sequence[SearchHit | ContextExcerpt]) -> tuple[str, ...]:
+def _frames(hits: Sequence[SearchHit | ContextExcerpt | ContextProjection]) -> tuple[str, ...]:
     return tuple(
         sorted(
             {

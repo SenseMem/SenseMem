@@ -40,7 +40,7 @@ def test_source_manifest_preserves_originals_and_requires_exact_identity_match(
     build = cast(
         Callable[[Path, Path], dict[str, object]],
         runpy.run_path(str(Path(__file__).parents[3] / "benchmarks/atm_source_manifest.py"))[
-            "build"
+            "write_source_manifest"
         ],
     )
     output = tmp_path / "manifest.json"

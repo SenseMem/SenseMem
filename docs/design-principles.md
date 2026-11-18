@@ -51,9 +51,13 @@ must remain distinguishable in the API and operation history. See
 
 ## Explicit composition around one kernel
 
-Replaceable computation belongs behind narrow, typed backend protocols. The kernel owns identity,
-validation, evidence policy, routing, persistence, and final hydration. A plugin's protocol grants
-no storage authority; custom Python code still runs with the host process's privileges.
+Replaceable computation belongs behind narrow, typed protocols. Models, query preparation,
+candidate discovery, retrieval scoring, context selection, and ordered ingestion stages propose
+results through public contracts; their
+default implementations use the same extension boundaries as third-party implementations.
+The kernel owns identity, validation, evidence completeness, consent, persistence, and final
+hydration and admission. A plugin's protocol grants no storage authority; custom Python code
+still runs with the host process's privileges.
 
 Applications choose bundled providers through `Memory.from_config()`, pass a `MemoryPlugins`
 bundle, or inject backend objects directly. Composition stays fixed for one `Memory` lifetime.

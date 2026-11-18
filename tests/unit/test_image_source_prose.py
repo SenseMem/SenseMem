@@ -9,13 +9,17 @@ from typing import Literal, cast
 import httpx2 as httpx
 import pytest
 from PIL import Image
-from test_openai_sdk import NOW, _asset, _sdk_client, _search_hit
+from test_openai_adapters import NOW, _asset, _sdk_client, _search_hit
 
 import sensemem.configuration as configuration
-import sensemem.models.openai_sdk as adapter
+import sensemem.models._openai_media as openai_media
+import sensemem.models._openai_requests as openai_requests
 import sensemem.recipes as recipes
-from sensemem import AssetRef, Modality, ModelInput, OpenAIModels
-from sensemem.types import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem import AssetRef, Modality, ModelInput
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.prompts import generation as prompts
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, RecordKind
 
 _Policy = Literal["include", "context_when_supplied"]
 
@@ -73,8 +77,8 @@ def test_configured_final_view_preserves_other_sources_metadata_and_original_hit
     image, mixed_image = _image(tmp_path, "image"), _image(tmp_path, "mixed-image")
     video = _asset(tmp_path, "video", Modality.VIDEO, "video/mp4", b"first clip")
     omitted_video = _asset(tmp_path, "mixed-video", Modality.VIDEO, "video/mp4", b"second clip")
-    context = MemoryContext(
-        kind=MemoryKind.OBSERVATION,
+    context = RecordSemantics(
+        kind=RecordKind.OBSERVATION,
         basis=EvidenceBasis.OBSERVATION,
         confidence=1.0,
         valid_from=None,
@@ -147,7 +151,7 @@ def test_configured_final_view_preserves_other_sources_metadata_and_original_hit
                 video_limit=1,
             )
         )
-        assert isinstance(model, OpenAIModels)
+        assert isinstance(model, OpenAICompletion)
         try:
             if streaming:
                 stream = model.stream_answer(question, hits)
@@ -169,10 +173,14 @@ def test_configured_final_view_preserves_other_sources_metadata_and_original_hit
     ]
     if policy == "context_when_supplied":
         assert memories[0]["auxiliary_source_text"] == hits[0].content
-        assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT in json.dumps(sent[0])
+        assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT in cast(
+            str, cast(list[dict[str, object]], sent[0]["messages"])[0]["content"]
+        )
     else:
         assert "auxiliary_source_text" not in memories[0]
-        assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT not in json.dumps(sent[0])
+        assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT not in cast(
+            str, cast(list[dict[str, object]], sent[0]["messages"])[0]["content"]
+        )
     assert all("auxiliary_source_text" not in memory for memory in memories[1:])
     assert memories[0]["metadata"] == dict(hits[0].metadata)
     assert cast(dict[str, object], memories[0]["context"])["subject"] == "typed subject"
@@ -195,7 +203,23 @@ def test_configured_final_view_preserves_other_sources_metadata_and_original_hit
 def test_projection_neither_admits_more_media_nor_loses_omitted_image_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, budget: str
 ) -> None:
-    images = (_image(tmp_path, "first"), _image(tmp_path, "second"))
+    # Media must dominate the wire budget independently of wording in conditional prompts.
+    image_refs = []
+    for name in ("first", "second"):
+        path = tmp_path / f"{name}.png"
+        Image.new("RGB", (32, 32), "blue").save(path, compress_level=0)
+        data = path.read_bytes()
+        image_refs.append(
+            AssetRef(
+                name,
+                Modality.IMAGE,
+                "image/png",
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+                path=path,
+            )
+        )
+    images = tuple(image_refs)
     hits = tuple(
         replace(
             _search_hit(),
@@ -213,20 +237,24 @@ def test_projection_neither_admits_more_media_nor_loses_omitted_image_text(
         sent.append(json.loads(request.content))
         return _reply(request)
 
-    original_inline_limit = adapter._MAX_INLINE_MODEL_BYTES
+    original_inline_limit = openai_media._MAX_INLINE_MODEL_BYTES
     monkeypatch.setattr(
-        adapter, "_MAX_INLINE_MODEL_BYTES", adapter._encoded_size(cast(int, images[0].size_bytes))
+        openai_media,
+        "_MAX_INLINE_MODEL_BYTES",
+        openai_media._encoded_size(cast(int, images[0].size_bytes)),
     )
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         sdk = _sdk_client(client)
-        OpenAIModels(
+        OpenAICompletion(
             sdk, generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
         ).answer(question, hits)
-        maximum = adapter._answer_wire_size(sent[0], stream=False) if budget == "wire" else None
+        maximum = (
+            openai_requests._answer_wire_size(sent[0], stream=False) if budget == "wire" else None
+        )
         if budget == "wire":
-            monkeypatch.setattr(adapter, "_MAX_INLINE_MODEL_BYTES", original_inline_limit)
+            monkeypatch.setattr(openai_media, "_MAX_INLINE_MODEL_BYTES", original_inline_limit)
         for policy in ("include", "context_when_supplied"):
-            result = OpenAIModels(
+            result = OpenAICompletion(
                 sdk,
                 generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
                 generation_image_source_prose=policy,
@@ -264,16 +292,20 @@ def test_provider_image_rejection_falls_back_to_original_text(
         if len(sent) == 1:
             assert _memories(sent[0])[0]["content"] == ""
             assert _memories(sent[0])[0]["auxiliary_source_text"] == hit.content
-            assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT in json.dumps(sent[0])
+            assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT in cast(
+                str, cast(list[dict[str, object]], sent[0]["messages"])[0]["content"]
+            )
             return httpx.Response(400, json={"error": {"message": "The image is too short."}})
         assert _memories(sent[1])[0]["content"] == hit.content
         assert _memories(sent[1])[0]["media_omitted"] == {"image": 1}
         assert "auxiliary_source_text" not in _memories(sent[1])[0]
-        assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT not in json.dumps(sent[1])
+        assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT not in cast(
+            str, cast(list[dict[str, object]], sent[1]["messages"])[0]["content"]
+        )
         return _reply(request)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_image_source_prose="context_when_supplied",
@@ -304,10 +336,12 @@ def test_partially_supplied_multi_image_source_keeps_full_prose(
         return _reply(request)
 
     monkeypatch.setattr(
-        adapter, "_MAX_INLINE_MODEL_BYTES", adapter._encoded_size(cast(int, images[0].size_bytes))
+        openai_media,
+        "_MAX_INLINE_MODEL_BYTES",
+        openai_media._encoded_size(cast(int, images[0].size_bytes)),
     )
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = OpenAIModels(
+        result = OpenAICompletion(
             _sdk_client(client),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_image_source_prose="context_when_supplied",
@@ -319,7 +353,9 @@ def test_partially_supplied_multi_image_source_keeps_full_prose(
     assert memory["media_omitted"] == {"image": 1}
     assert memory["content"] == hit.content
     assert "auxiliary_source_text" not in memory
-    assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT not in json.dumps(sent[0])
+    assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT not in cast(
+        str, cast(list[dict[str, object]], sent[0]["messages"])[0]["content"]
+    )
     assert hit.assets == images and question.evidence_sources == (hit,)
 
 
@@ -332,7 +368,7 @@ def test_final_policy_does_not_change_recall_planning_wire() -> None:
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         for policy in ("include", "context_when_supplied"):
-            model = OpenAIModels(
+            model = OpenAICompletion(
                 _sdk_client(client),
                 generation_image_source_prose=policy,
             )
@@ -362,7 +398,7 @@ def test_blank_image_prose_keeps_the_complete_ordinary_request(
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         for policy in ("include", "context_when_supplied"):
-            result = OpenAIModels(
+            result = OpenAICompletion(
                 _sdk_client(client),
                 generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
                 generation_image_source_prose=policy,
@@ -372,7 +408,9 @@ def test_blank_image_prose_keeps_the_complete_ordinary_request(
     assert len(sent) == 2 and sent[0] == sent[1]
     assert _memories(sent[1])[0]["content"] == content
     assert "auxiliary_source_text" not in _memories(sent[1])[0]
-    assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT not in json.dumps(sent[1])
+    assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT not in cast(
+        str, cast(list[dict[str, object]], sent[1]["messages"])[0]["content"]
+    )
     assert question.evidence_sources == (hit,)
 
 
@@ -417,7 +455,7 @@ def test_context_overhead_falls_back_to_the_complete_fitted_request(
         sdk = _sdk_client(client)
 
         def answer(policy: _Policy, maximum: int | None = None) -> None:
-            model = OpenAIModels(
+            model = OpenAICompletion(
                 sdk,
                 generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
                 generation_image_source_prose=policy,
@@ -433,11 +471,11 @@ def test_context_overhead_falls_back_to_the_complete_fitted_request(
         answer("include")
         answer("context_when_supplied")
         assert _memories(sent[1])[0]["auxiliary_source_text"] == hit.content
-        assert adapter._answer_wire_size(sent[1], stream=streaming) > adapter._answer_wire_size(
-            sent[0], stream=streaming
-        )
+        assert openai_requests._answer_wire_size(
+            sent[1], stream=streaming
+        ) > openai_requests._answer_wire_size(sent[0], stream=streaming)
         if budget == "wire":
-            maximum = adapter._answer_wire_size(sent[0], stream=streaming)
+            maximum = openai_requests._answer_wire_size(sent[0], stream=streaming)
         else:
             messages = cast(list[dict[str, object]], sent[0]["messages"])
             user_parts = cast(list[dict[str, object]], messages[1]["content"])
@@ -446,13 +484,15 @@ def test_context_overhead_falls_back_to_the_complete_fitted_request(
                 for part in user_parts
                 if part["type"] == "text"
             )
-            monkeypatch.setattr(adapter, "_MAX_GROUNDED_TEXT_BYTES", text_bytes)
+            monkeypatch.setattr(openai_requests, "_MAX_GROUNDED_TEXT_BYTES", text_bytes)
             maximum = None
         answer("context_when_supplied", maximum)
 
     assert len(sent) == 3 and sent[2] == sent[0]
     assert _memories(sent[2])[0]["content"] == hit.content
     assert "auxiliary_source_text" not in _memories(sent[2])[0]
-    assert adapter._IMAGE_SOURCE_CONTEXT_PROMPT not in json.dumps(sent[2])
+    assert prompts._IMAGE_SOURCE_CONTEXT_PROMPT not in cast(
+        str, cast(list[dict[str, object]], sent[2]["messages"])[0]["content"]
+    )
     assert hit.assets[0].path is not None and hit.assets[0].path.exists()
     assert question.evidence_sources == (hit,)

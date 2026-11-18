@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -28,7 +30,9 @@ from pydantic import (
     model_validator,
 )
 
-from sensemem.types import AssetRef, Blob, ContentInput, ContextBudget, MemoryType, Modality
+from sensemem.content import AssetRef, Blob, ContentInput
+from sensemem.context_values import ContextBudget, ContextSupplement
+from sensemem.types import MemoryCategory, Modality
 
 MAX_TEXT_CHARACTERS = 65_536
 # Bounds one decoded inline media value before any model or storage work. REST additionally caps
@@ -80,6 +84,33 @@ class StrictModel(BaseModel):
     """Reject every field the public contract does not name."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class ContextSupplementInput(StrictModel):
+    """The shared temporary-evidence input used by REST and MCP compilation."""
+
+    content: Text
+    source: Source
+    observed_at: AwareDatetime | None = None
+    expires_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def _expiry_follows_observation(self) -> ContextSupplementInput:
+        if (
+            self.observed_at is not None
+            and self.expires_at is not None
+            and self.expires_at <= self.observed_at
+        ):
+            raise ValueError("expires_at must follow observed_at")
+        return self
+
+
+def context_supplements(values: Sequence[ContextSupplementInput]) -> tuple[ContextSupplement, ...]:
+    """Decode already-validated transport values at the shared SDK boundary."""
+    return tuple(
+        ContextSupplement(item.content, item.source, item.observed_at, item.expires_at)
+        for item in values
+    )
 
 
 class _InputText(StrictModel):
@@ -199,7 +230,7 @@ class ContextBudgetInput(StrictModel):
     # Grounded media parts, not their price: 0 compiles a text-only bundle, null lets
     # `max_chars` alone decide.
     max_media_items: MediaItems | None = None
-    memory_types: Annotated[list[MemoryType], Field(min_length=1)] | None = None
+    memory_types: Annotated[list[MemoryCategory], Field(min_length=1)] | None = None
     min_confidence: Confidence = _BUDGET.min_confidence
     # `ContextBudget.freshness` is a timedelta; JSON carries the same bound as seconds.
     freshness_seconds: Seconds | None = None

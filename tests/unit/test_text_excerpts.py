@@ -1,4 +1,4 @@
-"""Focused structural tests for the isolated evidence-excerpt experiment."""
+"""Evidence-excerpt source integrity, selection, and delivery contracts."""
 
 from __future__ import annotations
 
@@ -23,26 +23,20 @@ from sensemem import (
     FormationProposal,
     IndexQuantization,
     Memory,
-    MemoryConfig,
-    MemoryKind,
-    MemoryType,
+    MemoryCategory,
+    MemorySettings,
     Modality,
     ObservationContext,
+    RecordKind,
     RetrievalMode,
     RetrievalScope,
     TextSpanPiece,
     TextSpanSelector,
 )
-from sensemem.api.app import ContextBundleResponse
-from sensemem.api.mcp import ContextBundleResult
-from sensemem.cli import _bundle_value
+from sensemem.api.responses import ContextBundleResponse
+from sensemem.cli import _bundle_document
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.infrastructure.local.store import (
-    SCHEMA_VERSION,
-    LocalStore,
-    StoredTextSelector,
-    UnsupportedSchemaError,
-)
+from sensemem.infrastructure.local.store import StoredTextSelector
 from sensemem.infrastructure.local.store.index import IndexOutbox
 from sensemem.infrastructure.local.zvec_index import IndexHit
 from sensemem.kernel.content import contextual_text_key_descriptors, contextual_text_keys
@@ -134,7 +128,7 @@ class _DerivedFormer:
             proposals.append(
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="DERIVED TARGET says the gate is open",
                         subject="gate",
                         predicate="status",
@@ -166,7 +160,7 @@ def _memory(data_dir: Path, *, former: _DerivedFormer | None = None) -> Memory:
         data_dir,
         embedder=_PartEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0.0),
+        settings=MemorySettings(minimum_relevance=0.0),
     )
 
 
@@ -185,7 +179,7 @@ def test_quantized_excerpt_follows_the_exact_winning_part(
     with Memory(
         tmp_path,
         embedder=QuantizedEmbedder(),
-        config=MemoryConfig(
+        settings=MemorySettings(
             index_quantization=IndexQuantization.INT8,
             retrieval_mode=RetrievalMode.DENSE,
             minimum_relevance=0.85,
@@ -242,7 +236,7 @@ def test_index_rebuild_preserves_exact_excerpts_without_reembedding(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(
+        settings=MemorySettings(
             minimum_relevance=0.0,
             index_quantization=(
                 IndexQuantization.INT8 if rebuild == "quantization" else IndexQuantization.NONE
@@ -263,7 +257,15 @@ def test_index_rebuild_preserves_exact_excerpts_without_reembedding(
     assert after.excerpts[0].content == before.excerpts[0].content
 
 
-def test_descriptors_preserve_existing_keys_for_unicode_strip_crlf_and_repeats() -> None:
+def test_text_keys_preserve_chunk_width_overlap_and_heading() -> None:
+    assert contextual_text_keys("head\n" + "a" * 4_100) == (
+        "head\n" + "a" * 2_043,
+        "head\n\n" + "a" * 2_048,
+        "head\n\n" + "a" * 521,
+    )
+
+
+def test_descriptor_source_spans_reconstruct_keys_for_unicode_strip_crlf_and_repeats() -> None:
     cases = (
         "short",
         " heading  \r\n" + "a" * 5_000,
@@ -274,11 +276,12 @@ def test_descriptors_preserve_existing_keys_for_unicode_strip_crlf_and_repeats()
 
     for source in cases:
         descriptors = contextual_text_key_descriptors(source)
-        assert tuple(value.key for value in descriptors) == contextual_text_keys(source)
         for descriptor in descriptors:
-            for span in descriptor.spans:
-                assert source[span.start_codepoint : span.end_codepoint]
-        assert len({value.key for value in descriptors}) <= len(descriptors)
+            pieces = tuple(
+                source[span.start_codepoint : span.end_codepoint] for span in descriptor.spans
+            )
+            assert all(pieces)
+            assert descriptor.key == "\n\n".join(pieces)
 
 
 def test_new_raw_parts_store_digest_bound_selectors_without_source_text(tmp_path: Path) -> None:
@@ -433,7 +436,7 @@ def test_excerpt_only_bundle_does_not_claim_its_memory_type_is_missing(tmp_path:
             budget=ContextBudget(
                 max_chars=3_000,
                 max_items=1,
-                memory_types=frozenset({MemoryType.SEMANTIC}),
+                memory_types=frozenset({MemoryCategory.SEMANTIC}),
             ),
             reference_at=REFERENCE,
             allow_partial_sources=True,
@@ -458,7 +461,7 @@ def test_an_excerpt_cannot_satisfy_a_derived_full_record_closure(tmp_path: Path)
         derived = next(
             hit
             for hit in memory.search("TARGET CLAIM", limit=10, reference_at=REFERENCE).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         )
         compact = memory.compile(
             "TARGET CLAIM",
@@ -608,63 +611,7 @@ def test_selector_tampering_disables_excerpt_but_preserves_full_memory(
     assert roomy.excerpts == ()
 
 
-def test_constraint_free_selector_tables_are_rejected_at_the_current_version(
-    tmp_path: Path,
-) -> None:
-    """`_validate_text_selector_schema` is what refuses a table that lost its CHECK constraints.
-
-    The declared version says nothing about the shape, so a store carrying the right names with
-    none of the guarantees has to be refused rather than written to.
-    """
-    with LocalStore(tmp_path):
-        pass
-    with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection, connection:
-        connection.executescript(
-            """
-            DROP TABLE embedding_text_span_pieces;
-            DROP TABLE embedding_text_selectors;
-            CREATE TABLE embedding_text_selectors (
-                embedding_id TEXT,
-                selector_position INTEGER,
-                parent_content_sha256 TEXT,
-                embedding_input_sha256 TEXT,
-                recipe_version TEXT
-            );
-            CREATE TABLE embedding_text_span_pieces (
-                embedding_id TEXT,
-                selector_position INTEGER,
-                piece_position INTEGER,
-                role TEXT,
-                start_codepoint INTEGER,
-                end_codepoint INTEGER,
-                piece_sha256 TEXT
-            );
-            """
-        )
-        before = tuple(
-            connection.execute(
-                "SELECT type, name, sql FROM sqlite_master "
-                "WHERE name LIKE 'embedding_text_%' ORDER BY type, name"
-            )
-        )
-
-    with pytest.raises(UnsupportedSchemaError, match="invalid embedding_text_selectors table"):
-        LocalStore(tmp_path)
-
-    with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection, connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
-        assert (
-            tuple(
-                connection.execute(
-                    "SELECT type, name, sql FROM sqlite_master "
-                    "WHERE name LIKE 'embedding_text_%' ORDER BY type, name"
-                )
-            )
-            == before
-        )
-
-
-def test_excerpt_serializes_through_rest_mcp_and_cli_contracts(tmp_path: Path) -> None:
+def test_excerpt_serializes_through_shared_response_and_cli_contracts(tmp_path: Path) -> None:
     with _memory(tmp_path) as memory:
         memory.add(_long_source(), occurred_at=REFERENCE)
         bundle = memory.compile(
@@ -674,13 +621,12 @@ def test_excerpt_serializes_through_rest_mcp_and_cli_contracts(tmp_path: Path) -
             allow_partial_sources=True,
         )
 
-    rest = ContextBundleResponse.model_validate(bundle.document()).model_dump(mode="json")
-    mcp = ContextBundleResult.model_validate(bundle.document()).model_dump(mode="json")
+    response = ContextBundleResponse.model_validate(bundle.document()).model_dump(mode="json")
     cli = cast(
         "dict[str, Any]",
-        {name: _bundle_value(value) for name, value in bundle.document().items()},
+        _bundle_document(bundle),
     )
-    for document in (rest, mcp, cli):
+    for document in (response, cli):
         assert len(document["excerpts"]) == 1
         value = document["excerpts"][0]
         assert value["source_memory_id"] == bundle.excerpts[0].source_memory_id

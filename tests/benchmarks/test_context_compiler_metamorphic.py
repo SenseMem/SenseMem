@@ -21,13 +21,13 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
+    MemorySettings,
     Modality,
     ModelInput,
     ObservationContext,
+    RecordKind,
     RetrievalScope,
 )
 
@@ -69,7 +69,7 @@ class _RankedEmbedder:
 
 
 class _ClaimFormer:
-    """Turn ``claim|subject|predicate|value|surface`` observations into typed claims."""
+    """Infer time-varying preference states without claiming host authority."""
 
     formation_capabilities = frozenset({Modality.TEXT})
     formation_model = "metamorphic-claim-test"
@@ -90,9 +90,9 @@ class _ClaimFormer:
             results.append(
                 (
                     FormationProposal(
-                        kind=MemoryKind.TRAIT,
+                        kind=RecordKind.STATE,
                         content=surface,
-                        basis=EvidenceBasis.USER_STATEMENT,
+                        basis=EvidenceBasis.MODEL_INFERENCE,
                         subject=subject,
                         predicate=predicate,
                         value=value,
@@ -118,7 +118,7 @@ def _values(bundle: ContextBundle) -> set[str]:
         hit.context.value
         for hit in hits
         if hit.context is not None
-        and hit.context.kind in {MemoryKind.STATE, MemoryKind.TRAIT}
+        and hit.context.kind is RecordKind.STATE
         and hit.context.value is not None
     }
 
@@ -127,7 +127,9 @@ def _memory(path: Path) -> tuple[Memory, _RankedEmbedder, _ClaimFormer]:
     embedder = _RankedEmbedder()
     former = _ClaimFormer()
     return (
-        Memory(path, embedder=embedder, former=former, config=MemoryConfig(minimum_relevance=0)),
+        Memory(
+            path, embedder=embedder, former=former, settings=MemorySettings(minimum_relevance=0)
+        ),
         embedder,
         former,
     )
@@ -253,7 +255,7 @@ def test_subject_swap_does_not_create_a_cross_identity_conflict(tmp_path: Path) 
     claims = [
         hit.context
         for hit in bundle.hits
-        if hit.context is not None and hit.context.kind is MemoryKind.TRAIT
+        if hit.context is not None and hit.context.kind is RecordKind.STATE
     ]
     assert {claim.subject for claim in claims} == {"Ana", "Bo"}
     assert len({claim.lineage_id for claim in claims}) == 2
@@ -317,7 +319,7 @@ def test_lineage_completion_cap_withholds_an_affirmative_claim(tmp_path: Path) -
         )
 
     assert not any(
-        hit.context is not None and hit.context.kind is MemoryKind.TRAIT for hit in bundle.hits
+        hit.context is not None and hit.context.kind is RecordKind.STATE for hit in bundle.hits
     )
     assert any(
         unknown.kind is ContextUnknownKind.EVIDENCE_UNAVAILABLE for unknown in bundle.unknowns
@@ -342,7 +344,7 @@ def test_derived_anchor_cannot_reintroduce_an_unsafe_supporting_claim(tmp_path: 
             item
             for item in memory.list(limit=100).items
             if item.context is not None
-            and item.context.kind is MemoryKind.TRAIT
+            and item.context.kind is RecordKind.STATE
             and item.context.value == "city-00"
         )
         derived_id = memory.apply(
@@ -350,7 +352,7 @@ def test_derived_anchor_cannot_reintroduce_an_unsafe_supporting_claim(tmp_path: 
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=(first_claim.id,),
                 proposal=FormationProposal(
-                    kind=MemoryKind.EVENT,
+                    kind=RecordKind.EVENT,
                     content="anchor-target derived conclusion",
                     confidence=0.8,
                 ),
@@ -365,7 +367,7 @@ def test_derived_anchor_cannot_reintroduce_an_unsafe_supporting_claim(tmp_path: 
 
     assert derived_id not in {hit.id for hit in bundle.hits}
     assert not any(
-        hit.context is not None and hit.context.kind is MemoryKind.TRAIT for hit in bundle.hits
+        hit.context is not None and hit.context.kind is RecordKind.STATE for hit in bundle.hits
     )
     assert any(
         unknown.kind is ContextUnknownKind.EVIDENCE_UNAVAILABLE for unknown in bundle.unknowns

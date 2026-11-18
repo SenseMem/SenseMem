@@ -37,3 +37,7 @@ class StaleOperationError(RuntimeError):
     cited source was forgotten, corrected, deleted, or already linked in between, nothing is
     written and the caller reports the proposal as stale rather than partially applying it.
     """
+
+
+class ReplacementNotVisibleError(StaleOperationError):
+    """Raised when consolidation would hide sources behind an invisible replacement."""

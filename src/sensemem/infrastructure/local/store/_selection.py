@@ -6,9 +6,11 @@ import math
 import sqlite3
 from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
+from typing import Literal, cast
 
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
+    affect_witnesses_from_json,
     datetime_text,
     optional_datetime_from_row,
     optional_row_text,
@@ -18,14 +20,9 @@ from sensemem.infrastructure.local.store._codec import (
 from sensemem.infrastructure.local.store._identity import resolve_identity_id
 from sensemem.infrastructure.local.store._membership import IDENTITY_SCOPE_CLAUSE
 from sensemem.infrastructure.local.store.errors import StoredDataError
-from sensemem.types import (
-    EvidenceBasis,
-    MemoryContext,
-    MemoryKind,
-    Modality,
-    SpatialAnchor,
-    SpatialContext,
-)
+from sensemem.semantics import AffectLink, AffectObjectRef, AffectWitness, RecordSemantics
+from sensemem.spatial import SpatialContext
+from sensemem.types import EvidenceBasis, Modality, RecordKind, SpatialAnchor
 
 
 def memory_in_scope(
@@ -36,6 +33,7 @@ def memory_in_scope(
     near: SpatialContext | None,
     semantic_ids: frozenset[str],
     scoped_ids: Collection[str],
+    retained_ids: Collection[str] = (),
 ) -> bool:
     """Decide whether one `memory_records` row survives the requested scope.
 
@@ -46,7 +44,7 @@ def memory_in_scope(
         return True
     # Forgetting is a column, not a deletion: the row stays readable by ID and drops out of every
     # active slate, whatever its validity interval or pose says.
-    if row["forgotten_at"] is not None:
+    if row["forgotten_at"] is not None and row_text(row, "memory_id") not in retained_ids:
         return False
     memory_id = row_text(row, "memory_id")
     if memory_id in scoped_ids:
@@ -139,6 +137,8 @@ def select_memory_contexts(  # noqa: C901 - one authoritative bitemporal selecti
                     s.lineage_id, s.kind, s.basis, s.source_id,
                     s.subject, s.predicate, s.value, s.model_id, s.recipe,
                     s.identity_id, s.cue_modality, s.valence, s.arousal,
+                    s.affect_id, s.affect_role, s.affect_object_memory_id,
+                    s.affect_object_identity_id, s.affect_polarity, s.affect_witnesses_json,
                     s.spatial_frame_id, s.spatial_anchor,
                     s.spatial_x, s.spatial_y, s.spatial_z,
                     s.spatial_qx, s.spatial_qy, s.spatial_qz, s.spatial_qw,
@@ -225,7 +225,7 @@ def read_memory_contexts(
     near: SpatialContext | None = None,
     radius_m: float | None = None,
     active_only: bool = False,
-) -> tuple[dict[str, MemoryContext], frozenset[str]]:
+) -> tuple[dict[str, RecordSemantics], frozenset[str]]:
     scoped, semantic_ids = select_memory_contexts(
         connection,
         memory_ids,
@@ -236,14 +236,15 @@ def read_memory_contexts(
         active_only=active_only,
     )
     evidence = _read_memory_evidence(connection, tuple(scoped), known_at=known_at)
-    contexts: dict[str, MemoryContext] = {}
+    witnesses = _read_affect_witnesses(connection, scoped, evidence, known_at=known_at)
+    contexts: dict[str, RecordSemantics] = {}
     for memory_id, (row, spatial) in scoped.items():
         retired_at = optional_datetime_from_row(row, "retired_at")
         if known_at is not None and retired_at is not None and known_at < retired_at:
             retired_at = None
         try:
-            contexts[memory_id] = MemoryContext(
-                kind=MemoryKind(row_text(row, "kind")),
+            contexts[memory_id] = RecordSemantics(
+                kind=RecordKind(row_text(row, "kind")),
                 basis=EvidenceBasis(row_text(row, "basis")),
                 confidence=float(row["confidence"]),
                 valid_from=optional_datetime_from_row(row, "valid_from"),
@@ -267,10 +268,85 @@ def read_memory_contexts(
                 ),
                 valence=None if row["valence"] is None else float(row["valence"]),
                 arousal=None if row["arousal"] is None else float(row["arousal"]),
+                affect_link=(
+                    None
+                    if row["affect_id"] is None
+                    else AffectLink(
+                        affect_id=row_text(row, "affect_id"),
+                        role=cast("Literal['target', 'elicitor']", row_text(row, "affect_role")),
+                        object_ref=AffectObjectRef(
+                            memory_id=optional_row_text(row, "affect_object_memory_id"),
+                            identity_id=(
+                                None
+                                if row["affect_object_identity_id"] is None
+                                else resolve_identity_id(
+                                    connection, row_text(row, "affect_object_identity_id")
+                                )
+                                or row_text(row, "affect_object_identity_id")
+                            ),
+                        ),
+                        polarity=cast(
+                            "Literal['affirmed', 'denied']", row_text(row, "affect_polarity")
+                        ),
+                    )
+                ),
+                affect_witnesses=witnesses.get(memory_id, ()),
             )
         except ValueError as error:
             raise StoredDataError("stored memory context is invalid") from error
     return contexts, semantic_ids
+
+
+def _read_affect_witnesses(
+    connection: sqlite3.Connection,
+    scoped: dict[str, tuple[sqlite3.Row, SpatialContext | None]],
+    evidence: dict[str, list[str]],
+    *,
+    known_at: datetime | None,
+) -> dict[str, tuple[AffectWitness, ...]]:
+    try:
+        witnesses = {
+            memory_id: affect_witnesses_from_json(row_text(row, "affect_witnesses_json"))
+            for memory_id, (row, _spatial) in scoped.items()
+            if row_text(row, "affect_witnesses_json") != "[]"
+        }
+    except ValueError as error:
+        raise StoredDataError("stored affect witnesses are invalid") from error
+    source_ids = tuple(
+        dict.fromkeys(witness.source_id for values in witnesses.values() for witness in values)
+    )
+    known = datetime_text(known_at or datetime.now(timezone.utc))
+    active: set[str] = set()
+    for offset in range(0, len(source_ids), SQLITE_PARAMETER_BATCH):
+        batch = source_ids[offset : offset + SQLITE_PARAMETER_BATCH]
+        placeholders = ", ".join("?" for _source_id in batch)
+        active.update(
+            row_text(row, "memory_id")
+            for row in connection.execute(
+                f"""
+                SELECT r.memory_id FROM memory_records AS r
+                LEFT JOIN memory_semantics AS s ON s.memory_id = r.memory_id
+                LEFT JOIN memory_versions AS v ON v.memory_id = s.memory_id AND v.version = (
+                    SELECT candidate.version FROM memory_versions AS candidate
+                    WHERE candidate.memory_id = s.memory_id AND candidate.recorded_at <= ?
+                    ORDER BY candidate.recorded_at DESC, candidate.version DESC LIMIT 1
+                )
+                WHERE r.memory_id IN ({placeholders}) AND r.forgotten_at IS NULL
+                  AND r.created_at <= ?
+                  AND (s.memory_id IS NULL OR (v.visible = 1
+                       AND (v.retired_at IS NULL OR v.retired_at > ?)))
+                """,
+                (known, *batch, known, known),
+            ).fetchall()
+        )
+    return {
+        memory_id: tuple(
+            witness
+            for witness in values
+            if witness.source_id in active and witness.source_id in evidence.get(memory_id, ())
+        )
+        for memory_id, values in witnesses.items()
+    }
 
 
 def _read_memory_evidence(

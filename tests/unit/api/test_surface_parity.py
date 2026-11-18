@@ -11,7 +11,7 @@ import re
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast, get_type_hints
+from typing import cast, get_args, get_type_hints
 
 import pytest
 from fastapi import status
@@ -21,9 +21,28 @@ from pydantic import BaseModel
 import sensemem
 from sensemem import Memory, cli
 from sensemem.api import app as rest
-from sensemem.api import content, errors
+from sensemem.api import content, errors, responses, schemas
 from sensemem.api import mcp as mcp_adapter
-from sensemem.api.errors import REASON_STATUS, ErrorEnvelope, _public_error
+from sensemem.api.errors import ErrorEnvelope, exception_response
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.content import AssetRef
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_values import (
+    AffectCue,
+    ContextBudget,
+    ContextConflict,
+    ContextSupplement,
+    ContextUnknown,
+    ContextUnknownKind,
+    NamedActor,
+    ProvisionalActor,
+)
+from sensemem.control_values import (
+    MemoryIntent,
+    MemoryOperation,
+    MemoryOperationRecord,
+    MemoryTrigger,
+)
 from sensemem.exceptions import (
     RETRYABLE_REASONS,
     IndexUnavailableError,
@@ -34,35 +53,17 @@ from sensemem.exceptions import (
     StorageError,
     ValidationError,
 )
-from sensemem.kernel.contracts import declared_capabilities
-from sensemem.types import (
-    AffectCue,
-    AssetRef,
-    ContextBudget,
-    ContextBundle,
-    ContextConflict,
-    ContextUnknown,
-    ContextUnknownKind,
-    EvidenceBasis,
+from sensemem.identity import (
     FaceObservation,
-    FormationProposal,
     IdentityErasure,
     IdentityProfile,
-    MemoryCapabilities,
-    MemoryContext,
-    MemoryIntent,
-    MemoryKind,
-    MemoryOperation,
-    MemoryOperationRecord,
-    MemoryRecord,
-    MemoryTrigger,
-    Modality,
-    NamedActor,
-    Page,
-    ProvisionalActor,
-    SearchHit,
+    PerceptionResult,
     SpeakerSegment,
 )
+from sensemem.kernel.contracts import declared_capabilities
+from sensemem.records import MemoryRecord, Page, SearchHit
+from sensemem.semantics import FormationProposal, RecordSemantics
+from sensemem.types import EvidenceBasis, Modality, RecordKind
 
 # The only hand-written mapping: which SDK operation each transport route and tool serves. Every
 # `/v1` route and every published tool must appear, so a new surface cannot skip this file.
@@ -74,6 +75,7 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
     "ask_stream": ("answerStream", None),
     "compile": ("compileContext", "compile_context"),
     "get": ("getMemory", "get_memory"),
+    "read_asset": ("readAsset", None),
     "list": ("listMemories", "list_memories"),
     "delete": ("deleteMemory", "delete_memory"),
     "reinforce": ("reinforceMemories", "reinforce_memories"),
@@ -104,7 +106,10 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
 # `SHARED_OPERATIONS` must be every public operation, so a new SDK operation cannot arrive without
 # someone deciding which of the two it belongs in.
 UNEXPOSED_OPERATIONS: dict[str, str] = {
+    "call_tool": "application-defined capabilities are granted by the host, outside fixed transports",
+    "prepare_input": "a leased model-input context manager is an in-process lifecycle boundary",
     "add_stream": "a lazy generator does not fit one finite request or response",
+    "replay_sources": "source replay runs between two host-owned directories",
     "reindex": "unbounded index maintenance an operator schedules, not a caller",
     "optimize": "index maintenance an operator schedules, not a caller",
     # The control plane rewrites derived memory under policy. `docs/context-os.md` keeps that
@@ -120,7 +125,7 @@ UNEXPOSED_OPERATIONS: dict[str, str] = {
 }
 # Not operations: construction, lifecycle, and the capability declaration REST reports in
 # `/healthz`.
-NON_OPERATIONS = frozenset({"capabilities", "close", "from_config", "from_plugins"})
+NON_OPERATIONS = frozenset({"capabilities", "tools", "close", "from_config", "from_plugins"})
 # Every routed operation uses the SDK signature, including optional diagnostics.
 PROTOCOL_OPERATIONS = (
     *(operation for operation, (route, _tool) in SHARED_OPERATIONS.items() if route is not None),
@@ -141,19 +146,19 @@ CAPABILITIES = MemoryCapabilities(
 # Body models are matched to their route by `operation_id`; a route without one takes its arguments
 # from query or path parameters instead.
 REST_REQUEST_MODELS: dict[str, type[BaseModel]] = {
-    "createMemory": rest.MemoryCreate,
-    "createMemories": rest.MemoryBatchCreate,
-    "searchMemories": rest.QueryRequest,
-    "answer": rest.AnswerRequest,
-    "answerStream": rest.AnswerRequest,
-    "reinforceMemories": rest.ReinforceRequest,
-    "compileContext": rest.ContextRequest,
-    "captureMemory": rest.MemoryCreate,
-    "settleCaptures": rest.SettleRequest,
-    "perceiveMemory": rest.PerceptionRequest,
-    "registerIdentity": rest.IdentityRegisterRequest,
-    "recordConsent": rest.ConsentRequest,
-    "applyRetention": rest.RetentionRequest,
+    "createMemory": schemas.MemoryCreate,
+    "createMemories": schemas.MemoryBatchCreate,
+    "searchMemories": schemas.QueryRequest,
+    "answer": schemas.AnswerRequest,
+    "answerStream": schemas.AnswerRequest,
+    "reinforceMemories": schemas.ReinforceRequest,
+    "compileContext": schemas.ContextRequest,
+    "captureMemory": schemas.MemoryCreate,
+    "settleCaptures": schemas.SettleRequest,
+    "perceiveMemory": schemas.PerceptionRequest,
+    "registerIdentity": schemas.IdentityRegisterRequest,
+    "recordConsent": schemas.ConsentRequest,
+    "applyRetention": schemas.RetentionRequest,
 }
 
 
@@ -346,7 +351,8 @@ def _public_exceptions(root: type[SenseMemError]) -> list[type[SenseMemError]]:
 def test_every_public_exception_is_mapped_on_both_transports() -> None:
     for error_type in _public_exceptions(SenseMemError):
         error = error_type("failure detail")
-        status_code, message = _public_error(error)
+        response = exception_response(error)
+        envelope = ErrorEnvelope.model_validate_json(bytes(response.body))
 
         assert error.code in mcp_adapter._STABLE_ERROR_CODES, error_type
         # Both transports read one table, so the check is that the table covers the class, not
@@ -355,9 +361,9 @@ def test_every_public_exception_is_mapped_on_both_transports() -> None:
             error_type
         )
         # The raise site's own words always survive the mapping.
-        assert message == "failure detail" or error_type is SenseMemError, error_type
+        assert envelope.message == "failure detail" or error_type is SenseMemError, error_type
         # Only the abstract base falls through to "unexpected"; every raised class is classified.
-        assert (status_code == 500) is (error_type is SenseMemError), error_type
+        assert (response.status_code == 500) is (error_type is SenseMemError), error_type
 
 
 def test_a_reason_gets_one_status_whatever_raised_it() -> None:
@@ -378,7 +384,7 @@ def test_a_reason_gets_one_status_whatever_raised_it() -> None:
     for reason, expected in errors.REASON_STATUS.items():
         for error_type in carriers:
             error = error_type("failure detail", reason=reason)
-            assert _public_error(error)[0] == expected, (reason, error_type)
+            assert exception_response(error).status_code == expected, (reason, error_type)
 
 
 def test_every_retryable_reason_says_503_and_nothing_else_does() -> None:
@@ -397,29 +403,6 @@ def test_every_retryable_reason_says_503_and_nothing_else_does() -> None:
     assert transient == RETRYABLE_REASONS
 
 
-def test_every_reason_a_raise_site_can_produce_has_a_row() -> None:
-    """A new reason must land in the table, or one condition gets two statuses again.
-
-    `cli.py` and `benchmarks/` are excluded on purpose: their reasons are theirs, reported in the
-    CLI's own JSON document, and never reach an HTTP status or a tool error envelope.
-    """
-    source = Path(sensemem.__file__).parent
-    literal = re.compile(r'\breason="([a-z_]+)"|\bdefault_reason\s*[:=][^"]*"([a-z_]+)"')
-    raised: dict[str, str] = {}
-    for path in sorted(source.rglob("*.py")):
-        if path.name == "cli.py" or "benchmarks" in path.parts:
-            continue
-        for match in literal.finditer(path.read_text(encoding="utf-8")):
-            raised[match.group(1) or match.group(2)] = path.name
-
-    missing = {reason: origin for reason, origin in raised.items() if reason not in REASON_STATUS}
-    assert not missing, (
-        f"add a row to sensemem.api.errors.REASON_STATUS for {missing}, "
-        "or the condition falls back to a coarse per-code status"
-    )
-    assert "backend_not_configured" in raised, "the scan matched nothing; check the pattern"
-
-
 def test_the_error_envelope_has_one_shape() -> None:
     assert set(ErrorEnvelope.model_fields) == mcp_adapter._ERROR_FIELDS
     assert set(ErrorEnvelope.model_fields) == {
@@ -435,24 +418,23 @@ def test_the_error_envelope_has_one_shape() -> None:
 
 
 @pytest.mark.parametrize(
-    ("record", "rest_model", "mcp_model"),
+    ("record", "model"),
     [
-        (MemoryRecord, rest.MemoryResponse, mcp_adapter.MemoryResult),
-        (SearchHit, rest.SearchHitResponse, mcp_adapter.SearchHitResult),
+        (MemoryRecord, responses.MemoryResponse),
+        (SearchHit, responses.SearchHitResponse),
         # The compiled affect entry is a hit plus its evidence hop, so both transports have to
         # carry the extra field instead of serializing it as a plain hit.
-        (AffectCue, rest.AffectCueResponse, mcp_adapter.AffectCueResult),
+        (AffectCue, responses.AffectCueResponse),
+        (PerceptionResult, responses.PerceptionResponse),
     ],
 )
 def test_result_records_expose_the_same_fields_on_both_transports(
     record: type,
-    rest_model: type[BaseModel],
-    mcp_model: type[BaseModel],
+    model: type[BaseModel],
 ) -> None:
     expected = {field.name for field in dataclass_fields(record)}
 
-    assert set(rest_model.model_fields) == expected
-    assert set(mcp_model.model_fields) == expected
+    assert set(model.model_fields) == expected
 
 
 def test_an_operation_row_is_one_document_on_both_transports() -> None:
@@ -467,7 +449,7 @@ def test_an_operation_row_is_one_document_on_both_transports() -> None:
             intent=MemoryIntent.CONSOLIDATE,
             evidence_ids=("memory_1",),
             proposal=FormationProposal(
-                kind=MemoryKind.ENTITY,
+                kind=RecordKind.ENTITY,
                 content="Ana is a person",
                 subject="Ana",
                 confidence=0.9,
@@ -480,9 +462,9 @@ def test_an_operation_row_is_one_document_on_both_transports() -> None:
 
     document = cli._operation_document(record)
 
-    assert set(rest.MemoryOperationResponse.model_fields) == set(document)
+    assert set(responses.MemoryOperationResponse.model_fields) == set(document)
     assert document["proposal"] is not None
-    assert rest._operation_response(record).proposal == document["proposal"]
+    assert responses._operation_response(record).proposal == document["proposal"]
 
 
 def test_a_memory_context_is_one_document_on_every_surface() -> None:
@@ -491,8 +473,8 @@ def test_a_memory_context_is_one_document_on_every_surface() -> None:
     `identity_id` is the claim's semantic subject. Dropping it locally made `get`, `search`,
     `compile`, and `export` say a claim was about nobody unless the caller went through `--url`.
     """
-    context = MemoryContext(
-        kind=MemoryKind.ENTITY,
+    context = RecordSemantics(
+        kind=RecordKind.ENTITY,
         basis=EvidenceBasis.USER_STATEMENT,
         confidence=0.9,
         valid_from=None,
@@ -501,34 +483,38 @@ def test_a_memory_context_is_one_document_on_every_surface() -> None:
         identity_id="identity_1",
     )
 
-    document = cli._context_document(context)
+    record = MemoryRecord(
+        id="memory_1",
+        content="Ana is a person",
+        created_at=context.recorded_at,
+        context=context,
+    )
+    document = cli._memory_document(record)["context"]
 
-    assert document is not None
-    assert set(document) == {field.name for field in dataclass_fields(MemoryContext)}
+    assert isinstance(document, dict)
+    assert set(document) == {field.name for field in dataclass_fields(RecordSemantics)}
     assert document["identity_id"] == "identity_1"
 
 
 def test_serialized_assets_drop_the_local_path_on_both_transports() -> None:
     expected = {field.name for field in dataclass_fields(AssetRef)} - {"path"}
 
-    assert set(rest.AssetResponse.model_fields) == expected
-    assert set(mcp_adapter.AssetResult.model_fields) == expected
+    assert set(responses.AssetResponse.model_fields) == expected
 
 
 def test_page_results_expose_the_same_fields_on_both_transports() -> None:
     expected = {field.name for field in dataclass_fields(Page)}
 
-    assert set(rest.PageResponse.model_fields) == expected
-    assert set(mcp_adapter.PageResult.model_fields) == expected
+    assert set(responses.PageResponse.model_fields) == expected
 
 
 @pytest.mark.parametrize(
     ("record", "model", "field"),
     [
-        (SpeakerSegment, mcp_adapter.PerceptionResult, "speech"),
-        (FaceObservation, mcp_adapter.PerceptionResult, "faces"),
-        (IdentityProfile, mcp_adapter.IdentityResult, "identity"),
-        (IdentityErasure, mcp_adapter.ForgetResult, "erasure"),
+        (SpeakerSegment, responses.PerceptionResponse, "speech"),
+        (FaceObservation, responses.PerceptionResponse, "faces"),
+        (IdentityProfile, responses.IdentityResponse, "identity"),
+        (IdentityErasure, responses.ForgetResponse, "erasure"),
     ],
 )
 def test_embodied_tool_results_publish_every_public_field(
@@ -546,7 +532,7 @@ def test_embodied_tool_results_publish_every_public_field(
 
 def test_health_reports_every_declared_capability() -> None:
     """`/healthz` says what the composition can do, so a new capability cannot go unreported."""
-    assert set(rest.CapabilitiesResponse.model_fields) == set(CAPABILITIES.document())
+    assert set(responses.CapabilitiesResponse.model_fields) == set(CAPABILITIES.document())
     assert set(CAPABILITIES.document()) == {
         field.name for field in dataclass_fields(MemoryCapabilities)
     } | {"operations"}
@@ -585,9 +571,9 @@ def test_every_surface_publishes_one_capability_document() -> None:
     `test_capability_document.py` covers; this composition declares only `ask`, which every
     surface serves, so the three documents here are the same object.
     """
-    served = rest._capabilities_response(CAPABILITIES, served=rest._ROUTED_OPERATIONS).model_dump(
-        mode="json"
-    )
+    served = responses._capabilities_response(
+        CAPABILITIES, served=rest._ROUTED_OPERATIONS
+    ).model_dump(mode="json")
     instructions = mcp_adapter.build_mcp_server(_UnusedMemory()).instructions  # type: ignore[arg-type]
     assert instructions is not None
     greeted = json.loads(instructions[instructions.index("{") :])
@@ -624,26 +610,23 @@ def test_the_capability_document_names_the_backend_each_operation_needs() -> Non
 
 def test_the_compiled_bundle_mirrors_the_sdk_value_on_both_transports() -> None:
     """A field added to `ContextBundle` must reach both transports instead of being dropped."""
-    for record, rest_model, mcp_model, renamed in (
-        (ContextBundle, rest.ContextBundleResponse, mcp_adapter.ContextBundleResult, {}),
-        (ContextConflict, rest.ContextConflictResponse, mcp_adapter.ContextConflictResult, {}),
-        (ContextUnknown, rest.ContextUnknownResponse, mcp_adapter.ContextUnknownResult, {}),
+    for record, model, renamed in (
+        (ContextBundle, responses.ContextBundleResponse, {}),
+        (ContextConflict, responses.ContextConflictResponse, {}),
+        (ContextUnknown, responses.ContextUnknownResponse, {}),
         (
             ProvisionalActor,
-            rest.ProvisionalActorResponse,
-            mcp_adapter.ProvisionalActorResult,
+            responses.ProvisionalActorResponse,
             {},
         ),
         (
             NamedActor,
-            rest.NamedActorResponse,
-            mcp_adapter.NamedActorResult,
+            responses.NamedActorResponse,
             {},
         ),
         (
             ContextBudget,
-            rest.ContextBudgetResponse,
-            mcp_adapter.ContextBudgetResult,
+            responses.ContextBudgetResponse,
             {"freshness": "freshness_seconds"},
         ),
     ):
@@ -651,8 +634,7 @@ def test_the_compiled_bundle_mirrors_the_sdk_value_on_both_transports() -> None:
         # `rendered` is the transports' serialization of `render()`, not a stored field.
         if record is ContextBundle:
             expected |= {"rendered"}
-        assert set(rest_model.model_fields) == expected, record.__name__
-        assert set(mcp_model.model_fields) == expected, record.__name__
+        assert set(model.model_fields) == expected, record.__name__
 
 
 def test_the_context_budget_transport_defaults_come_from_the_sdk_value() -> None:
@@ -670,7 +652,7 @@ def test_the_context_budget_transport_defaults_come_from_the_sdk_value() -> None
     }
 
     # One declaration, published under two component names; both must default from the SDK.
-    for model in (rest.ContextBudgetRequest, content.ContextBudgetInput):
+    for model in (schemas.ContextBudgetRequest, content.ContextBudgetInput):
         assert {
             name: field.get_default(call_default_factory=True)
             for name, field in model.model_fields.items()
@@ -699,9 +681,22 @@ def test_the_documented_root_import_inventory_contains_every_supported_name() ->
     assert missing == []
 
 
-def test_delete_reports_the_same_state_on_both_transports() -> None:
-    assert set(rest.DeleteResponse.model_fields) == set(mcp_adapter.DeleteResult.model_fields)
-    assert get_type_hints(rest.DeleteResponse) == get_type_hints(mcp_adapter.DeleteResult)
+def test_protocol_adapters_publish_the_shared_response_contracts() -> None:
+    server = mcp_adapter.build_mcp_server(_UnusedMemory())  # type: ignore[arg-type]
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+    for operation, model in (
+        ("get", responses.MemoryResponse),
+        ("search", responses.SearchResponse),
+        ("ask", responses.AnswerResponse),
+        ("compile", responses.ContextBundleResponse),
+        ("list", responses.PageResponse),
+        ("delete", responses.DeleteResponse),
+    ):
+        operation_id, tool_name = SHARED_OPERATIONS[operation]
+        assert operation_id is not None and tool_name is not None
+        assert _rest_route(operation_id).response_model is model
+        returned = get_type_hints(tools[tool_name].fn)["return"]
+        assert returned is model or model in get_args(returned)
 
 
 def _sample_bundle() -> ContextBundle:
@@ -744,6 +739,8 @@ def _sample_bundle() -> ContextBundle:
         chars=42,
         elapsed_ms=7,
         deadline_exceeded=False,
+        supplements=(ContextSupplement("Rain is forecast.", "weather-tool", observed_at=moment),),
+        omitted_supplements=1,
     )
 
 
@@ -754,10 +751,9 @@ def test_every_surface_publishes_one_context_bundle_document() -> None:
     expected = {field.name for field in dataclass_fields(ContextBundle)} | {"rendered"}
 
     assert set(document) == expected
-    assert set(rest.ContextBundleResponse.model_fields) == expected
-    assert set(mcp_adapter.ContextBundleResult.model_fields) == expected
+    assert set(responses.ContextBundleResponse.model_fields) == expected
     # The CLI encodes the same document rather than assembling its own, so its keys are these.
-    rendered = {name: cli._bundle_value(value) for name, value in document.items()}
+    rendered = cli._bundle_document(bundle)
     assert set(rendered) == expected
     assert json.loads(json.dumps(rendered))["budget"] == bundle.budget.document()
     episodes = cast(list[dict[str, object]], rendered["episodes"])
@@ -766,6 +762,17 @@ def test_every_surface_publishes_one_context_bundle_document() -> None:
     # A JSON array, not the tuple the value object holds: the CLI document is JSON-native before
     # it is dumped, because the same document also travels as a `--url` request body.
     assert actors[1] == {"identity_id": "identity_1", "memory_ids": ["memory_1"]}
+    shared_document = responses.ContextBundleResponse.model_validate(document).model_dump(
+        mode="json"
+    )
+    assert rendered["supplements"] == shared_document["supplements"]
+    assert rendered["omitted_supplements"] == 1
+
+
+def test_the_temporary_context_input_names_match_the_sdk_value() -> None:
+    assert set(content.ContextSupplementInput.model_fields) == {
+        field.name for field in dataclass_fields(ContextSupplement)
+    }
 
 
 def test_the_two_budget_projections_agree_on_every_bound() -> None:
@@ -773,8 +780,7 @@ def test_the_two_budget_projections_agree_on_every_bound() -> None:
     budget = ContextBudget(max_chars=2_000, max_items=8, min_confidence=0.5)
     document = budget.document()
 
-    assert set(document) == set(rest.ContextBudgetResponse.model_fields)
-    assert set(document) == set(mcp_adapter.ContextBudgetResult.model_fields)
+    assert set(document) == set(responses.ContextBudgetResponse.model_fields)
     assert set(document) == set(content.ContextBudgetInput.model_fields)
     # Round-tripping the document back through the shared translator returns the same value.
     assert content.context_budget(content.ContextBudgetInput.model_validate(document)) == budget

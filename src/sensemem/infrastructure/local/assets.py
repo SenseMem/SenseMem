@@ -49,11 +49,9 @@ class AssetStore:
         self.max_bytes = max_bytes
         self._write_lock = threading.Lock()
         self._leases: Counter[str] = Counter()
-        _ensure_data_directory(self.data_dir)
-        self.assets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._staging_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _secure_directory(self.assets_dir)
-        _secure_directory(self._staging_dir)
+        for directory in (self.data_dir, self.assets_dir, self._staging_dir):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _secure_directory(directory)
         self._remove_stale_parts()
 
     def materialize_bytes(
@@ -67,8 +65,6 @@ class AssetStore:
         lease: bool = False,
     ) -> StoredAsset:
         """Durably materialize inline bytes and return their immutable descriptor."""
-        if not isinstance(content, (bytes, bytearray, memoryview)):
-            raise TypeError("content must be bytes-like")
         _validate_media(modality, mime_type)
         view = memoryview(content)
         return self._materialize_chunks(
@@ -122,15 +118,8 @@ class AssetStore:
             os.close(descriptor)
 
     def resolve(self, asset: StoredAsset) -> Path:
-        """Resolve a descriptor to its regular CAS file without trusting stored paths."""
-        expected = Path(asset.relative_path)
-        if expected.is_absolute() or expected.parts != (
-            "assets",
-            asset.sha256[:2],
-            asset.sha256,
-        ):
-            raise AssetStoreError("asset descriptor has an invalid relative path")
-        path = self.data_dir / expected
+        """Resolve a validated descriptor to its regular CAS file."""
+        path = self.data_dir / asset.relative_path
         try:
             info = path.lstat()
         except FileNotFoundError:
@@ -163,21 +152,13 @@ class AssetStore:
         with self._write_lock:
             if self._leases[asset.asset_id]:
                 return False
-            self._validate_delete_target(asset)
             self._delete_path(self.data_dir / asset.relative_path)
         return True
 
     def delete(self, asset: StoredAsset) -> None:
         """Idempotently remove an unreferenced CAS file described by SQLite."""
         with self._write_lock:
-            self._validate_delete_target(asset)
             self._delete_path(self.data_dir / asset.relative_path)
-
-    def _validate_delete_target(self, asset: StoredAsset) -> None:
-        path = self.data_dir / asset.relative_path
-        expected = self.assets_dir / asset.sha256[:2] / asset.sha256
-        if path != expected:
-            raise AssetStoreError("asset descriptor has an invalid relative path")
 
     def list_ids(self) -> tuple[str, ...]:
         """List strictly laid-out regular CAS objects without following links."""
@@ -269,8 +250,6 @@ class AssetStore:
         try:
             with os.fdopen(descriptor, "wb") as output:
                 for chunk in chunks:
-                    if not isinstance(chunk, (bytes, bytearray, memoryview)):
-                        raise TypeError("asset stream yielded a non-bytes chunk")
                     size_bytes += len(chunk)
                     if size_bytes > self.max_bytes:
                         raise AssetTooLargeError(
@@ -342,18 +321,6 @@ def _validate_media(modality: str, mime_type: str) -> None:
 def _secure_directory(path: Path) -> None:
     if os.name != "nt":
         os.chmod(path, 0o700)
-
-
-def _ensure_data_directory(path: Path) -> None:
-    created = False
-    try:
-        path.mkdir(mode=0o700, parents=True)
-        created = True
-    except FileExistsError:
-        if not path.is_dir():
-            raise
-    if created or os.name != "nt":
-        _secure_directory(path)
 
 
 def _fsync_directory(path: Path) -> None:

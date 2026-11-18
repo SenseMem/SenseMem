@@ -1268,8 +1268,7 @@ def _string_tuple_attribute(attributes: Mapping[str, AttributeValue], name: str)
 
 
 def _span_status(span: ReadableSpan) -> str:
-    status = getattr(span, "status", None)
-    return "error" if getattr(status, "status_code", None) == StatusCode.ERROR else "ok"
+    return "error" if span.status.status_code == StatusCode.ERROR else "ok"
 
 
 def _distribution_json(

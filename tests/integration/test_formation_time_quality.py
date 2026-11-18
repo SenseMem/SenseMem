@@ -10,7 +10,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from sensemem import FormationInput, MemoryKind, ModelInput, ObservationContext, OpenAIModels
+from sensemem import FormationInput, ModelInput, ObservationContext, RecordKind
+from sensemem.models.openai_completion import OpenAICompletion
 
 MODEL_SNAPSHOT = "gpt-5-mini-2025-08-07"
 REFERENCE_AT = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
@@ -53,7 +54,7 @@ def test_relative_date_formation_quality(case: str, repeat: int) -> None:
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     try:
         with OpenAI(timeout=60, max_retries=0) as client:
-            former = OpenAIModels(
+            former = OpenAICompletion(
                 client,
                 generation_model=MODEL_SNAPSHOT,
                 generation_response_format="json_schema",
@@ -80,7 +81,7 @@ def test_relative_date_formation_quality(case: str, repeat: int) -> None:
         if case == "missing_reference":
             assert all(p.valid_from is None and p.valid_until is None for p in proposals)
         else:
-            events = [p for p in proposals if p.kind is MemoryKind.EVENT]
+            events = [p for p in proposals if p.kind is RecordKind.EVENT]
             assert events, "the grounded move must produce an event"
             assert all(
                 p.valid_from is not None and p.valid_from.date().isoformat() == "2026-03-01"

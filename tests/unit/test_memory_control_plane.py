@@ -37,21 +37,22 @@ from sensemem import (
     IdentityChange,
     IdentityClaim,
     Memory,
-    MemoryConfig,
+    MemoryCategory,
     MemoryIntent,
-    MemoryKind,
     MemoryNotFoundError,
     MemoryOperation,
     MemoryOperationRecord,
     MemoryOutcome,
     MemoryPlugins,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
-    MemoryType,
     Modality,
     ModelError,
     ModelInput,
     ObservationContext,
+    QueryFailure,
+    RecordKind,
     RetrievalScope,
     SearchHit,
     SpeakerEmbedding,
@@ -113,7 +114,7 @@ def _identity_memory(tmp_path: Path, consolidator: object) -> Memory:
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
         consolidator=consolidator,  # type: ignore[arg-type]
-        config=MemoryConfig(identity_link_min_assets=1, minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     )
 
 
@@ -123,7 +124,7 @@ def _asserted_name(memory: Memory, identity_id: str) -> str | None:
         record.context.subject
         for record in memory.list(limit=100).items
         if record.context is not None
-        and record.context.kind is MemoryKind.ENTITY
+        and record.context.kind is RecordKind.ENTITY
         and record.context.identity_id == identity_id
         and record.context.visible
         and record.context.retired_at is None
@@ -141,14 +142,17 @@ class ScriptedConsolidator:
     def __init__(self, *scripts: Sequence[MemoryOperation]) -> None:
         self._scripts = [tuple(script) for script in scripts]
         self.calls: list[tuple[tuple[str, ...], MemoryTrigger]] = []
+        self.failures: list[QueryFailure | None] = []
 
     def consolidate(
         self,
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.calls.append((tuple(record.id for record in evidence), trigger))
+        self.failures.append(query_failure)
         if not self._scripts:
             return ()
         return self._scripts.pop(0)
@@ -159,7 +163,7 @@ class ScriptedConsolidator:
 
 def _trait(subject: str, value: str, *, confidence: float = 0.6) -> FormationProposal:
     return FormationProposal(
-        kind=MemoryKind.TRAIT,
+        kind=RecordKind.TRAIT,
         content=f"{subject} is {value}",
         subject=subject,
         predicate="disposition",
@@ -172,14 +176,14 @@ def _memory(
     tmp_path: Path,
     consolidator: object | None = None,
     *,
-    config: MemoryConfig | None = None,
+    config: MemorySettings | None = None,
     **kwargs: object,
 ) -> Memory:
     return Memory(
         tmp_path,
         embedder=TinyEmbedder(),
         consolidator=consolidator,  # type: ignore[arg-type]
-        config=MemoryConfig(minimum_relevance=0) if config is None else config,
+        settings=MemorySettings(minimum_relevance=0) if config is None else config,
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -375,7 +379,7 @@ def test_two_sources_consolidate_as_one_joint_assessment(tmp_path: Path) -> None
 
         derived = memory.get(record.created_ids[0])
         assert derived.context is not None
-        assert derived.context.kind is MemoryKind.TRAIT
+        assert derived.context.kind is RecordKind.TRAIT
         assert set(derived.context.evidence_ids) == {first.id, second.id}
         # One operation asserted one claim over the full cited set. Its two members are one
         # assessment, so neither confidence nor the inferred-trait visibility threshold inflates.
@@ -386,7 +390,7 @@ def test_two_sources_consolidate_as_one_joint_assessment(tmp_path: Path) -> None
 
 def _relation_summary() -> FormationProposal:
     return FormationProposal(
-        kind=MemoryKind.RELATION,
+        kind=RecordKind.RELATION,
         content="Ana waited calmly on Monday and brought tea on Tuesday",
         subject="Ana",
         predicate="weekly_routine",
@@ -532,7 +536,7 @@ def test_consolidation_requires_the_affect_cue_modality_to_be_present(tmp_path: 
                     intent=MemoryIntent.CONSOLIDATE,
                     evidence_ids=(source.id,),
                     proposal=FormationProposal(
-                        kind=MemoryKind.AFFECT,
+                        kind=RecordKind.AFFECT,
                         content="Ana sounded pleased",
                         subject="Ana",
                         value="pleased",
@@ -668,7 +672,7 @@ def test_reinforcement_rejects_an_observation_target_and_an_existing_link(tmp_pa
             "not_derived",
             "already_linked",
             "unknown_target",
-            "target_is_evidence",
+            "evidence_not_shown",
         ]
 
 
@@ -804,14 +808,14 @@ def test_source_withdrawal_does_not_let_a_reinforcement_cycle_ground_itself(
         )
         proposals = (
             FormationProposal(
-                kind=MemoryKind.STATE,
+                kind=RecordKind.STATE,
                 content="Derived fact B",
                 subject="Ana",
                 predicate="fact_b",
                 value="true",
             ),
             FormationProposal(
-                kind=MemoryKind.STATE,
+                kind=RecordKind.STATE,
                 content="Derived fact C",
                 subject="Ana",
                 predicate="fact_c",
@@ -1092,6 +1096,7 @@ def test_a_failing_backend_maps_to_a_model_error(tmp_path: Path) -> None:
             evidence: Sequence[MemoryRecord],
             *,
             trigger: MemoryTrigger,
+            query_failure: QueryFailure | None = None,
         ) -> tuple[MemoryOperation, ...]:
             raise RuntimeError("provider exploded")
 
@@ -1108,6 +1113,7 @@ def test_a_failing_backend_maps_to_a_model_error(tmp_path: Path) -> None:
             evidence: Sequence[MemoryRecord],
             *,
             trigger: MemoryTrigger,
+            query_failure: QueryFailure | None = None,
         ) -> tuple[MemoryOperation, ...]:
             return ["not an operation"]  # type: ignore[return-value]
 
@@ -1138,7 +1144,7 @@ def test_async_memory_mirrors_the_control_plane(tmp_path: Path) -> None:
                 tmp_path / "async",
                 embedder=TinyEmbedder(),
                 consolidator=consolidator,
-                config=MemoryConfig(minimum_relevance=0),
+                settings=MemorySettings(minimum_relevance=0),
             )
         )
         try:
@@ -1197,7 +1203,8 @@ def test_deleting_every_cited_source_takes_the_agent_asserted_name_with_it(
     with _identity_memory(tmp_path / "cascade", consolidator) as memory:
         first = memory.add(Blob(b"stranger arrives", "video/mp4", "one.mp4"))
         second = memory.add(Blob(b"stranger speaks again", "video/mp4", "two.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = memory.perceive(first.id).speech[0].speaker_id
+        assert identity_id is not None
 
         def identify(*evidence: str) -> MemoryOperation:
             return MemoryOperation(
@@ -1228,8 +1235,7 @@ def test_deleting_every_cited_source_takes_the_agent_asserted_name_with_it(
             if item.context is not None and item.context.identity_id == identity_id
         ]
         profile = memory.identity(identity_id)
-        assert profile is not None and profile.name is None
-        assert profile.confirmed is False
+        assert profile is None or (profile.name is None and not profile.confirmed)
 
 
 def test_an_agent_names_a_person_only_from_evidence_that_contains_them(tmp_path: Path) -> None:
@@ -1242,11 +1248,9 @@ def test_an_agent_names_a_person_only_from_evidence_that_contains_them(tmp_path:
     consolidator = ScriptedConsolidator()
     with _identity_memory(tmp_path / "identify", consolidator) as memory:
         first = memory.add(Blob(b"stranger arrives", "video/mp4", "one.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
-        assert (
-            identity_id
-            == memory.perceive(first.id, kinds=frozenset({"speech"})).speech[0].speaker_id
-        )
+        identity_id = memory.perceive(first.id).speech[0].speaker_id
+        assert identity_id is not None
+        assert identity_id != memory.perceive(first.id).faces[0].identity_id
         second = memory.add(Blob(b"stranger speaks again", "video/mp4", "two.mp4"))
         elsewhere = memory.add("the courier left a parcel", occurred_at=OCCURRED)
 
@@ -1293,7 +1297,6 @@ def test_an_agent_names_a_person_only_from_evidence_that_contains_them(tmp_path:
         assert [record.operation.intent for record in memory.operations()] == [
             MemoryIntent.IDENTIFY,
             MemoryIntent.IDENTIFY,
-            MemoryIntent.MERGE,
         ]
 
         # Reversing the corroborating operation takes the projected name with it.
@@ -1308,7 +1311,7 @@ def test_independent_naming_preview_does_not_index_an_uncorroborated_name(tmp_pa
         embedder=TinyEmbedder(),
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
-        config=MemoryConfig(identity_link_min_assets=1, independent_evidence=True),
+        settings=MemorySettings(independent_evidence=True),
     ) as memory:
         first = memory.add(Blob(b"first arrival", "video/mp4", "first.mp4"))
         second = memory.add(Blob(b"second arrival", "video/mp4", "second.mp4"))
@@ -1347,7 +1350,7 @@ def test_zero_confidence_or_limited_capture_cannot_put_an_inferred_name_in_speec
         embedder=TinyEmbedder(),
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
-        config=MemoryConfig(identity_link_min_assets=1, independent_evidence=True),
+        settings=MemorySettings(independent_evidence=True),
     ) as memory:
         first = memory.add(Blob(b"normal capture", "video/mp4", "normal.mp4"))
         second = memory.add(
@@ -1379,7 +1382,7 @@ def test_nested_naming_projection_follows_support_rollback_and_delete(
         embedder=embedder,
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
-        config=MemoryConfig(identity_link_min_assets=1, independent_evidence=True),
+        settings=MemorySettings(independent_evidence=True),
     ) as memory:
         first = memory.add(Blob(b"normal capture", "video/mp4", "normal.mp4"))
         second, third = _observations(memory, "other situation", "independent situation")
@@ -1466,7 +1469,7 @@ def test_nested_naming_updates_two_speakers_in_one_indexed_document(
         tmp_path,
         embedder=embedder,
         transcriber=TwoPersonSpeech(),
-        config=MemoryConfig(independent_evidence=True),
+        settings=MemorySettings(independent_evidence=True),
     ) as memory:
         first = memory.add(Blob(b"two speakers", "audio/wav", "two.wav"))
         second, third = _observations(memory, "other situation", "independent situation")
@@ -1541,7 +1544,8 @@ def test_identify_creation_cannot_be_rolled_back_before_its_later_reinforcement(
     with _identity_memory(tmp_path / "identify-order", consolidator) as memory:
         first = memory.add(Blob(b"stranger arrives", "video/mp4", "one.mp4"))
         second = memory.add(Blob(b"stranger returns", "video/mp4", "two.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = memory.perceive(first.id).speech[0].speaker_id
+        assert identity_id is not None
 
         def identify(source_id: str) -> MemoryOperation:
             return MemoryOperation(
@@ -1642,9 +1646,31 @@ def test_control_operations_refuse_to_touch_a_bound_naming_assertion(tmp_path: P
 # Consolidation forgetting
 
 
-def test_consolidation_can_retire_the_detail_its_derived_record_replaces(tmp_path: Path) -> None:
+@pytest.mark.parametrize("selected_proofs", [False, True])
+def test_consolidation_can_retire_the_detail_its_derived_record_replaces(
+    tmp_path: Path, selected_proofs: bool
+) -> None:
+    class EvidenceAnswerer:
+        generation_capabilities = frozenset({Modality.TEXT})
+        generation_model = "consolidation-delivery-fixture"
+
+        def answer(
+            self,
+            question: ModelInput,
+            hits: Sequence[SearchHit],
+            *,
+            answer_policy: AnswerPolicy = "strict",
+            exhaustive: bool = False,
+        ) -> AnswerResult:
+            return AnswerResult(answer="Ana's routine", hits=tuple(hits))
+
+        def close(self) -> None:
+            pass
+
     consolidator = ScriptedConsolidator()
-    with _memory(tmp_path / "consolidation-forgetting", consolidator) as memory:
+    with _memory(
+        tmp_path / "consolidation-forgetting", consolidator, answerer=EvidenceAnswerer()
+    ) as memory:
         first, second = _observations(memory, "Ana waited calmly", "Ana waited again, calmly")
         consolidator._scripts.append(
             (
@@ -1652,7 +1678,7 @@ def test_consolidation_can_retire_the_detail_its_derived_record_replaces(tmp_pat
                     intent=MemoryIntent.CONSOLIDATE,
                     evidence_ids=(first.id, second.id),
                     target_ids=(first.id, second.id),
-                    proposal=_trait("Ana", "patient"),
+                    proposal=_relation_summary(),
                 ),
             )
         )
@@ -1665,10 +1691,16 @@ def test_consolidation_can_retire_the_detail_its_derived_record_replaces(tmp_pat
         assert set(record.forgotten_ids) == {first.id, second.id}
         assert [row.operation.intent for row in memory.operations()] == [MemoryIntent.CONSOLIDATE]
         assert not [hit for hit in memory.search("Ana waited", limit=10).hits if hit.id == first.id]
-        # The two cited sources are one joint assessment, so this inferred trait is retained for
-        # audit but remains below the two-assessment visibility threshold.
-        assert memory.get(derived_id).context is not None
-        assert not [hit for hit in memory.search("patient", limit=10).hits if hit.id == derived_id]
+        assert derived_id in {hit.id for hit in memory.search("Ana waited", limit=10).hits}
+        assert {first.id, second.id, derived_id} <= {
+            hit.id
+            for hit in memory.compile(
+                "Ana waited", budget=ContextBudget(selected_proofs=selected_proofs)
+            ).hits
+        }
+        assert {first.id, second.id, derived_id} <= {
+            hit.id for hit in memory.ask("Ana's routine").hits
+        }
         # Lineage survives: the sources are still readable and still cited as evidence.
         assert memory.get(first.id).forgotten_at == record.applied_at
         derived = memory.get(derived_id)
@@ -1680,6 +1712,100 @@ def test_consolidation_can_retire_the_detail_its_derived_record_replaces(tmp_pat
         assert memory.get(second.id).forgotten_at is None
         with pytest.raises(MemoryNotFoundError):
             memory.get(derived_id)
+
+
+def test_consolidation_cannot_hide_sources_behind_an_uncorroborated_trait(tmp_path: Path) -> None:
+    consolidator = ScriptedConsolidator()
+    with _memory(tmp_path, consolidator) as memory:
+        first, second = _observations(memory, "Ana waited calmly", "Ana waited again calmly")
+        consolidator._scripts.append(
+            (
+                MemoryOperation(
+                    intent=MemoryIntent.CONSOLIDATE,
+                    evidence_ids=(first.id, second.id),
+                    target_ids=(first.id, second.id),
+                    proposal=_trait("Ana", "patient"),
+                ),
+            )
+        )
+        report = memory.consolidate(evidence_ids=(first.id, second.id))
+        assert [reason for _operation, reason in report.rejected] == ["replacement_not_visible"]
+        assert memory.operations() == ()
+        assert {first.id, second.id} <= {hit.id for hit in memory.compile("Ana waited").hits}
+
+
+@pytest.mark.parametrize("selected_proofs", [False, True])
+def test_explicit_forgetting_withdraws_retained_consolidation_evidence_and_rollback_restores_it(
+    tmp_path: Path,
+    selected_proofs: bool,
+) -> None:
+    with _memory(tmp_path) as memory:
+        first, second = _observations(memory, "Ana waited calmly", "Ana brought tea")
+        operation = memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.CONSOLIDATE,
+                evidence_ids=(first.id, second.id),
+                target_ids=(first.id, second.id),
+                proposal=_relation_summary(),
+            )
+        )
+        derived_id = operation.created_ids[0]
+        budget = ContextBudget(selected_proofs=selected_proofs)
+        assert derived_id in {hit.id for hit in memory.compile("Ana's routine", budget=budget).hits}
+        withdrawal = memory.forget((first.id,))
+        assert withdrawal is not None
+        assert withdrawal.changed_ids == (first.id,)
+        assert withdrawal.forgotten_ids == ()
+        assert memory.compile("Ana's routine", budget=budget).hits == ()
+        assert memory.rollback(operation.operation_id) is False
+        assert memory.rollback(withdrawal.operation_id)
+        assert memory.get(first.id).forgotten_at == operation.applied_at
+        assert derived_id in {hit.id for hit in memory.compile("Ana's routine", budget=budget).hits}
+        memory.delete(first.id)
+        assert memory.compile("Ana's routine", budget=budget).hits == ()
+
+
+@pytest.mark.parametrize("selected_proofs", [False, True])
+def test_retained_sources_cannot_prove_an_unrelated_assertion(
+    tmp_path: Path, selected_proofs: bool
+) -> None:
+    with _memory(tmp_path) as memory:
+        first, second = _observations(memory, "Ana waited calmly", "Ana brought tea")
+        unrelated = memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.CONSOLIDATE,
+                evidence_ids=(first.id,),
+                proposal=replace(_relation_summary(), predicate="other_routine"),
+            )
+        ).created_ids[0]
+        retained = memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.CONSOLIDATE,
+                evidence_ids=(first.id, second.id),
+                target_ids=(first.id, second.id),
+                proposal=_relation_summary(),
+            )
+        ).created_ids[0]
+        bundle = memory.compile(
+            "Ana's routine", budget=ContextBudget(selected_proofs=selected_proofs)
+        )
+        assert retained in {hit.id for hit in bundle.hits}
+        assert unrelated not in {hit.id for hit in bundle.hits}
+
+
+def test_hidden_trait_is_shown_as_a_target_and_zero_yield_is_weighed_once(tmp_path: Path) -> None:
+    consolidator = ScriptedConsolidator()
+    with _memory(tmp_path, consolidator, former=DispositionFormer()) as memory:
+        memory.add("Ana waited calmly")
+        hidden = next(
+            row
+            for row in memory.list().items
+            if row.context and row.context.kind is RecordKind.TRAIT
+        )
+        report = memory.consolidate_pending(max_rounds=4)
+        assert report.model_calls == 1
+        assert hidden.id in consolidator.calls[0][0]
+        assert memory.consolidate_pending().model_calls == 0
 
 
 def test_consolidation_cannot_retire_a_record_it_did_not_cite(tmp_path: Path) -> None:
@@ -1717,7 +1843,7 @@ def test_consolidation_refuses_a_proposal_that_cites_the_claim_it_would_mint(
             "Ana arrived on time",
         )
         relation = FormationProposal(
-            kind=MemoryKind.RELATION,
+            kind=RecordKind.RELATION,
             content="Ana prefers late meetings",
             subject="Ana",
             predicate="prefers",
@@ -1782,7 +1908,7 @@ def test_one_pass_may_not_build_on_evidence_it_just_retired(tmp_path: Path) -> N
     with _memory(
         tmp_path / "inconsistent-reverse",
         consolidator,
-        config=MemoryConfig(memory_budget_records=1),
+        config=MemorySettings(memory_budget_records=1),
     ) as memory:
         first, second = _observations(memory, "Ana waited calmly", "Ana waited again")
         consolidator._scripts.append(
@@ -1945,7 +2071,7 @@ def test_a_target_forgotten_between_validation_and_apply_is_stale(
     """The apply transaction re-checks what validation read; a target that moved is refused."""
     consolidator = ScriptedConsolidator()
     with _memory(
-        tmp_path / "stale-target", consolidator, config=MemoryConfig(memory_budget_records=1)
+        tmp_path / "stale-target", consolidator, config=MemorySettings(memory_budget_records=1)
     ) as memory:
         first, second, _third = _observations(
             memory, "Ana waited calmly", "Ana waited again", "Unrelated note"
@@ -2040,7 +2166,7 @@ def test_control_commit_rechecks_source_visibility_without_rejecting_hidden_targ
 ) -> None:
     consolidator = ScriptedConsolidator()
     with _memory(
-        tmp_path, consolidator, config=MemoryConfig(independent_evidence=independent)
+        tmp_path, consolidator, config=MemorySettings(independent_evidence=independent)
     ) as memory:
         first, second, third, extra = _observations(memory, "first", "second", "third", "extra")
         source = memory.apply(
@@ -2074,7 +2200,7 @@ def test_control_commit_rechecks_source_visibility_without_rejecting_hidden_targ
                 target_ids=(extra.id,),
                 evidence_ids=(source, extra.id),
                 proposal=FormationProposal(
-                    kind=MemoryKind.EVENT,
+                    kind=RecordKind.EVENT,
                     content="A new conclusion from the patient claim.",
                     subject="Ana",
                 ),
@@ -2255,7 +2381,7 @@ def test_feedback_ignores_accumulating_relation_and_inferred_trait_disagreement(
                         intent=MemoryIntent.CONSOLIDATE,
                         evidence_ids=(source.id,),
                         proposal=FormationProposal(
-                            kind=MemoryKind.RELATION,
+                            kind=RecordKind.RELATION,
                             content=f"Ana likes {value}",
                             subject="Ana",
                             predicate="likes",
@@ -2285,10 +2411,10 @@ class FunctionalConflictFormer:
 
     def form(self, inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]:
         values = (
-            (MemoryKind.STATE, EvidenceBasis.MODEL_INFERENCE, "location", "kitchen"),
-            (MemoryKind.STATE, EvidenceBasis.MODEL_INFERENCE, "location", "garden"),
-            (MemoryKind.TRAIT, EvidenceBasis.USER_STATEMENT, "drink", "tea"),
-            (MemoryKind.TRAIT, EvidenceBasis.USER_STATEMENT, "drink", "coffee"),
+            (RecordKind.STATE, EvidenceBasis.MODEL_INFERENCE, "location", "kitchen"),
+            (RecordKind.STATE, EvidenceBasis.MODEL_INFERENCE, "location", "garden"),
+            (RecordKind.STATE, EvidenceBasis.MODEL_INFERENCE, "drink", "tea"),
+            (RecordKind.STATE, EvidenceBasis.MODEL_INFERENCE, "drink", "coffee"),
         )
         assert len(inputs) == len(values)
         return tuple(
@@ -2323,7 +2449,7 @@ class DisjointStateFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content=f"Ana is in the {value}",
                     subject="Ana",
                     predicate="location",
@@ -2356,7 +2482,7 @@ class PartlyOverlappingStateFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content=f"Ana is in the {value}",
                     subject="Ana",
                     predicate="location",
@@ -2390,7 +2516,7 @@ class FunctionalIntervalsFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content=f"{subject} is {value}",
                     subject=subject,
                     predicate=predicate,
@@ -2406,7 +2532,7 @@ class FunctionalIntervalsFormer:
         pass
 
 
-def test_functional_state_and_user_trait_disagreement_create_contradiction_work(
+def test_functional_state_disagreement_creates_contradiction_work(
     tmp_path: Path,
 ) -> None:
     with _memory(tmp_path / "functional-conflict", former=FunctionalConflictFormer()) as memory:
@@ -2426,13 +2552,53 @@ def test_functional_state_and_user_trait_disagreement_create_contradiction_work(
             memory.get(memory_id).context for row in contradictions for memory_id in row.memory_ids
         }
         assert {context.kind for context in contexts if context is not None} == {
-            MemoryKind.STATE,
-            MemoryKind.TRAIT,
+            RecordKind.STATE,
         }
         assert all(
-            context is not None
-            and (context.kind is MemoryKind.STATE or context.basis is EvidenceBasis.USER_STATEMENT)
+            context is not None and context.basis is EvidenceBasis.MODEL_INFERENCE
             for context in contexts
+        )
+
+
+def test_successive_host_confirmed_traits_preserve_current_value_and_history(
+    tmp_path: Path,
+) -> None:
+    with _memory(tmp_path) as memory:
+        sources = memory.add_many(
+            ("Ana likes tea", "Ana likes coffee"),
+            occurred_at=(OCCURRED, OCCURRED + timedelta(days=1)),
+        )
+        for source, value, confidence in zip(sources, ("tea", "coffee"), (0.9, 0.6), strict=True):
+            memory.apply(
+                MemoryOperation(
+                    intent=MemoryIntent.CONSOLIDATE,
+                    evidence_ids=(source.id,),
+                    proposal=FormationProposal(
+                        kind=RecordKind.TRAIT,
+                        basis=EvidenceBasis.USER_STATEMENT,
+                        content=f"Ana likes {value}",
+                        subject="Ana",
+                        predicate="drink",
+                        value=value,
+                        confidence=confidence,
+                    ),
+                )
+            )
+        assert _trigger_rows(memory, MemoryTrigger.CONTRADICTION) == ()
+        current = [
+            hit.context
+            for hit in memory.search("Ana likes").hits
+            if hit.context is not None and hit.context.kind is RecordKind.TRAIT
+        ]
+        assert [context.value for context in current] == ["coffee"]
+        historical = [
+            hit.context
+            for hit in memory.search("Ana likes", scope=RetrievalScope(valid_at=OCCURRED)).hits
+            if hit.context is not None and hit.context.kind is RecordKind.TRAIT
+        ]
+        assert [context.value for context in historical] == ["tea"]
+        assert all(
+            context.basis is EvidenceBasis.USER_STATEMENT for context in current + historical
         )
 
 
@@ -2604,7 +2770,9 @@ def test_weighed_prefix_does_not_exhaust_a_local_trigger_window(
         tmp_path,
         ScriptedConsolidator(),
         former=former,
-        config=MemoryConfig(memory_budget_records=1 if trigger is MemoryTrigger.PRESSURE else None),
+        config=MemorySettings(
+            memory_budget_records=1 if trigger is MemoryTrigger.PRESSURE else None
+        ),
     ) as memory:
         records = (
             _observations(memory, *(f"claim {index}" for index in range(9)))
@@ -2728,13 +2896,21 @@ def test_a_logged_operation_sequence_replays_against_a_fresh_store(tmp_path: Pat
                     intent=MemoryIntent.CONSOLIDATE,
                     evidence_ids=(first.id, second.id),
                     target_ids=(second.id,),
-                    proposal=_trait("Ana", "patient"),
+                    proposal=FormationProposal(
+                        kind=RecordKind.RELATION,
+                        content="Ana waited calmly on two occasions.",
+                        subject="Ana",
+                        predicate="observed_behavior",
+                        value="waited calmly",
+                        confidence=0.9,
+                    ),
                     rationale="two independent waits",
                 ),
             )
         )
         origin.consolidate(evidence_ids=(first.id, second.id))
         logged = tuple(reversed(origin.operations()))
+        assert len(logged) == 1
         recorded = [
             (row.operation.intent, row.created_ids, row.changed_ids, row.forgotten_ids)
             for row in logged
@@ -2816,7 +2992,7 @@ def test_apply_refuses_what_the_kernel_refuses_a_proposal(tmp_path: Path) -> Non
 def _state(value: str, *, valid_from: datetime) -> FormationProposal:
     """A STATE proposal: the kind whose lineage rule supersedes the claim it replaces."""
     return FormationProposal(
-        kind=MemoryKind.STATE,
+        kind=RecordKind.STATE,
         content=f"Ana is in the {value}",
         subject="Ana",
         predicate="location",
@@ -3069,7 +3245,7 @@ def _consolidate_relation(
                 intent=MemoryIntent.CONSOLIDATE,
                 evidence_ids=evidence_ids,
                 proposal=FormationProposal(
-                    kind=MemoryKind.RELATION,
+                    kind=RecordKind.RELATION,
                     content="Ana follows a calm waiting routine",
                     subject="Ana",
                     predicate="waiting_style",
@@ -3141,7 +3317,8 @@ def test_an_asserted_name_is_not_scoped_to_where_the_person_was_seen(tmp_path: P
             context=kitchen,
             metadata={"household": "flat-2"},
         )
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = memory.perceive(first.id).speech[0].speaker_id
+        assert identity_id is not None
         for cited in (first.id, second.id):
             consolidator._scripts.append(
                 (
@@ -3183,6 +3360,7 @@ class SilentConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.calls += 1
         return ()
@@ -3259,12 +3437,16 @@ def test_repeated_recall_failure_becomes_a_candidate_naming_the_nearest_records(
     with _memory(tmp_path, SilentConsolidator()) as memory:
         sources = _observations(memory, "the spare key is in the toolbox")
         # Fails because the store holds no procedural memory, not because the words are unknown.
-        assert memory.search("where is the spare key", memory_type=MemoryType.PROCEDURAL).hits == ()
+        assert (
+            memory.search("where is the spare key", memory_type=MemoryCategory.PROCEDURAL).hits
+            == ()
+        )
         assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
 
         # Near-equal, not equal: case, punctuation, and spacing are normalized away.
         assert (
-            memory.search("Where  is the SPARE key?", memory_type=MemoryType.PROCEDURAL).hits == ()
+            memory.search("Where  is the SPARE key?", memory_type=MemoryCategory.PROCEDURAL).hits
+            == ()
         )
         due = _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE)
         assert len(due) == 1
@@ -3273,7 +3455,11 @@ def test_repeated_recall_failure_becomes_a_candidate_naming_the_nearest_records(
         # hold nearest the question.
         assert sources[0].id in due[0].memory_ids
 
-        memory.consolidate(evidence_ids=due[0].memory_ids, trigger=MemoryTrigger.QUERY_FAILURE)
+        memory.consolidate(
+            evidence_ids=due[0].memory_ids,
+            trigger=MemoryTrigger.QUERY_FAILURE,
+            query_failure=due[0].query_failure,
+        )
         assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
 
 
@@ -3281,11 +3467,76 @@ def test_a_query_failure_window_bounds_how_far_back_the_signal_counts(tmp_path: 
     with _memory(
         tmp_path,
         SilentConsolidator(),
-        config=MemoryConfig(query_failure_window_seconds=0.001),
+        config=MemorySettings(query_failure_window_seconds=0.001),
     ) as memory:
         _observations(memory, "the spare key is in the toolbox")
         for _attempt in range(2):
-            assert memory.search("where is the key", memory_type=MemoryType.PROCEDURAL).hits == ()
+            assert (
+                memory.search("where is the key", memory_type=MemoryCategory.PROCEDURAL).hits == ()
+            )
+        assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
+
+
+def test_failed_request_constraints_reach_maintenance_and_unresolved_queries_remain_in_report(
+    tmp_path: Path,
+) -> None:
+    consolidator = ScriptedConsolidator()
+    scope = RetrievalScope(place_id="kitchen", valid_at=OCCURRED)
+    upper = OCCURRED + timedelta(days=1)
+    with _memory(tmp_path, consolidator) as memory:
+        memory.add("the key is in the toolbox", occurred_at=OCCURRED)
+        for _attempt in range(2):
+            assert (
+                memory.search(
+                    "where is the key",
+                    memory_type=MemoryCategory.PROCEDURAL,
+                    reference_at=OCCURRED,
+                    scope=scope,
+                    occurred_from=OCCURRED,
+                    occurred_until=upper,
+                ).hits
+                == ()
+            )
+        (due,) = _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE)
+        assert due.query_failure == QueryFailure(
+            query="where is the key",
+            memory_types=(MemoryCategory.PROCEDURAL,),
+            reference_at=OCCURRED,
+            scope=scope,
+            occurred_from=OCCURRED,
+            occurred_until=upper,
+        )
+        report = memory.consolidate_pending()
+        assert consolidator.failures == [due.query_failure]
+        assert report.unresolved_queries == (due.query_failure,)
+        assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
+        assert (
+            memory.search(
+                "where is the key",
+                memory_type=MemoryCategory.PROCEDURAL,
+                reference_at=OCCURRED,
+                scope=scope,
+                occurred_from=OCCURRED,
+                occurred_until=upper,
+            ).hits
+            == ()
+        )
+        assert len(_trigger_rows(memory, MemoryTrigger.QUERY_FAILURE)) == 1
+
+
+def test_failures_with_different_constraints_do_not_corroborate_each_other(tmp_path: Path) -> None:
+    with _memory(tmp_path, ScriptedConsolidator()) as memory:
+        for place in ("kitchen", "office"):
+            memory.search("where is the key", scope=RetrievalScope(place_id=place))
+        assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
+        memory.search("where is the key", scope=RetrievalScope(place_id="kitchen"))
+        (due,) = _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE)
+        assert due.memory_ids == ()
+        assert due.query_failure is not None
+        assert due.query_failure.scope == RetrievalScope(place_id="kitchen")
+        report = memory.consolidate_pending()
+        assert report.model_calls == 0
+        assert report.unresolved_queries == (due.query_failure,)
         assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
 
 
@@ -3296,7 +3547,7 @@ def test_memory_pressure_derives_candidates_only_over_a_declared_budget(tmp_path
         assert _trigger_rows(memory, MemoryTrigger.PRESSURE) == ()
 
     with _memory(
-        tmp_path, SilentConsolidator(), config=MemoryConfig(memory_budget_records=2)
+        tmp_path, SilentConsolidator(), config=MemorySettings(memory_budget_records=2)
     ) as memory:
         due = _trigger_rows(memory, MemoryTrigger.PRESSURE)
         assert len(due) == 4
@@ -3340,12 +3591,13 @@ class ResolvingConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.calls += 1
         derived = [
             record
             for record in evidence
-            if record.context is not None and record.context.kind is MemoryKind.TRAIT
+            if record.context is not None and record.context.kind is RecordKind.STATE
         ]
         if trigger is not MemoryTrigger.CONTRADICTION or len(derived) < 2:
             return ()
@@ -3432,6 +3684,7 @@ class BlockingConsolidator:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         self.entered.set()
         assert self.release.wait(timeout=30)
@@ -3478,24 +3731,30 @@ def test_an_identity_merge_does_not_commit_while_a_consolidate_apply_pass_holds_
 ) -> None:
     """The inverse of the test above: identity commits must serialize with formation too.
 
-    A corroborated cross-modal MERGE is authorized and committed by the kernel itself, from
-    `_link_asset_identity`, never through `consolidate()`'s own proposal pass -- so it is never
-    covered by `_apply_memory_operation`'s formation-lock scope unless it takes the lock itself.
-    Holding `_formation_lock` the way a consolidate apply pass does stands in for that pass here.
+    A host-confirmed cross-modal MERGE must take the same lock as consolidation applies.
     """
     with Memory(
         tmp_path,
         embedder=TinyEmbedder(),
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
-        config=MemoryConfig(identity_link_min_assets=1, minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         record = memory.add(Blob(b"stranger arrives", "video/mp4", "one.mp4"))
+        perceived = memory.perceive(record.id)
+        face_id = perceived.faces[0].identity_id
+        voice_id = perceived.speech[0].speaker_id
+        assert voice_id is not None
         errors: list[BaseException] = []
 
         def merging() -> None:
             try:
-                memory.perceive(record.id)
+                memory.apply(
+                    MemoryOperation(
+                        intent=MemoryIntent.MERGE,
+                        identity=IdentityChange(identity_id=face_id, moved_ids=(voice_id,)),
+                    )
+                )
             except BaseException as error:  # pragma: no cover - reported below
                 errors.append(error)
 
@@ -3504,8 +3763,7 @@ def test_an_identity_merge_does_not_commit_while_a_consolidate_apply_pass_holds_
             thread = threading.Thread(target=merging)
             thread.start()
             thread.join(timeout=0.5)
-            # The apply pass is "in progress" (simulated by holding its lock). Before this fix
-            # the merge committed anyway, since `_link_asset_identity` took no lock of its own.
+            # The apply pass is in progress, simulated by holding its lock.
             assert thread.is_alive()
             assert memory.operations() == ()
         finally:
@@ -3604,7 +3862,11 @@ def test_an_abstention_and_a_thin_bundle_record_the_same_failure_signal(tmp_path
             assert memory.ask("where is the passport").abstained is True
         due = _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE)
         assert len(due) == 1 and due[0].evidence_count == 2
-        memory.consolidate(evidence_ids=due[0].memory_ids, trigger=MemoryTrigger.QUERY_FAILURE)
+        memory.consolidate(
+            evidence_ids=due[0].memory_ids,
+            trigger=MemoryTrigger.QUERY_FAILURE,
+            query_failure=due[0].query_failure,
+        )
         assert _trigger_rows(memory, MemoryTrigger.QUERY_FAILURE) == ()
 
         # A bundle with no evidence in it is the compiler reporting the same thing.
@@ -3612,7 +3874,7 @@ def test_an_abstention_and_a_thin_bundle_record_the_same_failure_signal(tmp_path
             assert (
                 memory.compile(
                     "where is the passport",
-                    budget=ContextBudget(memory_types=frozenset({MemoryType.PROCEDURAL})),
+                    budget=ContextBudget(memory_types=frozenset({MemoryCategory.PROCEDURAL})),
                 ).hits
                 == ()
             )
@@ -3620,12 +3882,7 @@ def test_an_abstention_and_a_thin_bundle_record_the_same_failure_signal(tmp_path
 
 
 def test_a_backend_may_not_propose_an_identity_merge(tmp_path: Path) -> None:
-    """Merge authority is the kernel's, not a proposal vocabulary item.
-
-    A cross-modal merge is committed from corroboration evidence the kernel counted itself, so
-    a model that asks to fuse two people is refused before anything is read or written. An
-    agent that can call ordinary recall must not be able to convert it into that authority.
-    """
+    """Only an explicit host operation confirms a binding; a model cannot grant itself authority."""
     consolidator = ScriptedConsolidator()
     with _memory(tmp_path / "merge", consolidator) as memory:
         first, second = _observations(memory, "Ana waited", "Ana waited again")
@@ -3671,11 +3928,9 @@ def test_consolidation_forgetting_refuses_a_bound_naming_assertion(tmp_path: Pat
         assert [reason for _operation, reason in report.rejected] == ["naming_assertion"]
         assert memory.identity(identity_id).name == "Li"  # type: ignore[union-attr]
         assert _asserted_name(memory, identity_id) == "Li"
-        # The kernel's own cross-modal merge logs a row of its own here; what must be absent
-        # is a CONSOLIDATE row, because the proposal was refused before it applied.
+        # The refused proposal creates no CONSOLIDATE row.
         assert [item.operation.intent for item in memory.operations()] == [
             MemoryIntent.IDENTIFY,
-            MemoryIntent.MERGE,
         ]
 
 
@@ -3733,8 +3988,7 @@ def test_registering_a_name_again_after_rolling_it_back_names_the_person(tmp_pat
         memory.register_identity(identity_id, "Li")
         assert _asserted_name(memory, identity_id) == "Li"
         assert memory.identity(identity_id).name == "Li"  # type: ignore[union-attr]
-        # Both attempts are auditable, and exactly one of them still stands. The kernel's own
-        # cross-modal merge logs a row of its own beside them.
+        # Both attempts are auditable, and exactly one of them still stands.
         rows = [row for row in memory.operations() if row.operation.intent is MemoryIntent.IDENTIFY]
         assert len(rows) == 2
         assert [row.rolled_back_at is None for row in rows].count(True) == 1
@@ -3782,7 +4036,8 @@ def test_a_corroborated_agent_name_still_loses_to_the_one_the_host_stated(tmp_pa
     with _identity_memory(tmp_path / "outranked", consolidator) as memory:
         first = memory.add(Blob(b"stranger arrives", "video/mp4", "one.mp4"))
         second = memory.add(Blob(b"stranger speaks again", "video/mp4", "two.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = memory.perceive(first.id).speech[0].speaker_id
+        assert identity_id is not None
         memory.register_identity(identity_id, "Alice")
 
         for cited in (first.id, second.id):
@@ -3818,11 +4073,12 @@ def test_deleting_one_source_of_an_agent_asserted_name_takes_it_out_of_indexed_s
         transcriber=OnePersonSpeech(),
         face_analyzer=OnePersonFace(),
         consolidator=consolidator,
-        config=MemoryConfig(identity_link_min_assets=1, index_speech=True, minimum_relevance=0),
+        settings=MemorySettings(index_speech=True, minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"stranger arrives", "video/mp4", "one.mp4"))
         second = memory.add(Blob(b"stranger speaks again", "video/mp4", "two.mp4"))
-        identity_id = memory.perceive(first.id).faces[0].identity_id
+        identity_id = memory.perceive(first.id).speech[0].speaker_id
+        assert identity_id is not None
 
         def identify(*evidence: str) -> MemoryOperation:
             return MemoryOperation(

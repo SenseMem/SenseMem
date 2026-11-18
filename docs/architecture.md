@@ -31,9 +31,16 @@ data, not an account, authorization, request, or isolation boundary.
 
 ## Code layout
 
+[The maintainer map](maintaining.md) gives a reading route and maps changes to their owners.
+Public values live in small domain modules (`content.py`, `records.py`, `semantics.py`,
+`identity.py`, `context_values.py`, `stream_values.py`); `types.py` contains shared enums.
+`context_bundle.py` validates delivered bundles, while `context_rendering.py` renders them.
+`evidence_policy.py` owns support thresholds and state-authority ordering shared by SQLite,
+compilation and bundle validation. Trust boundaries still validate their own inputs.
+
 `memory.py` holds the two public facades, `Memory` and `AsyncMemory`.
 `Memory.__init__` assembles the runtime: it resolves
-`Settings` and `Backends`, opens the store, constructs the planes that need no index, delegates
+`ResolvedSettings` and `Backends`, opens the store, constructs the planes that need no index, delegates
 store recovery to `Recovery`, retains cached speech bindings when its producer is omitted,
 opens the index, constructs the remaining planes,
 and drains the outbox. Each plane declares its dependencies as constructor keyword arguments,
@@ -48,17 +55,22 @@ making assembly the explicit dependency graph.
 | `kernel/recovery.py` | `Recovery` | Validating current store identities before writes, initializing unused face/transcription spaces, replacing derived indexes, and checkpointing recovery work before index creation. |
 | `kernel/speech.py`, `vision.py`, `embedding.py` | `Speech`, `Vision`, `Embedding` | The perception planes: transcripts and voice identities; descriptions and faces; routing content into the embedder and keying rows. |
 | `kernel/projection.py` | `Projection` | Applying committed SQLite truth to Zvec through the outbox, batched flushes, `reindex()`, `optimize()`. |
-| `kernel/retrieval.py` | `Retrieval` | Query preparation, bounded candidate expansion, authoritative hydration and reranking; pure score calculation lives in `kernel/ranking.py`. Search, answer, compile and the control plane share these stages. |
+| `kernel/querying.py` | `Querying` | Validating query-policy plans and executing their required and optional embedding routes. |
+| `kernel/candidates.py` | `Candidates` | Executing bounded native reads and resolving external candidate references against SQLite. |
+| `kernel/retrieval.py` | `Retrieval` | Query preparation, candidate expansion, authoritative hydration and reranking; `RankingPolicy` proposes scores through `kernel/ranking.py`. Search, answer, compile and the control plane share these stages. |
 | `kernel/formation.py` | `Formation` | Running the formation backend over committed sources and committing accepted proposals. |
 | `kernel/identity.py` | `Identities` | Naming, consent, linking, unlinking, and erasing people. |
 | `kernel/ingestion.py` | `Ingestion` | `add`, `add_many`, `capture`, `settle`, and streamed observations. |
-| `kernel/answering.py` | `Answering` | Executing recall programs, generation routing, and streamed answer validation; deterministic evidence packing lives in `kernel/grounding.py`. |
-| `kernel/compilation.py` | `Compilation` | Evidence closure over lineage, consent, and actors; the pure selection stays in `context.py`. |
+| `kernel/processing.py` | `IngestionStages` | Ordered ingestion-stage execution, labelled interpretation attachment and operation-local reuse. |
+| `kernel/recall.py` | `Recall` | Bounded recall planning, read execution, linked expansion and corpus summaries shared by answering and compilation. |
+| `kernel/answering.py` | `Answering` | Generation routing, answer rounds, and streamed answer validation; deterministic evidence packing lives in `kernel/grounding.py`. |
+| `kernel/compilation.py` | `Compilation` | Evidence closure over lineage, consent, and actors; `ContextSelector` proposes anchor priorities before final budget admission. |
 | `kernel/control_plane.py` | `ControlPlane` | Proposing, applying, auditing, and reversing operations. |
 | `kernel/records.py` | `Records` | `get`, `list`, `delete`, `export`, retention, and reinforcement. |
 
 The pure modules beside them -- `content.py` for what the caller gave, `derived.py` for what a
-model derived, `grounding.py` for answer evidence packing and request annotations,
+model derived, `formation_rules.py` for shared proposal, naming, consent, and claim-identity rules,
+`grounding.py` for answer evidence packing and request annotations,
 `temporal.py`, `ranking.py`, `contracts.py`, `metadata.py`, `validation.py`,
 `settings.py` --
 read no storage and call no model; they are the functions the planes agree on, and they are
@@ -71,21 +83,77 @@ top-level `control.py`, so reading records or describing visuals does not import
 plane for one helper or constant. The top-level `streams.py` holds the async observation streams
 over `AsyncMemory`.
 
+`perception.py` owns the immutable speech, speaker, face, and visual-analysis values shared by
+models, kernel planes, and SQLite. Model protocols consume and return those values without owning
+their definitions. `_perception_codec.py` encodes visual-description caches for the vision plane
+and benchmark backends without importing kernel execution. `kernel/predicates.py` owns the label
+normalization used for claim keys and identity-name matching; the host consent predicate belongs
+to `control.py`, and SQLite projects that same contract.
+
+`evidence.py` owns first-occurrence evidence aliases, evidence identity membership, and functional
+claim slots. Request builders, answer parsers, context conflict reporting, and authoritative
+closure completion share those rules. Building a model request does not import its response parser.
+
+Shared components depend on values and contracts rather than runtime implementations.
+Top-level `_content.py` validates ordered content and snapshots it for materialization, prefetch,
+and temporary context suppliers. `recall.py` owns the read bounds enforced by both recall plans
+and SQLite primitives. `_capacity.py` owns process-local admission for protocol adapters, kernel
+workers, and SQLite connections; local file-descriptor accounting stays in
+`infrastructure/local/_capacity.py`. The package checks enforce these dependency boundaries.
+The HTTP URL validators in `_validation.py` are also shared by declarative configuration and
+benchmark configuration, so validating a URL does not depend on a provider client or model factory.
+
+`infrastructure/local/media_metadata.py` reads bounded EXIF capture fields and GPS coordinates.
+Source enrichment and model media transport share this adapter, so local metadata processing
+does not import a model client.
+
+`api/schemas.py` defines REST request models. `api/responses.py` owns the transport-neutral
+Pydantic response models shared by REST, MCP and CLI; MCP narrows its exposed operations. `api/streaming.py` owns SSE encoding,
+disconnect handling, and pinned answer-stream cleanup. `api/app.py` assembles these components,
+registers routes, and applies HTTP admission and telemetry. The CLI uses the standard-library
+`api/client.py` JSON transport for remote calls while retaining its own command and exit-code policy.
+
 `infrastructure/local/store/` mirrors the same discipline for SQLite. `LocalStore` owns one
 `Connections` pool and one directory lock and exposes eight families -- `records`, `captures`,
 `semantics`, `control`, `identities`, `media`, `index`, `recall` -- each the writer of its own
 tables. A transaction that spans families, such as a formation commit, lives in the family that
 owns the primary write and calls the other families' connection-level functions inside it. The
-private modules (`_connections.py`, `_lineage.py`, `_selection.py`, `_identity.py`,
+private modules (`_connections.py`, `_capture_queue.py`, `_embeddings.py`, `_lineage.py`, `_selection.py`, `_identity.py`,
 `_membership.py`, `_candidates.py`, `_operations.py`, `_recall.py`, `_outbox.py`, `_codec.py`,
 `_schema.py`) are the pool and those connection-level functions, grouped by the invariant they
 keep; product code outside the package imports only `LocalStore` and the row values, while
 white-box tests may reach the private modules directly.
 
+`store/_identity.py` owns biometric matching, alias resolution, consent-gated enrollment, and
+exemplar retention. The media family supplies analyzed vectors and persists speech and face
+observations, calling the identity operation inside the same SQLite transaction.
+`store/_embeddings.py` owns embedding and text-selector writes shared by record, capture,
+formation, and index operations. The owning family retains the transaction that combines them
+with its primary record write.
+`store/_capture_queue.py` admits deferred captures for settlement; `store/_outbox.py` schedules
+search-index projection. These queues share SQLite transactions without sharing queue policy.
+
+`Embedding` builds speech-document refresh callbacks for naming changes. Formation and control
+operations obtain these callbacks directly from it. SQLite invokes them inside the naming
+transaction, so an embedding failure rolls back names, evidence, documents, vectors, and outbox
+rows together.
+
 `store/_selection.py` owns version eligibility for both predicate selection and authoritative
 hydration. It selects the latest eligible version in SQLite before transferring a context row,
 so history length does not multiply decoded context rows. Match and window recall reuse its
 temporal predicate before applying their row bound. Metric distance remains a hydration check.
+
+Benchmark runners remain leaves of the product. Their shared components have their own owners:
+`benchmarks/eval_backends.py` borrows model and computation plugins from one pool and opens each
+isolated SDK instance through `Memory.from_plugins`; `artifact_io.py` owns atomic artifact writes;
+`eval_evidence.py` owns evidence interval values and mappings; `quality_support.py` owns synthetic
+embedding and report fixtures. Dataset adapters and reporting components do not import the eval
+runner to reuse these components. Official scorer and prompt files retain their pinned wording.
+
+The live example follows the same dependency direction. `examples/live/dialogue.py` validates and
+captures attributed dialogue using explicit SDK inputs. The HTTP layer retains proposal matching
+and runtime notifications. In the browser, `MediaCapture` owns recording, upload backpressure,
+and durable acknowledgements; `CallSession` owns call setup and teardown.
 
 ## Durable state
 
@@ -106,7 +174,7 @@ The pure `kernel/predicates.py` registry resolves reviewed exact aliases before 
 a claim key. Registered scalar claims retain kind, subject or bound identity, spatial frame and
 anchor, value type, and cardinality policy in that key. STATE is functional, RELATION accumulates,
 and TRAIT retains its existing basis-dependent override rule. Naming and consent are outside the
-registry. Unknown predicates and compound objects retain literal keys. SQLite schema 21 preserves
+registry. Unknown predicates and compound objects retain literal keys. SQLite schema 25 preserves
 the original predicate alongside its key, registry revision, and match method. Only the current
 schema is accepted; opening a directory never upgrades an older schema.
 
@@ -124,6 +192,13 @@ opens leave marker timestamps unchanged. Current operations use `clause_changes`
 retain historical clause versions on rollback.
 
 ## Write consistency
+
+Naming can change indexed speech documents. SQLite first evaluates the proposed mutation in a
+transaction and returns an exact `NamingDocuments` snapshot by rolling that transaction back.
+The kernel prepares text and vectors outside SQLite. The store replays the same mutation with
+that `NamingProjection`, verifies that the snapshot still matches, and commits names, evidence,
+text, vectors, operation log and outbox together. A changed snapshot raises a stale-operation
+error; a model failure commits nothing. Storage receives values and never a model callback.
 
 ```mermaid
 flowchart LR
@@ -257,16 +332,21 @@ naming assertion. Every operation that changes its visibility or binding updates
 in the same SQLite transaction, keeping names, evidence, and search documents consistent.
 
 The binding is deterministic policy, never a model's choice: the kernel stamps it when a
-proposed claim's subject matches the canonical subject of a visible naming assertion under the
-same NFKC casefold the lineage key uses, and `_formation_lineage_id` then keys on the identity,
+proposed claim's subject matches the canonical subject of a cited, current visible naming
+assertion under the same NFKC casefold the lineage key uses. `_formation_lineage_id` then keys on the identity,
 so claims about one person converge however a turn spelled the name. A model's `ENTITY` proposal
 is never bound, because a bound `ENTITY` row is a naming assertion and naming stays with the
 host. Undoing a merge re-evaluates the claims bound to the survivor: one resting only on media
 that moved back is re-attributed to the restored person, one resting on both people's media is
 unbound, and none is left attributed to somebody it was never about.
 
+An explicit name in original text can support an unbound text-label claim without a naming
+citation. Merely seeing a matching name in bounded history does not bind that claim or reject
+its textual evidence. Unbound and identity-bound lineage keys stay separate.
+
 An identity with no visible naming assertion is provisional. `IdentityProfile.confirmed` reports
-this derived state, and compiled `actors` includes `ProvisionalActor` entries for unnamed people
+host-confirmed naming; sourced model-inferred names remain unconfirmed. Compiled `actors` includes
+`ProvisionalActor` entries for unnamed people
 present in the selected evidence.
 
 ## Retrieval consistency
@@ -452,7 +532,8 @@ progress, with ownership retained and new operations refused, until the original
 
 The extension contracts are `EmbeddingBackend`, `GenerationBackend`, `TranscriptionBackend`,
 `SpeechBackend`, `VisionDescriptionBackend`, `FaceBackend`, `FormationBackend`, `RerankingBackend`, and
-`ConsolidationBackend`; `StreamingGenerationBackend` adds streamed generation and
+`ConsolidationBackend`, plus `EventSegmentationBackend` for automatic media-event boundaries;
+`StreamingGenerationBackend` adds streamed generation and
 `VisionAnalysisBackend` adds typed facts and naming proposals. `GenerationRouter` selects native
 models against both question and evidence. `EmbeddingInputSupport` describes joint restrictions;
 `EmbeddingRouter` combines encoders in one explicitly shared vector space. Shared source-backed
@@ -462,6 +543,35 @@ Provider output is validated before persistence or return.
 Identity linking and naming belong to `Identities`; `Vision` supplies observations. Provider-neutral
 `EvidenceGeneration` in `kernel/answer_evidence.py` owns the complete media-selection and
 source-metadata preparation path, including composition around a selected model. Provider adapters retain request formatting, model prompts and parsing.
+
+The kernel consumes the same typed backend protocols for every provider. The OpenAI adapters implement
+those protocols by calling caller-owned official OpenAI SDK clients. Its provider internals have
+separate responsibilities:
+
+| Module | Responsibility |
+| --- | --- |
+| `models/openai_embedding.py` | `OpenAIEmbedder`: embedding configuration, encoding and responses. |
+| `models/openai_speech.py` | `OpenAITranscriber`: transcription configuration and responses. |
+| `models/openai_completion.py` | `OpenAICompletion`: completion roles, bounded model operations, response lifetimes and failure mapping. |
+| `models/_openai_client.py` | Explicit ownership and closure of one SDK client. |
+| `prompts/` | Pure runtime instructions and text composition for generation, recall, events, context, tools, and model-specific input formats. |
+| `models/_openai_requests.py` | Serialize typed inputs, construct request and tool schemas, and fit evidence and media to request budgets. |
+| `models/_openai_media.py` | Read and verify local assets, encode images and audio, sample video, and account for inline media bytes. |
+| `models/_openai_output.py` | Parse domain outputs and enforce answer, formation, consolidation, and event-output contracts. |
+| `models/_openai_completion.py` | Accumulate streamed chat completions with the SDK's `ChatCompletionStreamState`, retaining local completion, usage, and cleanup checks for the output boundary. |
+| `models/_openai_protocol.py`, `_openai_schemas.py` | Model-family controls, capability admission, provider error classification, recipe identities, and closed output schemas. |
+| `models/_openai_telemetry.py` | Usage totals, returned model and request identity, and evidence-delivery diagnostics. |
+
+The official SDK owns authentication, HTTP transport, timeouts, and network retries. SenseMem's
+JSON operations may make one further request after a malformed HTTP 200 result, because successful
+HTTP transport does not establish a valid domain response. That bounded semantic retry retains
+usage from both attempts and excludes refusals and truncation. Splitting these provider internals
+preserves the public backend protocols and current prompt text.
+
+The kernel and adapters pass facts and selected settings into the prompt components rather than
+embedding instructions in execution branches. Benchmark query, baseline, and judge prompts remain
+in `benchmarks/`, with pinned upstream wording under `benchmarks/_official/`. See
+[Maintain prompts](prompts.md) for component ownership and change validation.
 
 The two reasoning contracts differ only in horizon and authority scope. A `FormationBackend`
 proposes typed semantics from one committed observation. A `ConsolidationBackend` proposes
@@ -475,8 +585,15 @@ transaction, so a record that moved since validation is refused as stale rather 
 applied. Physical deletion is not a proposable intent.
 
 Applications may inject backend objects directly or use `MemoryPlugins` and
-`Memory.from_plugins()`. `Memory.from_config()` validates a closed catalog of bundled providers and
-delegates to the same kernel. There is no global plugin registry, package discovery, or live
+`Memory.from_plugins()`. `Memory.from_config()` resolves bundled providers and explicitly supplied
+application factories through the same instance-local catalog and delegates to the same kernel.
+`QueryPolicy` selects query representations, `CandidateSource` supplies bounded candidate
+references, `RankingPolicy` supplies retrieval scores, `ContextSelector` supplies context anchor selection,
+and ordered `IngestionStage` computations append labelled interpretations before perception and
+embedding. Built-in computation policies implement those same public protocols. The kernel
+validates proposal identities and keeps evidence closure, consent, budget admission, SQLite
+transactions, and index outbox ordering. See [computation plugins](api/python-policies.md).
+There is no global plugin registry, package discovery, or live
 backend swap during a `Memory` lifetime. SQLite, the asset store, and Zvec are internal components
 rather than public storage plugins: a model backend may perform inference but cannot bypass
 validation, stable identity, durability, or final SQLite hydration.
@@ -494,8 +611,9 @@ The public vocabulary follows these shared execution paths:
 
 - `search(..., explain=True)` enables diagnostics on the ordinary retrieval path; every call
   returns `SearchResult(hits, trace)`, with `trace=None` by default.
-- `perceive` loads and leases one record's assets once, overlaps configured speech and face
-  recognition, then applies corroborated identity links. The result preserves separate typed
+- `perceive` loads and leases one record's assets once and overlaps configured speech and face
+  recognition. A binding requires explicit host confirmation through `apply(MERGE)`; unlink records
+  a durable negative pair. The result preserves separate typed
   observations; `register_identity` names either kind of identity through the same policy path.
 - `consolidate` handles one evidence pass; `consolidate_pending` schedules due candidates. Both use the
   same proposal validation and commit path and return `ConsolidationReport`.
@@ -504,20 +622,28 @@ The public vocabulary follows these shared execution paths:
   the complete retrieval, grounding, validation, and reinforcement path.
 
 Generic resource ownership lives in `_resources.py`, outside the kernel. Model clients import no
-kernel implementation. OpenAI structured-response parsing lives beside the adapter in
-`models/_answer_output.py`. Pure scalar validators and media URL encoding are shared below the model adapters, so one adapter
+kernel implementation. OpenAI domain-response parsing lives in `models/_openai_output.py`, using
+`models/_answer_output.py` for witnessed answer drafts. Pure scalar validators and media URL
+encoding are shared below the model adapters, so one adapter
 has no dependency on another adapter's configuration validation or local-media serialization.
 Sentence Transformers owns its embedding and cross-encoder clients together; reranking input
 and score validation remains a pure module shared by every provider and the retrieval plane.
 
 Validation and failure handling follow the same boundaries: assembly owns configuration and the
 capability snapshot; typed inputs own scope constraints; adapters own provider error classification
-and transport retry budgets; the embedding plane owns vector normalization; storage owns durable
+and bounded semantic recovery; SDK clients own transport retries and timeouts; the embedding plane
+owns vector normalization; storage owns durable
 representation checks. Required caption conversion preserves its original failure across query
 and answer stages. Optional enhancement may be skipped when native or derived content already
 supplies a usable representation. Programming errors are not relabelled as storage I/O failures.
 
 ## Public and trust boundaries
+
+Validate caller values once at the boundary that owns them, then pass typed values inward.
+For example, ingestion validates a batch's memory type before preparing its items; internal
+content construction reuses that value. Model and plugin outputs cross a separate trust boundary
+and require structural and semantic validation before affecting durable state. Checks that depend
+on current storage state belong in the write transaction.
 
 Supported SDK values are imported from `sensemem`. The `Memory` SDK exposes 33 product operations.
 REST exposes thirteen `/v1` routes: add, batch add, list, search, reinforce, get,

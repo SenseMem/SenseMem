@@ -20,19 +20,21 @@ import pytest
 from openai import OpenAI
 
 import sensemem.configuration as configuration
-import sensemem.models.openai_sdk as backend
+import sensemem.models._openai_media as media
 from sensemem import (
     FormationInput,
     Memory,
+    MemorySpec,
     Modality,
     ModelInput,
     ObservationContext,
     SearchHit,
-    SenseMemConfig,
 )
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.models.openai_sdk import OpenAIModels
-from sensemem.types import AssetRef
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.models.openai_embedding import OpenAIEmbedder
+from sensemem.models.openai_speech import OpenAITranscriber
 
 if TYPE_CHECKING:
     from PIL.Image import Image
@@ -64,20 +66,31 @@ def _client(transport: httpx.Client) -> OpenAI:
     )
 
 
-def _model(
+def _embedder(
     client: OpenAI,
     *,
     max_pixels: int | None = 4096,
     request_format: Literal["input", "messages"] = "messages",
-) -> OpenAIModels:
-    return OpenAIModels(
+) -> OpenAIEmbedder:
+    return OpenAIEmbedder(
         client,
         embedding_dimension=2,
         embedding_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
-        generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
         embedding_request_format=request_format,
         image_max_pixels=max_pixels,
     )
+
+
+def _model(client: OpenAI, *, max_pixels: int | None = 4096) -> OpenAICompletion:
+    return OpenAICompletion(
+        client,
+        generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
+        image_max_pixels=max_pixels,
+    )
+
+
+def _transcriber(client: OpenAI, *, max_pixels: int | None = 4096) -> OpenAITranscriber:
+    return OpenAITranscriber(client)
 
 
 def _hit(asset: AssetRef) -> SearchHit:
@@ -118,7 +131,7 @@ def test_all_image_surfaces_send_bounded_jpeg_and_keep_original_source(
     request_format: Literal["input", "messages"],
 ) -> None:
     source = _image(tmp_path)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
     assert source.path is not None
     original = source.path.read_bytes()
 
@@ -148,9 +161,12 @@ def test_all_image_surfaces_send_bounded_jpeg_and_keep_original_source(
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
-        model = _model(_client(transport), request_format=request_format)
+        model = _model(
+            _client(transport),
+        )
+        model_embedding = _embedder(_client(transport), request_format=request_format)
         if operation == "embed":
-            assert model.embed((ModelInput(assets=(source,)),)) == ((1.0, 0.0),)
+            assert model_embedding.embed((ModelInput(assets=(source,)),)) == ((1.0, 0.0),)
         elif operation == "describe":
             assert model.describe((ModelInput(assets=(source,)),)) == ("one image",)
         elif operation == "form":
@@ -166,22 +182,22 @@ def test_transcoding_is_deterministic_per_source_and_does_not_reencode_small_ima
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     large, small = _image(tmp_path), _image(tmp_path, name="small", size=(16, 16))
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
-    solo = backend._image_transport_parts((large,), 4096)
-    mixed = backend._image_transport_parts((small, large, large), 4096)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
+    solo = media._image_transport_parts((large,), 4096)
+    mixed = media._image_transport_parts((small, large, large), 4096)
     assert solo == mixed
     assert small.id not in mixed
     assert small.path is not None
-    assert backend._bounded_image_url(small, 4096) is None
+    assert media._bounded_image_url(small, 4096) is None
 
 
 def test_pixel_bound_applies_even_when_original_bytes_fit(tmp_path: Path) -> None:
     source = _image(tmp_path)
     assert (
-        backend._inline_item_size(source, cast(int, source.size_bytes))
-        < backend._MAX_INLINE_MODEL_ITEM_BYTES
+        media._inline_item_size(source, cast(int, source.size_bytes))
+        < media._MAX_INLINE_MODEL_ITEM_BYTES
     )
-    url = backend._bounded_image_url(source, 4096)
+    url = media._bounded_image_url(source, 4096)
     assert url is not None and _pixels(url) <= 4096
 
 
@@ -189,8 +205,8 @@ def test_byte_limit_can_reduce_pixels_further_than_configured_maximum(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = _image(tmp_path)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 2500)
-    url = backend._bounded_image_url(source, 4096, max_encoded_bytes=2500)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 2500)
+    url = media._bounded_image_url(source, 4096, max_encoded_bytes=2500)
     assert url is not None and len(url) <= 2500
     assert _pixels(url) < 4096
 
@@ -199,8 +215,8 @@ def test_original_size_jpeg_reencoding_is_available_when_pixels_already_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = _image(tmp_path)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 100_000)
-    url = backend._bounded_image_url(source, 60_000, max_encoded_bytes=100_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 100_000)
+    url = media._bounded_image_url(source, 60_000, max_encoded_bytes=100_000)
     assert url is not None and len(url) <= 100_000
     assert _pixels(url) == 60_000
 
@@ -228,30 +244,49 @@ def test_same_source_is_converted_once_per_answer_request(
 
 
 def test_image_transport_recipe_separates_default_explicit_and_custom_spaces() -> None:
-    default = OpenAIModels(embedding_space="custom")
-    first = OpenAIModels(embedding_space="custom", image_max_pixels=4096)
-    second = OpenAIModels(embedding_space="custom", image_max_pixels=8192)
+    default = OpenAIEmbedder(embedding_space="custom")
+    first = OpenAIEmbedder(embedding_space="custom", image_max_pixels=4096)
+    second = OpenAIEmbedder(embedding_space="custom", image_max_pixels=8192)
     assert default.embedding_space == "custom"
     assert len({default.embedding_space, first.embedding_space, second.embedding_space}) == 3
-    assert len({default.vision_space, first.vision_space, second.vision_space}) == 3
-    assert len({default.formation_space, first.formation_space, second.formation_space}) == 3
-    assert OpenAIModels().vision_space == OpenAIModels(image_max_pixels=None).vision_space
-    assert OpenAIModels().formation_space == OpenAIModels(image_max_pixels=None).formation_space
+    assert (
+        len(
+            {
+                OpenAICompletion(image_max_pixels=pixels).vision_space
+                for pixels in (None, 4096, 8192)
+            }
+        )
+        == 3
+    )
+    assert (
+        len(
+            {
+                OpenAICompletion(image_max_pixels=pixels).formation_space
+                for pixels in (None, 4096, 8192)
+            }
+        )
+        == 3
+    )
+    assert OpenAICompletion().vision_space == OpenAICompletion(image_max_pixels=None).vision_space
+    assert (
+        OpenAICompletion().formation_space
+        == OpenAICompletion(image_max_pixels=None).formation_space
+    )
 
 
 @pytest.mark.parametrize("pixels", (True, 0, -1, 64_000_001, 4096.0))
 def test_image_bound_rejects_invalid_constructor_values(pixels: object) -> None:
     with pytest.raises(ValidationError, match="image_max_pixels"):
-        OpenAIModels(image_max_pixels=cast(Any, pixels))
+        OpenAICompletion(image_max_pixels=cast(Any, pixels))
 
 
 @pytest.mark.parametrize("slot", ("embedding", "generation", "vision", "formation"))
 def test_config_image_bounds_reach_each_model_role(slot: str) -> None:
     payload: dict[str, object] = {"embedding": {"provider": "openai", "api_key": "EMPTY"}}
     payload[slot] = {"provider": "openai", "api_key": "EMPTY", "image_max_pixels": 4096}
-    config = SenseMemConfig.model_validate(payload)
+    config = MemorySpec.model_validate(payload)
     model = (
-        configuration._build_embedding(config.embedding)
+        configuration._build_embedding(cast(configuration.OpenAIEmbeddingConfig, config.embedding))
         if slot == "embedding"
         else configuration._build_generation(
             cast(configuration.OpenAIGenerationConfig, config.generation)
@@ -263,7 +298,7 @@ def test_config_image_bounds_reach_each_model_role(slot: str) -> None:
         if slot == "formation"
         else configuration._build_vision(cast(configuration.OpenAIVisionConfig, config.vision))
     )
-    assert isinstance(model, OpenAIModels)
+    assert isinstance(model, OpenAIEmbedder if slot == "embedding" else OpenAICompletion)
     assert model._image_max_pixels == 4096
     model.close()
 
@@ -280,7 +315,7 @@ def test_source_pixel_limit_is_checked_before_decode(
 
     monkeypatch.setattr(image, "open", oversized_header)
     with pytest.raises(ModelError, match="decode bound") as failure:
-        backend._bounded_image_url(source, 4096)
+        media._bounded_image_url(source, 4096)
     assert failure.value.reason == "payload_too_large"
 
 
@@ -294,9 +329,10 @@ def test_image_integrity_changes_are_never_swallowed(tmp_path: Path, operation: 
         transport=httpx.MockTransport(lambda _request: pytest.fail("changed source was sent"))
     ) as transport:
         model = _model(_client(transport))
+        model_embedding = _embedder(_client(transport))
         with pytest.raises(ModelError) as failure:
             if operation == "embed":
-                model.embed((ModelInput(assets=(source,)),))
+                model_embedding.embed((ModelInput(assets=(source,)),))
             elif operation == "describe":
                 model.describe((ModelInput(assets=(source,)),))
             elif operation == "form":
@@ -310,10 +346,10 @@ def test_formation_bounds_repeated_transmitted_images_not_only_unique_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = _image(tmp_path)
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
-    url = backend._bounded_image_url(source, 4096)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
+    url = media._bounded_image_url(source, 4096)
     assert url is not None
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_BYTES", len(url) + 1)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_BYTES", len(url) + 1)
     with (
         httpx.Client(
             transport=httpx.MockTransport(
@@ -334,10 +370,11 @@ def test_an_undecodable_image_is_omitted_for_answers_and_refused_for_embedding(
     source.path.write_bytes(b"x" * cast(int, source.size_bytes))
     with httpx.Client(transport=httpx.MockTransport(lambda _request: _reply())) as transport:
         model = _model(_client(transport))
+        model_embedding = _embedder(_client(transport))
         result = model.answer(ModelInput(text="What?"), (_hit(source),))
         assert result.hits[0].assets == ()
         with pytest.raises(ModelError) as failure:
-            model.embed((ModelInput(assets=(source,)),))
+            model_embedding.embed((ModelInput(assets=(source,)),))
     assert failure.value.reason == "payload_too_large"
 
 
@@ -347,7 +384,7 @@ def test_opt_in_image_transcoding_keeps_the_durable_original(
     source = _image(tmp_path)
     assert source.path is not None
     original = source.path.read_bytes()
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
+    monkeypatch.setattr(media, "_MAX_INLINE_MODEL_ITEM_BYTES", 20_000)
     with (
         httpx.Client(
             transport=httpx.MockTransport(
@@ -356,7 +393,7 @@ def test_opt_in_image_transcoding_keeps_the_durable_original(
                 )
             )
         ) as transport,
-        Memory(tmp_path / "store", embedder=_model(_client(transport))) as memory,
+        Memory(tmp_path / "store", embedder=_embedder(_client(transport))) as memory,
     ):
         stored = memory.add(source.path)
         durable = memory.get(stored.id).assets[0]

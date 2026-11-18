@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import builtins
 import math
 from collections.abc import (
     Mapping,
@@ -16,7 +15,13 @@ from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import EMBEDDING_PARTS_ELIDED, EMBEDDING_TASK, mark_model_requests
 from sensemem.exceptions import ModelError, SenseMemError
-from sensemem.infrastructure.local.store import StoredEmbedding, StoredMemory
+from sensemem.identity import SpeakerSegment
+from sensemem.infrastructure.local.store import (
+    NamingDocuments,
+    NamingProjection,
+    StoredEmbedding,
+    StoredMemory,
+)
 from sensemem.kernel.content import (
     PreparedContent,
     PreparedMemory,
@@ -35,22 +40,17 @@ from sensemem.kernel.derived import (
     prepared_from_stored,
     retrieval_content,
     speech_identity_text,
-    stored_canonical_parts,
     without_speech_identities,
 )
 from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import OperationAssets
 from sensemem.kernel.routing import route_input
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.speech import Speech
 from sensemem.kernel.tracing import Traced
 from sensemem.models.base import EmbedTask, ModelInput
-from sensemem.types import (
-    MemoryKind,
-    Modality,
-    SpeakerSegment,
-)
+from sensemem.types import Modality, RecordKind
 
 DOCUMENT_TASK = EmbedTask.DOCUMENT.value
 
@@ -98,7 +98,7 @@ class Embedding(Traced):
         tracer: Tracer,
         storage: Storage,
         backends: Backends,
-        settings: Settings,
+        settings: ResolvedSettings,
         hydrator: Hydrator,
         speech: Speech,
     ) -> None:
@@ -160,8 +160,8 @@ class Embedding(Traced):
         except ModelError as error:
             if error.reason != _PAYLOAD_TOO_LARGE or len(parts) < 2:
                 raise
-        vectors: builtins.list[tuple[float, ...]] = []
-        kept: builtins.list[tuple[PreparedMemory, int, ModelInput]] = []
+        vectors: list[tuple[float, ...]] = []
+        kept: list[tuple[PreparedMemory, int, ModelInput]] = []
         for entry in parts:
             try:
                 vectors.extend(self.embed((entry[2],), task=EmbedTask.DOCUMENT))
@@ -175,7 +175,7 @@ class Embedding(Traced):
         # asset elides. Leaving the gap stores a memory with no lexical document at all, which is
         # a silent retrieval hole rather than the degradation this promises. Renumbering restores
         # the invariant; the part index orders a memory's keys and is not a handle on any input.
-        renumbered: builtins.list[tuple[PreparedMemory, int, ModelInput]] = []
+        renumbered: list[tuple[PreparedMemory, int, ModelInput]] = []
         next_part: dict[str, int] = {}
         for memory, _dropped_part, model_input in kept:
             position = next_part.get(memory.memory_id, 0)
@@ -196,7 +196,8 @@ class Embedding(Traced):
         _record_elided_parts(len(parts) - len(kept))
         return tuple(vectors), tuple(kept)
 
-    def route(self, prepared: PreparedContent) -> ModelInput:
+    def route_input(self, prepared: PreparedContent) -> ModelInput:
+        """Build one supported embedding input from leased content."""
         return route_input(
             prepared,
             self._hydrator.model_input(prepared),
@@ -204,7 +205,10 @@ class Embedding(Traced):
             "embedding",
         )
 
-    def content(self, prepared: PreparedContent, operation: OperationAssets) -> PreparedContent:
+    def with_transcript_fallback(
+        self, prepared: PreparedContent, operation: OperationAssets
+    ) -> PreparedContent:
+        """Derive speech text required by this embedder and its transcription route."""
         missing = prepared_modalities(prepared) - self._backends.embedding_capabilities
         if missing & {Modality.AUDIO, Modality.VIDEO} or self._speech.derives_transcripts(
             prepared.assets
@@ -212,33 +216,40 @@ class Embedding(Traced):
             return self._speech.with_audio_transcripts(prepared, operation)
         return prepared
 
-    def inputs(
+    def build_retrieval_inputs(
         self,
         prepared: PreparedContent,
         *,
         maximum_keys: int = MAX_RETRIEVAL_KEYS,
     ) -> tuple[ModelInput, ...]:
+        """Build ordered aggregate and atomic inputs used as retrieval keys."""
         prepared = retrieval_content(prepared)
-        aggregate = self.route(prepared)
-        text_parts = tuple(
-            value
-            for kind, value in prepared.canonical_parts
-            if kind in {"text", "audio_transcript", "visual_description"}
-        )
+        aggregate = self.route_input(prepared)
+        text_parts = tuple(value for kind, value in prepared.canonical_parts if kind != "asset")
         if prepared.text and prepared.text != "\n\n".join(text_parts):
             text_parts = (*text_parts, prepared.text)
-        if (
-            prepared.audio_transcript or prepared.visual_description
-        ) and Modality.TEXT not in self._backends.embedding_capabilities:
+        # Aggregate routing already rejects unsupported original text. Native-only backends
+        # may omit derivative text keys, including event interpretations, without losing it.
+        if Modality.TEXT not in self._backends.embedding_capabilities:
             text_parts = ()
         text_keys = tuple(key for text in text_parts for key in contextual_text_keys(text))
+        transcript_markers = {
+            value.partition("\n")[0]
+            for kind, value in prepared.canonical_parts
+            if kind == "audio_transcript"
+        }
         atomic = [
-            *(self.route(text_content(text)) for text in text_keys),
+            *(self.route_input(text_content(text)) for text in text_keys),
             *(
-                self.route(asset_content(asset))
+                self.route_input(asset_content(asset))
                 for asset in prepared.assets
                 if Modality(asset.modality) in self._backends.embedding_capabilities
-                or bool(asset.transcript and asset.transcript.strip())
+                # A typed record transcript already contributes its own text keys and can
+                # supersede the asset cache. Reusing that cache would retain an old reading.
+                or (
+                    bool(asset.transcript and asset.transcript.strip())
+                    and f"[transcript:{asset.asset_id}]" not in transcript_markers
+                )
             ),
         ]
         unique = tuple(dict.fromkeys(value for value in atomic if value != aggregate))
@@ -269,7 +280,7 @@ class Embedding(Traced):
         Oversized inputs can elide and renumber keys. A shortened layout cannot establish
         which original asset a surviving position encoded, so it supplies no association.
         """
-        inputs = self.inputs(prepared_from_stored(memory).content)
+        inputs = self.build_retrieval_inputs(prepared_from_stored(memory).content)
         by_part = {embedding.object_part: embedding for embedding in embeddings}
         if len(by_part) != len(inputs) or set(by_part) != set(range(len(inputs))):
             return ()
@@ -281,17 +292,18 @@ class Embedding(Traced):
             and value.assets[0].modality is Modality.IMAGE
         )
 
-    def prepare(
+    def prepare_document(
         self,
         memory: PreparedMemory,
         operation: OperationAssets,
     ) -> PreparedMemory:
+        """Add speaker attribution and required transcripts before document embedding."""
         content = memory.content
         if self._settings.index_speech and self._speech.answer_speech_assets(content.assets):
             content = self._speech.with_speech_identities(content, operation)
         return replace(
             memory,
-            content=self.content(content, operation),
+            content=self.with_transcript_fallback(content, operation),
         )
 
     def refresh_speaker_memories(
@@ -334,6 +346,15 @@ class Embedding(Traced):
             update_operation=True,
             candidate_speech=speech,
         )
+
+    def prepare_naming_documents(
+        self, documents: NamingDocuments, operation: OperationAssets
+    ) -> NamingProjection:
+        """Compute a naming update after SQLite has rolled back its candidate mutation."""
+        memories, embeddings = self.refresh_naming_memories(
+            dict(documents.names), documents.memories, dict(documents.speech), operation=operation
+        )
+        return NamingProjection(documents, memories, embeddings)
 
     def _refresh_speech_memories(
         self,
@@ -390,22 +411,22 @@ class Embedding(Traced):
                 # sections were embedded as their own atomic keys on the way in, and merging
                 # them here would key 2048-character windows of the whole document instead --
                 # on exactly the memories a stated name reindexes.
-                canonical_parts=stored_canonical_parts(base, memory.assets),
+                canonical_parts=tuple((part.kind, part.value) for part in memory.parts),
                 audio_transcript=has_stream_transcript(base, memory.assets),
                 visual_description=has_stream_description(base, memory.assets),
             )
-            prepared.append((memory, self.content(content, operation)))
+            prepared.append((memory, self.with_transcript_fallback(content, operation)))
 
         parts = tuple(
             (memory, content, object_part, model_input)
             for memory, content in prepared
-            for object_part, model_input in enumerate(self.inputs(content))
+            for object_part, model_input in enumerate(self.build_retrieval_inputs(content))
         )
         selector_maps = {
             memory.memory_id: text_selector_map(
                 content,
                 raw_observation=(
-                    memory.context is None or memory.context.kind is MemoryKind.OBSERVATION
+                    memory.context is None or memory.context.kind is RecordKind.OBSERVATION
                 ),
             )
             for memory, content in prepared
@@ -416,7 +437,8 @@ class Embedding(Traced):
         )
         now = datetime.now(timezone.utc)
         updated = tuple(
-            replace(memory, content=content.text, updated_at=now) for memory, content in prepared
+            replace(memory, content=content.text, parts=content.parts, updated_at=now)
+            for memory, content in prepared
         )
         embeddings = tuple(
             StoredEmbedding(

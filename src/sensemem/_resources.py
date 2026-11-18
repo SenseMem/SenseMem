@@ -1,6 +1,5 @@
 """Ownership and cleanup for nested resource compositions, independent of the kernel."""
 
-import builtins
 from collections.abc import Sequence
 from contextlib import suppress
 from typing import Protocol, runtime_checkable
@@ -17,7 +16,7 @@ class ResourceGroup(Protocol):
 
 def unique_resources(resources: Sequence[Closable]) -> tuple[Closable, ...]:
     seen: set[int] = set()
-    unique: builtins.list[Closable] = []
+    unique: list[Closable] = []
     pending = list(reversed(resources))
     while pending:
         resource = pending.pop()

@@ -15,10 +15,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from sensemem import AsyncMemory, Memory, Modality, SenseMemConfig
+from sensemem import AsyncMemory, Memory, MemorySpec, Modality
 from sensemem.benchmarks import eval as evaluation
+from sensemem.benchmarks import eval_backends as eval_backends_module
 from sensemem.benchmarks import eval_leaderboard as aml
-from sensemem.benchmarks.eval_artifacts import _atomic_replace, _json_bytes
+from sensemem.benchmarks.artifact_io import encode_json_bytes, replace_artifact_files
+from sensemem.configuration import OpenAIEmbeddingConfig
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
 from sensemem.models.base import EmbedTask, ModelInput
 
@@ -226,9 +228,9 @@ def test_failed_acknowledgement_can_be_retried_without_duplicates(
         if fail and any(b'"complete":true' in content for _, content in files):
             fail = False
             raise OSError("simulated receipt failure")
-        _atomic_replace(files)
+        replace_artifact_files(files)
 
-    monkeypatch.setattr(aml, "_atomic_replace", interrupted)
+    monkeypatch.setattr(aml, "replace_artifact_files", interrupted)
     app = aml.create_app(data_root=tmp_path, memory_factory=memory_factory, api_key="secret")
     with TestClient(app, raise_server_exceptions=False) as client:
         assert client.post("/add", headers=HEADERS, json=payload()).status_code == 500
@@ -265,15 +267,15 @@ def test_slow_source_persistence_does_not_block_other_users(
     def serialize(value: object) -> bytes:
         if stage == "serialization" and value == text:
             pause()
-        return _json_bytes(value)
+        return encode_json_bytes(value)
 
     def write(files: Sequence[tuple[Path, bytes]]) -> None:
         if stage == "write" and files[0][0].parent == tmp_path / "sources" / aml._digest("slow"):
             pause()
-        _atomic_replace(files)
+        replace_artifact_files(files)
 
-    monkeypatch.setattr(aml, "_json_bytes", serialize)
-    monkeypatch.setattr(aml, "_atomic_replace", write)
+    monkeypatch.setattr(aml, "encode_json_bytes", serialize)
+    monkeypatch.setattr(aml, "replace_artifact_files", write)
     app = aml.create_app(data_root=tmp_path, memory_factory=memory_factory, api_key="secret")
     with TestClient(app) as client, ThreadPoolExecutor(max_workers=3) as workers:
         pending = workers.submit(
@@ -331,7 +333,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
 ) -> None:
     import uvicorn
 
-    configs: list[SenseMemConfig] = []
+    configs: list[MemorySpec] = []
     closed: list[bool] = []
     configuration = tmp_path / "config.yaml"
     configuration.write_text(
@@ -346,7 +348,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
                 closing(DataDirectoryLock(tmp_path / "data")),
             ):
                 pass
-            configs.append(cast(SenseMemConfig, kwargs["memory_config"]))
+            configs.append(cast(MemorySpec, kwargs["memory_config"]))
 
         def memory(self, path: Path) -> AsyncMemory:
             return memory_factory(path)
@@ -362,7 +364,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
             assert client.post("/add", headers=HEADERS, json=payload()).status_code == 200
             assert len(search(client)) == 1
 
-    monkeypatch.setattr(evaluation, "_BackendPool", Pool)
+    monkeypatch.setattr(eval_backends_module, "_BackendPool", Pool)
     monkeypatch.setattr(uvicorn, "run", run)
     monkeypatch.setenv("SENSEMEM_AML_API_KEY", "secret")
     for name, value in environment.items():
@@ -382,7 +384,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
         == 0
     )
     assert configs[0].generation is None
-    assert configs[0].embedding.provider == "openai"
+    assert isinstance(configs[0].embedding, OpenAIEmbeddingConfig)
     assert closed == [True]
     with closing(DataDirectoryLock(tmp_path / "data")):
         pass
@@ -397,7 +399,7 @@ def test_cli_refuses_an_owned_root_before_loading_models(
     def load(*args: object, **kwargs: object) -> None:
         raise AssertionError("an owned root must fail before any backend is loaded")
 
-    monkeypatch.setattr(evaluation, "_BackendPool", load)
+    monkeypatch.setattr(eval_backends_module, "_BackendPool", load)
     with closing(DataDirectoryLock(tmp_path / "data")), pytest.raises(DataDirectoryInUseError):
         aml.main(
             [
@@ -439,7 +441,7 @@ def test_cli_releases_root_after_startup_failure(
     def run(app: object, **kwargs: object) -> None:
         raise RuntimeError("startup failed")
 
-    monkeypatch.setattr(evaluation, "_BackendPool", Pool)
+    monkeypatch.setattr(eval_backends_module, "_BackendPool", Pool)
     monkeypatch.setattr(uvicorn, "run", run)
     with pytest.raises(RuntimeError, match="startup failed"):
         aml.main(

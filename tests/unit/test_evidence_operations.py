@@ -10,7 +10,6 @@ from typing import Literal, cast
 import pytest
 
 from sensemem.models._evidence_operations import (
-    EVIDENCE_OPERATION_INSTRUCTION,
     EVIDENCE_OPERATION_PARAMETERS,
     EVIDENCE_OPERATION_TOOL_NAME,
     EvidenceAnchor,
@@ -29,7 +28,9 @@ from sensemem.models._evidence_operations import (
     execute_evidence_operation,
     make_evidence_catalogue,
 )
-from sensemem.types import AbstentionReason, SearchHit
+from sensemem.prompts.evidence_operations import EVIDENCE_OPERATION_INSTRUCTION
+from sensemem.records import SearchHit
+from sensemem.types import AbstentionReason
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 QUESTION = (

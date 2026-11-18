@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sensemem import EmbedTask, Memory, MemoryConfig, Modality, ModelInput
+from sensemem import EmbedTask, Memory, MemorySettings, Modality, ModelInput
 from sensemem.infrastructure.local.store import StoredMemory
 from sensemem.kernel.ranking import lexical_query_terms, lexical_relevance
 
@@ -176,7 +176,7 @@ def test_an_incidental_surface_fragment_cannot_gain_relevance_admission(tmp_path
     with Memory(
         tmp_path,
         embedder=_NegationEmbedder(cosine=0.45),
-        config=MemoryConfig(minimum_relevance=0.55),
+        settings=MemorySettings(minimum_relevance=0.55),
     ) as memory:
         memory.add("安静的酒店\uff0c适合休息")
         memory.add("非常热闹的酒店\uff0c适合聚会")

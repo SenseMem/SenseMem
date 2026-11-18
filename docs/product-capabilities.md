@@ -50,8 +50,8 @@ evidence and use the same configured model stages.
 | Typed memory | Entities, events, states, relations, affect, and traits derived from observations | Formation backend; [typed memory](typed-memory.md) |
 | Memory maintenance | Consolidation, correction, reinforcement, reversible forgetting, and audit history | Consolidation backend for proposals; [memory management](memory-management.md) |
 | Time and place | Event intervals, valid/known time, symbolic places, and same-frame spatial filters | Caller-supplied context; [time and decay](memory-types-time-and-decay.md) |
-| Local identities | Voice/face observations, naming, corroborated linking, unlinking, and erasure | Speech and/or face backend; [identity API](api/python-identity.md) |
-| Continuous input | Update/final/cancel lifecycles for audio, vision, and interaction streams | Host-normalized packets; [streaming](omni-streaming-and-interaction-memory.md) |
+| Local identities | Voice/face observations, sourced naming, host-confirmed linking, persistent unlink corrections, and erasure | Speech and/or face backend; [identity API](api/python-identity.md) |
+| Continuous input | Automatic complete-event segmentation of audio/video, plus explicit update/final/cancel capture | Event segmentation backend or host-normalized finality; [streaming](omni-streaming-and-interaction-memory.md) |
 | Data lifecycle | Host-recorded consent, subject export, deletion, and retention passes | [Data-subject operations](api/python-identity.md#data-subject-rights) |
 
 Enable optional capabilities independently. Modality coverage follows the selected backends'
@@ -83,7 +83,9 @@ together. See [deployment](deployment.md) and [operations](operations.md).
 
 Phones, glasses, robots, and software tools can supply observations through application
 adapters. The host handles capture, device drivers, synchronization, localization, goals,
-and actions. SenseMem handles memory semantics, evidence, retrieval, and context construction.
+and actions. SenseMem handles semantic event segmentation, memory semantics, evidence, retrieval,
+and context construction. Automatic segmentation takes short encoded media chunks; boundary
+precision follows chunk edges.
 Spatial filters compare coordinates within a declared frame.
 
 ## Compose and extend

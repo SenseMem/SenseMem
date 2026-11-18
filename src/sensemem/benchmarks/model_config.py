@@ -11,9 +11,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from sensemem._validation import absolute_http_url
 from sensemem.benchmarks.eval_regression import PERFORMANCE_BUDGET_NAMES
-from sensemem.configuration import _absolute_http_url
-from sensemem.models.openai_sdk import DEFAULT_GENERATION_MODEL
+from sensemem.models._openai_defaults import DEFAULT_GENERATION_MODEL
 from sensemem.types import AnswerPolicy, Modality
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -37,7 +37,7 @@ class ModelConfig:
     generation_min_video_seconds: float | None = None
 
     def __post_init__(self) -> None:
-        if not _absolute_http_url(self.generation_base_url):
+        if not absolute_http_url(self.generation_base_url):
             raise ValueError("generation_base_url must be an absolute http(s) URL")
         if not self.generation_model.strip():
             raise ValueError("generation_model must not be blank")
@@ -129,7 +129,7 @@ class ServerMetricsOverrides(_HarnessModel):
     @field_validator("generation_url", "embedding_url")
     @classmethod
     def _absolute_metrics_url(cls, value: str | None) -> str | None:
-        if value is not None and not _absolute_http_url(value):
+        if value is not None and not absolute_http_url(value):
             raise ValueError("server metrics URL must be an absolute HTTP or HTTPS URL")
         return value
 
@@ -202,7 +202,7 @@ class HarnessOverrides(_HarnessModel):
     """The `benchmark:` section of a harness configuration file.
 
     Every field is optional and every field wins over the matching environment variable. The
-    section is absent from `SenseMemConfig` on purpose: judging and corpus acquisition are
+    section is absent from `MemorySpec` on purpose: judging and corpus acquisition are
     harness concerns, and putting them in the product schema would make them part of the public
     contract. Nothing that describes a model endpoint appears here -- not even the short-video
     floor, which is `generation.min_video_seconds` in the product block -- because a setting with

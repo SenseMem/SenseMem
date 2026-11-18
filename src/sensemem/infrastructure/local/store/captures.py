@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 
+from sensemem.infrastructure.local.store._capture_queue import enqueue_capture
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
     datetime_text,
@@ -13,9 +14,9 @@ from sensemem.infrastructure.local.store._codec import (
     row_text,
 )
 from sensemem.infrastructure.local.store._connections import Connections
-from sensemem.infrastructure.local.store._outbox import enqueue_capture
+from sensemem.infrastructure.local.store._embeddings import write_embeddings
 from sensemem.infrastructure.local.store.media import commit_speech_plans
-from sensemem.infrastructure.local.store.records import write_embeddings, write_memory
+from sensemem.infrastructure.local.store.records import write_memory
 from sensemem.infrastructure.local.store.rows import (
     SpeechPlan,
     StoredEmbedding,
@@ -23,7 +24,7 @@ from sensemem.infrastructure.local.store.rows import (
     require_aware,
     require_identifier,
 )
-from sensemem.types import PendingCapture
+from sensemem.records import PendingCapture
 
 
 class CaptureQueue:
@@ -41,12 +42,13 @@ class CaptureQueue:
         memories: Iterable[StoredMemory],
         *,
         enqueued_at: datetime,
+        replace_existing: bool = False,
     ) -> tuple[str, ...]:
         """Commit new captured records, their media, their context, and their queue rows.
 
-        Returns the IDs this call enqueued. A memory that already exists is left exactly as it is,
-        so capturing content that was already added or already queued neither rewrites derived
-        content nor re-enqueues work.
+        Returns the IDs this call enqueued. Ordinary duplicate captures remain unchanged.
+        An explicit derivation refresh replaces content, withdraws old vectors, and re-enqueues
+        settlement in the same transaction.
         """
         supplied_memories, _embeddings, supplied_by_memory = prepare_write_batch(memories, ())
         if not supplied_memories:
@@ -63,7 +65,14 @@ class CaptureQueue:
                     ).fetchone()
                     is not None
                 ):
-                    continue
+                    if not replace_existing:
+                        continue
+                    connection.execute(
+                        "DELETE FROM embeddings WHERE memory_id = ?", (memory.memory_id,)
+                    )
+                    connection.execute(
+                        "DELETE FROM capture_queue WHERE memory_id = ?", (memory.memory_id,)
+                    )
                 write_memory(
                     connection,
                     memory,
@@ -80,12 +89,13 @@ class CaptureQueue:
         memory: StoredMemory,
         embeddings: Iterable[StoredEmbedding] = (),
         *,
+        enqueued_at: datetime,
         speech_plans: Sequence[SpeechPlan] = (),
     ) -> bool:
         """Store one captured record's derived content and vectors while it stays queued.
 
-        Returns false when the record is not queued, so a settlement that lost a race writes
-        nothing. The queue row is removed by `complete_captures` once every deferred stage,
+        Returns false when this queue version was removed or refreshed, so an older settlement
+        cannot overwrite newer captured content. The queue row is removed once every deferred stage,
         formation included, has succeeded; a retry after a later failure re-runs this write, which
         is an idempotent upsert of the same derived content and vectors.
         """
@@ -93,10 +103,11 @@ class CaptureQueue:
             (memory,),
             embeddings,
         )
+        require_aware(enqueued_at, "enqueued_at")
         with self._connections.transaction() as connection:
             queued = connection.execute(
-                "SELECT 1 FROM capture_queue WHERE memory_id = ?",
-                (memory.memory_id,),
+                "SELECT 1 FROM capture_queue WHERE memory_id = ? AND enqueued_at = ?",
+                (memory.memory_id, datetime_text(enqueued_at)),
             ).fetchone()
             if queued is None:
                 return False
@@ -131,18 +142,59 @@ class CaptureQueue:
                 ).rowcount
         return removed
 
-    def record_capture_failure(self, memory_id: str, error: str) -> None:
+    def complete_settlements(
+        self,
+        captures: Mapping[str, datetime],
+        *,
+        through: bool = False,
+    ) -> tuple[str, ...]:
+        """Complete only the queue versions the caller processed, returning their IDs.
+
+        A blocking add uses its record's update time as an inclusive boundary: it may finish
+        an older formation debt, but must leave a later capture refresh queued.
+        """
+        for memory_id, enqueued_at in captures.items():
+            require_identifier(memory_id, "memory_id")
+            require_aware(enqueued_at, "enqueued_at")
+        if not captures:
+            return ()
+        completed: list[str] = []
+        comparison = "<=" if through else "="
+        with self._connections.transaction() as connection:
+            for memory_id, enqueued_at in captures.items():
+                if connection.execute(
+                    f"DELETE FROM capture_queue WHERE memory_id = ? AND enqueued_at {comparison} ?",
+                    (memory_id, datetime_text(enqueued_at)),
+                ).rowcount:
+                    completed.append(memory_id)
+        return tuple(completed)
+
+    def record_capture_failure(
+        self,
+        memory_id: str,
+        error: str,
+        *,
+        enqueued_at: datetime | None = None,
+    ) -> bool:
         """Count one failed settlement and store its reason, leaving the row queued."""
         require_identifier(memory_id, "memory_id")
+        if enqueued_at is not None:
+            require_aware(enqueued_at, "enqueued_at")
+        version = "" if enqueued_at is None else "AND enqueued_at = ?"
         with self._connections.transaction() as connection:
-            connection.execute(
-                """
+            updated = connection.execute(
+                f"""
                 UPDATE capture_queue
                 SET attempts = attempts + 1, last_error = ?
-                WHERE memory_id = ?
+                WHERE memory_id = ? {version}
                 """,
-                (error.strip() or None, memory_id),
-            )
+                (
+                    error.strip() or None,
+                    memory_id,
+                    *(() if enqueued_at is None else (datetime_text(enqueued_at),)),
+                ),
+            ).rowcount
+        return bool(updated)
 
     def failed_capture_ids(
         self,
@@ -172,6 +224,7 @@ class CaptureQueue:
         limit: int = 100,
         memory_ids: Sequence[str] | None = None,
         max_attempts: int | None = None,
+        after: tuple[datetime, str] | None = None,
     ) -> tuple[PendingCapture, ...]:
         """Return queued captures in enqueue order, optionally restricted or attempt-capped.
 
@@ -212,6 +265,8 @@ class CaptureQueue:
                 )
                 if max_attempts is not None:
                     clauses.append("attempts < ?")
+                if after is not None:
+                    clauses.append("(enqueued_at > ? OR (enqueued_at = ? AND memory_id > ?))")
                 restriction = f"WHERE {' AND '.join(clauses)}" if clauses else ""
                 queued.extend(
                     PendingCapture(
@@ -237,6 +292,11 @@ class CaptureQueue:
                         (
                             *(batch or ()),
                             *(() if max_attempts is None else (max_attempts,)),
+                            *(
+                                ()
+                                if after is None
+                                else (datetime_text(after[0]), datetime_text(after[0]), after[1])
+                            ),
                             limit,
                         ),
                     ).fetchall()

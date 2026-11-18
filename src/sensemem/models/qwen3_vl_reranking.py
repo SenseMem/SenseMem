@@ -15,16 +15,13 @@ from typing import Protocol, TypedDict, cast
 
 from sensemem._telemetry import mark_model_requests, record_unmetered_model_usage
 from sensemem._validation import commit_revision, nonempty_text, optional_text, positive_int
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models.base import ModelInput
 from sensemem.models.reranking import reranking_inputs, reranking_scores
-from sensemem.types import AssetRef, Modality
+from sensemem.prompts import reranking as reranking_prompts
+from sensemem.types import Modality
 
-_INSTRUCTION = "Given a search query, retrieve relevant candidates that answer the query."
-_SYSTEM = (
-    "Judge whether the Document meets the requirements based on the Query and the Instruct "
-    'provided. Note that the answer can only be "yes" or "no".'
-)
 _RECIPE = "qwen3-vl-multimodal-vllm-pooling-v1"
 
 
@@ -136,15 +133,6 @@ class _VideoCache:
         with self._lock:
             self._entries.clear()
             self._bytes = 0
-
-
-def _prompt(query: str, document: str) -> str:
-    # The publisher's reranker_template.jinja; source data are never interpreted as a template.
-    return (
-        f"<|im_start|>system\n{_SYSTEM}<|im_end|>\n"
-        f"<|im_start|>user\n<Instruct>: {_INSTRUCTION}<Query>:{query}\n"
-        f"<Document>:{document}<|im_end|>\n<|im_start|>assistant\n"
-    )
 
 
 def _input_text(value: ModelInput) -> str:
@@ -308,7 +296,7 @@ class _VLLMScoringEngine:
                         reason="payload_too_large",
                         stage="reranking",
                     )
-            prompt = _prompt(query_text, _input_text(document))
+            prompt = reranking_prompts.qwen3_vl_prompt(query_text, _input_text(document))
             if len(self._tokenizer.encode(prompt, add_special_tokens=False)) > max_length:
                 raise ModelError(
                     "reranking pair exceeds its context budget",
@@ -329,8 +317,15 @@ class _VLLMScoringEngine:
                         request_count += 1
                         mark_model_requests(request_count, token_usage_expected=0)
                         outputs = self._llm.classify(rows, use_tqdm=False)
-                    values = [reranking_scores(output.outputs.probs, 1)[0] for output in outputs]
-                    scores.extend(reranking_scores(values, len(rows)))
+                    if len(outputs) != len(rows):
+                        raise ModelError(
+                            "reranking model returned the wrong number of scores",
+                            reason="response_invalid",
+                            stage="reranking",
+                        )
+                    scores.extend(
+                        reranking_scores(output.outputs.probs, 1)[0] for output in outputs
+                    )
                     record_unmetered_model_usage(request_count=request_count)
             return scores
 
@@ -455,7 +450,8 @@ class Qwen3VLReranker:
     @property
     def reranking_model(self) -> str:
         recipe = hashlib.sha256(
-            f"{_RECIPE}{_SYSTEM}{_INSTRUCTION}:{self._image_max_pixels}:{self._video_frames}".encode()
+            f"{_RECIPE}{reranking_prompts.QWEN3_VL_SYSTEM}{reranking_prompts.QWEN3_VL_INSTRUCTION}:"
+            f"{self._image_max_pixels}:{self._video_frames}".encode()
         ).hexdigest()[:16]
         return f"{self._model_id}@{self._revision}:{recipe}:max_length={self._max_length}"
 

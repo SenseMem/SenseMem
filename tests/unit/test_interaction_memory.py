@@ -13,14 +13,15 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryRecord,
+    MemorySettings,
     MemoryTrigger,
     Modality,
     ObservationContext,
+    QueryFailure,
+    RecordKind,
     RetrievalScope,
 )
 
@@ -38,7 +39,7 @@ class InteractionFormer:
                 results.append(
                     (
                         FormationProposal(
-                            kind=MemoryKind.TRAIT,
+                            kind=RecordKind.TRAIT,
                             content=f"The user tends to prefer {style} responses",
                             basis=(
                                 item.context.basis
@@ -56,7 +57,7 @@ class InteractionFormer:
             results.append(
                 (
                     FormationProposal(
-                        kind=MemoryKind.AFFECT,
+                        kind=RecordKind.AFFECT,
                         content="Text affect cue: calm",
                         subject="user",
                         value="calm",
@@ -66,7 +67,7 @@ class InteractionFormer:
                         confidence=0.8,
                     ),
                     FormationProposal(
-                        kind=MemoryKind.AFFECT,
+                        kind=RecordKind.AFFECT,
                         content="Audio affect cue: tense",
                         subject="user",
                         value="tense",
@@ -97,6 +98,7 @@ class CueReinforcer:
         evidence: Sequence[MemoryRecord],
         *,
         trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
         del trigger
         return (
@@ -119,7 +121,7 @@ def _cue_memory(root: Path) -> Memory:
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
         consolidator=CueConsolidator(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     )
 
 
@@ -127,7 +129,7 @@ def _affect_ids(memory: Memory) -> tuple[str, ...]:
     return tuple(
         record.id
         for record in memory.list(limit=100).items
-        if record.context is not None and record.context.kind is MemoryKind.AFFECT
+        if record.context is not None and record.context.kind is RecordKind.AFFECT
     )
 
 
@@ -178,13 +180,13 @@ def test_multimodal_affect_keeps_conflicting_cues_separate(tmp_path: Path) -> No
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(("I am fine", Blob(b"voice", "audio/wav")))
         affect = [
             hit.context
             for hit in memory.search("affect cue", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.AFFECT
+            if hit.context is not None and hit.context.kind is RecordKind.AFFECT
         ]
 
         assert {value.cue_modality for value in affect} == {
@@ -199,11 +201,11 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("trait evidence one")
         assert not any(
-            hit.context and hit.context.kind is MemoryKind.TRAIT
+            hit.context and hit.context.kind is RecordKind.TRAIT
             for hit in memory.search("concise responses", limit=10).hits
         )
 
@@ -211,7 +213,7 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         traits = [
             hit.context
             for hit in memory.search("concise responses", limit=10).hits
-            if hit.context and hit.context.kind is MemoryKind.TRAIT
+            if hit.context and hit.context.kind is RecordKind.TRAIT
         ]
         assert len(traits) == 1
         assert len(traits[0].evidence_ids) == 2
@@ -220,14 +222,14 @@ def test_a_trait_needs_a_statement_or_two_independent_observations(tmp_path: Pat
         tmp_path / "statement",
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(
             "trait: I prefer concise responses",
             context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
         )
         assert any(
-            hit.context and hit.context.kind is MemoryKind.TRAIT
+            hit.context and hit.context.kind is RecordKind.TRAIT
             for hit in memory.search("concise responses", limit=10).hits
         )
 
@@ -237,7 +239,7 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(
             "trait evidence one",
@@ -248,7 +250,7 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
             context=ObservationContext(source_id="same-session"),
         )
         assert not any(
-            hit.context and hit.context.kind is MemoryKind.TRAIT
+            hit.context and hit.context.kind is RecordKind.TRAIT
             for hit in memory.search("concise responses", limit=10).hits
         )
 
@@ -257,14 +259,14 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
             context=ObservationContext(source_id="other-session"),
         )
         assert any(
-            hit.context and hit.context.kind is MemoryKind.TRAIT
+            hit.context and hit.context.kind is RecordKind.TRAIT
             for hit in memory.search("concise responses", limit=10).hits
         )
         known_before_delete = datetime.now(timezone.utc)
 
         assert memory.delete(independent.id) is True
         assert not any(
-            hit.context and hit.context.kind is MemoryKind.TRAIT
+            hit.context and hit.context.kind is RecordKind.TRAIT
             for hit in memory.search("concise responses", limit=10).hits
         )
         historical = next(
@@ -274,7 +276,7 @@ def test_trait_support_counts_independent_sources_and_retracts_on_delete(tmp_pat
                 limit=10,
                 scope=RetrievalScope(known_at=known_before_delete),
             ).hits
-            if hit.context and hit.context.kind is MemoryKind.TRAIT
+            if hit.context and hit.context.kind is RecordKind.TRAIT
         )
         assert independent.id in historical.evidence_ids
         assert memory.get(first.id) == first
@@ -285,7 +287,7 @@ def test_explicit_typed_trait_statement_supersedes_inferred_trait(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("trait evidence one")
         memory.add("trait evidence two")
@@ -297,7 +299,7 @@ def test_explicit_typed_trait_statement_supersedes_inferred_trait(tmp_path: Path
         values = {
             hit.context.value
             for hit in memory.search("responses", limit=10).hits
-            if hit.context and hit.context.kind is MemoryKind.TRAIT
+            if hit.context and hit.context.kind is RecordKind.TRAIT
         }
 
         assert values == {"detailed"}
@@ -308,7 +310,7 @@ def test_explicit_trait_precedence_is_insertion_order_independent(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(
             "trait: I prefer concise responses",
@@ -320,7 +322,7 @@ def test_explicit_trait_precedence_is_insertion_order_independent(tmp_path: Path
         traits = {
             (hit.context.value, hit.context.basis)
             for hit in memory.search("responses", limit=10).hits
-            if hit.context and hit.context.kind is MemoryKind.TRAIT
+            if hit.context and hit.context.kind is RecordKind.TRAIT
         }
 
     assert traits == {("concise", EvidenceBasis.USER_STATEMENT)}
@@ -337,7 +339,7 @@ def test_explicit_trait_can_evolve_back_to_an_earlier_value(tmp_path: Path) -> N
         tmp_path,
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add("trait: concise", occurred_at=january, context=statement)
         memory.add("trait: detailed", occurred_at=february, context=statement)
@@ -350,7 +352,7 @@ def test_explicit_trait_can_evolve_back_to_an_earlier_value(tmp_path: Path) -> N
                 limit=10,
                 scope=RetrievalScope(valid_at=april),
             ).hits
-            if hit.context and hit.context.kind is MemoryKind.TRAIT
+            if hit.context and hit.context.kind is RecordKind.TRAIT
         }
 
     assert traits == {"concise"}
@@ -462,7 +464,7 @@ def test_reinforcing_one_joint_member_does_not_create_an_alternative(tmp_path: P
         embedder=TinyEmbedder(),
         former=InteractionFormer(),
         consolidator=CueReinforcer(cues[0]),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         raw = memory.add(
             ("the user paused", Blob(b"pause", "audio/wav")),

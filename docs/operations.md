@@ -62,12 +62,16 @@ Run end-to-end canaries in a separate directory.
 A backup preserves queued work without making it searchable. Inspect through the existing owner:
 
 ```python
-for item in memory.pending_captures(limit=100):
-    print(item.memory_id, item.awaiting, item.attempts, item.last_error)
+cursor = None
+while page := memory.pending_captures(limit=100, cursor=cursor):
+    for item in page:
+        print(item.memory_id, item.awaiting, item.attempts, item.last_error)
+    cursor = page[-1].cursor
 ```
 
 Enrichment rows lack vectors; formation rows are searchable and owe only typed formation.
-The page is bounded; a full page may indicate more backlog. Track enqueue age, attempts, and stage.
+Each page is bounded; its cursor remains usable after the preceding record leaves the queue.
+Track enqueue age, attempts, and stage.
 Call settle only during the host's approved model-work window. Failed batches can still settle
 other rows. A record at the default three-attempt ceiling remains queued; fix its cause and raise
 the ceiling or name it explicitly with `settle(memory_ids=[...])`.
@@ -177,7 +181,8 @@ Original media, canonical FP32 vectors, and composite/text embedding keys remain
 4. Reopen with compatible identities or replay sources into a new directory.
 5. Verify records, media, retrieval, and telemetry before traffic.
 
-Only SQLite schema 21 is accepted. Startup validates tables, constraints, provenance, and policy
+Only SQLite schema 25 is accepted. Selector-piece ordering and outbox pagination use their primary
+keys without duplicate secondary indexes. Startup validates tables, constraints, provenance, and policy
 markers; it performs no migration or automatic re-embedding. Initial face setup is allowed only
 without existing face-analysis/space markers and pins both face identities together.
 Operation logs require current complete payloads; incompatible logs raise StorageError.
@@ -186,6 +191,7 @@ Operation logs require current complete payloads; incompatible logs raise Storag
 | --- | --- |
 | Embedding space/dimension | Replay into a fresh directory |
 | Persisted transcription/face space | Keep a compatible backend or replay |
+| Ingestion stage recipe changed or missing | Replay into a fresh directory |
 | Current-recipe quantization | Rebuild from stored FP32 vectors |
 | Missing Zvec | Reopen and rebuild from SQLite |
 | Evidence projection policy | Fresh directory with the intended policy |

@@ -15,7 +15,7 @@ from sensemem import (
     AnswerPolicy,
     AnswerResult,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     RetrievalMode,
@@ -104,7 +104,7 @@ def test_predicate_reveals_a_bridge_already_in_the_unshown_candidate_pool(tmp_pa
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             recall_query_expansion=True,
             recall_rounds=3,
@@ -139,7 +139,7 @@ def test_repeating_a_predicate_uses_remaining_abstention_rounds_without_new_sear
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             recall_query_expansion=True,
             recall_rounds=4,
@@ -172,7 +172,7 @@ def test_confident_answer_does_not_trigger_another_plan(tmp_path: Path) -> None:
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             recall_query_expansion=True,
             recall_rounds=3,
@@ -216,7 +216,7 @@ def test_shared_query_budget_matches_the_planner_capability_and_runtime(
         tmp_path,
         embedder=models,
         answerer=models,
-        config=MemoryConfig(
+        settings=MemorySettings(
             recall_planning=True,
             recall_query_expansion=True,
             recall_rounds=limit // 6 + 1,

@@ -61,12 +61,6 @@ def parse_choice(response: str, choices: Sequence[str] = ()) -> str | None:
     return None
 
 
-def exact_match(prediction: str, references: Sequence[str]) -> float:
-    """Return normalized exact match across accepted references."""
-    normalized = normalize_text(prediction)
-    return float(any(normalized == normalize_text(reference) for reference in references))
-
-
 def normalize_text(value: str) -> str:
     """Normalize case, Unicode, punctuation, and whitespace without language-specific stemming."""
     normalized = unicodedata.normalize("NFKC", value).casefold()

@@ -54,11 +54,16 @@ Set `OPENAI_API_KEY` in the host environment. Each OpenAI slot can instead decla
 endpoint, credentials, timeout, and retries; see [provider fields](configuration/providers.md).
 Unknown fields/providers and out-of-range values are rejected. Declarative composition owns its
 adapters. `AsyncMemory.from_config()` accepts the same shape; use
-`SenseMemConfig.model_validate()` to validate without opening storage.
+`MemorySpec.model_validate()` to validate without opening storage.
+
+For third-party implementations, use [application plugin factories](configuration/plugins.md).
+`MemorySpec` accepts either a bundled `provider` or a registered `factory` in each backend
+field, and a separate `tools` list. The host selects which tools a fixed pipeline or
+an [optional agent](api/python-agents.md) invokes.
 
 ### Loading a configuration file
 
-The SDK accepts a mapping or `SenseMemConfig`. The host decodes files:
+The SDK accepts a mapping or `MemorySpec`. The host decodes files:
 
 ```python
 import json
@@ -100,7 +105,7 @@ composition; use the [quality gate](model-quality.md) to qualify it for your tas
 
 | Construction | Use when |
 | --- | --- |
-| `Memory.from_config()` | Bundled providers and pure data are enough |
+| `Memory.from_config()` | Bundled providers or explicitly registered application factories |
 | `Memory.from_plugins()` | Constructed backends should travel as one `MemoryPlugins` value |
 | `Memory(...)` | The host injects custom backends or owns provider clients |
 
@@ -109,11 +114,11 @@ composition; use the [quality gate](model-quality.md) to qualify it for your tas
 ```python
 from openai import OpenAI
 
-from sensemem import Memory, OpenAIModels, SentenceTransformersEmbedder
+from sensemem import Memory, OpenAICompletion, SentenceTransformersEmbedder
 
 with OpenAI(timeout=30.0, max_retries=3) as client:
-    models = OpenAIModels(
-        generation_client=client,
+    models = OpenAICompletion(
+        client=client,
         generation_model="gpt-5-mini-2025-08-07",
     )
     with Memory(
@@ -125,12 +130,12 @@ with OpenAI(timeout=30.0, max_retries=3) as client:
         print(memory.ask("Where is the spare key?").answer)
 ```
 
-`Memory` closes each distinct adapter once. `OpenAIModels` leaves caller-supplied clients open;
-the outer context owns that client. One compatible adapter may fill several slots, such as
-`answerer`, `former`, and `consolidator`. Pass policy through `config=MemoryConfig(...)`
+`Memory` closes each distinct adapter once. `OpenAICompletion` leaves caller-supplied clients open;
+the outer context owns that client. One completion adapter may fill several completion slots, such as
+`answerer`, `former`, and `consolidator`. Pass policy through `settings=MemorySettings(...)`
 and tracing through the separate `tracer=` argument.
 
-`resolve_memory_config()` returns a `MemoryComposition` for hosts needing to assemble before
+`build_memory_composition()` returns a `MemoryComposition` for hosts needing to assemble before
 opening storage. Close it unless its plugins are transferred to a `Memory`. Exact constructors
 and custom inference protocols are in the [SDK](api/python-sdk.md) and
 [backend reference](api/python-backends.md).

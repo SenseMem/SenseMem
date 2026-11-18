@@ -6,13 +6,12 @@ private modules, and product code outside this package imports none of them dire
 """
 
 from sensemem.infrastructure.local.store._codec import datetime_text, optional_datetime_text
-from sensemem.infrastructure.local.store._identity import CONSENT_PREDICATE, canonical_subject
-from sensemem.infrastructure.local.store._naming_projection import NamingProjectionFactory
-from sensemem.infrastructure.local.store._recall import (
-    RECALL_MAX_ROWS,
-    RECALL_MAX_TERM_CHARS,
-    RELATED_EDGES,
+from sensemem.infrastructure.local.store._naming_projection import (
+    NamingDocuments,
+    NamingPreparationRequired,
+    NamingProjection,
 )
+from sensemem.infrastructure.local.store._recall import RELATED_EDGES
 from sensemem.infrastructure.local.store._schema import SCHEMA_VERSION
 from sensemem.infrastructure.local.store.errors import (
     LocalStoreCapacityError,
@@ -45,9 +44,6 @@ from sensemem.infrastructure.local.store.rows import (
 )
 
 __all__ = [
-    "CONSENT_PREDICATE",
-    "RECALL_MAX_ROWS",
-    "RECALL_MAX_TERM_CHARS",
     "RELATED_EDGES",
     "SCHEMA_VERSION",
     "IdentityLink",
@@ -57,7 +53,9 @@ __all__ = [
     "LocalStore",
     "LocalStoreCapacityError",
     "LocalStoreClosedError",
-    "NamingProjectionFactory",
+    "NamingDocuments",
+    "NamingPreparationRequired",
+    "NamingProjection",
     "ProtectedMemoryError",
     "RecallDigest",
     "RecallRead",
@@ -75,7 +73,6 @@ __all__ = [
     "StoredTextSelector",
     "StoredTextSpanPiece",
     "UnsupportedSchemaError",
-    "canonical_subject",
     "datetime_text",
     "optional_datetime_text",
     "validate_asset_name",

@@ -22,14 +22,19 @@ from sensemem import (
     EmbedTask,
     IndexQuantization,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
 )
 from sensemem.benchmarks import eval as runner
+from sensemem.benchmarks import eval_backends as eval_backends_module
 from sensemem.benchmarks import eval_config
+from sensemem.benchmarks import eval_ingest as eval_ingest_module
+from sensemem.benchmarks import eval_inputs as eval_inputs_module
+from sensemem.benchmarks import eval_runner as eval_runner_module
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
 from sensemem.benchmarks.eval_cache import DescriptionCache
+from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import FailureDetail
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.model_config import HarnessOverrides, ModelConfig
@@ -101,7 +106,7 @@ async def test_real_sdk_chunks_share_the_model_budget_and_checkpoint_only_comple
 ) -> None:
     backend = _BlockingEmbedder()
     run = BenchmarkRun(tmp_path / "runs", "fixture", "concurrent")
-    checkpoint = runner._IngestCheckpoint(run, "unit", "fixture")
+    checkpoint = eval_ingest_module._IngestCheckpoint(run, "unit", "fixture")
     receipts = []
 
     def observe(count: int) -> None:
@@ -112,11 +117,11 @@ async def test_real_sdk_chunks_share_the_model_budget_and_checkpoint_only_comple
         Memory(
             run.unit_dir("unit"),
             embedder=backend,
-            config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+            settings=MemorySettings(index_quantization=IndexQuantization.NONE),
         )
     ) as memory:
         pending = asyncio.create_task(
-            runner._ingest(
+            eval_ingest_module._ingest(
                 memory,
                 _task(tmp_path).units[0].memories,
                 batch_size=1,
@@ -145,17 +150,17 @@ async def test_cancel_waits_for_real_sdk_writes_then_records_the_completed_wave(
 ) -> None:
     backend = _BlockingEmbedder()
     run = BenchmarkRun(tmp_path / "runs", "fixture", "cancelled")
-    checkpoint = runner._IngestCheckpoint(run, "unit", "fixture")
+    checkpoint = eval_ingest_module._IngestCheckpoint(run, "unit", "fixture")
 
     async def ingest() -> None:
         async with AsyncMemory(
             Memory(
                 run.unit_dir("unit"),
                 embedder=backend,
-                config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+                settings=MemorySettings(index_quantization=IndexQuantization.NONE),
             )
         ) as memory:
-            await runner._ingest(
+            await eval_ingest_module._ingest(
                 memory,
                 _task(tmp_path).units[0].memories,
                 batch_size=1,
@@ -185,7 +190,7 @@ async def test_cancel_waits_for_real_sdk_writes_then_records_the_completed_wave(
         Memory(
             run.unit_path("unit"),
             embedder=fresh,
-            config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+            settings=MemorySettings(index_quantization=IndexQuantization.NONE),
         )
     ) as memory:
         assert len((await memory.list(limit=100)).items) == 2
@@ -210,7 +215,7 @@ async def test_later_chunk_failures_are_released_only_with_their_own_prefix() ->
             raise ValueError("fixture bad item")
 
     pending = asyncio.create_task(
-        runner._ingest(
+        eval_ingest_module._ingest(
             cast(AsyncMemory, Store()),
             (
                 MemoryItem("good", ("good",), occurred_at=DAY),
@@ -248,7 +253,7 @@ async def test_fatal_chunk_waits_for_siblings_and_stops_receipts_at_the_failed_p
         return 0
 
     pending = asyncio.create_task(
-        runner._ingest_chunks(
+        eval_ingest_module._ingest_chunks(
             chunk,
             tuple(
                 MemoryItem(str(index), (str(index),), occurred_at=DAY + timedelta(seconds=index))
@@ -284,12 +289,12 @@ def test_ingest_concurrency_defaults_yaml_override_and_cache_identity(tmp_path: 
     )
     assert explicit.ingest_concurrency == 2
     altered = replace(base, ingest_concurrency=4)
-    assert runner._cache_namespace(base, ModelConfig(), {}) != runner._cache_namespace(
-        altered, ModelConfig(), {}
-    )
-    assert runner._ingest_digest(_task(tmp_path), base, None) != runner._ingest_digest(
-        _task(tmp_path), altered, None
-    )
+    assert eval_inputs_module._cache_namespace(
+        base, ModelConfig(), {}
+    ) != eval_inputs_module._cache_namespace(altered, ModelConfig(), {})
+    assert eval_inputs_module._ingest_digest(
+        _task(tmp_path), base, None
+    ) != eval_inputs_module._ingest_digest(_task(tmp_path), altered, None)
 
 
 @pytest.mark.parametrize("extra", [["--ingest", "capture"], ["--deliberate"]])
@@ -332,15 +337,17 @@ async def test_parallel_ingest_rejects_cutoffs_before_opening_any_store(tmp_path
         raise AssertionError("cutoff guard must run before opening a store")
 
     with pytest.raises(ValueError, match="without question cutoffs"):
-        await runner.run_loaded_task(
+        await eval_runner_module.run_loaded_task(
             _task(tmp_path, cutoff=10),
             run=BenchmarkRun(tmp_path / "runs", "fixture", "cutoff"),
             memory_factory=factory,
-            batch_size=1,
-            unit_concurrency=1,
-            request_concurrency=1,
-            recall_limit=10,
-            ingest_concurrency=2,
+            options=EvaluationOptions(
+                batch_size=1,
+                unit_concurrency=1,
+                request_concurrency=1,
+                recall_limit=10,
+                ingest_concurrency=2,
+            ),
         )
 
 
@@ -365,7 +372,7 @@ def test_shared_asset_caption_is_described_once_across_concurrent_batches(tmp_pa
 
     backend = Backend()
     cache = DescriptionCache(tmp_path / "captions.db", "fixture")
-    described = runner._CachedVisionDescriber(backend, cache)  # type: ignore[arg-type]
+    described = eval_backends_module._CachedVisionDescriber(backend, cache)  # type: ignore[arg-type]
 
     def second() -> tuple[str, ...]:
         second_started.set()
@@ -396,7 +403,7 @@ def test_independent_asset_captions_can_run_concurrently(tmp_path: Path) -> None
             return tuple(value.assets[0].id for value in inputs)
 
     cache = DescriptionCache(tmp_path / "captions.db", "fixture")
-    described = runner._CachedVisionDescriber(Backend(), cache)  # type: ignore[arg-type]
+    described = eval_backends_module._CachedVisionDescriber(Backend(), cache)  # type: ignore[arg-type]
     try:
         with ThreadPoolExecutor(max_workers=2) as workers:
             first = workers.submit(described.describe, (_image("a"),))
@@ -471,11 +478,11 @@ async def test_real_sdk_reverse_delay_preserves_sqlite_order_for_overlapping_clo
         Memory(
             directory,
             embedder=backend,
-            config=MemoryConfig(index_quantization=IndexQuantization.NONE),
+            settings=MemorySettings(index_quantization=IndexQuantization.NONE),
         )
     ) as memory:
         pending = asyncio.create_task(
-            runner._ingest(
+            eval_ingest_module._ingest(
                 memory,
                 items,
                 batch_size=4,
@@ -528,7 +535,7 @@ async def test_fatal_predecessor_prevents_same_time_successor_but_drains_indepen
         MemoryItem("independent", ("independent",), occurred_at=DAY + timedelta(seconds=1)),
     )
     with pytest.raises(RuntimeError, match="fatal predecessor"):
-        await runner._ingest_chunks(
+        await eval_ingest_module._ingest_chunks(
             ingest, items, batch_size=1, on_chunk=receipts.append, ingest_concurrency=3
         )
     assert set(called) == {"first", "independent"}

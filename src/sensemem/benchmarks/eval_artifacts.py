@@ -4,22 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from collections.abc import (
-    Iterable,
     Mapping,
     Sequence,
 )
 from dataclasses import fields
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import cast
 
 import yaml
 from pydantic import SecretStr
 
-from sensemem import SenseMemConfig
+from sensemem import MemorySpec
+from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
 from sensemem.benchmarks.eval_adapters import MediaManifest
 from sensemem.benchmarks.eval_config import (
     _CONFIG_FILE,
@@ -45,10 +43,10 @@ def _write_artifacts(
     *,
     config_bytes: bytes | None = None,
 ) -> None:
-    samples_bytes = _jsonl_bytes(sample.json() for sample in samples)
+    samples_bytes = encode_jsonl_bytes(sample.json() for sample in samples)
     document = dict(results)
     document["samples_sha256"] = hashlib.sha256(samples_bytes).hexdigest()
-    results_bytes = _jsonl_bytes((document,))
+    results_bytes = encode_jsonl_bytes((document,))
     arguments.output_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     files = [
         (arguments.output_path / _SAMPLES_FILE, samples_bytes),
@@ -56,7 +54,7 @@ def _write_artifacts(
     ]
     if config_bytes is not None:
         files.append((arguments.output_path / _CONFIG_FILE, config_bytes))
-    _atomic_replace(files)
+    replace_artifact_files(files)
     # The real samples file now holds everything the crash copy did.
     (arguments.output_path / _PARTIAL_SAMPLES_FILE).unlink(missing_ok=True)
 
@@ -71,7 +69,7 @@ def _config_artifact(
     arguments: _Arguments,
     config: ModelConfig,
     judge_config: _JudgeConfig,
-    memory_config: SenseMemConfig | None,
+    memory_config: MemorySpec | None,
     download: DownloadSettings,
     server_metrics: ServerMetricsOverrides,
 ) -> bytes:
@@ -169,24 +167,6 @@ def _secret_free_yaml_value(value: object) -> object:
 _URL_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
 
 
-def _atomic_replace(files: Sequence[tuple[Path, bytes]]) -> None:
-    temporary: list[tuple[Path, Path]] = []
-    try:
-        for target, content in files:
-            with NamedTemporaryFile(
-                mode="wb", dir=target.parent, prefix=f".{target.name}.", delete=False
-            ) as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-                temporary.append((Path(stream.name), target))
-        for source, target in temporary:
-            os.replace(source, target)
-    finally:
-        for source, _target in temporary:
-            source.unlink(missing_ok=True)
-
-
 def _merged_manifest(
     manifest: MediaManifest | None,
     manifest_directory: Path | None,
@@ -198,8 +178,7 @@ def _merged_manifest(
             {} if manifest is None else json.loads(manifest.source_json), manifest_directory
         ),
     )
-    tasks = payload.get("tasks")
-    merged = dict(tasks) if isinstance(tasks, dict) else {}
+    merged = cast(dict[str, object], payload.get("tasks", {}))
     merged.update(generated)
     payload.update({"version": 1, "tasks": merged})
     return payload
@@ -219,20 +198,3 @@ def _absolute_manifest_paths(value: object, directory: Path | None) -> object:
     ):
         result["path"] = str((directory / Path(path).expanduser()).resolve())
     return result
-
-
-def _json_bytes(value: object) -> bytes:
-    return (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
-def _jsonl_bytes(values: Iterable[object]) -> bytes:
-    return b"".join(_json_bytes(value) for value in values)

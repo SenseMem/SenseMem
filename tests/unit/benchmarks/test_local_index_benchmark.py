@@ -11,12 +11,15 @@ from typing import cast
 
 import pytest
 
+import sensemem.benchmarks.local_index_benchmark as benchmark
 from sensemem.benchmarks.local_index_benchmark import (
     _normalized_fp32,
     main,
     run_benchmark,
 )
 from sensemem.infrastructure.local import LocalStore
+from sensemem.infrastructure.local.zvec_index import IndexHit, ZvecIndex
+from sensemem.types import IndexQuantization
 
 
 def test_fp32_vectors_are_deterministic_and_normalized() -> None:
@@ -42,9 +45,12 @@ def test_small_benchmark_reports_valid_metrics(tmp_path: Path) -> None:
         "k",
         "seed",
         "quantization",
+        "environment",
+        "configuration",
         "ingest_seconds",
         "optimize_seconds",
         "recall_at_k",
+        "recall_truth",
         "query_latency_ms",
         "query_qps",
         "disk_bytes",
@@ -76,6 +82,48 @@ def test_small_benchmark_reports_valid_metrics(tmp_path: Path) -> None:
 
     with LocalStore(tmp_path) as store:
         assert store.index.pending_index_operations() == ()
+
+
+@pytest.mark.parametrize(
+    ("stored_vectors", "query", "returned_rows", "expected"),
+    (
+        (((1.0, 0.0), (0.0, 1.0)), (0.0, 1.0), (0,), 0.0),
+        (((1.0,), (1.0,), (1.0,)), (1.0,), (1, 2), 1.0),
+    ),
+    ids=("quantized_linear_agreement_is_not_truth", "kth_boundary_ties_are_correct"),
+)
+def test_recall_uses_sqlite_fp32_truth_and_accepts_boundary_ties(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored_vectors: tuple[tuple[float, ...], ...],
+    query: tuple[float, ...],
+    returned_rows: tuple[int, ...],
+    expected: float,
+) -> None:
+    pytest.importorskip("zvec", reason="Zvec 0.8 native wheel is not installed")
+    vectors = iter((*stored_vectors, query))
+    monkeypatch.setattr(benchmark, "_BATCH_SIZE", 2)
+    monkeypatch.setattr(benchmark, "_normalized_fp32", lambda *_args: next(vectors))
+    # ANN and a linear query can agree on the wrong quantized neighbor. Neither can supply
+    # independent truth; equal FP32 neighbors at the kth boundary must also remain correct.
+    monkeypatch.setattr(
+        ZvecIndex,
+        "search",
+        lambda *_args, **_kwargs: tuple(
+            IndexHit(id=f"embedding-{row:09d}", relevance=1.0) for row in returned_rows
+        ),
+    )
+
+    result = run_benchmark(
+        tmp_path,
+        rows=len(stored_vectors),
+        dimension=len(query),
+        queries=1,
+        k=len(returned_rows),
+        quantization=IndexQuantization.FP16,
+    )
+
+    assert result["recall_at_k"] == expected
 
 
 def test_cli_prints_one_json_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

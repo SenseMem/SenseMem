@@ -9,11 +9,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 MOSAIC_DATA_REVISION = "c4567178d7430d87484db1ab207f5c8aaa26199a"
-MOSAIC_SOURCE_REVISION = "82dc5ccf8063f41b28145f0c0e49747549aff457"
 MOSAIC_ADAPTER_VERSION = "mosaic_native_official_v2"
 MOSAIC_SCORER_VERSION = "mosaic_judge_82dc5ccf8063_v2"
 MOSAIC_DATA_SHA256 = "c17cbab45499222e0590fdb0d557548366ed3d9deafe2ecd06ecd475625b51b7"
-MOSAIC_QIDS_SHA256 = "8a42ac2fe6ad94490d083bd83e0a817f9ae205f461f38d8b791c6edafc6636a4"
 
 
 class _ReleaseModel(BaseModel):

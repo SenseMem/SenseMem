@@ -57,10 +57,10 @@ def test_full_modal_contract_is_exported_from_the_package_root() -> None:
         "ContentAtom",
         "ContentInput",
         "IndexQuantization",
-        "MemoryType",
-        "MemoryConfig",
+        "MemoryCategory",
+        "MemorySettings",
         "MemoryComposition",
-        "SenseMemConfig",
+        "MemorySpec",
         "SenseMemError",
         "MemoryPlugins",
         "Modality",
@@ -75,7 +75,9 @@ def test_full_modal_contract_is_exported_from_the_package_root() -> None:
         "FaceObservation",
         "GenerationBackend",
         "ModelInput",
-        "OpenAIModels",
+        "OpenAICompletion",
+        "OpenAIEmbedder",
+        "OpenAITranscriber",
         "OpenCVFaceAnalyzer",
         "PCMChunk",
         "EmbedTask",
@@ -90,7 +92,7 @@ def test_full_modal_contract_is_exported_from_the_package_root() -> None:
         "VisionFrame",
         "VisionPartial",
         "VisionStreamPacket",
-        "resolve_memory_config",
+        "build_memory_composition",
     }
 
     assert names <= set(package.__all__)
@@ -105,6 +107,99 @@ def test_product_does_not_address_benchmarks() -> None:
         if not path.is_relative_to(benchmark_root) and (references := _benchmark_references(path))
     }
     assert violations == {}
+
+
+def test_shared_components_do_not_address_runtime_implementations() -> None:
+    runtime_modules = {"__init__.py", "memory.py", "configuration.py", "cli.py", "streams.py"}
+    violations = {
+        path.name: sorted(references)
+        for path in SOURCE.glob("*.py")
+        if path.name not in runtime_modules
+        if (
+            references := {
+                name
+                for name in _imports(path).names
+                if name.startswith(("sensemem.kernel", "sensemem.infrastructure", "sensemem.api"))
+            }
+        )
+    }
+    assert violations == {}, "shared values and policies must be independent of runtime wiring"
+
+
+def test_api_adapters_do_not_address_local_storage() -> None:
+    violations = {
+        str(path.relative_to(SOURCE)): sorted(references)
+        for path in (SOURCE / "api").rglob("*.py")
+        if (
+            references := {
+                name for name in _imports(path).names if name.startswith("sensemem.infrastructure")
+            }
+        )
+    }
+    assert violations == {}, "protocol adapters must call the SDK for persistence"
+
+
+def test_api_components_do_not_address_application_routing() -> None:
+    violations = {
+        str(path.relative_to(SOURCE)): sorted(references)
+        for path in (SOURCE / "api").rglob("*.py")
+        if path.name not in {"__init__.py", "app.py"}
+        if (
+            references := {
+                name
+                for name in _imports(path).names
+                if name == "sensemem.api.app" or name.startswith("sensemem.api.app.")
+            }
+        )
+    }
+    assert violations == {}, "API contracts and transports must be independent of app assembly"
+
+
+def test_benchmark_components_do_not_address_the_evaluation_runner() -> None:
+    violations = {
+        str(path.relative_to(SOURCE)): sorted(references)
+        for path in (SOURCE / "benchmarks").rglob("*.py")
+        if path.name not in {"cli.py", "eval.py"}
+        if (
+            references := {
+                name
+                for name in _imports(path).names
+                if name == "sensemem.benchmarks.eval"
+                or name.startswith("sensemem.benchmarks.eval.")
+            }
+        )
+    }
+    assert violations == {}, "benchmark components must not depend back on the evaluation runner"
+
+
+def test_model_request_components_do_not_address_response_parsers() -> None:
+    parsers = ("sensemem.models._answer_output", "sensemem.models._openai_output")
+    violations = {
+        path.name: sorted(references)
+        for path in (SOURCE / "models").glob("_openai_*.py")
+        if path.name in {"_openai_requests.py", "_openai_protocol.py", "_openai_media.py"}
+        if (
+            references := {
+                name
+                for name in _imports(path).names
+                if any(name == parser or name.startswith(parser + ".") for parser in parsers)
+            }
+        )
+    }
+    assert violations == {}, "request construction must use evidence contracts rather than parsers"
+
+
+def test_local_infrastructure_does_not_address_model_clients() -> None:
+    violations = {
+        str(path.relative_to(SOURCE)): sorted(references)
+        for path in (SOURCE / "infrastructure").rglob("*.py")
+        if (
+            references := {
+                name for name in _imports(path).names if name.startswith("sensemem.models")
+            }
+        )
+    }
+    assert violations == {}, "local adapters must depend on perception values, not model modules"
 
 
 def test_imported_distributions_are_declared() -> None:
@@ -173,7 +268,8 @@ def test_deferred_and_conditional_imports_are_classified(tmp_path: Path) -> None
     # Deferred and TYPE_CHECKING imports are declarations; stdlib, relative, first-party, and
     # the prose constant are not, and prose reaching this set would fail every product module.
     assert dict(found.third_party) == {"lazyquiet": 6, "deferred": 10, "probed": 9}
-    assert {"sibling", "os", "answer using only the supplied memories"} <= found.names
+    assert {"sibling", "os"} <= found.names
+    assert "answer using only the supplied memories" not in found.names
 
 
 def _benchmark_references(path: Path) -> set[str]:
@@ -196,14 +292,7 @@ _FIRST_PARTY = frozenset({"sensemem", *sys.stdlib_module_names})
 
 
 def _imports(path: Path) -> _Imports:
-    """Collect module names imported statically, lazily, or named as a bare string constant.
-
-    ``names`` keeps every string constant so a product module cannot reach the benchmarks by
-    spelling the path instead of importing it. ``third_party`` keeps only names a real import
-    statement or a deferred ``import_module``/``find_spec`` call resolves, because every heavy
-    backend here loads that way and an unfiltered constant sweep would return application text.
-    Relative imports name no distribution, so they stay out of ``third_party``.
-    """
+    """Collect static and deferred imports; relative imports name no distribution."""
     names: set[str] = set()
     third_party: set[tuple[str, int]] = set()
 
@@ -224,8 +313,6 @@ def _imports(path: Path) -> _Imports:
                 add(f"{module}.{alias.name}".lstrip("."), node.lineno, resolvable=False)
         elif isinstance(node, ast.Call) and (loaded := _loader_argument(node)) is not None:
             add(loaded, node.lineno, resolvable=True)
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            add(node.value, node.lineno, resolvable=False)
     return _Imports(frozenset(names), frozenset(third_party))
 
 
@@ -272,6 +359,11 @@ def test_all_extra_contains_each_optional_dependency() -> None:
     assert set(EXTRAS["all"]) == {
         item for extra, items in EXTRAS.items() if extra != "all" for item in items
     }
+
+
+def test_openai_extra_installs_the_native_realtime_transport() -> None:
+    requirement = next(item for item in EXTRAS["openai"] if _name(item) == "openai")
+    assert "realtime" in Requirement(requirement).extras
 
 
 def test_funasr_runtime_and_cache_identity_use_the_same_immutable_source() -> None:

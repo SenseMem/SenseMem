@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sensemem.infrastructure.local import LocalStore, StoredMemory
-from sensemem.types import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, RecordKind
 
 
 def test_unknown_semantic_version_cannot_hide_an_older_eligible_history(tmp_path: Path) -> None:
@@ -27,8 +28,8 @@ def test_unknown_semantic_version_cannot_hide_an_older_eligible_history(tmp_path
                 metadata_json="{}",
                 created_at=start + timedelta(days=1),
                 updated_at=start + timedelta(days=3),
-                context=MemoryContext(
-                    kind=MemoryKind.EVENT,
+                context=RecordSemantics(
+                    kind=RecordKind.EVENT,
                     basis=EvidenceBasis.MODEL_INFERENCE,
                     confidence=0.8,
                     valid_from=None,

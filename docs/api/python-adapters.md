@@ -1,7 +1,8 @@
 # Bundled Python model adapters
 
 Choose a bundled adapter for local embedding, model endpoints, reranking, speech, faces, or map
-context. Pass it to the [Memory constructor](python-sdk.md#construction) or `MemoryPlugins`.
+context. Pass inference adapters to the [Memory constructor](python-sdk.md#construction) or
+`MemoryPlugins`; compose the optional tool-using agent separately with `AgentRunner`.
 This reference lists constructors and resource ownership.
 
 [Backend protocols](python-backends.md) define inference methods;
@@ -15,7 +16,10 @@ This reference lists constructors and resource ownership.
 | [Qwen3VLReranker](#qwen3vlreranker) | Local multimodal ranking |
 | [FunASRTranscriber](#funasrtranscriber) | Speech/transcription |
 | [OpenCVFaceAnalyzer](#opencvfaceanalyzer) | Local face analysis |
-| [OpenAIModels](#openaimodels) | Compatible embedding/completion/transcription capabilities |
+| [OpenAIEmbedder](#openaiembedder) | Compatible embedding endpoint |
+| [OpenAITranscriber](#openaitranscriber) | Compatible transcription endpoint |
+| [OpenAICompletion](#openaicompletion) | Completion, formation, vision, planning and consolidation |
+| [OpenAIAgent](#openaiagent) | Optional multimodal agent steps with native tool calls |
 | [Offline gazetteer](#offline-gazetteer) | Explicit map-source enrichment |
 | [Named recipes](#named-recipes) | Published compositions and probes |
 
@@ -216,51 +220,87 @@ OpenCVFaceAnalyzer(
 Supply caller-managed detector/recognizer model files and evaluate matching thresholds against
 the intended camera/population. See [identity calibration](../configuration/settings.md#identity-thresholds).
 
-## OpenAIModels
+## OpenAIEmbedder
 
 ```text
-OpenAIModels(
+OpenAIEmbedder(
     client: OpenAI | None = None,
     *,
-    embedding_client: OpenAI | None = None,
-    generation_client: OpenAI | None = None,
-    transcription_client: OpenAI | None = None,
+    owns_client: bool = False,
     embedding_model: str = "text-embedding-3-small",
     embedding_space: str | None = None,
     embedding_dimension: int = 1536,
-    embedding_request_format: Literal["input", "messages"] = "input",
-    generation_model: str = "gpt-5-mini-2025-08-07",
+    embedding_request_format: Literal['input', 'messages'] = 'input',
+    embedding_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
+    image_max_pixels: int | None = None,
+)
+```
+
+This adapter implements `EmbeddingBackend`. Its space identifies the model, dimension, task
+prefix, normalization and media transport recipe. Use a separate adapter for transcription or
+completion, even when the endpoint is the same.
+
+## OpenAITranscriber
+
+```text
+OpenAITranscriber(
+    client: OpenAI | None = None,
+    *,
+    owns_client: bool = False,
     transcription_model: str = "whisper-1",
     transcription_space: str | None = None,
     transcription_prompt: str | None = None,
     transcription_keywords: Sequence[str] | None = None,
     transcription_languages: Sequence[str] | None = None,
-    embedding_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
-    generation_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
     transcription_capabilities: frozenset[Modality] = frozenset({Modality.AUDIO, Modality.VIDEO}),
+)
+```
+
+This adapter implements `TranscriptionBackend`. Prompt, keyword and language hints are part of
+its transcription recipe. Speech with speaker analysis uses `FunASRTranscriber` instead.
+
+## OpenAICompletion
+
+```text
+OpenAICompletion(
+    client: OpenAI | None = None,
+    *,
+    owns_client: bool = False,
+    generation_model: str = "gpt-5-mini-2025-08-07",
+    generation_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
     generation_seed: int | None = None,
     generation_temperature: float | None = None,
     generation_max_tokens: int | None = None,
     generation_media_max_tokens: int = 8192,
-    generation_response_format: Literal["json_object", "json_schema"] = "json_schema",
+    generation_response_format: Literal['json_object', 'json_schema'] = 'json_schema',
     generation_store: bool = False,
     generation_min_video_seconds: float | None = None,
     generation_video_limit: int | None = 8,
     generation_extra_body: Mapping[str, object] | None = None,
     generation_stream: bool = False,
-    generation_answer_style: Literal["default", "concise"] = "default",
-    generation_answer_format: Literal["text", "structured"] = "text",
-    generation_image_source_prose: Literal["include", "context_when_supplied"] = "include",
+    generation_answer_style: Literal['default', 'concise'] = 'default',
+    generation_answer_format: Literal['text', 'structured'] = 'text',
     generation_evidence_operation_tool: bool = False,
-    generation_source_metadata_key: str = "source_id",
+    generation_image_source_prose: Literal['include', 'context_when_supplied'] = 'include',
+    generation_source_metadata_key: str = 'source_id',
     vision_video_frames: int = 4,
     image_max_pixels: int | None = None,
     generation_request_max_bytes: int | None = None,
 )
 ```
 
-The common client fills unset operation-specific clients. Missing clients fail only when called.
-Close leaves caller-supplied OpenAI clients open. Pass the same object only to desired `Memory` slots.
+Each adapter accepts one SDK client. Missing clients fail when an operation needs them.
+The caller owns a supplied client by default; `owns_client=True` explicitly transfers its
+closure to the adapter. Declarative factories create and transfer their own clients.
+`Memory` closes each distinct adapter once, including a completion adapter shared by several
+completion roles. The embedder and transcriber expose only their own operation protocols.
+
+The adapter also implements `EventSegmentationBackend` for
+[`AsyncEventStream`](python-streams.md#asynceventstream). It uses the configured completion model,
+controls, and declared media capabilities to assess ordered original media chunks. Configure an
+endpoint that accepts those modalities; declaring a modality does not add provider support.
+`event_model` and `event_recipe` identify the configured model and segmentation recipe.
+The stream's caller owns this adapter separately from `Memory`.
 
 | Direct control | Declarative counterpart |
 | --- | --- |
@@ -334,6 +374,42 @@ Metadata stays untrusted and source-bound even after request resizing; it adds n
 fields. No address lookup occurs unless the offline gazetteer is enabled. Existing stores need no
 re-ingest for answer metadata; caption recipe identity changes, embedding identity does not.
 
+## OpenAIAgent
+
+```text
+OpenAIAgent(
+    client: OpenAI,
+    *,
+    model: str,
+    system_prompt: str = DEFAULT_AGENT_INSTRUCTIONS,
+    capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
+    max_tokens: int | None = None,
+    max_tokens_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_completion_tokens",
+    strict_tools: bool = False,
+    audio_data_url: bool = False,
+)
+```
+
+Implements `AgentBackend.step` over Chat Completions. `AgentRunner` publishes a caller-selected
+tool registry, executes proposed calls, and returns typed results to the model. The adapter
+preserves ordered original media and prior tool messages; it executes no tools itself and is
+independent of the `Memory` answerer slot. See [optional agents](python-agents.md) for composition,
+execution bounds, temporary results and async context-source delivery.
+`AgentRunner.run(input)` returns `AgentResult`; `await AgentRunner.run_async(input)` runs off-thread and
+drains started work before propagating cancellation. Caller-owned resources can then be closed;
+synchronous providers and tools still need their own timeouts.
+
+Declare the endpoint's actual modalities. Output-token limits and audio encoding use the explicit
+protocol switches above. The adapter adds no sampling controls and sends `store=False` on every
+request. Strict tools require compatible schemas and endpoint support; there is no downgrade.
+The SDK client owns authentication, transport, timeouts and retries, and remains caller-owned
+after `close()`. Refusals, truncation, and provider failures retain their distinct error mapping.
+Raw provider errors and response bodies do not enter the mapped exception chain.
+
+The default tool-use instructions are a new behavioral surface. Local native-request tests do
+not establish model quality; qualify the intended revision against the
+[agent tool quality gate](../model-quality.md#check-agent-tool-reasoning) before deployment.
+
 ## Offline gazetteer
 
 This construction example assumes an open, caller-owned OpenAI client named `client`. Keep it
@@ -345,7 +421,7 @@ from sensemem import (
     GazetteerEnricher,
     Modality,
     OfflineGazetteer,
-    OpenAIModels,
+    OpenAICompletion,
 )
 
 gazetteer = OfflineGazetteer(
@@ -356,8 +432,8 @@ gazetteer = OfflineGazetteer(
     budget_chars=16000,
 )
 answerer = EvidenceGeneration(
-    OpenAIModels(
-        generation_client=client,
+    OpenAICompletion(
+        client=client,
         generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
     ),
     enricher=GazetteerEnricher(gazetteer),
@@ -498,3 +574,5 @@ recipes.transcriber(
 
 Each construction function returns an object the caller owns and closes. `load=True` additionally
 exercises the recipe's published probe (`weights`, `import`, or `client`).
+`describe()` reports a `classes` mapping from slot to qualified adapter class, alongside its
+`models` mapping. A multi-role recipe no longer reports one class for unrelated operations.

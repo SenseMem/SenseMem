@@ -23,13 +23,23 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from sensemem import Memory, MemoryConfig, RetrievalScope
+from sensemem import (
+    Memory,
+    MemorySettings,
+    RetrievalScope,
+    SpeakerEmbedding,
+    SpeechAnalysis,
+    SpeechTurn,
+)
 from sensemem._telemetry import (
     IDENTITY_NAMES_BOUND,
     IDENTITY_NAMES_REFUSED,
     VISION_BATCHES_FAILED,
 )
+from sensemem.content import AssetRef, Blob
+from sensemem.control_values import MemoryIntent, MemoryTrigger
 from sensemem.exceptions import IndexUnavailableError, ModelError
+from sensemem.identity import SpeakerSegment
 from sensemem.infrastructure.local.store.index import IndexOutbox
 from sensemem.infrastructure.local.zvec_index import ZvecIndex
 from sensemem.kernel.derived import (
@@ -40,30 +50,16 @@ from sensemem.kernel.derived import (
 )
 from sensemem.kernel.ranking import (
     LEXICAL_FULL_COVERAGE,
-    LEXICAL_FULL_COVERAGE_RELEVANCE,
     lexical_query_terms,
     lexical_relevance,
 )
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
-from sensemem.models.base import (
-    EmbedTask,
-    ModelInput,
-    SpeakerEmbedding,
-    SpeechAnalysis,
-    SpeechTurn,
-)
-from sensemem.models.openai_sdk import _visual_description
+from sensemem.models._openai_output import _visual_description
+from sensemem.models.base import EmbedTask, ModelInput
 from sensemem.perception import VisualDescription
-from sensemem.types import (
-    AnswerPolicy,
-    AnswerResult,
-    AssetRef,
-    Blob,
-    MemoryIntent,
-    Modality,
-    SearchHit,
-    SpeakerSegment,
-)
+from sensemem.ranking_policy import LEXICAL_FULL_COVERAGE_RELEVANCE
+from sensemem.records import AnswerResult, SearchHit
+from sensemem.types import AnswerPolicy, EvidenceBasis, Modality
 
 _ALL_INPUT_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
 
@@ -322,7 +318,7 @@ def test_the_relevance_floor_rejects_the_similarity_it_reports(tmp_path: Path) -
         with Memory(
             directory,
             embedder=_DirectionalEmbedder(cosines),
-            config=MemoryConfig(minimum_relevance=floor),
+            settings=MemorySettings(minimum_relevance=floor),
         ) as memory:
             middling = memory.add("kepler transit candidate list")
             memory.add("orbital resonance survey notes")
@@ -350,7 +346,7 @@ def test_a_weak_lexical_match_cannot_smuggle_an_anticorrelated_memory_past_the_f
         with Memory(
             directory,
             embedder=_DirectionalEmbedder(cosines),
-            config=MemoryConfig(minimum_relevance=floor),
+            settings=MemorySettings(minimum_relevance=floor),
         ) as memory:
             opposite = memory.add("anticorrelated zibaldone drift")
             memory.add("ordinary weather notes")
@@ -381,7 +377,7 @@ def test_the_lexical_route_survives_a_floor_above_the_old_flat_constant(tmp_path
     with Memory(
         tmp_path,
         embedder=_DirectionalEmbedder({"anticorrelated": -1.0, "ordinary": 0.2}),
-        config=MemoryConfig(minimum_relevance=0.7),
+        settings=MemorySettings(minimum_relevance=0.7),
     ) as memory:
         covering = memory.add("anticorrelated zibaldone quokka")
         memory.add("ordinary weather notes")
@@ -411,7 +407,9 @@ def test_partial_lexical_candidate_outside_the_ann_window_gets_its_persisted_sco
         return original_read(store, memory_ids, space_id=space_id, task=task)
 
     monkeypatch.setattr(IndexOutbox, "iter_memory_embedding_vectors", observed_read)
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0.1)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0.1)
+    ) as memory:
         memory.add_many([f"distractor ordinary weather note {index}" for index in range(100)])
         known_before_target = datetime.now(timezone.utc)
         target = memory.add("rescue-target zibaldone drift")
@@ -470,7 +468,9 @@ def test_dense_candidates_keep_the_index_score_without_completion(
         raise AssertionError("a parent already scored by the dense route was completed again")
 
     monkeypatch.setattr(IndexOutbox, "iter_memory_embedding_vectors", unexpected_read)
-    with Memory(tmp_path, embedder=embedder, config=MemoryConfig(minimum_relevance=0.1)) as memory:
+    with Memory(
+        tmp_path, embedder=embedder, settings=MemorySettings(minimum_relevance=0.1)
+    ) as memory:
         target = memory.add("target zibaldone drift")
         memory.add("other weather note")
 
@@ -799,7 +799,7 @@ def test_decay_demotes_an_old_memory_without_evicting_it(tmp_path: Path) -> None
     with Memory(
         tmp_path,
         embedder=_DirectionalEmbedder({"heirloom": 1.0}),
-        config=MemoryConfig(minimum_relevance=0.35, decay_half_life_days=30.0),
+        settings=MemorySettings(minimum_relevance=0.35, decay_half_life_days=30.0),
     ) as memory:
         aged = memory.add("heirloom clock wound every sunday", occurred_at=long_ago)
 
@@ -1231,7 +1231,7 @@ def test_the_candidate_trace_order_does_not_depend_on_the_process_hash_seed(
 def test_the_modality_floor_never_evicts_the_top_hit(tmp_path: Path) -> None:
     """A floor promotes into spare slots; it does not rebuild the window out of last places."""
     from sensemem.kernel.grounding import grounding_hits
-    from sensemem.types import SearchHit
+    from sensemem.records import SearchHit
 
     created = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
     media_types = {
@@ -1300,7 +1300,7 @@ def test_evidence_budget_skips_an_oversized_extra_and_keeps_a_later_fit() -> Non
     """The optional budget extension is not closed by one expensive lower-ranked record."""
     from sensemem.context import evidence_cost
     from sensemem.kernel.grounding import grounding_hits
-    from sensemem.types import SearchHit
+    from sensemem.records import SearchHit
 
     created = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
     ranking = tuple(
@@ -1588,13 +1588,10 @@ def _speaker_identity(memory: Memory, memory_id: str, label: str) -> str:
     return next(identity for identity, alias in labels.items() if alias == label)
 
 
-def test_a_stated_name_carries_to_every_later_clip_of_the_same_voice(tmp_path: Path) -> None:
-    """The lever the M3-Agent ablations measure: stable identity across clips, worth -11.2 to lose.
-
-    A recognizer mints an unstable `identity_*` per run, and the index prints `speaker_1`. Once
-    the dialogue states the name, the person is keyed under it everywhere -- including clips that
-    say nothing about who is talking, which is where the retrieval question is actually asked.
-    """
+def test_an_inferred_speaker_name_requires_support_and_retracts_with_its_sources(
+    tmp_path: Path,
+) -> None:
+    """A model-inferred name carries provenance and never impersonates host confirmation."""
     describer = _StructuredDescriber(
         "Shown: two people at a kitchen table",
         "Fact: speaker_1 is called Lily",
@@ -1608,7 +1605,25 @@ def test_a_stated_name_carries_to_every_later_clip_of_the_same_voice(tmp_path: P
         named = memory.add(Blob(b"kitchen-clip", "video/mp4", "kitchen.mp4"))
         identity_id = _speaker_identity(memory, named.id, "speaker_1")
         assert memory.identity(identity_id) is not None
-        assert memory.identity(identity_id).name == "Lily"  # type: ignore[union-attr]
+        assert memory.identity(identity_id).name is None  # type: ignore[union-attr]
+        inferred = memory.operations()[0]
+        assertion = memory.get(inferred.created_ids[0])
+        assert assertion.context is not None
+        assert assertion.context.basis is EvidenceBasis.MODEL_INFERENCE
+        assert assertion.context.confidence < 1
+        assert assertion.context.model_id == describer.vision_model
+        assert (
+            assertion.context.recipe
+            == f"sensemem-speaker-naming-v2:{describer.vision_space}:typed-v1"
+        )
+        assert assertion.context.evidence_ids == (named.id,)
+        assert inferred.trigger is MemoryTrigger.EVIDENCE
+        assert inferred.operation.evidence_ids == (named.id,)
+        assert inferred.model_id == describer.vision_model
+        corroborating = memory.add(Blob(b"another named clip", "video/mp4", "named-again.mp4"))
+        profile = memory.identity(identity_id)
+        assert profile is not None and profile.name == "Lily" and not profile.confirmed
+        assert set(profile.evidence_ids) == {named.id, corroborating.id}
 
         # A later clip of the same voice, whose own facts say nothing about a name.
         describer.lines = ("Shown: the same table, later",)
@@ -1624,8 +1639,17 @@ def test_a_stated_name_carries_to_every_later_clip_of_the_same_voice(tmp_path: P
         assert "speaker_1" not in projected
         # And the naming is an ordinary auditable operation, not a hidden write.
         assert [record.operation.intent for record in memory.operations()] == [
-            MemoryIntent.IDENTIFY
+            MemoryIntent.IDENTIFY,
+            MemoryIntent.IDENTIFY,
         ]
+        memory.delete(named.id)
+        profile = memory.identity(identity_id)
+        assert profile is not None and profile.name is None and not profile.confirmed
+        assert '"speaker_name":"Lily"' not in memory.get(anonymous.id).content
+        memory.register_identity(identity_id, "Mei")
+        memory.delete(corroborating.id)
+        profile = memory.identity(identity_id)
+        assert profile is not None and profile.name == "Mei" and profile.confirmed
 
 
 def test_a_stated_name_never_replaces_the_one_a_host_registered(
@@ -1691,7 +1715,7 @@ def test_a_staged_name_rechecks_the_profile_after_a_concurrent_host_registration
         def bind() -> None:
             try:
                 with memory._lifecycle.operation() as operation:
-                    operation.speaker_names[identity_id] = "ModelName"
+                    operation.speaker_names[identity_id] = ("ModelName", {first.assets[0].id})
                     memory._identities.bind_speaker_names(operation)
             except BaseException as error:
                 errors.append(error)
@@ -1728,6 +1752,7 @@ def test_a_stated_name_with_a_few_words_is_bound_in_full(tmp_path: Path) -> None
         named = memory.add(Blob(b"kitchen-clip", "video/mp4", "kitchen.mp4"))
         identity_id = _speaker_identity(memory, named.id, "speaker_1")
 
+        memory.add(Blob(b"another named clip", "video/mp4", "named-again.mp4"))
         assert memory.identity(identity_id).name == "Mary Jane"  # type: ignore[union-attr]
 
 

@@ -1,13 +1,16 @@
 """PersonaMem-v3 scoring pinned from the official evaluator.
 
-Transcribed from `bowen-upenn/PersonaMem-v3@main` -- `evaluation/prompts.py`
+Transcribed from `bowen-upenn/PersonaMem-v3@ad80a3b1b322129fb0585ead33b129a87bb4e387`
+on GitHub -- `evaluation/prompts.py`
 (`_JUDGE_PREFACE`, `_PERSONALIZATION_DIM_DEFS`, `judge_unified_rubric_prompt`),
 `evaluation/personalization_rubric.py` (`APPLICABILITY`, `PENALTY_CHECKS`,
 `_PRIMARY_POSITIVE_OVERRIDE`, `score`), `evaluation/judges.py`
 (`_SYCOPHANCY_JUDGE_PROMPT`, `_PREFERENCE_SHIFT_JUDGE_PROMPT`),
 `evaluation/tasks/hidden_persona_implicit_qa.py` and
 `evaluation/tasks/personal_qa_hallucination.py` (their `JUDGE_PROMPT` and
-`_score_judge_response`), and `evaluation/metrics.py` (the ranking metrics).
+`_score_judge_response`), `evaluation/metrics.py` (the ranking metrics and
+substantive-response gate), and `evaluation/tasks/local_recommendation_geo_shift.py`
+(`compute_geo_shift_metrics`).
 
 Scope. The released dataset revision and the evaluation repository have
 diverged: the repository's slate scorer reads `instance["slate"]` and
@@ -15,36 +18,19 @@ diverged: the repository's slate scorer reads `instance["slate"]` and
 `held_out_idx`, `positive_indices` and `matching_indices`; its ranking prompt
 asks for a fenced-JSON `ranked_indices`, while the release's own
 `example_response` is `"Ranked indexes: [...]"`. Everything reproduced here
-reads only fields the pinned release actually carries. Four families are
-deliberately absent because they do not:
-
-* the proactive decision judge (5 task types) -- 70% of its headline is a
-  deterministic comparison of the agent's structured `should_act` flag against
-  the hidden expected behaviour, and a free-text answer does not carry one;
-* the repetition-fatigue cluster (2 task types) -- its runner threads each
-  response into the next prompt, which a harness that answers questions
-  independently cannot reconstruct;
-* `new_suggestions_chatbot` -- a leak-set plus judge composite;
-* `local_recommendation_geo_shift`, `active_mistake_prevention` and
-  `short_vs_long_term_lifecycle` -- paired scorers whose headline is a delta
-  across two rows, not a per-row value.
-
-Rows of those types are still answered and reported; they carry no official
-headline metric.
+reads only fields the pinned release actually carries. Proactive decisions,
+novel suggestions, repetition clusters, and paired lifecycle results live in
+their companion benchmark modules. Retired task types absent from the pinned
+release do not acquire replacement headline metrics.
 """
 
 # ruff: noqa: RUF001 -- upstream rubric text keeps its published typography.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from math import log2
-
-# `eval` must not publish the official micro headline while the task protocols
-# listed in the scope note above remain unavailable. Keeping this next to the
-# scorer inventory prevents row coverage from being mistaken for benchmark
-# protocol coverage (two cluster families are dropped before rows are built).
-COMPLETE_HEADLINE_COVERAGE = False
 
 JUDGE_PREFACE = (
     "You are an expert judge evaluating a personalized assistant's output.\n"
@@ -649,8 +635,8 @@ def _dim_score(value: object) -> float | None:
 # --- Task-specific single judges -------------------------------------------
 # Four of upstream's five own-judge task types read only fields the pinned
 # release publishes on `instance_full`, so their prompts and score parsers are
-# reproduced here. `new_suggestions_chatbot` is not: its headline is a
-# leak-set plus judge composite whose leak set the release does not carry.
+# reproduced here. `new_suggestions_chatbot` is not: it requires its own
+# structured recommendation prompt and a leak-set plus judge composite.
 
 OWN_JUDGE_TASK_TYPES = frozenset(
     {
@@ -812,6 +798,53 @@ def json_dumps(value: object) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False)
+
+
+# --- Geo-shift metrics (`evaluation/tasks/local_recommendation_geo_shift.py`) ---
+
+
+def compute_geo_shift_metrics(
+    response_text: str,
+    current_city: str,
+    prior_city: str,
+    current_region: str = "",
+) -> dict[str, float]:
+    """Score one response against its current and stale locations.
+
+    The upstream round-trip linkage controls which histories each row sees;
+    its headline is still scored independently for every leg.
+    """
+    # Upstream counts distinct ASCII tokens of at least three characters,
+    # rather than words or total tokens. Short answers cannot earn a neutral
+    # partial pass just by omitting both locations.
+    tokens = {
+        token.lower() for token in re.findall(r"[A-Za-z0-9#]+", response_text) if len(token) >= 3
+    }
+    if len(tokens) < 15:
+        return {
+            "current_city_grounded": 0.0,
+            "stale_geo_anchor": 0.0,
+            "geo_neutral_response": 0.0,
+            "geo_shift_correctness": 0.0,
+            "non_substantive_response": 1.0,
+        }
+
+    grounded = any(
+        _word_boundary_match(response_text, term) for term in (current_city, current_region)
+    )
+    stale = _word_boundary_match(response_text, prior_city)
+    neutral = not grounded and not stale
+    return {
+        "current_city_grounded": float(grounded),
+        "stale_geo_anchor": float(stale),
+        "geo_neutral_response": float(neutral),
+        "geo_shift_correctness": 0.0 if stale else 1.0 if grounded else 0.5,
+    }
+
+
+def _word_boundary_match(text: str, term: str) -> bool:
+    term = term.strip()
+    return bool(term and re.search(r"\b" + re.escape(term) + r"\b", text, re.IGNORECASE))
 
 
 # --- Ranking metrics (`evaluation/metrics.py`) ------------------------------

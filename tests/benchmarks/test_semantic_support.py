@@ -13,11 +13,11 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryKind,
     MemoryNotFoundError,
+    MemorySettings,
     Modality,
     ModelInput,
+    RecordKind,
 )
 
 
@@ -257,7 +257,7 @@ def test_formation_provenance_does_not_establish_semantic_entailment(tmp_path: P
             assert len(inputs) == 1
             return (
                 tuple(
-                    FormationProposal(kind=MemoryKind.EVENT, content=claim)
+                    FormationProposal(kind=RecordKind.EVENT, content=claim)
                     for claim in (
                         "Lin drank tea.",
                         "Lin drank coffee.",
@@ -273,7 +273,7 @@ def test_formation_provenance_does_not_establish_semantic_entailment(tmp_path: P
         tmp_path,
         embedder=_FixtureEmbedder(),
         former=Former(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add("Lin drank tea and did not drink coffee.")
         derived = [record for record in memory.list().items if record.id != source.id]

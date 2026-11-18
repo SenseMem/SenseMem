@@ -16,7 +16,7 @@ from sensemem import (
     Blob,
     FunASRTranscriber,
     Memory,
-    SenseMemConfig,
+    MemorySpec,
     SpeechAnalysis,
     SpeechTurn,
     StorageError,
@@ -25,7 +25,7 @@ from sensemem.configuration import FunASRSpeechConfig, _build_speech
 
 
 def test_funasr_configuration_forwards_execution_settings() -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "embedding": {"provider": "openai"},
             "speech": {

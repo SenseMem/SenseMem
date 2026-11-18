@@ -9,7 +9,6 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from pydantic import ValidationError as PydanticValidationError
@@ -20,11 +19,12 @@ from sensemem._telemetry import (
     record_model_request_id,
     record_model_usage,
 )
-from sensemem._validation import nonempty_text, optional_text, positive_int
+from sensemem._validation import nonempty_text, optional_text, positive_int, server_base_url
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models._media import asset_url_part
 from sensemem.models.base import ModelInput, _modalities
 from sensemem.models.reranking import reranking_inputs
+from sensemem.prompts import reranking as prompts
 from sensemem.types import Modality
 
 if TYPE_CHECKING:
@@ -64,28 +64,6 @@ class _RequestUsage:
     total_tokens: int = 0
 
 
-def _server_base_url(value: str) -> str:
-    value = nonempty_text(value, "base_url")
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        raise ValidationError("base_url must be an absolute HTTP or HTTPS URL") from None
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or (port is not None and not 1 <= port <= 65535)
-        or parsed.query
-        or parsed.fragment
-        or "\\" in value
-        or any(character.isspace() for character in value)
-    ):
-        raise ValidationError(
-            "base_url must be an absolute HTTP or HTTPS URL without query or fragment"
-        )
-    return value.rstrip("/")
-
-
 class VLLMReranker:
     """Score via ``<base_url>/score`` and restore input-order scores.
 
@@ -111,7 +89,7 @@ class VLLMReranker:
         media_weight: float = 0.5,
     ) -> None:
         self._model_id = nonempty_text(model_id, "model_id")
-        self._url = _server_base_url(base_url) + "/score"
+        self._url = server_base_url(base_url) + "/score"
         self._api_key = optional_text(api_key, "api_key")
         self._batch_size = positive_int(batch_size, "batch_size")
         self._request_concurrency = positive_int(request_concurrency, "request_concurrency")
@@ -174,13 +152,14 @@ class VLLMReranker:
         try:
             if self._media_candidates is None:
                 return self._score(query, batch, usage)
-            text_query = ModelInput(
-                text=query.text or "Retrieve candidates relevant to the query media."
-            )
+            text_query = ModelInput(text=query.text or prompts.MEDIA_QUERY_FALLBACK)
             scores = list(
                 self._score(
                     text_query,
-                    tuple(ModelInput(text=row.text or "Media evidence") for row in batch),
+                    tuple(
+                        ModelInput(text=row.text or prompts.MEDIA_DOCUMENT_FALLBACK)
+                        for row in batch
+                    ),
                     usage,
                 )
             )

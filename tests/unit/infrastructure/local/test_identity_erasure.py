@@ -19,19 +19,21 @@ from pathlib import Path
 
 import pytest
 
-from sensemem import EvidenceBasis, MemoryContext, MemoryKind
+from sensemem import (
+    EvidenceBasis,
+    FaceAnalysis,
+    FaceEmbedding,
+    RecordKind,
+    RecordSemantics,
+    SpeakerEmbedding,
+    SpeechAnalysis,
+    SpeechTurn,
+)
 from sensemem.infrastructure.local import (
     LocalStore,
     StoredAsset,
     StoredEmbedding,
     StoredMemory,
-)
-from sensemem.models.base import (
-    FaceAnalysis,
-    FaceEmbedding,
-    SpeakerEmbedding,
-    SpeechAnalysis,
-    SpeechTurn,
 )
 
 _NOW = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
@@ -135,7 +137,7 @@ def _person(store: LocalStore, label: str, seed: int) -> tuple[str, tuple[str, .
     voice_id = _voice(store, first, _distinctive(seed + 100))
     merged = store.identities.link_identities(face_id, voice_id)
     assert merged is not None
-    # A second voice fragment re-absorbed, exactly as `Memory._link_asset_identity` does it.
+    # A second voice fragment absorbed by another explicit store binding.
     extra_voice = _voice(store, second, _distinctive(seed + 200))
     merged = store.identities.link_identities(merged, extra_voice, allow_shared_modality=True)
     assert merged is not None
@@ -150,7 +152,7 @@ def _counts(store: LocalStore) -> dict[str, int]:
                 "identities",
                 "identity_aliases",
                 "identity_exemplars",
-                "identity_link_evidence",
+                "identity_rejections",
                 "face_observations",
                 "speech_segments",
                 "memory_records",
@@ -406,7 +408,7 @@ def test_asset_retention_candidates_are_oldest_first_and_filter_by_age(tmp_path:
 def _semantic_memory(
     memory_id: str,
     content: str,
-    context: MemoryContext,
+    context: RecordSemantics,
 ) -> StoredMemory:
     return StoredMemory(
         memory_id=memory_id,
@@ -434,8 +436,8 @@ def test_erasing_a_person_reconciles_the_claims_that_cited_their_naming_assertio
                 _semantic_memory(
                     "naming-1",
                     "Alice is a recognized person",
-                    MemoryContext(
-                        kind=MemoryKind.ENTITY,
+                    RecordSemantics(
+                        kind=RecordKind.ENTITY,
                         basis=EvidenceBasis.USER_STATEMENT,
                         confidence=1.0,
                         valid_from=None,
@@ -454,8 +456,8 @@ def test_erasing_a_person_reconciles_the_claims_that_cited_their_naming_assertio
                 _semantic_memory(
                     "trait-1",
                     "Alice prefers tea",
-                    MemoryContext(
-                        kind=MemoryKind.TRAIT,
+                    RecordSemantics(
+                        kind=RecordKind.TRAIT,
                         basis=EvidenceBasis.MODEL_INFERENCE,
                         confidence=0.9,
                         valid_from=None,

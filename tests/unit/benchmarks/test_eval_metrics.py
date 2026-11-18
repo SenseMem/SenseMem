@@ -21,7 +21,15 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
-from sensemem import AssetRef, ContextBudget, MemoryType, Modality, SearchHit
+from sensemem import (
+    AssetRef,
+    ContentPart,
+    ContextBudget,
+    ContextSupplement,
+    MemoryCategory,
+    Modality,
+    SearchHit,
+)
 from sensemem._telemetry import (
     CAPTURE_TIME_TO_SEARCHABLE,
     MODEL_MODULE,
@@ -30,11 +38,13 @@ from sensemem._telemetry import (
     SPAN_KIND,
     TOKEN_AUDIO_SECONDS,
 )
-from sensemem.benchmarks import eval as eval_module
+from sensemem.benchmarks import eval_answers as eval_answers_module
 from sensemem.benchmarks import eval_config as eval_config_module
 from sensemem.benchmarks import eval_console as eval_console_module
+from sensemem.benchmarks import eval_ingest as eval_ingest_module
 from sensemem.benchmarks import eval_metrics as eval_metrics_module
 from sensemem.benchmarks import eval_results as eval_results_module
+from sensemem.benchmarks import eval_samples as eval_samples_module
 from sensemem.benchmarks import eval_telemetry as eval_telemetry_module
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
@@ -42,7 +52,7 @@ from sensemem.benchmarks.eval_adapters import (
     LoadedTask,
     MemoryItem,
 )
-from sensemem.benchmarks.eval_cache import EvidenceInterval
+from sensemem.benchmarks.eval_evidence import EvidenceInterval
 from sensemem.benchmarks.eval_metrics import NOISE_FLOOR
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.eval_statistics import ScoredValue, percentile
@@ -249,7 +259,7 @@ async def test_ingest_traces_one_span_per_accepted_batch_with_its_item_count() -
             BENCHMARK_TASK_SPAN,
             attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
         ):
-            failures = await eval_module._ingest(
+            failures = await eval_ingest_module._ingest(
                 cast(Any, memory),
                 items,
                 batch_size=2,
@@ -647,7 +657,7 @@ def test_compile_telemetry_counts_every_grounded_media_part() -> None:
         content="a still and a clip from one observation",
         score=0.9,
         created_at=reference,
-        memory_type=MemoryType.EPISODIC,
+        memory_type=MemoryCategory.EPISODIC,
         modality=Modality.IMAGE,
         assets=(
             _asset("asset-still"),
@@ -665,13 +675,50 @@ def test_compile_telemetry_counts_every_grounded_media_part() -> None:
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    with eval_module._compile_span(provider.get_tracer("test"), bundle):
+    with eval_answers_module._compile_span(provider.get_tracer("test"), bundle):
         pass
 
     attributes = exporter.get_finished_spans()[-1].attributes
     assert attributes is not None
     assert attributes[BENCHMARK_COMPILE_ITEMS] == 1
     assert attributes[BENCHMARK_COMPILE_MEDIA_ITEMS] == 2
+
+
+def test_compile_telemetry_counts_text_only_sources_and_temporary_supplements() -> None:
+    reference = datetime(2026, 11, 16, tzinfo=timezone.utc)
+    bundle = compile_context(
+        "inspection",
+        (
+            SearchHit(
+                id="note", content="The valve needs inspection.", score=0.9, created_at=reference
+            ),
+            SearchHit(
+                id="image",
+                content="Inspection camera context.",
+                score=0.8,
+                created_at=reference,
+                assets=(_asset("camera"),),
+                modality=Modality.IMAGE,
+                parts=(
+                    ContentPart("text", "Inspection camera context."),
+                    ContentPart("asset", "camera"),
+                ),
+            ),
+        ),
+        budget=ContextBudget(max_media_items=0),
+        reference_at=reference,
+        supplements=(ContextSupplement(content="The current tool is a meter.", source="host"),),
+    )
+    assert len(bundle.hits) == len(bundle.projections) == len(bundle.supplements) == 1
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with eval_answers_module._compile_span(provider.get_tracer("test"), bundle):
+        pass
+    attributes = exporter.get_finished_spans()[-1].attributes
+    assert attributes is not None
+    assert attributes[BENCHMARK_COMPILE_ITEMS] == 3
+    assert attributes[BENCHMARK_COMPILE_MEDIA_ITEMS] == 0
 
 
 def test_capture_settle_and_compile_spans_are_aggregated_separately() -> None:
@@ -1258,10 +1305,12 @@ def test_candidate_pool_stops_at_the_question_cutoff() -> None:
         ),
     )
 
-    assert eval_module._candidate_count(unit, unit.questions[0]) == 2
+    assert eval_samples_module._candidate_count(unit, unit.questions[0]) == 2
     for cutoff, count in ((0.0, 0), (10.0, 1), (29.9, 2), (30.0, 3), (None, 4), (20.0, 2)):
         assert (
-            eval_module._candidate_count(unit, replace(unit.questions[0], cutoff_seconds=cutoff))
+            eval_samples_module._candidate_count(
+                unit, replace(unit.questions[0], cutoff_seconds=cutoff)
+            )
             == count
         )
 

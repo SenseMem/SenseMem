@@ -16,6 +16,7 @@ defines visibility and withdrawal, and [context compilation](context-compilation
 | Original words, audio, or frames | `OBSERVATION` | Source evidence retained independently of an interpretation. |
 | Situated affect assessment | `AFFECT` | An episodic record with optional valence, arousal, cue modality, confidence, and validity. |
 | Co-occurring event | `EVENT` | An event assertion linked to its source observation. |
+| Emotional target or elicitor | `RELATION` with `affect_link` | A separate, sourced affirmation or denial about one particular affect cue. |
 | Longer-horizon characteristic | `TRAIT` | A semantic claim with additional support requirements for model inferences. |
 | Response guidance | `RESPONSE_POLICY` | Procedural guidance authorized by a host operation with response-feedback provenance. |
 
@@ -34,9 +35,10 @@ The bundled OpenAI-compatible `FormationBackend` can propose affect and trait re
 source observation commits. Formation is disabled unless configured. Its native modalities default
 to text; source-labelled captions and transcripts can also provide a text route.
 
-Use a custom formation adapter for prosody, facial-expression, or acoustic-affect analysis.
-Declare the modalities it analyzes and evaluate its estimates on representative inputs.
-Formation modality declarations control routing.
+The bundled adapter can send original audio to an audio-capable generation endpoint when its
+formation modalities include audio. A custom formation adapter can provide dedicated prosody,
+facial-expression, or acoustic-affect analysis. Declare the modalities actually analyzed and
+evaluate the estimates on representative inputs. Formation modality declarations control routing.
 See [formation configuration](configuration/lifecycle.md#automatic-memory-formation).
 
 Keep one estimate per cue channel when the channels disagree. The kernel excludes `AFFECT` from
@@ -45,13 +47,55 @@ explicit host correction or deletion to withdraw an incorrect inference while re
 A backend with insufficient evidence can return no proposal.
 
 The evidence basis records whether a claim is an observation, user statement, model inference, or
-response feedback. It has no separate value for another person's judgment about how somebody
-seemed. Applications must not present such a judgment as the subject's own statement.
+response feedback. `AffectWitness(source_id, reporter, quote)` preserves an exact original-text
+report and its reporter. A statement about somebody else's feelings remains a reported judgment;
+it does not become that person's own statement. Automatic affect and attribution formation stays
+`MODEL_INFERENCE`, including when the source is host-marked `USER_STATEMENT`: a copied quote and
+a model-written reporter name cannot verify who spoke about whom. The host can explicitly assert
+`USER_STATEMENT` through `apply(CONSOLIDATE)` with a host-marked source, exact witness, and reporter
+matching the affect subject. This is the host's assertion of self-report status. Reporting
+witnesses preserve the original words without granting that authority themselves.
+
+## Emotional targets and elicitors
+
+An affect cue answers how somebody seemed or said they felt. A separate relation can assert
+what the feeling concerns (`target`) or which event elicited it (`elicitor`). These roles differ:
+somebody may be angry at a colleague because a meeting was cancelled. A target can refer to a
+stable recognized identity or a particular entity/event record; an elicitor references an event.
+
+`AffectLink` names the focal `affect_id`, a role, an `AffectObjectRef`, and polarity `affirmed` or
+`denied`. Its relation predicate is `affect_target` or `affect_elicitor`. An explicit denial
+preserves a particular rejected explanation. An absent relation leaves attribution unknown;
+it does not assert that the feeling has no object or cause. Multiple elicitors may coexist.
+
+Formation can propose a cue, event, and relations in one batch. Give a proposal a batch-local
+`local_id`, then refer to it as `proposal:<local_id>` inside the link. The kernel resolves those
+references before storage and requires an active cue and grounded object. Stored relations
+carry stable record or identity references. The focal cue and a record-valued object are required
+premises, so deleting their support also withdraws dependent attribution. They do not count as
+new independent observations.
+
+Configured formation examines positive, negative, mixed, and low-arousal inputs alike. It can
+return no proposal when the available observation and bounded history do not establish the
+target or elicitor. Later observations can supply an explanation or deny an earlier one;
+recording order alone does not make a competing explanation true.
+
+A later attribution keeps the focal cue's occurrence time, identity, place, and spatial context.
+Its recording time and reporting witness identify the later explanation. Moving to another
+location before clarifying an earlier feeling therefore does not move that feeling's attribution
+to the reporting location or hide a denial from the original episode's place filter.
 
 ## Trait visibility
 
 A model-inferred `TRAIT` stays hidden from active retrieval until two independent evidence groups
 support the normalized claim. A trusted `USER_STATEMENT` trait is visible immediately.
+
+All automatic state and trait extraction remains `MODEL_INFERENCE`, even when its source is
+host-marked `USER_STATEMENT`. An original quote does not confirm the model's attribution or
+interpretation. The host can explicitly confirm a typed trait through `apply(CONSOLIDATE)` with
+`FormationProposal(basis=EvidenceBasis.USER_STATEMENT, ...)`. Current single-valued preferences
+are `STATE` records and can be visible after one observation without becoming host-confirmed
+traits. See [state replacement](typed-memory.md#state-replacement) for authority and history rules.
 
 Capture identity determines independence: an observation uses its `ObservationContext.source_id`,
 or its record ID when no source ID was supplied. Derived records inherit the groups of their
@@ -76,6 +120,14 @@ is optional and can be skipped after the compilation deadline. See
 
 Ordinary relevance, time, scope, and evidence rules determine affect retrieval. Applications can
 use those records for their own trajectory or per-person analysis.
+
+Typed attribution relations appear as independent lines in `relationships`. Each line retains its
+role, polarity, basis, and any reporting witnesses. Before delivery, the compiler reads active
+affirmations and denials for that exact cue/role/object group from SQLite, including peers that
+vector ranking omitted. It delivers their required evidence together within the normal budget.
+An incomplete read, unavailable peer evidence, or a passed deadline withholds the attribution and
+reports an unknown while an independently deliverable cue remains available. Compilation makes
+no model call to infer an explanation. See [attribution delivery](context-compilation.md#attribution-delivery).
 
 ## Response-policy authority
 
@@ -107,6 +159,17 @@ Evaluate an affect adapter on held-out, representative, appropriately authorized
 measurements include valence/arousal error, label accuracy, calibration, abstention, false trait
 promotion, correction behavior, and downstream task quality against a text-only baseline.
 Report the model revision, source population, modality, annotation basis, and costs.
+
+The [synthetic affect and preference gate](model-quality.md#affect-and-preference-checks) checks
+source attribution, text/image disagreement, trait support, preference replacement, and injected
+instructions. Real-model qualification is not yet complete: recorded runs include missed cues,
+inconsistent trait promotion, and stale preferences. Kernel lifecycle tests establish the storage
+and authority contracts, not recognition accuracy.
+
+Typed target/elicitor and reporting-witness checks establish reference, lifecycle, and delivery
+contracts. They do not qualify a model's attribution accuracy, distinguish actual psychological
+causes, or establish acoustic-affect quality. The earlier synthetic gate does not qualify the
+expanded formation recipe; see [attribution qualification](model-quality.md#attribution-qualification).
 
 The host controls recording disclosure, consent, remote inference, retention, and access. Consent
 to transcription does not by itself authorize every derived analysis. SenseMem's identity-consent

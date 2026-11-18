@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from inspect import signature
 from typing import cast
 
 import pytest
@@ -85,14 +84,10 @@ async def test_runner_uses_only_public_add_and_ask_without_gold_or_identity_fiel
         "sample_id": "conv-26",
         "dialog_id": "D1:1",
     }
-    assert metadata is not None
     assert {"tenant", "tenant_id", "user", "user_id", "run", "run_id"}.isdisjoint(metadata)
     assert memory.ask_requests == [("What did Caroline start?", 17)]
     assert "SECRET REFERENCE ANSWER" not in repr(memory.add_requests)
     assert "SECRET REFERENCE ANSWER" not in repr(memory.ask_requests)
-    assert {"run", "run_id", "tenant_prefix", "tenant_id", "user", "user_id"}.isdisjoint(
-        signature(run_locomo_refined_conversation).parameters
-    )
     assert predictions[0].qa_id == "conv-26#q0000"
     assert predictions[0].predicted_answer == "A new course."
     assert predictions[0].sensemem_prediction_context == ("D1:1",)

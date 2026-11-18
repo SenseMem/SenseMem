@@ -13,7 +13,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import ValidationError as PydanticValidationError
 
 import sensemem.configuration as configuration
-from sensemem import Memory, Modality, SenseMemConfig, VLLMReranker
+from sensemem import Memory, MemorySpec, Modality, VLLMReranker
 from sensemem._telemetry import (
     GEN_AI_RESPONSE_MODEL,
     MODEL_REQUEST_COUNT,
@@ -55,7 +55,7 @@ def test_configured_server_reranks_search_and_records_provider_usage(
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {
             "data_dir": tmp_path,
             "embedding": {"provider": "openai"},
@@ -128,7 +128,7 @@ def test_server_configuration_rejects_invalid_or_server_owned_controls(
     controls: dict[str, object],
 ) -> None:
     with pytest.raises(PydanticValidationError):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "reranking": {

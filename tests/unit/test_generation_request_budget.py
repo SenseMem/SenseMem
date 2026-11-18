@@ -17,19 +17,20 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import sensemem.models.openai_sdk as adapter
+import sensemem.models._openai_media as openai_media
+import sensemem.models._openai_requests as openai_requests
 from sensemem import (
     AbstentionReason,
     AssetRef,
     EvidenceBasis,
-    MemoryContext,
-    MemoryKind,
     Modality,
     ModelError,
-    OpenAIModels,
+    RecordKind,
+    RecordSemantics,
     SearchHit,
 )
 from sensemem.models.base import ModelInput
+from sensemem.models.openai_completion import OpenAICompletion
 
 ATOMIC_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
 
@@ -93,8 +94,8 @@ def test_media_packing_withholds_transitive_assertions_when_a_source_is_omitted(
     intermediate = replace(
         _hit("intermediate"),
         content="Intermediate derived assertion.",
-        context=MemoryContext(
-            kind=MemoryKind.RELATION,
+        context=RecordSemantics(
+            kind=RecordKind.RELATION,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.9,
             valid_from=None,
@@ -115,12 +116,12 @@ def test_media_packing_withholds_transitive_assertions_when_a_source_is_omitted(
     question = ModelInput(text="What is here?", evidence_sources=hits)
     maximum = None
     if packing == "inline":
-        monkeypatch.setattr(adapter, "_MAX_INLINE_MODEL_ITEM_BYTES", 1_000)
+        monkeypatch.setattr(openai_media, "_MAX_INLINE_MODEL_ITEM_BYTES", 1_000)
     elif packing == "wire":
-        probe = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)
-        prepared = probe._answer_request(question, hits, stream=stream)
+        probe = OpenAICompletion(generation_capabilities=ATOMIC_MODALITIES)
+        prepared = probe._requests.answer_request(question, hits, stream=stream)
         assert isinstance(prepared, tuple)
-        maximum = adapter._answer_wire_size(prepared[0], stream=stream) - 256
+        maximum = openai_requests._answer_wire_size(prepared[0], stream=stream) - 256
     sent: list[bytes] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -139,7 +140,7 @@ def test_media_packing_withholds_transitive_assertions_when_a_source_is_omitted(
         return _reply()
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             OpenAI(api_key="test", http_client=client, max_retries=0),
             generation_capabilities=ATOMIC_MODALITIES,
             generation_request_max_bytes=maximum,
@@ -172,8 +173,8 @@ def test_wire_budget_abstains_when_only_an_incomplete_source_closure_remains(
     )
     assertion = replace(
         _hit("assertion"),
-        context=MemoryContext(
-            kind=MemoryKind.RELATION,
+        context=RecordSemantics(
+            kind=RecordKind.RELATION,
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.9,
             valid_from=None,
@@ -184,17 +185,17 @@ def test_wire_budget_abstains_when_only_an_incomplete_source_closure_remains(
     )
     hits = (assertion, source)
     question = ModelInput(text="What is here?", evidence_sources=hits)
-    prepared = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)._answer_request(
+    prepared = OpenAICompletion(generation_capabilities=ATOMIC_MODALITIES)._requests.answer_request(
         question, hits
     )
     assert isinstance(prepared, tuple)
-    maximum = adapter._answer_wire_size(prepared[0], stream=False) - 256
+    maximum = openai_requests._answer_wire_size(prepared[0], stream=False) - 256
 
     def unreachable(_request: httpx.Request) -> httpx.Response:
         pytest.fail("strict answering must not generate from withheld assertions")
 
     with httpx.Client(transport=httpx.MockTransport(unreachable)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             OpenAI(api_key="test", http_client=client, max_retries=0),
             generation_capabilities=ATOMIC_MODALITIES,
             generation_request_max_bytes=maximum,
@@ -224,15 +225,19 @@ def test_budget_matches_real_sdk_wire_bytes_including_extra_body_and_stream(stre
             )
         return _reply()
 
-    model = OpenAIModels(generation_request_max_bytes=100_000, generation_extra_body=extra)
-    prepared = model._answer_request(ModelInput(text="箱子是什么颜色?"), (hit,), stream=stream)
+    model = OpenAICompletion(generation_request_max_bytes=100_000, generation_extra_body=extra)
+    prepared = model._requests.answer_request(
+        ModelInput(text="箱子是什么颜色?"), (hit,), stream=stream
+    )
     assert isinstance(prepared, tuple)
-    exact = adapter._answer_wire_size(prepared[0], stream=stream)
+    exact = openai_requests._answer_wire_size(prepared[0], stream=stream)
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         sdk = OpenAI(
             api_key="test", base_url="https://models.example/v1", http_client=client, max_retries=0
         )
-        model = OpenAIModels(sdk, generation_request_max_bytes=exact, generation_extra_body=extra)
+        model = OpenAICompletion(
+            sdk, generation_request_max_bytes=exact, generation_extra_body=extra
+        )
         if stream:
             assert tuple(model.stream_answer(ModelInput(text="箱子是什么颜色?"), (hit,))) == (
                 "蓝色。",
@@ -243,7 +248,7 @@ def test_budget_matches_real_sdk_wire_bytes_including_extra_body_and_stream(stre
         payload = json.loads(captured[0])
         assert payload["reasoning"] == {"effort": "low"}
         assert "extra_body" not in payload
-        model = OpenAIModels(
+        model = OpenAICompletion(
             sdk, generation_request_max_bytes=exact - 1, generation_extra_body=extra
         )
         with pytest.raises(ModelError) as failure:
@@ -272,7 +277,7 @@ def test_budget_resizes_required_question_image_without_removing_text_or_source(
         return _reply()
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             OpenAI(api_key="test", http_client=client, max_retries=0),
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_request_max_bytes=8_000,
@@ -297,7 +302,7 @@ def test_required_question_audio_is_never_dropped_to_meet_the_limit(tmp_path: Pa
         pytest.fail("an over-budget mandatory question must fail before HTTP")
 
     with httpx.Client(transport=httpx.MockTransport(unreachable)) as client:
-        model = OpenAIModels(
+        model = OpenAICompletion(
             OpenAI(api_key="test", http_client=client, max_retries=0),
             generation_capabilities=ATOMIC_MODALITIES,
             generation_request_max_bytes=4_000,
@@ -319,12 +324,12 @@ def test_ranked_omission_keeps_gps_and_map_metadata_without_absent_attachment(
         "gps": {"latitude": 51.5, "longitude": -0.1},
         "capture_time": {"value": "2026-01-01T10:00:00"},
     }
-    monkeypatch.setattr(adapter, "image_capture_metadata", lambda _path: gps)
-    probe = OpenAIModels(
+    monkeypatch.setattr(openai_media, "image_capture_metadata", lambda _path: gps)
+    probe = OpenAICompletion(
         generation_request_max_bytes=1_000_000, generation_capabilities=ATOMIC_MODALITIES
     )
     stripped = (hits[0], replace(hits[1], assets=(), modality=Modality.TEXT))
-    request, _, _, _ = probe._render_answer_request(
+    request, _, _, _ = probe._requests.render_answer_request(
         ModelInput(text="What is here?"),
         stripped,
         hits,
@@ -334,7 +339,7 @@ def test_ranked_omission_keeps_gps_and_map_metadata_without_absent_attachment(
         exhaustive=False,
         metadata_source_hits=hits,
     )
-    maximum = adapter._answer_wire_size(request, stream=False) + 100
+    maximum = openai_requests._answer_wire_size(request, stream=False) + 100
     captured: list[bytes] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -348,7 +353,7 @@ def test_ranked_omission_keeps_gps_and_map_metadata_without_absent_attachment(
         httpx.Client(transport=httpx.MockTransport(respond)) as client,
         provider.get_tracer("test").start_as_current_span("answer"),
     ):
-        model = OpenAIModels(
+        model = OpenAICompletion(
             OpenAI(api_key="test", http_client=client, max_retries=0),
             generation_capabilities=ATOMIC_MODALITIES,
             generation_request_max_bytes=maximum,
@@ -375,7 +380,7 @@ def test_ranked_omission_keeps_gps_and_map_metadata_without_absent_attachment(
     assert attributes["sensemem.grounding.request_bytes"] == len(captured[0])
     assert attributes["sensemem.grounding.budget_omitted_assets"] == 1
     # Map enrichment is retained in the same source-bound metadata-only payload.
-    parts = adapter._answer_text_parts(
+    parts = openai_requests._answer_text_parts(
         ModelInput(text="Where?"),
         stripped,
         ({}, {}),
@@ -414,13 +419,13 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
         counts.append((count, max_frame_bytes))
         return (url,) * count
 
-    monkeypatch.setattr(adapter, "_video_frame_urls", frames)
-    model = OpenAIModels(
+    monkeypatch.setattr(openai_media, "_video_frame_urls", frames)
+    model = OpenAICompletion(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=25_000
     )
-    prepared = model._answer_request(ModelInput(text="What happens?"), (hit,))
+    prepared = model._requests.answer_request(ModelInput(text="What happens?"), (hit,))
     assert isinstance(prepared, tuple)
-    assert adapter._answer_wire_size(prepared[0], stream=False) <= 25_000
+    assert openai_requests._answer_wire_size(prepared[0], stream=False) <= 25_000
     content = cast(
         list[dict[str, object]],
         cast(list[dict[str, object]], prepared[0]["messages"])[1]["content"],
@@ -432,19 +437,19 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
     )
     assert counts[0][0] == 16 and counts[0][1] is not None
     counts.clear()
-    model = OpenAIModels(
+    model = OpenAICompletion(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=100_000
     )
-    prepared = model._answer_request(ModelInput(text="What happens?"), (hit,))
+    prepared = model._requests.answer_request(ModelInput(text="What happens?"), (hit,))
     assert isinstance(prepared, tuple)
     assert not counts
     # Native video fits by itself, but earlier ranked audio leaves too little room. Keep
     # native semantics and omit it explicitly instead of converting it to stills.
     audio = _asset(tmp_path, "earlier.wav", Modality.AUDIO, b"audio" * 4_000)
-    model = OpenAIModels(
+    model = OpenAICompletion(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=80_000
     )
-    prepared = model._answer_request(
+    prepared = model._requests.answer_request(
         ModelInput(text="What happens?"), (_hit("earlier", (audio,)), hit)
     )
     assert isinstance(prepared, tuple)
@@ -459,21 +464,20 @@ def test_sampled_video_frames_obey_the_explicit_frame_byte_limit() -> None:
 
     from_image = cast(Callable[[Image.Image], av.VideoFrame], av.VideoFrame.from_image)
     frame = from_image(Image.effect_noise((512, 512), 100).convert("RGB"))
-    url = adapter._jpeg_frame_url(frame, max_encoded_bytes=3_000)
+    url = openai_media._jpeg_frame_url(frame, max_encoded_bytes=3_000)
     assert len(url) <= 3_000
     with Image.open(BytesIO(base64.b64decode(url.partition(",")[2]))) as image:
         assert image.width * image.height < 512 * 512
 
 
 def test_none_keeps_existing_body_and_all_nonanswer_recipe_identities() -> None:
-    default = OpenAIModels()
-    explicit = OpenAIModels(generation_request_max_bytes=None)
-    bounded = OpenAIModels(generation_request_max_bytes=100_000)
+    default = OpenAICompletion()
+    explicit = OpenAICompletion(generation_request_max_bytes=None)
+    bounded = OpenAICompletion(generation_request_max_bytes=100_000)
     hit = _hit("one")
-    assert default._answer_request(ModelInput(text="What?"), (hit,)) == explicit._answer_request(
+    assert default._requests.answer_request(
         ModelInput(text="What?"), (hit,)
-    )
-    assert default.embedding_space == bounded.embedding_space
+    ) == explicit._requests.answer_request(ModelInput(text="What?"), (hit,))
     assert default.vision_space == bounded.vision_space
     assert default.formation_space == bounded.formation_space
 
@@ -491,24 +495,28 @@ def test_fitting_request_keeps_exact_old_body_without_reading_previously_omitted
         read.append(path)
         return {"gps": {"latitude": 51.5, "longitude": -0.1}}
 
-    monkeypatch.setattr(adapter, "image_capture_metadata", metadata)
-    unbounded = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)
-    old = unbounded._answer_request(
+    monkeypatch.setattr(openai_media, "image_capture_metadata", metadata)
+    unbounded = OpenAICompletion(generation_capabilities=ATOMIC_MODALITIES)
+    old = unbounded._requests.answer_request(
         ModelInput(text="Where?"), fitted, omission_source_hits=original
     )
-    bounded = OpenAIModels(
+    bounded = OpenAICompletion(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=1_000_000
     )
-    new = bounded._answer_request(ModelInput(text="Where?"), fitted, omission_source_hits=original)
+    new = bounded._requests.answer_request(
+        ModelInput(text="Where?"), fitted, omission_source_hits=original
+    )
     assert isinstance(old, tuple) and isinstance(new, tuple)
     assert json.dumps(old[0], ensure_ascii=False) == json.dumps(new[0], ensure_ascii=False)
     assert not read
     # A real overflow also cannot add metadata from media the pre-existing fit already removed.
-    too_small = OpenAIModels(
+    too_small = OpenAICompletion(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=1
     )
     with pytest.raises(ModelError):
-        too_small._answer_request(ModelInput(text="Where?"), fitted, omission_source_hits=original)
+        too_small._requests.answer_request(
+            ModelInput(text="Where?"), fitted, omission_source_hits=original
+        )
     assert not read
 
 
@@ -528,19 +536,21 @@ def test_multiple_mandatory_images_fit_when_full_text_uses_most_of_the_budget(
     )
     text = ("The complete original question. " * 250).strip()
     hit = _hit("one")
-    baseline = OpenAIModels(generation_capabilities=ATOMIC_MODALITIES)
-    text_only = baseline._answer_request(ModelInput(text=text), (hit,))
-    minimum = baseline._answer_request(ModelInput(text=text, assets=tiny), (hit,))
+    baseline = OpenAICompletion(generation_capabilities=ATOMIC_MODALITIES)
+    text_only = baseline._requests.answer_request(ModelInput(text=text), (hit,))
+    minimum = baseline._requests.answer_request(ModelInput(text=text, assets=tiny), (hit,))
     assert isinstance(text_only, tuple) and isinstance(minimum, tuple)
-    fixed = adapter._answer_wire_size(text_only[0], stream=False)
-    maximum = max(fixed * 10 // 7, adapter._answer_wire_size(minimum[0], stream=False) + 256)
+    fixed = openai_requests._answer_wire_size(text_only[0], stream=False)
+    maximum = max(
+        fixed * 10 // 7, openai_requests._answer_wire_size(minimum[0], stream=False) + 256
+    )
     assert fixed / maximum >= 0.65
-    model = OpenAIModels(
+    model = OpenAICompletion(
         generation_capabilities=ATOMIC_MODALITIES, generation_request_max_bytes=maximum
     )
-    prepared = model._answer_request(ModelInput(text=text, assets=large), (hit,))
+    prepared = model._requests.answer_request(ModelInput(text=text, assets=large), (hit,))
     assert isinstance(prepared, tuple)
-    assert adapter._answer_wire_size(prepared[0], stream=False) <= maximum
+    assert openai_requests._answer_wire_size(prepared[0], stream=False) <= maximum
     content = cast(
         list[dict[str, object]],
         cast(list[dict[str, object]], prepared[0]["messages"])[1]["content"],

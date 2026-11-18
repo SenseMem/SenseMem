@@ -12,12 +12,18 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import platform
 import random
 import struct
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from heapq import nlargest
+from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter
+
+import numpy as np
 
 from sensemem.benchmarks.eval_statistics import percentile
 from sensemem.infrastructure.local import (
@@ -27,6 +33,7 @@ from sensemem.infrastructure.local import (
     StoredMemory,
 )
 from sensemem.infrastructure.local.zvec_index import ZvecIndex
+from sensemem.kernel.metadata import index_recipe_for
 from sensemem.types import IndexQuantization
 
 _BATCH_SIZE = 512
@@ -80,7 +87,7 @@ def run_benchmark(
         optimize_seconds = perf_counter() - optimize_started
 
         query_vectors = tuple(_normalized_fp32(rng, fp32) for _query in range(queries))
-        recall, latencies = _measure_queries(index, query_vectors, k=k)
+        recall, latencies = _measure_queries(store, index, query_vectors, rows=rows, k=k)
 
     query_seconds = sum(latencies)
     sqlite_bytes = sum(
@@ -102,9 +109,25 @@ def run_benchmark(
         "k": k,
         "seed": seed,
         "quantization": quantization.value,
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "cpu_count": os.cpu_count(),
+            "sensemem": version("sensemem"),
+            "zvec": version("zvec"),
+            "numpy": np.__version__,
+        },
+        "configuration": {
+            "index_recipe": index_recipe_for(quantization),
+            "ef_search": index.ef_search,
+        },
         "ingest_seconds": ingest_seconds,
         "optimize_seconds": optimize_seconds,
         "recall_at_k": recall,
+        "recall_truth": (
+            "exhaustive cosine over SQLite FP32 vectors with FP64 accumulation; "
+            "ties at the kth score count as correct"
+        ),
         "query_latency_ms": {
             "p50": _milliseconds(latencies, 0.50),
             "p95": _milliseconds(latencies, 0.95),
@@ -205,9 +228,11 @@ def _drain_batch(
 
 
 def _measure_queries(
+    store: LocalStore,
     index: ZvecIndex,
     query_vectors: Sequence[tuple[float, ...]],
     *,
+    rows: int,
     k: int,
 ) -> tuple[float, tuple[float, ...]]:
     index.search(
@@ -229,17 +254,44 @@ def _measure_queries(
         latencies.append(perf_counter() - started)
         approximate_ids.append({hit.id for hit in approximate})
 
-    recalls = []
-    for vector, found_ids in zip(query_vectors, approximate_ids, strict=True):
-        truth = index.search(
-            vector,
-            limit=k,
-            space_id=_SPACE_ID,
-            task=_TASK,
-            exact=True,
+    # A linear query against a quantized index shares its quantization error. Read SQLite's
+    # original FP32 buffers instead, retaining only one vector batch and each query's top k.
+    query_matrix = np.asarray(query_vectors, dtype=np.float64)
+    query_matrix /= np.linalg.norm(query_matrix, axis=1, keepdims=True)
+    closest_scores: list[list[float]] = [[] for _vector in query_vectors]
+    found_scores: list[list[float]] = [[] for _vector in query_vectors]
+    for offset in range(0, rows, _BATCH_SIZE):
+        parts = tuple(
+            store.index.iter_memory_embedding_parts(
+                tuple(
+                    f"memory-{row:09d}" for row in range(offset, min(rows, offset + _BATCH_SIZE))
+                ),
+                space_id=_SPACE_ID,
+                task=_TASK,
+            )
         )
-        truth_ids = {hit.id for hit in truth}
-        recalls.append(len(truth_ids & found_ids) / len(truth_ids))
+        document_matrix = np.stack(
+            [np.frombuffer(packed, dtype="<f4") for _memory_id, _embedding_id, packed in parts]
+        ).astype(np.float64)
+        document_matrix /= np.linalg.norm(document_matrix, axis=1, keepdims=True)
+        scores = query_matrix @ document_matrix.T
+        for query_number, query_scores in enumerate(scores):
+            closest_scores[query_number] = nlargest(
+                k, (*closest_scores[query_number], *(float(score) for score in query_scores))
+            )
+            found_scores[query_number].extend(
+                float(score)
+                for score, (_memory_id, embedding_id, _packed) in zip(
+                    query_scores, parts, strict=True
+                )
+                if embedding_id in approximate_ids[query_number]
+            )
+    # Every member of a tie at the kth boundary is a correct neighbor, including in dimension
+    # one where many normalized vectors are identical. Keep k as the denominator for all ties.
+    recalls = [
+        sum(score >= closest[-1] for score in found) / k
+        for closest, found in zip(closest_scores, found_scores, strict=True)
+    ]
     return sum(recalls) / len(recalls), tuple(latencies)
 
 

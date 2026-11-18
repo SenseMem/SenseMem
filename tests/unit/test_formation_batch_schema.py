@@ -5,10 +5,11 @@ from typing import Any, Literal
 
 import httpx2 as httpx
 import pytest
-from test_openai_sdk import _sdk_client
+from test_openai_adapters import _sdk_client
 
-from sensemem import FormationInput, ModelError, ModelInput, ObservationContext, OpenAIModels
+from sensemem import FormationInput, ModelError, ModelInput, ObservationContext
 from sensemem.models._openai_schemas import response_schema
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 def _inputs(count: int) -> tuple[FormationInput, ...]:
@@ -59,7 +60,7 @@ def test_each_batch_uses_its_own_envelope_without_forcing_facts(
 
     original = response_schema("formation")
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_response_format=mode)
+        adapter = OpenAICompletion(_sdk_client(client), generation_response_format=mode)
         assert adapter.form(()) == ()
         for count in (4, 1):
             assert adapter.form(_inputs(count)) == ((),) * count
@@ -94,7 +95,7 @@ def test_semantic_repair_retains_the_exact_batch_schema() -> None:
         return _reply([f"observation_{index}" for index in range(count)])
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_response_format="json_schema")
+        adapter = OpenAICompletion(_sdk_client(client), generation_response_format="json_schema")
         assert adapter.form(_inputs(4)) == ((),) * 4
     assert len(sent) == 2
     assert sent[0]["response_format"] == sent[1]["response_format"]
@@ -119,7 +120,7 @@ def test_provider_ignoring_envelope_constraints_still_fails_closed(aliases: list
         return _reply(aliases)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        adapter = OpenAIModels(_sdk_client(client), generation_response_format="json_schema")
+        adapter = OpenAICompletion(_sdk_client(client), generation_response_format="json_schema")
         with pytest.raises(ModelError) as failure:
             adapter.form(_inputs(4))
     assert requests == 2

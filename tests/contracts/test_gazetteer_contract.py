@@ -9,14 +9,19 @@ import sys
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
-from sensemem import OpenAIModels, SenseMemConfig
+from sensemem import MemorySpec
+from sensemem.configuration import OpenAIGenerationConfig
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 def test_default_config_and_package_import_do_not_enable_or_load_geospatial_dependencies() -> None:
-    config = SenseMemConfig.model_validate(
+    config = MemorySpec.model_validate(
         {"embedding": {"provider": "openai"}, "generation": {"provider": "openai"}}
     )
-    assert config.generation is not None and config.generation.offline_gazetteer is None
+    assert (
+        isinstance(config.generation, OpenAIGenerationConfig)
+        and config.generation.offline_gazetteer is None
+    )
     command = "import json,sys; from sensemem import OfflineGazetteer; print(json.dumps(sorted({'shapely','pyproj','osmium'}.intersection(sys.modules))))"
     result = subprocess.run(
         [sys.executable, "-I", "-c", command],
@@ -27,13 +32,13 @@ def test_default_config_and_package_import_do_not_enable_or_load_geospatial_depe
     )
     assert json.loads(result.stdout) == []
     with pytest.raises(TypeError, match="generation_gazetteer"):
-        OpenAIModels(generation_gazetteer=object())  # type: ignore[call-arg]
+        OpenAICompletion(generation_gazetteer=object())  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("slot", ["embedding", "formation", "vision", "consolidation"])
 def test_map_configuration_cannot_enable_write_time_world_knowledge(slot: str) -> None:
     with pytest.raises(PydanticValidationError):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 slot: {
@@ -57,7 +62,7 @@ def test_map_configuration_cannot_enable_write_time_world_knowledge(slot: str) -
 )
 def test_map_resource_bounds_fail_before_clients_or_storage(values: dict[str, object]) -> None:
     with pytest.raises(PydanticValidationError):
-        SenseMemConfig.model_validate(
+        MemorySpec.model_validate(
             {
                 "embedding": {"provider": "openai"},
                 "generation": {

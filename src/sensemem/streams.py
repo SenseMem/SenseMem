@@ -1,33 +1,40 @@
-"""Async observation streams over `AsyncMemory`: omni prefetch, capture, audio, and vision."""
+"""Async observation streams: semantic events, omni prefetch, capture, audio, and vision."""
 
 from __future__ import annotations
 
 import asyncio
-import builtins
 import io
 import wave
-from collections.abc import AsyncIterable, AsyncIterator, Callable
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable
+from contextlib import aclosing
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import partial
+from pathlib import Path
+from typing import TypeVar, cast
 
+from sensemem._content import content_atoms, snapshot_content
+from sensemem._validation import nonempty_text, positive_int
+from sensemem.content import Blob, ContentAtom, ContentInput
+from sensemem.context_values import ContextBudget
+from sensemem.events import EventChunk
 from sensemem.exceptions import SenseMemError, ValidationError
-from sensemem.kernel.content import content_atoms, declared_atom_modality, snapshot_content
+from sensemem.infrastructure.local.event_checkpoint import EventCheckpoint
+from sensemem.kernel.content import declared_atom_modality
+from sensemem.kernel.events import EventSegmentation
 from sensemem.kernel.temporal import resolved_reference_at, search_occurrence_range
-from sensemem.kernel.validation import optional_memory_type, positive_int, validate_limit
+from sensemem.kernel.validation import optional_memory_type, validate_limit
 from sensemem.memory import AsyncMemory
-from sensemem.types import (
+from sensemem.models.base import EventSegmentationBackend
+from sensemem.spatial import ObservationContext
+from sensemem.stream_values import (
     AcousticBoundary,
     ASRPartial,
     AudioBoundary,
     AudioStreamPacket,
-    Blob,
-    ContentAtom,
-    ContentInput,
-    MemoryType,
-    Modality,
-    ObservationContext,
     PCMChunk,
     PrefetchResult,
+    PrefetchUpdate,
     SceneBoundary,
     StreamCommit,
     StreamEvent,
@@ -39,6 +46,9 @@ from sensemem.types import (
     VisionPartial,
     VisionStreamPacket,
 )
+from sensemem.types import MemoryCategory, Modality
+
+_T = TypeVar("_T")
 
 
 @dataclass(slots=True)
@@ -60,17 +70,18 @@ class _VisionStreamState:
 
 
 class AsyncOmniPrefetch:
-    """Coalesce evolving omni query snapshots into one in-flight search per turn."""
+    """Coalesce evolving omni query snapshots into one in-flight retrieval per turn."""
 
     def __init__(
         self,
         memory: AsyncMemory,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         occurred_from: datetime | None = None,
         occurred_until: datetime | None = None,
+        budget: ContextBudget | None = None,
     ) -> None:
         validate_limit(limit, maximum=100)
         occurred_from, occurred_until = search_occurrence_range(
@@ -83,6 +94,13 @@ class AsyncOmniPrefetch:
         self._reference_at = resolved_reference_at(reference_at)
         self._occurred_from = occurred_from
         self._occurred_until = occurred_until
+        if budget is not None and not isinstance(budget, ContextBudget):
+            raise ValidationError("prefetch budget must be ContextBudget")
+        if budget is not None and any(
+            value is not None for value in (memory_type, occurred_from, occurred_until)
+        ):
+            raise ValidationError("compiled prefetch uses budget filters instead of search filters")
+        self._budget = budget
         self._revision = 0
         self._submitted: tuple[int, ContentInput] | None = None
         self._pending: tuple[int, ContentInput] | None = None
@@ -91,14 +109,15 @@ class AsyncOmniPrefetch:
         self._failure: tuple[int, Exception] | None = None
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
+        self._changed = asyncio.Event()
 
     @property
     def latest(self) -> PrefetchResult | None:
         """Return the newest completed result without waiting."""
         return self._latest
 
-    def submit(self, query: ContentInput) -> None:
-        """Queue a complete current snapshot, replacing any not-yet-started snapshot."""
+    def submit(self, query: ContentInput) -> int:
+        """Queue a complete snapshot and return its request-local revision."""
         if self._closed:
             raise ValidationError("prefetch is closed")
         loop = asyncio.get_running_loop()
@@ -106,7 +125,7 @@ class AsyncOmniPrefetch:
         if self._submitted is not None and self._submitted[1] == snapshot:
             failed = self._failure is not None and self._failure[0] == self._submitted[0]
             if not failed:
-                return
+                return self._submitted[0]
         self._revision += 1
         revision = self._revision
         self._submitted = (revision, snapshot)
@@ -114,6 +133,25 @@ class AsyncOmniPrefetch:
         self._failure = None
         if self._worker is None:
             self._worker = loop.create_task(self._run())
+        return revision
+
+    async def updates(self) -> AsyncIterator[PrefetchUpdate]:
+        """Yield matching completions as they arrive, without retaining an update queue."""
+        seen = 0
+        while True:
+            if (
+                self._latest is not None
+                and self._latest_revision > seen
+                and self._submitted is not None
+                and self._latest_revision == self._submitted[0]
+            ):
+                seen = self._latest_revision
+                yield PrefetchUpdate(seen, self._latest)
+            elif self._closed and self._worker is None:
+                return
+            else:
+                self._changed.clear()
+                await self._changed.wait()
 
     async def finalize(self, query: ContentInput | None = None) -> PrefetchResult:
         """Finish the turn and return a result for the exact final snapshot."""
@@ -127,6 +165,7 @@ class AsyncOmniPrefetch:
         assert self._submitted is not None
         target = self._submitted[0]
         self._closed = True
+        self._changed.set()
         worker = self._worker
         if worker is not None:
             await asyncio.shield(worker)
@@ -137,9 +176,10 @@ class AsyncOmniPrefetch:
         raise RuntimeError("prefetch completed without its final revision")
 
     async def close(self) -> None:
-        """Discard queued snapshots and drain the one search that may already be running."""
+        """Discard queued snapshots and drain the operation that may already be running."""
         self._closed = True
         self._pending = None
+        self._changed.set()
         worker = self._worker
         if worker is not None:
             await asyncio.shield(worker)
@@ -150,21 +190,31 @@ class AsyncOmniPrefetch:
                 revision, query = self._pending
                 self._pending = None
                 try:
-                    result = await self._memory.search(
-                        query,
-                        limit=self._limit,
-                        memory_type=self._memory_type,
-                        reference_at=self._reference_at,
-                        occurred_from=self._occurred_from,
-                        occurred_until=self._occurred_until,
-                    )
+                    if self._budget is None:
+                        result = await self._memory.search(
+                            query,
+                            limit=self._limit,
+                            memory_type=self._memory_type,
+                            reference_at=self._reference_at,
+                            occurred_from=self._occurred_from,
+                            occurred_until=self._occurred_until,
+                        )
+                        completed = PrefetchResult(hits=result.hits)
+                    else:
+                        bundle = await self._memory.compile(
+                            query, budget=self._budget, reference_at=self._reference_at
+                        )
+                        completed = PrefetchResult(hits=bundle.hits, bundle=bundle)
                 except Exception as error:
                     self._failure = (revision, error)
+                    self._changed.set()
                     continue
-                self._latest = PrefetchResult(hits=result.hits)
+                self._latest = completed
                 self._latest_revision = revision
+                self._changed.set()
         finally:
             self._worker = None
+            self._changed.set()
 
 
 class AsyncCaptureStream:
@@ -180,7 +230,7 @@ class AsyncCaptureStream:
         memory: AsyncMemory,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         reference_at: datetime | None = None,
         max_streams: int = 32,
         capture: bool = False,
@@ -292,7 +342,12 @@ class AsyncCaptureStream:
             return prefetch
         if len(prefetches) >= self._max_streams:
             raise ValidationError("capture stream exceeds max_streams")
-        prefetch = self._new_prefetch()
+        prefetch = AsyncOmniPrefetch(
+            self._memory,
+            limit=self._limit,
+            memory_type=self._memory_type,
+            reference_at=self._reference_at,
+        )
         prefetches[stream_id] = prefetch
         return prefetch
 
@@ -304,7 +359,7 @@ class AsyncCaptureStream:
         capabilities = self._memory.capabilities.embedding
         if Modality.TEXT not in capabilities:
             return item.content
-        routed: builtins.list[ContentAtom] = [
+        routed: list[ContentAtom] = [
             value for value in (item.transcript, item.description) if value is not None
         ]
         for atom in content_atoms(item.content):
@@ -323,14 +378,6 @@ class AsyncCaptureStream:
                 continue
             routed.append(atom)
         return routed[0] if len(routed) == 1 else tuple(routed)
-
-    def _new_prefetch(self) -> AsyncOmniPrefetch:
-        return AsyncOmniPrefetch(
-            self._memory,
-            limit=self._limit,
-            memory_type=self._memory_type,
-            reference_at=self._reference_at,
-        )
 
 
 StreamContext = ObservationContext | Callable[[], ObservationContext | None] | None
@@ -356,6 +403,192 @@ def _stream_context(context: StreamContext) -> Callable[[], ObservationContext |
     return context
 
 
+class AsyncEventStream:
+    """Understand continuous timed media and commit complete semantic events automatically.
+
+    Capture windows are independently encoded audio, images, video, or synchronized sound and
+    visual media. The segmenter decides finality, at window boundaries, from the whole unfinished
+    event. EOF triggers one final assessment and retains any still-incomplete suffix. The caller
+    owns the segmenter; the memory instance owns execution, storage, and ordinary enrichment.
+    """
+
+    def __init__(
+        self,
+        memory: AsyncMemory,
+        *,
+        segmenter: EventSegmentationBackend,
+        limit: int = 10,
+        context: StreamContext = None,
+        reference_at: datetime | None = None,
+        max_streams: int = 32,
+        max_chunks: int = 32,
+        max_buffer_bytes: int = 64 * 1024 * 1024,
+        max_pending_bytes: int = 64 * 1024 * 1024,
+        capture: bool = False,
+        checkpoint_path: Path | None = None,
+    ) -> None:
+        if not isinstance(memory, AsyncMemory):
+            raise ValidationError("memory must be an AsyncMemory")
+        if not isinstance(segmenter, EventSegmentationBackend):
+            raise ValidationError("segmenter must be an EventSegmentationBackend")
+        nonempty_text(segmenter.event_model, "event_model")
+        nonempty_text(segmenter.event_recipe, "event_recipe")
+        self._memory = memory
+        self._context = _stream_context(context)
+        max_streams = positive_int(max_streams, "max_streams")
+        max_chunks = positive_int(max_chunks, "max_chunks")
+        max_buffer_bytes = positive_int(max_buffer_bytes, "max_buffer_bytes")
+        max_pending_bytes = positive_int(max_pending_bytes, "max_pending_bytes")
+        if checkpoint_path is not None and not isinstance(checkpoint_path, Path):
+            raise ValidationError("checkpoint_path must be a Path")
+        if max_chunks < 2:
+            raise ValidationError("max_chunks must allow a continuation and one new chunk")
+        core = memory._memory
+        self._plane = EventSegmentation(
+            tracer=core._tracer,
+            segmenter=segmenter,
+            lifecycle=core._lifecycle,
+            materializer=core._materializer,
+            hydrator=core._hydrator,
+            max_streams=max_streams,
+            max_chunks=max_chunks,
+            max_buffer_bytes=max_buffer_bytes,
+            max_pending_bytes=max_pending_bytes,
+            checkpoint=(
+                None
+                if checkpoint_path is None
+                else EventCheckpoint(checkpoint_path, data_dir=core.data_dir)
+            ),
+        )
+        self._consuming = False
+        self._processing = False
+        self._checkpoint_path = checkpoint_path
+        self._capture = AsyncCaptureStream(
+            memory,
+            limit=limit,
+            memory_type=MemoryCategory.EPISODIC,
+            reference_at=reference_at,
+            max_streams=max_streams,
+            capture=capture,
+        )
+
+    @property
+    def positions(self) -> dict[str, datetime]:
+        """Return each stream's accepted capture end; resume source input at this boundary."""
+        return self._plane.positions
+
+    async def consume(self, chunks: AsyncIterable[EventChunk]) -> AsyncIterator[StreamCommit]:
+        """Yield storage parts of complete events; accepted input survives interrupted calls."""
+        if not isinstance(chunks, AsyncIterable):
+            raise ValidationError("chunks must be an async iterable of EventChunk values")
+        if self._consuming or self._processing:
+            raise ValidationError("event stream already has an active consumer")
+        self._consuming = True
+        try:
+            async with aclosing(self._process(end_of_stream=False)) as processing:
+                async for commit in processing:
+                    yield commit
+            async for chunk in chunks:
+                await self._append(chunk, deferred=False)
+                async with aclosing(self._process(end_of_stream=False)) as processing:
+                    async for commit in processing:
+                        yield commit
+            async with aclosing(self._process(end_of_stream=True)) as processing:
+                async for commit in processing:
+                    yield commit
+        finally:
+            self._consuming = False
+
+    async def append(self, chunk: EventChunk) -> None:
+        """Flush a window to the native checkpoint without waiting for any model work.
+
+        Requires ``checkpoint_path``. Concurrent appends are serialized at durable acceptance;
+        one ``process()`` may assess earlier input concurrently. ``max_pending_bytes`` bounds
+        unassessed staged media separately from the active ``max_buffer_bytes`` budget.
+        """
+        if self._checkpoint_path is None:
+            raise ValidationError("append requires checkpoint_path for durable acceptance")
+        await self._append(chunk, deferred=True)
+
+    async def _append(self, chunk: EventChunk, *, deferred: bool) -> None:
+        if not isinstance(chunk, EventChunk):
+            raise ValidationError("chunks must contain EventChunk values")
+        if chunk.context is None:
+            chunk = replace(chunk, context=self._context())
+        await self._drain_call(partial(self._plane.stage, chunk, deferred=deferred))
+
+    async def process(self, *, end_of_stream: bool = False) -> AsyncIterator[StreamCommit]:
+        """Drain arrived input through one bounded semantic processor.
+
+        Adjacent queued windows are assessed together within ``max_chunks`` and the active
+        byte budget. Idle input does not imply EOF. Explicit EOF assesses the final suffix
+        without forcing completion; source bytes remain resumable when a model fails.
+        """
+        if self._consuming:
+            raise ValidationError("event stream already has an active consumer")
+        async with aclosing(self._process(end_of_stream=end_of_stream)) as processing:
+            async for commit in processing:
+                yield commit
+
+    async def _process(self, *, end_of_stream: bool) -> AsyncGenerator[StreamCommit, None]:
+        if not isinstance(end_of_stream, bool):
+            raise ValidationError("end_of_stream must be a boolean")
+        if self._processing:
+            raise ValidationError("event stream already has an active processor")
+        self._processing = True
+        try:
+            async with (
+                aclosing(self._events(end_of_stream=end_of_stream)) as events,
+                aclosing(
+                    cast(AsyncGenerator[StreamCommit, None], self._capture.consume(events))
+                ) as captures,
+            ):
+                async for commit in captures:
+                    await self._drain_call(self._plane.acknowledge)
+                    yield commit
+        finally:
+            self._processing = False
+
+    async def _events(self, *, end_of_stream: bool) -> AsyncGenerator[StreamEvent, None]:
+        plane = self._plane
+        finished: set[str] = set()
+        while (event := plane.peek()) is not None:
+            yield event
+        while assessed := await self._drain_call(
+            partial(plane.advance, end_of_stream=end_of_stream)
+        ):
+            stream_id, final = assessed
+            if final:
+                finished.add(stream_id)
+            while (event := plane.peek()) is not None:
+                yield event
+        if end_of_stream:
+            for stream_id in plane.pending_streams:
+                if stream_id not in finished:
+                    await self._drain_call(partial(plane.finish, stream_id))
+                    while (event := plane.peek()) is not None:
+                        yield event
+
+    async def _drain_call(self, call: Callable[[], _T]) -> _T:
+        assessment = asyncio.create_task(self._memory._memory._execution.run_in_worker(call))
+        cancelled = False
+        # The next consume may reuse this state or close the caller's segmenter. Drain active
+        # model calls and checkpoint writes before cancellation releases that ownership boundary.
+        while not assessment.done():
+            try:
+                await asyncio.shield(assessment)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                if not cancelled:
+                    raise
+        if cancelled:
+            if not assessment.cancelled():
+                assessment.exception()
+            raise asyncio.CancelledError
+        return assessment.result()
+
+
 class AsyncAudioStream:
     """Normalize PCM, VAD, ASR, and acoustic boundaries into associated capture events."""
 
@@ -364,7 +597,7 @@ class AsyncAudioStream:
         memory: AsyncMemory,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         context: StreamContext = None,
         reference_at: datetime | None = None,
         max_streams: int = 32,
@@ -373,9 +606,9 @@ class AsyncAudioStream:
         if not isinstance(memory, AsyncMemory):
             raise ValidationError("memory must be an AsyncMemory")
         self._max_streams = positive_int(max_streams, "max_streams")
-        self._written_type = optional_memory_type(memory_type) or MemoryType.SEMANTIC
+        self._written_type = optional_memory_type(memory_type) or MemoryCategory.SEMANTIC
         self._context = _stream_context(context)
-        capabilities = memory._memory._backends.embedding_capabilities
+        capabilities = memory.capabilities.embedding
         self._native_audio = Modality.AUDIO in capabilities
         self._native_text = Modality.TEXT in capabilities
         self._max_pcm_bytes = memory._memory._storage.assets.max_bytes - 44
@@ -528,7 +761,7 @@ class AsyncVisionStream:
         memory: AsyncMemory,
         *,
         limit: int = 10,
-        memory_type: MemoryType | None = None,
+        memory_type: MemoryCategory | None = None,
         context: StreamContext = None,
         reference_at: datetime | None = None,
         max_streams: int = 32,
@@ -538,9 +771,9 @@ class AsyncVisionStream:
             raise ValidationError("memory must be an AsyncMemory")
         self._memory = memory
         self._max_streams = positive_int(max_streams, "max_streams")
-        self._written_type = optional_memory_type(memory_type) or MemoryType.SEMANTIC
+        self._written_type = optional_memory_type(memory_type) or MemoryCategory.SEMANTIC
         self._context = _stream_context(context)
-        capabilities = memory._memory._backends.embedding_capabilities
+        capabilities = memory.capabilities.embedding
         self._native_image = Modality.IMAGE in capabilities
         self._native_text = Modality.TEXT in capabilities
         self._capture = AsyncCaptureStream(
@@ -551,6 +784,7 @@ class AsyncVisionStream:
             max_streams=max_streams,
             capture=capture,
         )
+        self._capture_mode = capture
 
     async def consume(
         self,
@@ -637,14 +871,15 @@ class AsyncVisionStream:
             return None
         occurred_end = occurred_end or state.last_occurred_at
         if (
-            state.image is not None
+            not self._capture_mode
+            and state.image is not None
             and not state.description
             and not self._native_image
             and self._native_text
             and self._memory._memory._backends.vision_describer is not None
         ):
             state.description = (
-                await self._memory._memory._execution.run(
+                await self._memory._memory._execution.run_in_worker(
                     self._memory._memory._vision.describe, (state.image,)
                 )
             )[0]

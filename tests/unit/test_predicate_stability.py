@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -12,15 +13,17 @@ from _feature_support import TinyEmbedder
 
 from sensemem import (
     EmbedTask,
+    EvidenceBasis,
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
-    MemoryKind,
+    MemorySettings,
     Modality,
     ModelInput,
+    RecordKind,
 )
-from sensemem.infrastructure.local import LocalStore, UnsupportedSchemaError
+from sensemem.infrastructure.local import LocalStore
+from sensemem.kernel.formation_rules import formation_context, formation_memory_id, naming_proposal
 
 
 class PredicateFormer:
@@ -55,7 +58,82 @@ def _add_claim(memory: Memory, predicate: str, value: str, **fields: object) -> 
 _FULLWIDTH_ALIAS = " " + "".join(chr(ord(c) + 0xFEE0) for c in "FAVORITE_BEVERAGE") + " "
 
 
-@pytest.mark.parametrize("alias", ["favorite_beverage", "喜欢的饮料", _FULLWIDTH_ALIAS])
+@pytest.mark.parametrize(
+    "first_subject,first_identity,second_subject,second_identity,same_claim",
+    [
+        ("Ana", "person-1", "Ann", "person-1", True),
+        ("Ana", "person-1", "Ana", "person-2", False),
+        ("Ana", None, "Ann", None, False),
+    ],
+)
+def test_stable_claim_identity_survives_a_rename_without_merging_distinct_people(
+    first_subject: str,
+    first_identity: str | None,
+    second_subject: str,
+    second_identity: str | None,
+    same_claim: bool,
+) -> None:
+    claims = []
+    lineages = []
+    for index, (subject, identity_id) in enumerate(
+        ((first_subject, first_identity), (second_subject, second_identity))
+    ):
+        proposal = FormationProposal(
+            kind=RecordKind.TRAIT,
+            content=f"{subject} is patient.",
+            subject=subject,
+            predicate="disposition",
+            value="patient",
+        )
+        context = formation_context(
+            None,
+            proposal,
+            model_id="identity-fixture",
+            recipe="identity-fixture:v1",
+            recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            identity_id=identity_id,
+        )
+        lineages.append(context.lineage_id)
+        claims.append(
+            formation_memory_id(
+                f"source-{index}", proposal, recipe="identity-fixture:v1", context=context
+            )
+        )
+    assert (lineages[0] == lineages[1]) is same_claim
+    assert (claims[0] == claims[1]) is same_claim
+
+
+def test_naming_assertions_keep_distinct_claims_within_one_identity() -> None:
+    claims = []
+    lineages = []
+    for name in ("Ana", "Ann"):
+        proposal = naming_proposal(name, None, basis=EvidenceBasis.USER_STATEMENT)
+        context = formation_context(
+            None,
+            proposal,
+            model_id=None,
+            recipe="identity-fixture:v1",
+            recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            identity_id="person-1",
+        )
+        lineages.append(context.lineage_id)
+        claims.append(
+            formation_memory_id("person-1", proposal, recipe="identity-fixture:v1", context=context)
+        )
+    assert lineages[0] == lineages[1]
+    assert claims[0] != claims[1]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "favorite_beverage",
+        "current_preferred_drink",
+        "only_current_preferred_drink",
+        "喜欢的饮料",
+        _FULLWIDTH_ALIAS,
+    ],
+)
 def test_alias_correction_reaches_the_original_claim(tmp_path: Path, alias: str) -> None:
     with Memory(tmp_path, embedder=TinyEmbedder(), former=PredicateFormer()) as memory:
         first_id = _add_claim(memory, "preferred_drink", "tea")
@@ -96,7 +174,7 @@ def test_relation_aliases_keep_multiple_values(tmp_path: Path) -> None:
         first, second = memory.get(first_id).context, memory.get(second_id).context
         assert first is not None and second is not None
         assert first.lineage_id == second.lineage_id
-        assert first.kind is second.kind is MemoryKind.RELATION
+        assert first.kind is second.kind is RecordKind.RELATION
         assert first.retired_at is second.retired_at is None
 
 
@@ -132,7 +210,7 @@ def test_current_predicate_provenance_and_history_survive_reopening(tmp_path: Pa
         assert provenance == (
             "favorite_beverage",
             "preferred_drink",
-            "sensemem-predicates-v1",
+            "sensemem-predicates-v2",
             "alias",
         )
     with Memory(tmp_path, embedder=TinyEmbedder(), former=PredicateFormer()) as memory:
@@ -146,24 +224,6 @@ def test_current_predicate_provenance_and_history_survive_reopening(tmp_path: Pa
         assert corrected is not None and original is not None and other is not None
         assert other.valid_until == corrected.valid_from
         assert original.valid_until == other.valid_from
-
-
-@pytest.mark.parametrize(
-    "corruption",
-    [
-        "ALTER TABLE memory_semantics DROP COLUMN predicate_key",
-        "ALTER TABLE memory_semantics ADD COLUMN previous_lineage_id TEXT",
-    ],
-    ids=["missing-provenance", "obsolete-provenance"],
-)
-def test_current_schema_requires_exact_predicate_columns(tmp_path: Path, corruption: str) -> None:
-    with LocalStore(tmp_path):
-        pass
-    with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection:
-        connection.execute(corruption)
-        connection.commit()
-    with pytest.raises(UnsupportedSchemaError, match="predicate"):
-        LocalStore(tmp_path)
 
 
 def test_alias_index_rebuild_reuses_authoritative_vectors(tmp_path: Path) -> None:
@@ -180,7 +240,7 @@ def test_alias_index_rebuild_reuses_authoritative_vectors(tmp_path: Path) -> Non
             return super().embed(inputs, task=task)
 
     with Memory(
-        tmp_path, embedder=StoredVectorsOnly(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path, embedder=StoredVectorsOnly(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         left, right = memory.get(first).context, memory.get(second).context
         assert left is not None and right is not None and left.lineage_id == right.lineage_id
@@ -198,6 +258,31 @@ def test_user_stated_alias_overrides_an_inferred_trait(tmp_path: Path) -> None:
         assert old is not None and new is not None
         assert old.lineage_id == new.lineage_id
         assert old.valid_until == new.valid_from
+
+
+@pytest.mark.parametrize("independent", [False, True])
+@pytest.mark.parametrize("kind", [RecordKind.TRAIT, RecordKind.RELATION])
+@pytest.mark.parametrize("alias", ["favorite_beverage", "only_current_preferred_drink"])
+def test_reviewed_aliases_share_one_claim_and_independent_support(
+    tmp_path: Path, independent: bool, kind: RecordKind, alias: str
+) -> None:
+    with Memory(
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=PredicateFormer(),
+        settings=MemorySettings(independent_evidence=independent),
+    ) as memory:
+        first = _add_claim(memory, "preferred_drink", "tea", kind=kind.value, confidence=0.6)
+        first_context = memory.get(first).context
+        assert first_context is not None
+        assert first_context.visible is (kind is RecordKind.RELATION)
+        second = _add_claim(memory, alias, "tea", kind=kind.value, confidence=0.6)
+        assert second == first
+        context = memory.get(first).context
+        assert context is not None and context.visible
+        assert len(context.evidence_ids) == 2
+        assert context.confidence == pytest.approx(0.84)
+        assert context.predicate == "preferred_drink"
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""The compile plane: closed, budgeted context over already-retrieved evidence.
+"""The compile plane: closed, budgeted context with optional goal-directed recall.
 
 Selection and structuring are pure and live in `sensemem.context`; this module owns the
 store-backed reads that close evidence over lineage, consent, and actors before that pure step
@@ -14,6 +14,7 @@ from time import perf_counter
 
 from opentelemetry.trace import Tracer
 
+from sensemem.content import ContentInput
 from sensemem.context import (
     EvidenceClosure,
     NamedActorLink,
@@ -21,16 +22,31 @@ from sensemem.context import (
     bundle_cost,
     compile_context,
 )
+from sensemem.context_bundle import ContextBundle
+from sensemem.context_selection import ContextSelector
+from sensemem.context_values import (
+    ContextBudget,
+    ContextExcerpt,
+    ContextProof,
+    ContextProofScoring,
+    ContextSupplement,
+    ContextUnknown,
+    ContextUnknownKind,
+)
+from sensemem.evidence import AffectLinkKey, affect_link_key, functional_lineage
+from sensemem.evidence_policy import required_support
 from sensemem.exceptions import ValidationError
 from sensemem.kernel.content import PreparedContent, verified_context_excerpt
 from sensemem.kernel.contracts import Backends
-from sensemem.kernel.corroboration import SupportSummary, independent_support
+from sensemem.kernel.corroboration import SupportSummary, independent_support, naming_conditions
 from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import Lifecycle
 from sensemem.kernel.materialization import Materializer
 from sensemem.kernel.proofs import certificates, select_certificates
+from sensemem.kernel.recall import Recall
 from sensemem.kernel.retrieval import RERANK_CANDIDATES, Retrieval
 from sensemem.kernel.runtime import Storage, translate_storage_errors
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.speech import Speech
 from sensemem.kernel.temporal import query_temporal_range, resolved_reference_at, temporal_context
 from sensemem.kernel.tracing import Traced
@@ -40,20 +56,10 @@ from sensemem.kernel.validation import (
     scope_description,
     validated_retrieval_scope,
 )
-from sensemem.types import (
-    ContentInput,
-    ContextBudget,
-    ContextBundle,
-    ContextExcerpt,
-    ContextProof,
-    ContextUnknown,
-    ContextUnknownKind,
-    EvidenceBasis,
-    MemoryKind,
-    Modality,
-    RetrievalScope,
-    SearchHit,
-)
+from sensemem.prompts import context as context_prompts
+from sensemem.records import SearchHit
+from sensemem.spatial import RetrievalScope
+from sensemem.types import Modality, RecordKind
 
 # How much deeper `compile()` ranks when the budget carries a bound only the compiler can
 # apply -- `min_confidence` or `freshness`. Those remove candidates after retrieval, so the
@@ -66,27 +72,7 @@ _POST_FILTER_WINDOW = 3
 # values.  This is an obligation lookup, never a second relevance route, so a finite cap must
 # refuse rather than silently make a prefix look complete.
 _LINEAGE_COMPLETION_REPRESENTATIVES = 8
-
-
-def _functional_lineage(hit: SearchHit) -> tuple[str, str] | None:
-    """Return the claim key whose competing values make delivery non-affirmative.
-
-    This matches the compiler and slow-loop contract: relations and inferred traits can
-    accumulate values, while STATE and a user-stated TRAIT have one functional value at a scoped
-    point in time.
-    """
-    context = hit.context
-    if (
-        context is None
-        or context.lineage_id is None
-        or context.value is None
-        or not (
-            context.kind is MemoryKind.STATE
-            or (context.kind is MemoryKind.TRAIT and context.basis is EvidenceBasis.USER_STATEMENT)
-        )
-    ):
-        return None
-    return context.lineage_id, context.value
+_AFFECT_LINK_COMPLETION_LIMIT = 128
 
 
 def _functional_representatives(
@@ -95,7 +81,7 @@ def _functional_representatives(
     """Group candidate IDs by functional lineage and value, preserving rank order."""
     values_by_lineage: dict[str, dict[str, list[str]]] = {}
     for hit in hits:
-        functional = _functional_lineage(hit)
+        functional = functional_lineage(hit.context)
         if functional is None:
             continue
         lineage_id, value = functional
@@ -138,7 +124,7 @@ def _consent_withheld_required_closure(
     for closure in closures:
         if closure.anchor.id in consent_closure_ids:
             continue
-        functional = _functional_lineage(closure.anchor)
+        functional = functional_lineage(closure.anchor.context)
         if functional is None:
             return True
         lineage_id, value = functional
@@ -161,7 +147,7 @@ def _deliverable_functional_representatives(
     selected_ids: set[str] = set()
     selected_values: set[tuple[str, str]] = set()
     for hit in hits:
-        functional = _functional_lineage(hit)
+        functional = functional_lineage(hit.context)
         if functional is None or functional in selected_values:
             continue
         if hit.id not in closure_ids or _rejection(hit, budget, reference_at) is not None:
@@ -186,7 +172,7 @@ def _closure_contains_functional_lineage(
     return any(
         functional is not None and functional[0] in lineage_ids
         for member in closure.members
-        if (functional := _functional_lineage(member)) is not None
+        if (functional := functional_lineage(member.context)) is not None
     )
 
 
@@ -198,21 +184,29 @@ class Compilation(Traced):
         *,
         tracer: Tracer,
         storage: Storage,
+        settings: ResolvedSettings,
         backends: Backends,
         lifecycle: Lifecycle,
         hydrator: Hydrator,
         materializer: Materializer,
         speech: Speech,
         retrieval: Retrieval,
+        recall: Recall,
+        context_selector: ContextSelector,
     ) -> None:
         super().__init__(tracer)
         self._store = storage.store
+        self._proof_scoring: ContextProofScoring = (
+            "independent_pair" if settings.independent_evidence else "capture_groups"
+        )
         self._backends = backends
         self._lifecycle = lifecycle
         self._hydrator = hydrator
         self._materializer = materializer
         self._speech = speech
         self._retrieval = retrieval
+        self._recall = recall
+        self._context_selector = context_selector
 
     def compile(
         self,
@@ -222,6 +216,7 @@ class Compilation(Traced):
         reference_at: datetime | None = None,
         scope: RetrievalScope | None = None,
         allow_partial_sources: bool = False,
+        supplements: Sequence[ContextSupplement] = (),
     ) -> ContextBundle:
         with (
             self._trace("sensemem.compile", kind="operation"),
@@ -235,9 +230,15 @@ class Compilation(Traced):
                 raise ValidationError("budget must be a ContextBudget")
             if not isinstance(allow_partial_sources, bool):
                 raise ValidationError("allow_partial_sources must be a boolean")
+            try:
+                supplied_context = tuple(supplements)
+            except TypeError:
+                raise ValidationError("supplements must contain ContextSupplement values") from None
+            if any(not isinstance(item, ContextSupplement) for item in supplied_context):
+                raise ValidationError("supplements must contain ContextSupplement values")
             scope = validated_retrieval_scope(scope)
             with self._trace("sensemem.content.prepare", kind="stage"):
-                prepared = self._materializer.prepare(goal, assets)
+                prepared = self._materializer.materialize_content(goal, assets)
             explicit_reference = resolved_reference_at(reference_at)
             reference, temporal_text = temporal_context(
                 prepared.text,
@@ -274,11 +275,22 @@ class Compilation(Traced):
             # The same transcript cache `search()` writes for a spoken query. It is a cache of
             # the query's own audio, not a memory: `compile()` stores nothing it retrieved.
             self._speech.persist_transcripts(assets)
-            completion_hits, capped_lineages = self._competing_lineage_hits(
+            ranked, recall_unknowns = self._recall.for_context(
+                prepared,
                 outcome.hits,
+                candidate_limit=candidate_limit,
+                budget=budget,
+                reference_at=reference,
+                temporal_range=query_temporal_range(temporal_text, reference),
+                scope=scope,
+                assets=assets,
+                started_at=started_at,
+            )
+            completion_hits, capped_lineages = self._competing_lineage_hits(
+                ranked,
                 scope=scope,
             )
-            candidate_by_id = {hit.id: hit for hit in outcome.hits}
+            candidate_by_id = {hit.id: hit for hit in ranked}
             for hit in completion_hits:
                 candidate_by_id.setdefault(hit.id, hit)
             candidates = tuple(candidate_by_id.values())
@@ -289,6 +301,16 @@ class Compilation(Traced):
                 scope=scope,
                 started_at=started_at,
             )
+            candidates, closures, affect_unavailable = self._complete_affect_links(
+                candidates,
+                closures,
+                budget=budget,
+                reference_at=reference,
+                scope=scope,
+                started_at=started_at,
+            )
+            candidate_by_id = {hit.id: hit for hit in candidates}
+            unavailable = (*unavailable, *affect_unavailable)
             closure_ids = frozenset(closure.anchor.id for closure in closures)
             values_by_lineage = _functional_representatives(candidates)
             competing_values = {
@@ -312,10 +334,10 @@ class Compilation(Traced):
                 withheld_ids = frozenset(
                     hit.id
                     for hit in candidates
-                    if (functional := _functional_lineage(hit)) is not None
+                    if (functional := functional_lineage(hit.context)) is not None
                     and functional[0] in incomplete_lineages
                 )
-                ranked_withheld = sum(1 for hit in outcome.hits if hit.id in withheld_ids)
+                ranked_withheld = sum(1 for hit in ranked if hit.id in withheld_ids)
                 candidates = tuple(hit for hit in candidates if hit.id not in withheld_ids)
                 closures = tuple(
                     closure
@@ -326,10 +348,7 @@ class Compilation(Traced):
                     *unavailable,
                     ContextUnknown(
                         kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                        detail=(
-                            f"{ranked_withheld} ranked assertions required complete competing"
-                            " evidence under the requested scope"
-                        ),
+                        detail=(context_prompts.competing_evidence_required(ranked_withheld)),
                     ),
                 )
             closure_hits = tuple(
@@ -387,7 +406,7 @@ class Compilation(Traced):
                 consent_withheld_ids = frozenset(
                     hit.id
                     for hit in hits
-                    if (functional := _functional_lineage(hit)) is not None
+                    if (functional := functional_lineage(hit.context)) is not None
                     and functional[0] in consent_incomplete_lineages
                 )
                 hits = tuple(hit for hit in hits if hit.id not in consent_withheld_ids)
@@ -402,7 +421,35 @@ class Compilation(Traced):
                     *unavailable,
                     ContextUnknown(
                         kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                        detail="one or more ranked assertions required competing evidence withheld by consent",
+                        detail=context_prompts.COMPETING_CONSENT_WITHHELD,
+                    ),
+                )
+            consent_closure_ids = frozenset(closure.anchor.id for closure in closures)
+            consent_incomplete_attributions = {
+                key
+                for hit in candidates
+                if (key := affect_link_key(hit)) is not None
+                and (hit.id not in permitted_ids or hit.id not in consent_closure_ids)
+            }
+            if consent_incomplete_attributions:
+                hits = tuple(
+                    hit
+                    for hit in hits
+                    if affect_link_key(hit) not in consent_incomplete_attributions
+                )
+                closures = tuple(
+                    closure
+                    for closure in closures
+                    if all(
+                        affect_link_key(member) not in consent_incomplete_attributions
+                        for member in closure.members
+                    )
+                )
+                unavailable = (
+                    *unavailable,
+                    ContextUnknown(
+                        kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
+                        detail=context_prompts.AFFECT_CONSENT_WITHHELD,
                     ),
                 )
             consent_closure_ids = frozenset(closure.anchor.id for closure in closures)
@@ -412,13 +459,13 @@ class Compilation(Traced):
             hits = tuple(
                 hit
                 for hit in hits
-                if (functional := _functional_lineage(hit)) is None
+                if (functional := functional_lineage(hit.context)) is None
                 or hit.id in deliverable_functional_ids
             )
             closures = tuple(
                 closure
                 for closure in closures
-                if _functional_lineage(closure.anchor) is None
+                if functional_lineage(closure.anchor.context) is None
                 or closure.anchor.id in deliverable_functional_ids
             )
             excerpts = (
@@ -434,7 +481,7 @@ class Compilation(Traced):
                     *unavailable,
                     ContextUnknown(
                         kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                        detail="one or more ranked assertions required evidence withheld by consent",
+                        detail=context_prompts.EVIDENCE_CONSENT_WITHHELD,
                     ),
                 )
             bundle = compile_context(
@@ -445,6 +492,7 @@ class Compilation(Traced):
                 started_at=started_at,
                 unknowns=(
                     *self._request_unknowns(prepared, scope, hits),
+                    *recall_unknowns,
                     *withheld,
                     *unavailable,
                 ),
@@ -459,15 +507,22 @@ class Compilation(Traced):
                     if any(identity_id not in restrained for identity_id in identity_ids)
                 },
                 named=named,
-                co_derived_events=partial(self._co_derived_events, scope=scope),
+                resolve_co_derived_event_ids=partial(self._read_co_derived_event_ids, scope=scope),
                 closures=closures,
                 excerpts=excerpts,
+                supplements=supplied_context,
+                context_selector=self._context_selector,
+                proof_scoring=self._proof_scoring,
             )
             # QUERY_FAILURE hook: a bundle with no evidence in it is the compiler reporting that
             # the goal found nothing, which is the same signal as an empty search.
             self._retrieval.note_query_failure(
                 prepared.text,
-                failed=not bundle.hits and not bundle.excerpts,
+                failed=not bundle.hits and not bundle.excerpts and not bundle.projections,
+                operation="compile",
+                memory_types=budget.memory_types,
+                scope=scope,
+                reference_at=reference,
             )
             return bundle
 
@@ -483,7 +538,7 @@ class Compilation(Traced):
             if hit.id in matched_dense_index_ids
             and hit.modality is Modality.TEXT
             and not hit.assets
-            and (hit.context is None or hit.context.kind is MemoryKind.OBSERVATION)
+            and (hit.context is None or hit.context.kind is RecordKind.OBSERVATION)
         )
         if not eligible:
             return {}
@@ -517,7 +572,7 @@ class Compilation(Traced):
             dict.fromkeys(
                 functional[0]
                 for anchor in anchors
-                if (functional := _functional_lineage(anchor)) is not None
+                if (functional := functional_lineage(anchor.context)) is not None
             )
         )
         if not lineage_ids:
@@ -556,6 +611,121 @@ class Compilation(Traced):
             )
         return self._hydrator.evidence_closures(
             anchors, budget=budget, reference_at=reference_at, scope=scope, started_at=started_at
+        )
+
+    def _complete_affect_links(  # noqa: C901 - exact completion follows transitive delivery obligations
+        self,
+        candidates: Sequence[SearchHit],
+        closures: Sequence[EvidenceClosure],
+        *,
+        budget: ContextBudget,
+        reference_at: datetime,
+        scope: RetrievalScope | None,
+        started_at: float,
+    ) -> tuple[tuple[SearchHit, ...], tuple[EvidenceClosure, ...], tuple[ContextUnknown, ...]]:
+        """Complete every delivered attribution with its scoped affirmations and denials.
+
+        The exact read is an evidence obligation for an already ranked claim, including a claim
+        reached through provenance. Unrelated objects and roles never become relevance routes.
+        """
+        by_id = {hit.id: hit for hit in candidates}
+        by_anchor = {closure.anchor.id: closure for closure in closures}
+        groups: dict[AffectLinkKey, set[str]] = {}
+        checked: set[AffectLinkKey] = set()
+        incomplete: set[AffectLinkKey] = set()
+        unknowns: list[ContextUnknown] = []
+        while True:
+            for closure in by_anchor.values():
+                for member in closure.members:
+                    key = affect_link_key(member)
+                    if key is not None:
+                        groups.setdefault(key, set()).add(member.id)
+            focal_ids = {key[0] for key in groups}
+            fallback_cues = {
+                member.id: member
+                for closure in by_anchor.values()
+                for member in closure.members
+                if member.id in focal_ids and member.id not in by_id
+            }
+            if fallback_cues:
+                # An attribution may not fit while its cue does. Reuse its already hydrated
+                # focus as a separate anchor; do not discover other affects or infer a cause.
+                by_id.update(fallback_cues)
+                cue_closures, cue_unavailable = self._evidence_closures(
+                    tuple(fallback_cues.values()),
+                    budget=budget,
+                    reference_at=reference_at,
+                    scope=scope,
+                    started_at=started_at,
+                )
+                by_anchor.update({closure.anchor.id: closure for closure in cue_closures})
+                unknowns.extend(cue_unavailable)
+            pending = groups.keys() - checked
+            if not pending:
+                break
+            checked.update(pending)
+            if len(checked) > _AFFECT_LINK_COMPLETION_LIMIT or (
+                budget.max_latency_ms is not None
+                and (perf_counter() - started_at) * 1000 > budget.max_latency_ms
+            ):
+                incomplete.update(pending)
+                continue
+            with translate_storage_errors("complete affect attribution evidence"):
+                records = self._store.semantics.affect_links(
+                    tuple(sorted({key[0] for key in pending})),
+                    limit=_AFFECT_LINK_COMPLETION_LIMIT,
+                    scope=scope,
+                )
+            if records.selected > len(records):
+                incomplete.update(pending)
+                continue
+            peers: list[SearchHit] = []
+            found: dict[AffectLinkKey, set[str]] = {}
+            for record in records:
+                hit = self._hydrator.search_hit(record, 0.0)
+                key = affect_link_key(hit)
+                if key is None or key not in pending:
+                    continue
+                found.setdefault(key, set()).add(hit.id)
+                if _rejection(hit, budget, reference_at) is not None:
+                    incomplete.add(key)
+                if hit.id not in by_id:
+                    by_id[hit.id] = hit
+                if hit.id not in by_anchor:
+                    peers.append(by_id[hit.id])
+            for key in pending:
+                if not groups[key].issubset(found.get(key, set())):
+                    incomplete.add(key)
+                groups[key].update(found.get(key, set()))
+            peer_closures, unavailable = self._evidence_closures(
+                peers,
+                budget=budget,
+                reference_at=reference_at,
+                scope=scope,
+                started_at=started_at,
+            )
+            unknowns.extend(unavailable)
+            by_anchor.update({closure.anchor.id: closure for closure in peer_closures})
+        for key, peer_ids in groups.items():
+            if any(memory_id not in by_anchor for memory_id in peer_ids):
+                incomplete.add(key)
+        withheld = {
+            closure.anchor.id
+            for closure in by_anchor.values()
+            if any(affect_link_key(member) in incomplete for member in closure.members)
+        }
+        withheld.update(hit.id for hit in by_id.values() if affect_link_key(hit) in incomplete)
+        if incomplete:
+            unknowns.append(
+                ContextUnknown(
+                    kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
+                    detail=(context_prompts.incomplete_affect(len(incomplete))),
+                )
+            )
+        return (
+            tuple(hit for hit in by_id.values() if hit.id not in withheld),
+            tuple(closure for closure in by_anchor.values() if closure.anchor.id not in withheld),
+            tuple(unknowns),
         )
 
     def _selected_closures(  # noqa: C901 - enforce every intermediate's delivery obligations
@@ -626,25 +796,31 @@ class Compilation(Traced):
                 ):
                     complete = False
                     break
-                full_support = independent_support(nodes, memory_id)
+                full_support = (
+                    independent_support(nodes, memory_id)
+                    if self._proof_scoring == "independent_pair"
+                    else SupportSummary(0, 0.0, False)
+                )
                 context = hits[memory_id].context
-                needs_pair = (
-                    context is not None
-                    and context.basis
-                    not in {EvidenceBasis.USER_STATEMENT, EvidenceBasis.RESPONSE_FEEDBACK}
-                    and (
-                        context.kind is MemoryKind.TRAIT
-                        or (context.kind is MemoryKind.ENTITY and context.identity_id is not None)
-                    )
+                support = (
+                    1
+                    if context is None
+                    else required_support(context.kind, context.basis, context.identity_id)
                 )
                 required = SupportSummary(
-                    count=max(2 if needs_pair else 1, full_support.count),
+                    count=max(support, full_support.count),
                     confidence=0.0 if context is None else context.confidence,
                     truncated=full_support.truncated or clipped,
                 )
                 witnesses, clipped_search = certificates(eligible, memory_id)
                 truncated |= clipped_search or full_support.truncated
-                bought = select_certificates(witnesses, required, costs)
+                bought = select_certificates(
+                    witnesses,
+                    required,
+                    costs,
+                    naming_conditions(nodes, memory_id),
+                    scoring=self._proof_scoring,
+                )
                 if not bought:
                     complete = False
                     break
@@ -672,19 +848,19 @@ class Compilation(Traced):
             unknowns.append(
                 ContextUnknown(
                     kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                    detail=f"{unavailable} ranked assertions lacked deliverable count and confidence certificates",
+                    detail=context_prompts.uncertified_assertions(unavailable),
                 )
             )
         if truncated:
             unknowns.append(
                 ContextUnknown(
                     kind=ContextUnknownKind.EVIDENCE_UNAVAILABLE,
-                    detail="bounded certificate search may have omitted valid alternatives",
+                    detail=context_prompts.CERTIFICATE_SEARCH_TRUNCATED,
                 )
             )
         return tuple(closures), tuple(unknowns)
 
-    def _co_derived_events(
+    def _read_co_derived_event_ids(
         self,
         cues: Sequence[str],
         *,
@@ -701,7 +877,7 @@ class Compilation(Traced):
         if not cues:
             return {}
         with translate_storage_errors("read co-derived events"):
-            return self._store.identities.co_derived_events(
+            return self._store.identities.read_co_derived_event_ids(
                 cues,
                 valid_at=None if scope is None else scope.valid_at,
                 known_at=None if scope is None else scope.known_at,
@@ -740,7 +916,7 @@ class Compilation(Traced):
             for hit in hits
             if hit.context is not None
             and hit.context.identity_id is not None
-            and hit.context.kind is MemoryKind.ENTITY
+            and hit.context.kind is RecordKind.ENTITY
         }
         # Every identity the enrichment could name, not only the ones a retrieved `ENTITY` hit
         # carried: a bundle that reached a person's clip but not their naming assertion used to
@@ -757,7 +933,7 @@ class Compilation(Traced):
             hit
             for hit in hits
             if hit.context is None
-            or hit.context.kind is not MemoryKind.ENTITY
+            or hit.context.kind is not RecordKind.ENTITY
             or hit.context.identity_id not in restrained
         )
         permitted = {
@@ -771,11 +947,7 @@ class Compilation(Traced):
             (
                 ContextUnknown(
                     kind=ContextUnknownKind.CONSENT_WITHHELD,
-                    detail=(
-                        f"{len(restrained)} recognized "
-                        f"{'person is' if len(restrained) == 1 else 'people are'} withheld from"
-                        " the actors section by their own recorded consent"
-                    ),
+                    detail=(context_prompts.consent_withheld_actors(len(restrained))),
                 ),
             ),
             restrained,
@@ -842,9 +1014,9 @@ class Compilation(Traced):
                 ContextUnknown(
                     kind=ContextUnknownKind.MODALITY_UNSUPPORTED,
                     detail=(
-                        f"the goal's {', '.join(unsupported)} was not embedded natively;"
-                        f" embedding accepts {modality_names(self._backends.embedding_capabilities)},"
-                        " so only derived text could have matched"
+                        context_prompts.unsupported_goal_modalities(
+                            unsupported, modality_names(self._backends.embedding_capabilities)
+                        )
                     ),
                 )
             )

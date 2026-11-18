@@ -19,13 +19,13 @@ from typing import Annotated, Literal, TypeAlias
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
-from sensemem import AsyncMemory, Blob, MemoryRecord, SearchHit, SenseMemConfig
+from sensemem import AsyncMemory, Blob, MemoryRecord, MemorySpec, SearchHit
 from sensemem.api.content import StrictModel
 from sensemem.api.errors import register_error_handlers
-from sensemem.benchmarks.eval_artifacts import _atomic_replace, _json_bytes
+from sensemem.benchmarks.artifact_io import encode_json_bytes, replace_artifact_files
 from sensemem.benchmarks.eval_config import _read_config_document
+from sensemem.content import ContentInput
 from sensemem.infrastructure.local._lock import DataDirectoryLock
-from sensemem.types import ContentInput
 
 _Text = Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r"\S")]
 _IMAGE_BYTES = 10 * 1024 * 1024
@@ -149,12 +149,14 @@ def _directory(path: Path) -> Path:
 
 
 def _write_receipt(receipt: Path, fingerprint: str, *, complete: bool) -> None:
-    _atomic_replace([(receipt, _json_bytes({"fingerprint": fingerprint, "complete": complete}))])
+    replace_artifact_files(
+        [(receipt, encode_json_bytes({"fingerprint": fingerprint, "complete": complete}))]
+    )
 
 
 def _prepare_add(receipt: Path, request: AddRequest) -> tuple[str, bool]:
     _directory(receipt.parent)
-    fingerprint = hashlib.sha256(_json_bytes(request.model_dump(mode="json"))).hexdigest()
+    fingerprint = hashlib.sha256(encode_json_bytes(request.model_dump(mode="json"))).hexdigest()
     prior = json.loads(receipt.read_bytes()) if receipt.exists() else None
     if prior is not None and prior["fingerprint"] != fingerprint:
         raise HTTPException(422, "request_id was already used with a different payload")
@@ -168,11 +170,11 @@ def _persist_sources(
     directory: Path, records: Sequence[MemoryRecord], messages: Sequence[_Message]
 ) -> None:
     _directory(directory)
-    _atomic_replace(
+    replace_artifact_files(
         [
             (
                 directory / f"{record.id}.json",
-                _json_bytes(message.model_dump(mode="json")["content"]),
+                encode_json_bytes(message.model_dump(mode="json")["content"]),
             )
             for record, message in zip(records, messages, strict=True)
         ]
@@ -338,14 +340,14 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
         values.pop("benchmark", None)
         if values.get("embedding") is None:
             raise ValueError("benchmark config requires an explicit embedding section")
-        config = SenseMemConfig.model_validate(values).model_copy(update={"generation": None})
+        config = MemorySpec.model_validate(values).model_copy(update={"generation": None})
     except ValueError as error:
         parser.error(str(error))
     try:
         import uvicorn
     except ImportError:
         parser.error("serving requires uvicorn and sensemem[benchmarks,server]")
-    from sensemem.benchmarks.eval import _BackendPool
+    from sensemem.benchmarks.eval_backends import _BackendPool
     from sensemem.benchmarks.model_config import ModelConfig
 
     with ExitStack() as cleanup:

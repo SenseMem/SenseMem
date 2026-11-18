@@ -10,13 +10,13 @@ from random import Random
 
 import pytest
 
-from sensemem import Memory, MemoryConfig, RetrievalScope
+from sensemem import Memory, MemorySettings, RetrievalScope
 from sensemem.exceptions import StorageError
 from sensemem.infrastructure.local.scoring import max_cosine_scores
 from sensemem.infrastructure.local.store import IndexDocument, StoredEmbedding
 from sensemem.infrastructure.local.zvec_index import IndexHit, ZvecIndex
 from sensemem.models.base import EmbedTask, ModelInput
-from sensemem.types import MemoryType, Modality, RetrievalMode
+from sensemem.types import MemoryCategory, Modality, RetrievalMode
 
 
 class _DirectionalEmbedder:
@@ -154,7 +154,7 @@ def test_completion_uses_every_parent_part_without_an_additional_model_call(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         record = memory.add(("rare aggregate preface", "aligned part"))
         documents = memory._store.index.read_memory_index_documents((record.id,))
@@ -192,7 +192,7 @@ def test_a_valid_zero_dense_hit_is_not_treated_as_a_missing_score(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         measured = memory.add("rare measured")
         missing = memory.add("rare missing")
@@ -247,13 +247,13 @@ def test_completion_reads_only_records_that_survive_type_time_and_known_at_scope
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         included = memory.add("rare included", occurred_at=event)
         wrong_type = memory.add(
             "rare episodic",
             occurred_at=event,
-            memory_type=MemoryType.EPISODIC,
+            memory_type=MemoryCategory.EPISODIC,
         )
         outside_time = memory.add("rare outside", occurred_at=event + timedelta(days=10))
         ids = (included.id, wrong_type.id, outside_time.id)
@@ -279,7 +279,7 @@ def test_completion_reads_only_records_that_survive_type_time_and_known_at_scope
 
         hits = memory.search(
             "rare",
-            memory_type=MemoryType.SEMANTIC,
+            memory_type=MemoryCategory.SEMANTIC,
             occurred_from=event - timedelta(hours=1),
             occurred_until=event + timedelta(hours=1),
         ).hits
@@ -305,7 +305,7 @@ def test_corrupt_persisted_vector_uses_the_storage_error_path(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(minimum_relevance=0, ambiguity_margin=0),
+        settings=MemorySettings(minimum_relevance=0, ambiguity_margin=0),
     ) as memory:
         record = memory.add("rare corrupt")
         monkeypatch.setattr(memory._index, "search", lambda *_args, **_kwargs: ())
@@ -357,7 +357,7 @@ def test_dense_mode_keeps_the_index_score_and_skips_completion(
     with Memory(
         tmp_path,
         embedder=embedder,
-        config=MemoryConfig(
+        settings=MemorySettings(
             retrieval_mode=RetrievalMode.DENSE, minimum_relevance=0, ambiguity_margin=0
         ),
     ) as memory:

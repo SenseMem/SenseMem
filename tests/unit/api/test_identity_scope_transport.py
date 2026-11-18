@@ -26,7 +26,7 @@ from sensemem import (
     FaceAnalysis,
     FaceEmbedding,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelInput,
     SearchHit,
@@ -102,7 +102,7 @@ def _library(tmp_path: Path, *, planning: bool = False) -> tuple[Memory, str, st
         embedder=_Embedder(),
         face_analyzer=_Face(),
         answerer=_EntityAnswerer() if planning else None,
-        config=MemoryConfig(recall_planning=planning, minimum_relevance=0),
+        settings=MemorySettings(recall_planning=planning, minimum_relevance=0),
     )
     seen = memory.add(Blob(b"one", "image/png", "alice.png"))
     memory.add("a kettle nobody was photographed beside")

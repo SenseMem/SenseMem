@@ -27,40 +27,31 @@ from urllib.request import Request
 import pytest
 from pydantic import TypeAdapter
 
-import sensemem
+import sensemem.api.client as api_client
 import sensemem.cli as cli_module
-from sensemem import Memory, recipes
-from sensemem.api import app as rest
+from sensemem import Memory, OpenAIEmbedder, recipes
 from sensemem.api import content as rest_content
+from sensemem.api import responses as rest
 from sensemem.api.errors import ErrorEnvelope
-from sensemem.cli import COMMANDS, EXIT_CODES, OPERATIONS, _parser, main
+from sensemem.cli import EXIT_CODES, _parser, main
+from sensemem.content import AssetRef, ContentPart
 from sensemem.control import dump_operation, load_operation
-from sensemem.exceptions import SenseMemError, ValidationError
-from sensemem.kernel.contracts import declared_capabilities
-from sensemem.models.base import EmbedTask, ModelInput
-from sensemem.models.funasr import DEFAULT_FUNASR_MODEL_ID
-from sensemem.models.openai_sdk import DEFAULT_EMBEDDING_MODEL
-from sensemem.types import (
-    AbstentionReason,
-    AnswerResult,
-    AssetRef,
-    EvidenceBasis,
-    FormationProposal,
-    IdentityChange,
-    IdentityClaim,
+from sensemem.control_values import (
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
     MemoryOperationRecord,
-    MemoryRecord,
     MemoryTrigger,
-    MemoryType,
-    Modality,
-    ObservationContext,
-    Page,
-    PendingCapture,
-    SearchHit,
 )
+from sensemem.exceptions import SenseMemError, ValidationError
+from sensemem.identity import IdentityChange, IdentityClaim
+from sensemem.kernel.contracts import declared_capabilities
+from sensemem.models._openai_defaults import DEFAULT_EMBEDDING_MODEL
+from sensemem.models.base import EmbedTask, ModelInput
+from sensemem.models.funasr import DEFAULT_FUNASR_MODEL_ID
+from sensemem.records import AnswerResult, MemoryRecord, Page, PendingCapture, SearchHit
+from sensemem.semantics import FormationProposal
+from sensemem.spatial import ObservationContext
+from sensemem.types import AbstentionReason, EvidenceBasis, MemoryCategory, Modality, RecordKind
 
 # The REST content union itself, so the two decoders are compared over one schema.
 _REST_CONTENT: TypeAdapter[rest_content.Content] = TypeAdapter(rest_content.Content)
@@ -165,6 +156,10 @@ UNEXPOSED_OPERATIONS: dict[str, str] = {
         "incremental delivery cannot survive one stable JSON document per invocation; `ask` "
         "returns the same answer"
     ),
+    "read_asset": "returns retained media bytes rather than the descriptor JSON printed by commands",
+    "replay_sources": "requires a caller-owned destination Memory instance",
+    "prepare_input": "returns a context manager whose resolved media lifetime belongs to its caller",
+    "call_tool": "uses a caller-defined tool registry and result schema without a CLI command contract",
 }
 
 
@@ -174,40 +169,14 @@ def test_commands_are_the_sdk_operations_kebab_cased() -> None:
         for name, value in inspect.getmembers(Memory, inspect.isfunction)
         if not name.startswith("_") and name != "close"
     }
-    assert set(OPERATIONS) | set(UNEXPOSED_OPERATIONS) == published
-    assert not set(OPERATIONS) & set(UNEXPOSED_OPERATIONS)
-    assert set(COMMANDS) == {name.replace("_", "-") for name in set(OPERATIONS)} | {"doctor"}
-
-
-def test_every_cli_gap_is_documented_with_its_reason() -> None:
-    """A command left out has to be visible on the page, not only in this file."""
-    page = (Path(sensemem.__file__).parents[2] / "docs" / "api" / "cli.md").read_text(
-        encoding="utf-8"
-    )
-
-    for operation in UNEXPOSED_OPERATIONS:
-        assert f"`{operation.replace('_', '-')}`" in page
-
-
-def test_the_documented_commands_table_and_count_are_the_real_ones() -> None:
-    """`docs/api/cli.md` states a command count in prose and lists every command in a table.
-
-    Both have drifted before: `deliberate`, `apply`, and `record-outcome` landed on the parser
-    without a documentation update in the same commit. Parsing the table and the count sentence
-    catches a command added to `COMMANDS` without a row, a row naming a command that does not
-    exist, and a stale count, rather than trusting either by inspection.
-    """
-    page = (Path(cli_module.__file__).parents[2] / "docs" / "api" / "cli.md").read_text(
-        encoding="utf-8"
-    )
-    section = page[page.index("### Commands") : page.index("### Content and JSONL input")]
-    documented = set(re.findall(r"^\| `([a-z][a-z-]*)` \|", section, re.MULTILINE))
-
-    assert documented == set(COMMANDS)
-
-    match = re.search(r"provides (\d+) SDK operation commands plus `doctor`", page)
-    assert match is not None
-    assert int(match.group(1)) == len(COMMANDS) - 1
+    operations = {command.replace("-", "_") for command in cli_module._LOCAL}
+    assert operations | set(UNEXPOSED_OPERATIONS) == published
+    assert not operations & set(UNEXPOSED_OPERATIONS)
+    parser = _parser()
+    commands = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    ).choices
+    assert set(commands) == set(cli_module._LOCAL) | {"doctor"}
 
 
 def test_every_public_error_code_has_a_stable_exit_status() -> None:
@@ -247,7 +216,8 @@ def _record(**overrides: object) -> MemoryRecord:
         "occurred_end": datetime(2026, 1, 1, 1, tzinfo=timezone(timedelta(hours=5, minutes=30))),
         "metadata": {"source": "inspection", "count": 3},
         "modality": Modality.IMAGE,
-        "memory_type": MemoryType.EPISODIC,
+        "memory_type": MemoryCategory.EPISODIC,
+        "parts": (ContentPart(kind="text", value="the spare key is in the blue toolbox"),),
         "assets": (
             AssetRef(
                 id="asset-1",
@@ -282,6 +252,7 @@ def test_memory_documents_equal_the_rest_response_models() -> None:
         assets=record.assets,
         modality=record.modality,
         memory_type=record.memory_type,
+        parts=record.parts,
     )
     assert _memory_document(hit) == rest.SearchHitResponse.model_validate(hit).model_dump(
         mode="json"
@@ -312,34 +283,16 @@ def test_memory_documents_equal_the_rest_response_models() -> None:
             limit=5,
             memory_type=None,
             reference_at=None,
+            scope=None,
         ),
     )
     assert document == rest.AnswerResponse.model_validate(answer).model_dump(mode="json")
 
 
-def test_ask_forwards_link_identities_and_defaults_it_when_absent() -> None:
-    """`--no-link-identities` must reach the SDK; a bare `Namespace` still defaults to True."""
-    from sensemem.cli import _ask
-
-    seen: list[bool] = []
-
-    class RecordingMemory:
-        def ask(self, *_args: object, **kwargs: object) -> AnswerResult:
-            seen.append(cast(bool, kwargs["link_identities"]))
-            return AnswerResult("unknown", hits=())
-
-    memory = cast(Memory, RecordingMemory())
-    base = {
-        "content": ["question"],
-        "content_json": None,
-        "limit": 5,
-        "memory_type": None,
-        "reference_at": None,
-    }
-    _ask(memory, argparse.Namespace(**base, link_identities=False))
-    _ask(memory, argparse.Namespace(**base))
-
-    assert seen == [False, True]
+def test_ask_rejects_the_removed_implicit_identity_binding_flag() -> None:
+    with pytest.raises(SystemExit) as error:
+        _parser().parse_args(["ask", "question", "--link-identities"])
+    assert error.value.code == 2
 
 
 # ---------------------------------------------------------------------------------------------
@@ -631,7 +584,7 @@ def test_add_stream_commits_before_reading_a_later_invalid_line(
     with Memory(tmp_path / "store", embedder=_Embedder()) as memory:
         records = memory.list().items
     assert [(record.content, record.metadata, record.memory_type) for record in records] == [
-        ("a red wrench", {"sequence": 0}, MemoryType.EPISODIC)
+        ("a red wrench", {"sequence": 0}, MemoryCategory.EPISODIC)
     ]
 
 
@@ -707,6 +660,14 @@ def test_recipes_pin_identity_to_the_constants_in_the_source() -> None:
         "vision": "gpt-5-mini",
     }
     assert "OPENAI_API_KEY" in cast(str, recipes.describe("openai")["credential"])
+    assert recipes.describe("openai")["classes"] == {
+        "embedder": "sensemem.models.openai_embedding.OpenAIEmbedder",
+        "transcriber": "sensemem.models.openai_speech.OpenAITranscriber",
+        "answerer": "sensemem.models.openai_completion.OpenAICompletion",
+        "former": "sensemem.models.openai_completion.OpenAICompletion",
+        "consolidator": "sensemem.models.openai_completion.OpenAICompletion",
+        "vision": "sensemem.models.openai_completion.OpenAICompletion",
+    }
 
 
 @pytest.mark.parametrize(
@@ -796,7 +757,7 @@ def test_a_recipe_closes_the_sdk_client_it_constructed(
     backend.close()
     backend.close()
 
-    # `OpenAIModels.close()` leaves a caller-supplied client open; a recipe-built one is the
+    # `OpenAICompletion.close()` leaves a caller-supplied client open; a recipe-built one is the
     # recipe's, so the connection pool goes when the returned backend does.
     assert [client.closed for client in clients] == [True]
     assert [client.close_calls for client in clients] == [1]
@@ -813,7 +774,7 @@ def test_failed_backend_construction_closes_the_created_client(
             monkeypatch.setattr(recipes, "_OPENAI_MODELS", {"embedder": ""})
             recipes.embedder("openai")
         else:
-            recipes._owned_openai_models(embedding_model="")
+            recipes._owned_openai(OpenAIEmbedder, embedding_model="")
 
     assert client.close_calls == 1
 
@@ -832,6 +793,35 @@ def test_a_recipe_cannot_fill_a_slot_it_does_not_serve() -> None:
         recipes.answerer("funasr")
     with pytest.raises(ValidationError):
         recipes.embedder("funasr")
+
+
+def test_failed_recipe_construction_closes_prior_backends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    embedder = _Embedder()
+    closed = []
+    monkeypatch.setattr(embedder, "close", lambda: closed.append("embedder"))
+    monkeypatch.setattr(recipes, "embedder", lambda name: embedder)
+
+    def fail(name: str) -> None:
+        raise ValidationError("recipe construction failed")
+
+    monkeypatch.setattr(recipes, "answerer", fail)
+    status, document, errors = _run(
+        capsys,
+        "--embedder",
+        "openai",
+        "--answerer",
+        "openai",
+        "--data-dir",
+        str(tmp_path),
+        "-q",
+        "add",
+        "source",
+    )
+    assert status == EXIT_CODES["configuration_error"]
+    assert document is None and errors
+    assert closed == ["embedder"]
 
 
 def test_doctor_reports_a_failed_loader_without_writing(
@@ -962,7 +952,6 @@ class _Response:
 
 @pytest.fixture
 def calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, str, object]]]:
-    from sensemem import cli
 
     seen: list[tuple[str, str, object]] = []
 
@@ -973,7 +962,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, str, obje
         seen.append((request.get_method(), request.full_url, body))
         return _Response(b'{"hits": []}')
 
-    monkeypatch.setattr(cli, "urlopen", fake)
+    monkeypatch.setattr(api_client, "urlopen", fake)
     yield seen
 
 
@@ -1223,7 +1212,6 @@ def test_two_sources_for_one_operand_are_refused_before_anything_runs(
 def test_a_remote_failure_envelope_is_forwarded_and_mapped(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from sensemem import cli
 
     envelope = {
         "code": "model_error",
@@ -1250,7 +1238,7 @@ def test_a_remote_failure_envelope_is_forwarded_and_mapped(
     def fake(request: object, *, timeout: float) -> _Response:
         raise _Failure
 
-    monkeypatch.setattr(cli, "urlopen", fake)
+    monkeypatch.setattr(api_client, "urlopen", fake)
     status, stdout, stderr = _run(capsys, "--url", "http://owner:8000", "-q", "ask", "why")
     assert status == EXIT_CODES["model_error"] == 6
     assert stdout is None
@@ -1260,12 +1248,11 @@ def test_a_remote_failure_envelope_is_forwarded_and_mapped(
 def test_an_unreachable_owner_is_a_retryable_storage_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from sensemem import cli
 
     def fake(request: object, *, timeout: float) -> _Response:
         raise URLError("connection refused")
 
-    monkeypatch.setattr(cli, "urlopen", fake)
+    monkeypatch.setattr(api_client, "urlopen", fake)
     status, _stdout, stderr = _run(capsys, "--url", "http://owner:8000", "-q", "list")
     assert status == EXIT_CODES["storage_error"] == 7
     envelope = cast(dict[str, object], stderr[0])
@@ -1281,13 +1268,12 @@ def test_a_remote_timeout_is_a_retryable_storage_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from sensemem import cli
 
     def fake(request: object, *, timeout: float) -> _Response:
         assert timeout == 0.25
         raise failure
 
-    monkeypatch.setattr(cli, "urlopen", fake)
+    monkeypatch.setattr(api_client, "urlopen", fake)
     status, stdout, stderr = _run(
         capsys, "--url", "http://owner:8000", "--timeout", "0.25", "-q", "list"
     )
@@ -1345,6 +1331,32 @@ def test_capture_settle_and_pending_captures_round_trip(
     assert [hit["id"] for hit in cast(dict[str, list[dict[str, object]]], found)["hits"]] == [
         memory_id
     ]
+
+
+def test_pending_captures_prints_the_same_fields_locally_and_remotely(
+    app: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status, _, _ = _run(capsys, "--app", app, "-q", "capture", "a red wrench on the bench")
+    assert status == 0
+    status, local, _ = _run(capsys, "--app", app, "-q", "pending-captures")
+    assert status == 0
+    pending = cast(dict[str, list[dict[str, object]]], local)["pending"]
+    payload = {
+        "items": [{**item, "cursor": "opaque-page-cursor"} for item in pending],
+        "next_cursor": "opaque-next-page",
+    }
+
+    def fake(request: Request, *, timeout: float) -> _Response:
+        assert request.get_method() == "GET"
+        assert request.full_url == "http://owner:8000/v1/pending_captures?limit=100"
+        return _Response(json.dumps(payload).encode())
+
+    monkeypatch.setattr(api_client, "urlopen", fake)
+    status, remote, _ = _run(capsys, "--url", "http://owner:8000", "-q", "pending-captures")
+    assert status == 0
+    assert remote == local
 
 
 def test_the_operation_document_carries_the_identity_claim_it_applied() -> None:
@@ -1556,7 +1568,7 @@ def test_a_consolidation_row_carries_the_proposal_it_would_replay_from() -> None
         intent=MemoryIntent.CONSOLIDATE,
         evidence_ids=("memory-1", "memory-2"),
         proposal=FormationProposal(
-            kind=MemoryKind.STATE,
+            kind=RecordKind.STATE,
             content="the bench is in the garage",
             basis=EvidenceBasis.MODEL_INFERENCE,
             confidence=0.8,

@@ -1,18 +1,13 @@
 """Formation: grounding typed proposals in committed observations.
 
-The pure helpers decide identity, lineage, refusal, and inheritance; `Formation` runs the
-formation backend and commits its accepted proposals with evidence, versions, and vectors in
-one store transaction.
+`Formation` runs the formation backend and commits accepted proposals with evidence, versions,
+and vectors in one store transaction. Shared proposal rules live in `formation_rules`.
 """
 
 from __future__ import annotations
 
-import builtins
-import hashlib
-import json
-import logging
 from collections import ChainMap
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from functools import partial
@@ -22,99 +17,51 @@ from typing import cast
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import mark_model_requests, record_formation_refusals
-from sensemem.exceptions import ModelError, SenseMemError
+from sensemem.exceptions import ModelError, SenseMemError, ValidationError
 from sensemem.infrastructure.local.store import (
-    CONSENT_PREDICATE,
-    NamingProjectionFactory,
+    NamingPreparationRequired,
     ProtectedMemoryError,
     StaleOperationError,
     StoredEmbedding,
     StoredMemory,
     StoredOperation,
-    canonical_subject,
-    datetime_text,
 )
+from sensemem.kernel.affect import affect_witness_refusal, resolve_affect_proposal
 from sensemem.kernel.content import (
     PreparedMemory,
+    decode_metadata,
     embedding_row_id,
-    encode_metadata,
     observation_from_record,
     prepare_memory,
 )
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.derived import prepared_from_stored
 from sensemem.kernel.embedding import DOCUMENT_TASK, Embedding
+from sensemem.kernel.formation_identity import claim_identity
+from sensemem.kernel.formation_identity import history_identity_refusal as _history_identity_refusal
+from sensemem.kernel.formation_rules import (
+    agreed_inheritance,
+    formation_context,
+    formation_evidence_active,
+    formation_memory_id,
+    formation_memory_type,
+    formation_refusal,
+)
 from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import OperationAssets
 from sensemem.kernel.materialization import Materializer
-from sensemem.kernel.predicates import claim_lineage_id, resolve_predicate
 from sensemem.kernel.projection import Projection
 from sensemem.kernel.routing import route_input
 from sensemem.kernel.runtime import Storage, translate_storage_errors
-from sensemem.kernel.settings import Settings
+from sensemem.kernel.settings import ResolvedSettings
 from sensemem.kernel.temporal import intervals_overlap
 from sensemem.kernel.tracing import Traced
 from sensemem.models.base import EmbedTask, FormationInput, ModelInput
-from sensemem.types import (
-    KIND_MEMORY_TYPES,
-    ConsentClaim,
-    EvidenceBasis,
-    FormationProposal,
-    MemoryContext,
-    MemoryIntent,
-    MemoryKind,
-    MemoryOperation,
-    MemoryRecord,
-    MemoryType,
-    SpatialContext,
-)
-
-_LOGGER = logging.getLogger(__name__)
-
+from sensemem.records import MemoryRecord
+from sensemem.semantics import FormationProposal, RecordSemantics
+from sensemem.types import RecordKind
 
 _EMPTY_METADATA_JSON = "{}"
-
-
-def formation_evidence_active(record: MemoryRecord) -> bool:
-    context = record.context
-    return record.forgotten_at is None and (
-        context is None or (context.visible and context.retired_at is None)
-    )
-
-
-def _history_identity_refusal(
-    proposal: FormationProposal, source: FormationInput, evidence: Sequence[MemoryRecord]
-) -> bool:
-    """A known historical name requires a cited, still-standing naming witness.
-
-    This conservative check never rewrites prose or treats it as a host control operation.
-    Anonymous events and newly introduced entity proposals remain available to the former.
-    """
-    subject = canonical_subject(proposal.subject)
-    if subject is None or proposal.kind is MemoryKind.ENTITY:
-        return False
-    known = any(
-        record.context is not None
-        and record.context.kind is MemoryKind.ENTITY
-        and canonical_subject(record.context.subject) == subject
-        for record in source.history
-    )
-    if not known:
-        return False
-    witnesses = [
-        record
-        for record in evidence
-        if record.context is not None
-        and record.context.kind is MemoryKind.ENTITY
-        and canonical_subject(record.context.subject) == subject
-        and formation_evidence_active(record)
-    ]
-    identities = {
-        record.context.identity_id
-        for record in witnesses
-        if record.context is not None and record.context.identity_id is not None
-    }
-    return not witnesses or len(identities) > 1
 
 
 def _cited_sources(pairs: Sequence[tuple[PreparedMemory, str | None, float]]) -> tuple[str, ...]:
@@ -122,7 +69,7 @@ def _cited_sources(pairs: Sequence[tuple[PreparedMemory, str | None, float]]) ->
         dict.fromkeys(
             source_id
             for prepared, _source, _confidence in pairs
-            if isinstance(prepared.context, MemoryContext)
+            if isinstance(prepared.context, RecordSemantics)
             for source_id in prepared.context.evidence_ids
         )
     )
@@ -147,186 +94,12 @@ def _proposal_sources(
     return evidence if all(formation_evidence_active(records[item]) for item in evidence) else None
 
 
-# Naming a person is a claim the host asserts, so its recipe names the kernel rule that produced
-# it rather than a model space. That is what lets `register_identity` work with no former and no
-# consolidator configured.
-NAMING_RECIPE = "sensemem-identity-naming-v1"
-
-
-NAMING_PREDICATE = "identity"
-
-
-# Recording consent rests on the same authority as naming -- somebody said so -- so it is the
-# same kind of assertion under its own recipe and its own predicate, which keeps the two in
-# separate lineages: consenting never renames anybody and renaming never re-opens consent.
-CONSENT_RECIPE = "sensemem-identity-consent-v1"
-
-
-def formation_memory_type(kind: MemoryKind) -> MemoryType:
-    return KIND_MEMORY_TYPES.get(kind, MemoryType.SEMANTIC)
-
-
-def formation_refusal(
-    proposal: FormationProposal,
-    source: FormationInput,
-    *,
-    host_authored: bool = False,
-) -> str | None:
-    """Say why the kernel refuses to ground this proposal in this source, or `None` to keep it.
-
-    A refusal costs the proposal and nothing else, on both paths that ask: formation drops it,
-    and consolidation moves on to the next cited source.
-    """
-    if proposal.kind is MemoryKind.RESPONSE_POLICY and not host_authored:
-        # How the system should behave toward somebody is a grant, not an inference: one
-        # observed cue must not become standing guidance. Keyed on where the proposal came
-        # from, never on the basis it claims -- a formation or consolidation backend builds
-        # its own `FormationProposal` and could name any basis -- so the only path that
-        # authorizes one is the host's own `apply()`.
-        return "response_policy formation requires explicit host authorization"
-    if proposal.kind is MemoryKind.AFFECT and (
-        proposal.cue_modality is None or proposal.cue_modality not in source.content.modalities
-    ):
-        return "affect formation must name a modality present in its source"
-    if proposal.spatial is not None:
-        observed = source.context.spatial
-        if (
-            observed is None
-            or proposal.spatial.frame_id != observed.frame_id
-            or proposal.spatial.anchor is not observed.anchor
-        ):
-            return "spatial formation must use the source observation frame and anchor"
-    return None
-
-
 class RejectedOperation(Exception):
     """Internal signal that kernel policy refused one proposed operation."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
-
-
-def naming_proposal(
-    name: str,
-    relationship: str | None,
-    *,
-    basis: EvidenceBasis,
-) -> FormationProposal:
-    """Build the ENTITY proposal one naming claim asserts, whoever claimed it."""
-    return FormationProposal(
-        kind=MemoryKind.ENTITY,
-        content=(
-            f"{name} is a recognized person."
-            if relationship is None
-            else f"{name} is a recognized person, {relationship}."
-        ),
-        basis=basis,
-        subject=name,
-        predicate=NAMING_PREDICATE,
-        value=relationship,
-        confidence=1.0,
-    )
-
-
-def consent_proposal(claim: ConsentClaim) -> FormationProposal:
-    """Build the STATE proposal one consent statement asserts."""
-    stated = f"Processing consent for {claim.identity_id} is {claim.state.value}."
-    return FormationProposal(
-        kind=MemoryKind.STATE,
-        content=stated if claim.note is None else f"{stated} {claim.note}",
-        # The one basis a consent statement can have. Nothing was observed and no model may
-        # infer it: the person said so.
-        basis=EvidenceBasis.USER_STATEMENT,
-        # The identity itself, not the name it currently projects: a person may be unnamed, and
-        # renaming one must not fork their consent history into a second subject.
-        subject=claim.identity_id,
-        predicate=CONSENT_PREDICATE,
-        value=claim.state.value,
-        confidence=1.0,
-    )
-
-
-def is_consent_assertion(
-    memories: Mapping[str, StoredMemory],
-    memory_id: str,
-) -> bool:
-    """Report whether one record is a standing consent statement about a person."""
-    memory = memories.get(memory_id)
-    context = None if memory is None else memory.context
-    return (
-        context is not None
-        and context.identity_id is not None
-        and context.predicate == CONSENT_PREDICATE
-    )
-
-
-def is_bound_naming_assertion(
-    memories: Mapping[str, StoredMemory],
-    memory_id: str,
-) -> bool:
-    memory = memories.get(memory_id)
-    context = None if memory is None else memory.context
-    return (
-        context is not None
-        and context.kind is MemoryKind.ENTITY
-        and context.identity_id is not None
-    )
-
-
-def is_derived(memories: Mapping[str, StoredMemory], memory_id: str) -> bool:
-    memory = memories.get(memory_id)
-    context = None if memory is None else memory.context
-    return context is not None and context.kind is not MemoryKind.OBSERVATION
-
-
-def consolidation_primary(
-    proposal: FormationProposal,
-    sources: Sequence[MemoryRecord],
-    *,
-    host_authored: bool = False,
-) -> MemoryRecord | None:
-    """Return the newest cited source the proposal is grounded in, or `None`.
-
-    Formation binds one proposal to one source. A consolidation cites several, so the kernel
-    requires the AFFECT cue modality and the spatial frame to match at least one of them and
-    inherits validity from the newest such source, which keeps the derived ID stable when the
-    same evidence set is proposed again.
-    """
-    ranked = sorted(
-        sources,
-        key=lambda source: (
-            source.occurred_end or source.occurred_at or source.created_at,
-            source.id,
-        ),
-    )
-    for source in reversed(ranked):
-        refusal = formation_refusal(
-            proposal,
-            FormationInput(
-                memory_id=source.id,
-                content=ModelInput(text=source.content, assets=source.assets),
-                context=observation_from_record(source),
-                occurred_at=source.occurred_at,
-                occurred_end=source.occurred_end,
-                created_at=source.created_at,
-            ),
-            host_authored=host_authored,
-        )
-        if refusal is None:
-            return source
-    return None
-
-
-def retiring_targets(operation: MemoryOperation) -> set[str]:
-    """IDs this operation would take out of ordinary recall or retire the current version of.
-
-    A `REINFORCE` target is strengthened rather than retired, so it is not one of these; a
-    `CONSOLIDATE` target is consolidation forgetting and is.
-    """
-    if operation.intent is MemoryIntent.REINFORCE:
-        return set()
-    return set(operation.target_ids)
 
 
 def _grounded_formation_pairs(
@@ -339,14 +112,14 @@ def _grounded_formation_pairs(
     already committed when formation runs, so failing the write would report a stored observation
     as unwritten and every retry would re-run the model and fail identically.
     """
-    kept: builtins.list[tuple[PreparedMemory, str | None, float]] = []
+    kept: list[tuple[PreparedMemory, str | None, float]] = []
     refused = 0
     seen: dict[tuple[str, str | None], PreparedMemory] = {}
-    states: dict[tuple[str | None, str], builtins.list[MemoryContext]] = {}
+    states: dict[tuple[str | None, str], list[RecordSemantics]] = {}
     for pair in pairs:
         prepared, source_id, _confidence = pair
         context = prepared.context
-        if isinstance(context, MemoryContext) and prepared.memory_id in context.evidence_ids:
+        if isinstance(context, RecordSemantics) and prepared.memory_id in context.evidence_ids:
             # A source-independent ID can restate a historical claim it also cites. Its whole
             # conjunction is circular; removing only the self premise would invent support.
             refused += 1
@@ -354,7 +127,7 @@ def _grounded_formation_pairs(
         if seen.setdefault((prepared.memory_id, source_id), prepared) != prepared:
             refused += 1
             continue
-        if isinstance(context, MemoryContext) and context.kind is MemoryKind.STATE:
+        if isinstance(context, RecordSemantics) and context.kind is RecordKind.STATE:
             lineage = states.setdefault(
                 (source_id, context.lineage_id or prepared.memory_id),
                 [],
@@ -374,21 +147,6 @@ def _grounded_formation_pairs(
             lineage.append(context)
         kept.append(pair)
     return tuple(kept), refused
-
-
-def agreed_inheritance(
-    sources: Sequence[MemoryRecord],
-) -> tuple[str | None, Mapping[str, object] | None]:
-    """The place and the metadata every cited source agrees on, or nothing.
-
-    A place is a hard retrieval filter, so disagreement inherits nothing rather than a majority.
-    """
-    places = {source.place_id for source in sources}
-    tags = {encode_metadata(source.metadata) for source in sources}
-    return (
-        sources[0].place_id if len(places) == 1 else None,
-        sources[0].metadata if len(tags) == 1 else None,
-    )
 
 
 def _agreed_columns(
@@ -413,153 +171,6 @@ def _agreed_columns(
     )
 
 
-def formation_context(
-    source: MemoryRecord | None,
-    proposal: FormationProposal,
-    *,
-    model_id: str | None,
-    recipe: str,
-    recorded_at: datetime,
-    identity_id: str | None = None,
-) -> MemoryContext:
-    """Build the typed context for one proposal, optionally derived from a source memory.
-
-    A naming assertion has no source memory and no model behind it: the household owner said
-    so. It passes `source=None` and carries the identity binding instead.
-    """
-    source_context = None if source is None else observation_from_record(source)
-    valid_from = proposal.valid_from
-    valid_until = proposal.valid_until
-    spatial = proposal.spatial
-    if source is not None and source_context is not None:
-        valid_from = valid_from or source_context.valid_from or source.occurred_at
-        valid_until = valid_until or source_context.valid_until
-        spatial = spatial or source_context.spatial
-    if valid_from is None and proposal.kind in {MemoryKind.STATE, MemoryKind.TRAIT}:
-        valid_from = recorded_at
-    return MemoryContext(
-        kind=proposal.kind,
-        # How the system should behave toward somebody is a grant: the kernel refuses every
-        # model-proposed `RESPONSE_POLICY`, so one that reaches persistence was authorized by
-        # the host calling `apply()` itself, and the stored record names that authorization
-        # rather than the default the proposal carried. Stamped here, on the persisted context
-        # alone, and never on the proposal: the log keeps the proposal it was handed and
-        # `formation_memory_id` keys on that basis, so replaying a logged row mints the same
-        # ID and is recognised as the duplicate it is.
-        basis=(
-            EvidenceBasis.RESPONSE_FEEDBACK
-            if proposal.kind is MemoryKind.RESPONSE_POLICY
-            else proposal.basis
-        ),
-        confidence=proposal.confidence,
-        valid_from=valid_from,
-        valid_until=valid_until,
-        recorded_at=recorded_at,
-        lineage_id=_formation_lineage_id(proposal, spatial=spatial, identity_id=identity_id),
-        source_id=None if source_context is None else source_context.source_id,
-        subject=proposal.subject,
-        predicate=proposal.predicate,
-        value=proposal.value,
-        evidence_ids=() if source is None else (source.id,),
-        model_id=model_id,
-        recipe=recipe,
-        identity_id=identity_id,
-        spatial=spatial,
-        cue_modality=proposal.cue_modality,
-        valence=proposal.valence,
-        arousal=proposal.arousal,
-    )
-
-
-def _formation_lineage_id(
-    proposal: FormationProposal,
-    *,
-    spatial: SpatialContext | None = None,
-    identity_id: str | None = None,
-) -> str:
-    return claim_lineage_id(
-        kind=proposal.kind.value,
-        predicate=proposal.predicate,
-        subject=proposal.subject,
-        identity_id=identity_id,
-        frame_id=None if spatial is None else spatial.frame_id,
-        anchor=None if spatial is None else spatial.anchor.value,
-        resolution=resolve_predicate(
-            proposal.predicate,
-            kind=proposal.kind.value,
-            basis=proposal.basis.value,
-            value=proposal.value,
-        ),
-    )
-
-
-def formation_memory_id(
-    source_id: str,
-    proposal: FormationProposal,
-    *,
-    recipe: str,
-    context: MemoryContext,
-) -> str:
-    episode_source = (
-        source_id
-        if (
-            proposal.kind in {MemoryKind.EVENT, MemoryKind.AFFECT, MemoryKind.STATE}
-            or (
-                proposal.kind is MemoryKind.TRAIT and proposal.basis is EvidenceBasis.USER_STATEMENT
-            )
-        )
-        else None
-    )
-    spatial = context.spatial
-    payload = json.dumps(
-        {
-            "recipe": recipe,
-            "kind": proposal.kind.value,
-            # Only present once something is bound, so two identities that share a name stay two
-            # records while every ID minted before the binding existed keeps its value.
-            **({} if context.identity_id is None else {"identity_id": context.identity_id}),
-            "subject": canonical_subject(proposal.subject),
-            "predicate": canonical_subject(proposal.predicate),
-            "value": canonical_subject(proposal.value),
-            "assertion_basis": (
-                proposal.basis.value
-                if proposal.basis is not EvidenceBasis.MODEL_INFERENCE
-                else None
-            ),
-            "cue_modality": (
-                None if proposal.cue_modality is None else proposal.cue_modality.value
-            ),
-            "episode_source": episode_source,
-            "content": proposal.content if proposal.kind is MemoryKind.EVENT else None,
-            "valid_from": (
-                datetime_text(context.valid_from)
-                if episode_source is not None and context.valid_from is not None
-                else None
-            ),
-            "valid_until": (
-                datetime_text(context.valid_until)
-                if episode_source is not None and context.valid_until is not None
-                else None
-            ),
-            "spatial": (
-                None
-                if spatial is None
-                else {
-                    "frame_id": spatial.frame_id,
-                    "anchor": spatial.anchor.value,
-                    "position_m": (spatial.x, spatial.y, spatial.z),
-                    "orientation_xyzw": spatial.orientation_xyzw,
-                    "position_uncertainty_m": spatial.position_uncertainty_m,
-                }
-            ),
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(f"sensemem-formation-v1:{payload}".encode()).hexdigest()
-
-
 class Formation(Traced):
     """Run the formation backend over committed sources and commit accepted proposals."""
 
@@ -568,7 +179,7 @@ class Formation(Traced):
         *,
         tracer: Tracer,
         storage: Storage,
-        settings: Settings,
+        settings: ResolvedSettings,
         backends: Backends,
         materializer: Materializer,
         embedding: Embedding,
@@ -598,7 +209,7 @@ class Formation(Traced):
             stored = self._store.records.formation_history(
                 known_before=source.created_at, exclude_ids=excluded, limit=limit + 1
             )
-        history: builtins.list[MemoryRecord] = []
+        history: list[MemoryRecord] = []
         remaining = self._settings.formation_history_budget
         truncated = len(stored) > limit
         for record in stored[:limit]:
@@ -616,7 +227,7 @@ class Formation(Traced):
         result = []
         for source in sources:
             history, truncated = self._history_for(source, excluded)
-            content = ModelInput(text=source.content, assets=source.assets)
+            content = ModelInput(text=source.content, assets=source.assets, parts=source.parts)
             if content.modalities - self._backends.formation_capabilities:
                 with translate_storage_errors("read formation representation"):
                     stored = self._store.records.read_memory(source.id)
@@ -631,7 +242,6 @@ class Formation(Traced):
                     except ModelError as error:
                         if error.reason != "unsupported_modality":
                             raise
-                        _LOGGER.info("formation skipped an unsupported source modality")
             result.append(
                 FormationInput(
                     memory_id=source.id,
@@ -726,7 +336,7 @@ class Formation(Traced):
         with self._formation_lock:
             self._apply_proposals(inputs, proposals_by_source, pending, operation=operation)
 
-    def _apply_proposals(
+    def _apply_proposals(  # noqa: C901 - two-stage grounding shares one formation transaction
         self,
         inputs: Sequence[FormationInput],
         proposals_by_source: tuple[tuple[FormationProposal, ...], ...],
@@ -740,11 +350,12 @@ class Formation(Traced):
         }
 
         now = datetime.now(timezone.utc)
-        pairs: builtins.list[tuple[PreparedMemory, str, float]] = []
+        pairs: list[tuple[PreparedMemory, str | None, float]] = []
         inputs_by_id = {value.memory_id: value for value in inputs}
         formed_sources = tuple(source for source in pending if source.id in inputs_by_id)
         batch_records = {source.id: source for source in formed_sources}
         refused = 0
+        local_prepared: dict[tuple[str, str], PreparedMemory] = {}
         for source in formed_sources:
             # One ID can have different states at different observations' causal cutoffs. Never
             # let another target's background overwrite the snapshot this proposal actually saw.
@@ -752,7 +363,7 @@ class Formation(Traced):
                 batch_records,
                 {record.id: record for record in inputs_by_id[source.id].history},
             )
-            proposals = proposals_by_id.get(source.id, ())
+            proposals = proposals_by_id[source.id]
             # Application data and the symbolic place travel with the knowledge formed from them:
             # a host that filters recall by metadata expects the tag on the observation to hold
             # for what was learned from it, and `place_id` is a hard filter, so knowledge formed
@@ -761,6 +372,14 @@ class Formation(Traced):
             # relations formed from it. One source agrees with itself; a record several sources
             # share keeps only what they all say, which `_commit_formation` settles.
             for proposal in proposals:
+                if proposal.affect_link is not None:
+                    continue
+                if (
+                    proposal.local_id is not None
+                    and sum(item.local_id == proposal.local_id for item in proposals) != 1
+                ):
+                    refused += 1
+                    continue
                 evidence_ids = _proposal_sources(
                     proposal, inputs_by_id[source.id], inputs_by_id, evidence_by_id
                 )
@@ -774,28 +393,25 @@ class Formation(Traced):
                 ):
                     refused += 1
                     continue
-                # One derived opinion the model grounded wrongly -- an affect cue naming a
-                # modality the source never carried, a pose in another frame -- must not cost the
-                # caller the observation it came from. `add` commits the source before formation
-                # runs, so failing here fails a write that in fact succeeded, and every retry
-                # re-runs formation and fails the same way. It is dropped and counted instead,
-                # which is the policy the model adapter already applies to a malformed one, and
-                # which consolidation already applies to this same rule. Damage to the batch
-                # envelope still raises above: that is not one opinion.
+                # The source is already committed; drop a misgrounded proposal without failing
+                # its write. The batch envelope is validated before any proposal is applied.
                 refusal = formation_refusal(proposal, inputs_by_id[source.id])
                 if refusal is not None:
-                    _LOGGER.warning(
-                        "formation proposal refused for memory %s: %s",
-                        source.id,
-                        refusal,
-                    )
                     refused += 1
                     continue
-                place_id, metadata = agreed_inheritance(
-                    tuple(evidence_by_id[item] for item in evidence_ids)
-                )
+                proposal = replace(proposal, evidence_ids=evidence_ids)
+                if affect_witness_refusal(proposal, evidence_by_id):
+                    refused += 1
+                    continue
+                cited = tuple(evidence_by_id[item] for item in evidence_ids)
+                try:
+                    identity_id = claim_identity(proposal, cited)
+                except ValidationError:
+                    refused += 1
+                    continue
+                place_id, metadata = agreed_inheritance(cited)
                 prepared = prepare_memory(
-                    self._materializer.prepare(proposal.content, operation),
+                    self._materializer.materialize_content(proposal.content, operation),
                     occurred_at=source.occurred_at,
                     occurred_end=source.occurred_end,
                     metadata=metadata,
@@ -807,28 +423,109 @@ class Formation(Traced):
                     model_id=self._backends.formation_model,
                     recipe=self._backends.formation_space,
                     recorded_at=now,
-                    identity_id=self.bound_identity(proposal),
+                    identity_id=identity_id,
                 )
                 context = replace(context, evidence_ids=evidence_ids)
-                pairs.append(
-                    (
-                        replace(
-                            prepared,
-                            memory_id=formation_memory_id(
-                                source.id,
-                                proposal,
-                                recipe=self._backends.formation_space,
-                                context=context,
-                            ),
-                            context=context,
-                            place_id=place_id,
-                        ),
+                prepared = replace(
+                    prepared,
+                    memory_id=formation_memory_id(
                         source.id,
-                        proposal.confidence,
-                    )
+                        proposal,
+                        recipe=self._backends.formation_space,
+                        context=context,
+                    ),
+                    context=context,
+                    place_id=place_id,
                 )
-        grounded, conflicting = _grounded_formation_pairs(pairs)
-        record_formation_refusals(refused + conflicting)
+                pairs.append((prepared, source.id, proposal.confidence))
+                if proposal.local_id is not None:
+                    local_prepared[(source.id, proposal.local_id)] = prepared
+        ordinary, conflicting = _grounded_formation_pairs(pairs)
+        pairs = list(ordinary)
+        accepted = {
+            (source_id, prepared.memory_id): prepared for prepared, source_id, _ in ordinary
+        }
+        for source in formed_sources:
+            offered = inputs_by_id[source.id]
+            new_records: dict[str, MemoryRecord] = {}
+            local_ids: dict[str, str] = {}
+            for (source_id, local_id), prepared in local_prepared.items():
+                if (
+                    source_id != source.id
+                    or accepted.get((source_id, prepared.memory_id)) != prepared
+                ):
+                    continue
+                local_ids[f"proposal:{local_id}"] = prepared.memory_id
+                new_records[prepared.memory_id] = MemoryRecord(
+                    id=prepared.memory_id,
+                    content=prepared.content.text,
+                    created_at=now,
+                    occurred_at=prepared.occurred_at,
+                    occurred_end=prepared.occurred_end,
+                    metadata=decode_metadata(prepared.metadata_json),
+                    memory_type=prepared.memory_type,
+                    context=cast(RecordSemantics, prepared.context),
+                    place_id=prepared.place_id,
+                    parts=prepared.content.parts,
+                )
+            evidence_by_id = ChainMap(
+                batch_records, {record.id: record for record in offered.history}, new_records
+            )
+            for proposal in proposals_by_id[source.id]:
+                if proposal.affect_link is None:
+                    continue
+                evidence_ids = _proposal_sources(proposal, offered, inputs_by_id, evidence_by_id)
+                if evidence_ids is None or formation_refusal(proposal, offered) is not None:
+                    refused += 1
+                    continue
+                resolved = resolve_affect_proposal(
+                    replace(proposal, evidence_ids=evidence_ids), evidence_by_id, local_ids
+                )
+                if resolved is None or affect_witness_refusal(resolved, evidence_by_id):
+                    refused += 1
+                    continue
+                proposal = resolved
+                assert proposal.evidence_ids is not None
+                cited = tuple(evidence_by_id[item] for item in proposal.evidence_ids)
+                if _history_identity_refusal(proposal, offered, cited):
+                    refused += 1
+                    continue
+                link = proposal.affect_link
+                assert link is not None
+                focal = evidence_by_id[link.affect_id]
+                assert focal.context is not None
+                _, metadata = agreed_inheritance(cited)
+                context = replace(
+                    formation_context(
+                        source,
+                        proposal,
+                        model_id=self._backends.formation_model,
+                        recipe=self._backends.formation_space,
+                        recorded_at=now,
+                        identity_id=focal.context.identity_id,
+                    ),
+                    valid_from=proposal.valid_from,
+                    valid_until=proposal.valid_until,
+                    spatial=focal.context.spatial,
+                    evidence_ids=proposal.evidence_ids,
+                )
+                prepared = replace(
+                    prepare_memory(
+                        self._materializer.materialize_content(proposal.content, operation),
+                        occurred_at=focal.occurred_at,
+                        occurred_end=focal.occurred_end,
+                        metadata=metadata,
+                        memory_type=formation_memory_type(proposal.kind),
+                    ),
+                    memory_id=formation_memory_id(
+                        source.id, proposal, recipe=self._backends.formation_space, context=context
+                    ),
+                    context=context,
+                    place_id=focal.place_id,
+                )
+                pairs.append((prepared, source.id, proposal.confidence))
+        grounded, link_conflicts = _grounded_formation_pairs(pairs)
+        record_formation_refusals(refused + conflicting + link_conflicts)
         self._commit_targets(grounded, formed_sources, operation=operation, completed_at=now)
 
     def _commit_targets(
@@ -850,7 +547,11 @@ class Formation(Traced):
                         completed_at=completed_at,
                         joint_evidence_clauses=True,
                         require_active=tuple(source.id for source in targets),
-                        require_visible=_cited_sources(remaining),
+                        require_visible=tuple(
+                            memory_id
+                            for memory_id in _cited_sources(remaining)
+                            if memory_id not in {pair[0].memory_id for pair in remaining}
+                        ),
                         preserve_response_policies=True,
                     )
                 except ProtectedMemoryError as error:
@@ -861,7 +562,6 @@ class Formation(Traced):
                     )
                     assert len(accepted) < len(remaining)
                     record_formation_refusals(len(remaining) - len(accepted))
-                    _LOGGER.warning("formation proposal refused: unauthorized")
                     remaining = accepted
                 else:
                     return
@@ -888,11 +588,6 @@ class Formation(Traced):
         preserve_response_policies: bool = False,
         projection_identity_id: str | None = None,
         joint_evidence_clauses: bool = False,
-        projection_factory: Callable[
-            [], tuple[tuple[StoredMemory, ...], tuple[StoredEmbedding, ...]]
-        ]
-        | None = None,
-        projection_sources: Sequence[StoredMemory] | None = None,
     ) -> StoredOperation | None:
         """Embed and commit derived records; return the log row when one was requested.
 
@@ -901,7 +596,7 @@ class Formation(Traced):
         """
         recipe = self._backends.formation_space if recipe is None else recipe
         ordered_pairs = tuple(sorted(pairs, key=lambda value: (value[0].memory_id, value[1] or "")))
-        by_id: dict[str, builtins.list[PreparedMemory]] = {}
+        by_id: dict[str, list[PreparedMemory]] = {}
         for prepared, _source, _score in ordered_pairs:
             by_id.setdefault(prepared.memory_id, []).append(prepared)
         with translate_storage_errors("check formed memories"):
@@ -926,7 +621,9 @@ class Formation(Traced):
         parts = tuple(
             (memory, object_part, model_input)
             for memory in missing
-            for object_part, model_input in enumerate(self._embedding.inputs(memory.content))
+            for object_part, model_input in enumerate(
+                self._embedding.build_retrieval_inputs(memory.content)
+            )
         )
         vectors = self._embedding.embed(
             tuple(model_input for _memory, _part, model_input in parts),
@@ -945,7 +642,7 @@ class Formation(Traced):
                 created_at=completed_at,
                 updated_at=completed_at,
                 place_id=memory.place_id,
-                context=cast(MemoryContext, memory.context),
+                context=cast(RecordSemantics, memory.context),
             )
             # Existing records travel too: what they skip is the embedding, not the write. The
             # store decides whether restating a claim it already holds is a no-op or a new
@@ -980,67 +677,59 @@ class Formation(Traced):
                     if memory_id not in set(created)
                 ),
             )
-        projection_memories: tuple[StoredMemory, ...] = ()
-        projection_embeddings: tuple[StoredEmbedding, ...] = ()
-        projector = projection_factory
-        if self._settings.independent_evidence and projection_sources is None:
-            # Evidence-driven names depend on candidate proof activation. An authoritative
-            # naming update supplies its checked source snapshot and can prepare outside SQL.
-            projector = None
-        if projector is not None:
-            # Derived assertion vectors are prepared first, then every speech document the new
-            # projection affects. Neither reaches SQLite until both model calls have succeeded.
-            projection_memories, projection_embeddings = projector()
-        with self._write_lock:
-            with translate_storage_errors("commit automatic memory formation"):
-                applied = self._store.semantics.apply_formation(
-                    stored,
-                    embeddings,
-                    evidence_clauses=(
-                        ()
-                        if not joint_evidence_clauses
-                        else tuple(
-                            dict.fromkeys(
-                                (
-                                    prepared.memory_id,
-                                    prepared.context.evidence_ids,
-                                    confidence,
-                                )
-                                for prepared, _source_id, confidence in ordered_pairs
-                                if isinstance(prepared.context, MemoryContext)
-                                and prepared.context.evidence_ids
-                            )
+        commit_naming = partial(
+            self._store.semantics.apply_formation,
+            stored,
+            embeddings,
+            evidence_clauses=(
+                ()
+                if not joint_evidence_clauses
+                else tuple(
+                    dict.fromkeys(
+                        (
+                            prepared.memory_id,
+                            prepared.context.evidence_ids,
+                            confidence,
                         )
-                    ),
-                    evidence=tuple(
-                        dict.fromkeys(
-                            (prepared.memory_id, evidence_id, confidence)
-                            for prepared, _source_id, confidence in ordered_pairs
-                            for evidence_id in (
-                                ()
-                                if not isinstance(prepared.context, MemoryContext)
-                                else prepared.context.evidence_ids
-                            )
-                        )
-                    ),
-                    source_memory_ids=tuple(source.id for source in sources),
-                    narrowed=narrowed,
-                    recipe=recipe,
-                    completed_at=completed_at,
-                    operation=operation,
-                    forget_ids=forget_ids,
-                    require_active=require_active,
-                    require_unretired=require_unretired,
-                    require_visible=require_visible,
-                    preserve_response_policies=preserve_response_policies,
-                    projection_identity_id=projection_identity_id,
-                    projection_memories=projection_memories,
-                    projection_embeddings=projection_embeddings,
-                    projection_sources=projection_sources,
-                    naming_projection_factory=(
-                        self.naming_projection_factory(assets) if projector is None else None
-                    ),
+                        for prepared, _source_id, confidence in ordered_pairs
+                        if isinstance(prepared.context, RecordSemantics)
+                        and prepared.context.evidence_ids
+                    )
                 )
+            ),
+            evidence=tuple(
+                dict.fromkeys(
+                    (prepared.memory_id, evidence_id, confidence)
+                    for prepared, _source_id, confidence in ordered_pairs
+                    for evidence_id in (
+                        ()
+                        if not isinstance(prepared.context, RecordSemantics)
+                        else prepared.context.evidence_ids
+                    )
+                )
+            ),
+            source_memory_ids=tuple(source.id for source in sources),
+            narrowed=narrowed,
+            recipe=recipe,
+            completed_at=completed_at,
+            operation=operation,
+            forget_ids=forget_ids,
+            require_active=require_active,
+            require_unretired=require_unretired,
+            require_visible=require_visible,
+            preserve_response_policies=preserve_response_policies,
+            projection_identity_id=projection_identity_id,
+        )
+        try:
+            with self._write_lock, translate_storage_errors("commit automatic memory formation"):
+                applied = commit_naming()
+        except NamingPreparationRequired as pending_naming:
+            prepared_naming = self._embedding.prepare_naming_documents(
+                pending_naming.documents, assets
+            )
+            with self._write_lock, translate_storage_errors("commit automatic memory formation"):
+                applied = commit_naming(naming_projection=prepared_naming)
+        with self._write_lock:
             self._projection.drain()
         if operation is None:
             return None
@@ -1051,40 +740,3 @@ class Formation(Traced):
         with translate_storage_errors("read a memory operation"):
             logged = self._store.control.read_operations(operation_key=operation.operation_key)
         return logged[0] if logged else None
-
-    def naming_projection_factory(
-        self, assets: OperationAssets, *, force: bool = False
-    ) -> NamingProjectionFactory | None:
-        """Prepare exact candidate speech projections before their transaction commits."""
-        if not force and not self._settings.independent_evidence:
-            return None
-        return partial(self._embedding.refresh_naming_memories, operation=assets)
-
-    def bound_identity(self, proposal: FormationProposal) -> str | None:
-        """Resolve which recognized person a proposed claim is about, or None.
-
-        Deterministic and never the model's decision: the proposal's subject has to match the
-        canonical subject of one currently visible naming assertion, compared with the same
-        NFKC casefold the lineage key uses. `_formation_lineage_id` then keys on the identity,
-        so claims about one person converge however the model spelled the name that turn.
-
-        An ENTITY proposal is deliberately never bound. A bound ENTITY row *is* a naming
-        assertion, so binding one here would let a model's proposal rename a person; naming
-        stays with the host and with the identify path.
-
-        `consent` is a reserved predicate for the same reason and by the same route. A bound
-        STATE row carrying it *is* a consent statement -- it is what `consent()` reads and what
-        restrains enrolment and merging -- so binding one here would let a model manufacture or
-        retract permission to process a person without ever reaching the control plane, which
-        refuses a proposed `CONSENT` operation. The claim itself is kept, unbound: a model
-        inferring that somebody withdrew consent is evidence of what the model thought, and it
-        is recorded as an ordinary STATE about that subject with no identity attached.
-        """
-        if (
-            proposal.kind is MemoryKind.ENTITY
-            or proposal.subject is None
-            or proposal.predicate == CONSENT_PREDICATE
-        ):
-            return None
-        with translate_storage_errors("resolve a claim's subject"):
-            return self._store.identities.identity_for_subject(proposal.subject)

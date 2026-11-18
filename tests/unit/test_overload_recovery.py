@@ -19,13 +19,13 @@ from mcp import Client
 from starlette.types import Message, Scope
 
 import sensemem.api.app as app_module
+import sensemem.infrastructure.local.store._capture_queue as capture_queue_module
 import sensemem.infrastructure.local.store._connections as connections_module
-import sensemem.infrastructure.local.store._outbox as outbox_module
 import sensemem.kernel.lifecycle as lifecycle_module
 from sensemem import AsyncMemory, Memory, StorageError, ValidationError
+from sensemem._capacity import Capacity
 from sensemem.api.app import create_app
 from sensemem.api.mcp import build_mcp_server
-from sensemem.infrastructure.local._capacity import Capacity
 from sensemem.models.base import EmbedTask, ModelInput
 
 
@@ -64,7 +64,7 @@ def test_instance_budget_releases_failed_and_closed_owners(
 def test_pending_capture_limit_is_atomic_and_duplicates_remain_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(outbox_module, "MAX_PENDING_CAPTURES", 1)
+    monkeypatch.setattr(capture_queue_module, "MAX_PENDING_CAPTURES", 1)
     with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
         first = memory.capture("first")
         with pytest.raises(StorageError) as failure:

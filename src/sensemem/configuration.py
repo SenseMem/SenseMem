@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated, Literal, Self
-from urllib.parse import urlsplit
+from typing import Annotated, Literal, Self, TypeVar, cast
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Discriminator,
     Field,
     SecretStr,
     StringConstraints,
+    Tag,
     field_serializer,
     field_validator,
     model_validator,
@@ -24,11 +25,21 @@ from pydantic import (
 )
 
 import sensemem.recipes as recipes
-from sensemem._resources import close_quietly
+from sensemem._resources import Closable, close_quietly
+from sensemem._validation import absolute_http_url, server_base_url
+from sensemem.candidate_sources import CandidateSource, DefaultCandidateSource
+from sensemem.context_selection import ContextSelector, DefaultContextSelector
+from sensemem.control_values import RetentionPolicy
 from sensemem.exceptions import ValidationError
 from sensemem.infrastructure.local.gazetteer import OfflineGazetteer
 from sensemem.infrastructure.local.source_metadata import GazetteerEnricher
 from sensemem.kernel.answer_evidence import EvidenceGeneration
+from sensemem.models._openai_defaults import (
+    DEFAULT_EMBEDDING_DIMENSION,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_TRANSCRIPTION_MODEL,
+)
 from sensemem.models.base import (
     ConsolidationBackend,
     EmbeddingBackend,
@@ -41,12 +52,9 @@ from sensemem.models.base import (
     VisionDescriptionBackend,
 )
 from sensemem.models.funasr import FunASRTranscriber
-from sensemem.models.openai_sdk import (
-    DEFAULT_EMBEDDING_DIMENSION,
-    DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_GENERATION_MODEL,
-    DEFAULT_TRANSCRIPTION_MODEL,
-)
+from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.models.openai_embedding import OpenAIEmbedder
+from sensemem.models.openai_speech import OpenAITranscriber
 from sensemem.models.opencv_face import OpenCVFaceAnalyzer
 from sensemem.models.qwen3_vl_reranking import Qwen3VLReranker
 from sensemem.models.routing import GenerationRouter
@@ -54,9 +62,14 @@ from sensemem.models.sentence_transformers import (
     SentenceTransformersEmbedder,
     SentenceTransformersReranker,
 )
-from sensemem.models.vllm_reranking import VLLMReranker, _server_base_url
-from sensemem.plugins import MemoryConfig, MemoryPlugins
-from sensemem.types import Modality, RetentionPolicy
+from sensemem.models.vllm_reranking import VLLMReranker
+from sensemem.plugins import MemoryPlugins
+from sensemem.processing import IngestionStage
+from sensemem.query_policy import DefaultQueryPolicy, QueryPolicy
+from sensemem.ranking_policy import DefaultRankingPolicy, RankingPolicy
+from sensemem.settings import MemorySettings
+from sensemem.tools import RegisteredTool, ToolRegistry
+from sensemem.types import Modality
 
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 _PositiveFloat = Annotated[float, Field(strict=True, gt=0)]
@@ -66,22 +79,8 @@ _Temperature = Annotated[float, Field(strict=True, ge=0, le=2)]
 _Seed = Annotated[int, Field(strict=True, ge=0, lt=2**63)]
 _UnitInterval = Annotated[float, Field(strict=True, ge=0, le=1)]
 _DISCRIMINATED_SLOTS = frozenset({"embedding", "reranking", "speech"})
-
-
-def _absolute_http_url(value: str) -> bool:
-    """Return whether an OpenAI-compatible base URL is safe to hand to httpx."""
-    if any(character.isspace() for character in value) or "\\" in value:
-        return False
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return False
-    return (
-        parsed.scheme.casefold() in {"http", "https"}
-        and parsed.hostname is not None
-        and (port is None or 1 <= port <= 65_535)
-    )
+PluginFactory = Callable[[Mapping[str, object]], Closable]
+_ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 
 
 class _ConfigModel(BaseModel):
@@ -115,7 +114,7 @@ class _OpenAIConfig(_ConfigModel):
     def _absolute_http_base_url(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        if not _absolute_http_url(value):
+        if not absolute_http_url(value):
             raise ValueError("base_url must be an absolute HTTP or HTTPS URL")
         return value
 
@@ -188,11 +187,11 @@ class VLLMRerankingConfig(_ConfigModel):
     @field_validator("base_url")
     @classmethod
     def _validate_base_url(cls, value: str) -> str:
-        return _server_base_url(value)
+        return server_base_url(value)
 
 
 class _OpenAICompletionConfig(_OpenAIConfig):
-    """Knobs `OpenAIModels` reads for any chat-completion role."""
+    """Knobs `OpenAICompletion` reads for any chat-completion role."""
 
     model: _Text = DEFAULT_GENERATION_MODEL
     modalities: frozenset[Modality] = frozenset({Modality.TEXT})
@@ -226,7 +225,7 @@ class OpenAIGenerationConfig(_OpenAICompletionConfig):
     image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
     video_limit: _PositiveInt | None = 8
     # Below this duration a video is answered as four ordered stills instead. The option already
-    # existed on `OpenAIModels` and was unreachable from configuration, which left every caller
+    # existed on `OpenAICompletion` and was unreachable from configuration, which left every caller
     # that builds its models from a file -- the benchmark harness included -- unable to set the
     # floor its endpoint needs. Answer-only, like `video_limit`, so it is not on the shared
     # completion base that formation also reads.
@@ -349,44 +348,80 @@ SpeechProviderConfig = Annotated[
 ]
 
 
-class SenseMemConfig(_ConfigModel):
-    """Pure-data configuration for SenseMem's bundled backend adapters."""
+class PluginConfig(_ConfigModel):
+    """A named bundled or application factory, with factory-owned options."""
+
+    factory: _Text
+    options: Mapping[str, object] = Field(default_factory=dict)
+
+
+def _declaration_kind(value: object) -> str:
+    if isinstance(value, PluginConfig) or (isinstance(value, Mapping) and "factory" in value):
+        return "factory"
+    return "provider"
+
+
+ProviderOrFactory = Annotated[
+    Annotated[_ConfigT, Tag("provider")] | Annotated[PluginConfig, Tag("factory")],
+    Discriminator(_declaration_kind),
+]
+
+
+class MemorySpec(_ConfigModel):
+    """One declarative shape for bundled providers and host-registered factories."""
 
     data_dir: Path = Path(".sensemem")
-    embedding: EmbeddingProviderConfig
-    generation: OpenAIGenerationConfig | None = None
-    reranking: RerankingProviderConfig | None = None
+    embedding: ProviderOrFactory[EmbeddingProviderConfig]
+    generation: ProviderOrFactory[OpenAIGenerationConfig] | None = None
+    reranking: ProviderOrFactory[RerankingProviderConfig] | None = None
     # Both reachable, but never implicit, and omitted by default. Configuring `generation` must
     # not enable either one: a former is an LLM call per observation and a describer an LLM call
     # per visual, both on the write path, and the only bundled adapters are cloud calls, which a
     # local-first deployment should opt into rather than discover. What each derives is also a
     # union with the raw sources rather than a replacement for them.
-    formation: OpenAIFormationConfig | None = None
-    vision: OpenAIVisionConfig | None = None
+    formation: ProviderOrFactory[OpenAIFormationConfig] | None = None
+    vision: ProviderOrFactory[OpenAIVisionConfig] | None = None
     # The agentic memory control plane. Same rule as `formation`: reachable, never implicit. A
     # deployment that never sets it keeps `consolidate()` unavailable and everything else
     # unchanged, which is what a host that only recalls should get.
-    consolidation: OpenAIConsolidationConfig | None = None
-    speech: SpeechProviderConfig | None = None
-    face: OpenCVFaceConfig | None = None
-    settings: MemoryConfig = Field(default_factory=MemoryConfig)
+    consolidation: ProviderOrFactory[OpenAIConsolidationConfig] | None = None
+    speech: ProviderOrFactory[SpeechProviderConfig] | None = None
+    face: ProviderOrFactory[OpenCVFaceConfig] | None = None
+    query_policy: PluginConfig | None = None
+    candidate_source: PluginConfig | None = None
+    ranking_policy: PluginConfig | None = None
+    context_selector: PluginConfig | None = None
+    ingestion_stages: tuple[PluginConfig, ...] = ()
+    tools: tuple[PluginConfig, ...] = ()
+    settings: MemorySettings = Field(default_factory=MemorySettings)
     # Its own section rather than a `settings` field: every other setting shapes what recall
     # returns and can be changed back, and this one deletes. It reaches `Memory` as
-    # `MemoryConfig.retention`, which is the same value under the name `from_plugins` reads;
+    # `MemorySettings.retention`, which is the same value under the name `from_plugins` reads;
     # declaring it twice is refused rather than silently resolved.
     retention: RetentionPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryComposition:
-    """Constructed plugins and settings owned by one declarative composition."""
+    """Constructed plugins and settings whose resources the caller owns.
+
+    Close the composition unless its plugins are transferred to a ``Memory`` instance.
+    Building this value does not open local storage.
+    """
 
     data_dir: Path
     plugins: MemoryPlugins
-    settings: MemoryConfig
+    settings: MemorySettings
 
     def close(self) -> None:
+        """Release constructed plugins, including resources shared across slots."""
         close_quietly(
+            self.plugins.tools,
+            self.plugins.query_policy,
+            self.plugins.candidate_source,
+            self.plugins.ranking_policy,
+            self.plugins.context_selector,
+            *self.plugins.ingestion_stages,
             self.plugins.face_analyzer,
             self.plugins.vision_describer,
             self.plugins.transcriber,
@@ -398,53 +433,259 @@ class MemoryComposition:
         )
 
 
-def resolve_memory_config(
-    value: SenseMemConfig | Mapping[str, object],
+def build_memory_composition(  # noqa: C901 - each optional capability is wired explicitly
+    spec: MemorySpec | Mapping[str, object],
+    *,
+    factories: Mapping[str, PluginFactory] | None = None,
 ) -> MemoryComposition:
-    """Construct and return the bundled plugins described by declarative configuration."""
-    config = _validated_config(value)
+    """Validate a specification and construct its plugins without opening storage.
+
+    Provider construction may load models and allocate clients. The caller must close the
+    returned composition or transfer its plugins to a ``Memory`` instance.
+    """
+    config = _validated_config(spec)
     settings = _with_retention(config)
+    completions: list[tuple[_OpenAICompletionConfig, Closable]] = []
+    catalog = _builtin_factories(completions=completions)
+    if factories:
+        if factories.keys() & catalog.keys():
+            raise ValidationError("application factories cannot replace bundled factories")
+        catalog.update(factories)
+    resources: list[Closable] = []
     with ExitStack() as cleanup:
-        embedder = _build_embedding(config.embedding)
-        cleanup.callback(embedder.close)
-        answerer = None if config.generation is None else _build_generation(config.generation)
-        if answerer is not None:
-            cleanup.callback(answerer.close)
-        reranker = None if config.reranking is None else _build_reranking(config.reranking)
-        if reranker is not None:
-            cleanup.callback(reranker.close)
-        former = None if config.formation is None else _build_formation(config.formation)
-        if former is not None:
-            cleanup.callback(former.close)
-        describer = None if config.vision is None else _build_vision(config.vision)
-        if describer is not None:
-            cleanup.callback(describer.close)
-        consolidator = _build_consolidation(
-            config,
-            answerer=answerer,
-            former=former,
+        cleanup.callback(lambda: close_quietly(*resources))
+        embedder = (
+            cast(
+                EmbeddingBackend,
+                _registered_plugin(config.embedding, catalog, (EmbeddingBackend,), resources),
+            )
+            if isinstance(config.embedding, PluginConfig)
+            else _build_embedding(config.embedding)
         )
-        # Only close it here when it is its own adapter; a reused one is already registered.
-        if consolidator is not None and id(consolidator) not in {id(answerer), id(former)}:
-            cleanup.callback(consolidator.close)
-        transcriber = None if config.speech is None else _build_speech(config.speech)
-        if transcriber is not None:
-            cleanup.callback(transcriber.close)
-        face = None if config.face is None else _build_face(config.face)
-        if face is not None:
-            cleanup.callback(face.close)
+        resources.append(embedder)
+        answerer = None
+        if config.generation is not None:
+            answerer = (
+                cast(
+                    GenerationBackend,
+                    _registered_plugin(config.generation, catalog, (GenerationBackend,), resources),
+                )
+                if isinstance(config.generation, PluginConfig)
+                else _build_generation(config.generation)
+            )
+            resources.append(answerer)
+        if isinstance(config.generation, OpenAIGenerationConfig) and answerer is not None:
+            completions.append((config.generation, answerer))
+        former = None
+        if config.formation is not None:
+            former = (
+                cast(
+                    FormationBackend,
+                    _registered_plugin(config.formation, catalog, (FormationBackend,), resources),
+                )
+                if isinstance(config.formation, PluginConfig)
+                else _build_formation(config.formation)
+            )
+            resources.append(former)
+        if isinstance(config.formation, OpenAIFormationConfig) and former is not None:
+            completions.append((config.formation, former))
+        consolidator = None
+        if config.consolidation is not None:
+            consolidator = (
+                cast(
+                    ConsolidationBackend,
+                    _registered_plugin(
+                        config.consolidation, catalog, (ConsolidationBackend,), resources
+                    ),
+                )
+                if isinstance(config.consolidation, PluginConfig)
+                else _build_consolidation(config.consolidation, completions=completions)
+            )
+            resources.append(consolidator)
+        transcriber = None
+        if config.speech is not None:
+            transcriber = (
+                cast(
+                    SpeechBackend | TranscriptionBackend,
+                    _registered_plugin(
+                        config.speech, catalog, (SpeechBackend, TranscriptionBackend), resources
+                    ),
+                )
+                if isinstance(config.speech, PluginConfig)
+                else _build_speech(config.speech)
+            )
+            resources.append(transcriber)
+        vision = None
+        if config.vision is not None:
+            vision = (
+                cast(
+                    VisionDescriptionBackend,
+                    _registered_plugin(
+                        config.vision, catalog, (VisionDescriptionBackend,), resources
+                    ),
+                )
+                if isinstance(config.vision, PluginConfig)
+                else _build_vision(config.vision)
+            )
+            resources.append(vision)
+        face = None
+        if config.face is not None:
+            face = (
+                cast(
+                    FaceBackend, _registered_plugin(config.face, catalog, (FaceBackend,), resources)
+                )
+                if isinstance(config.face, PluginConfig)
+                else _build_face(config.face)
+            )
+            resources.append(face)
+        reranker = None
+        if config.reranking is not None:
+            reranker = (
+                cast(
+                    RerankingBackend,
+                    _registered_plugin(config.reranking, catalog, (RerankingBackend,), resources),
+                )
+                if isinstance(config.reranking, PluginConfig)
+                else _build_reranking(config.reranking)
+            )
+            resources.append(reranker)
+        stages = tuple(
+            cast(IngestionStage, _registered_plugin(stage, catalog, (IngestionStage,), resources))
+            for stage in config.ingestion_stages
+        )
+        tools = _build_tools(config.tools, catalog, resources)
         plugins = MemoryPlugins(
             embedder=embedder,
             answerer=answerer,
             transcriber=transcriber,
-            vision_describer=describer,
+            vision_describer=vision,
             face_analyzer=face,
             former=former,
             consolidator=consolidator,
             reranker=reranker,
+            query_policy=None
+            if config.query_policy is None
+            else cast(
+                QueryPolicy,
+                _registered_plugin(config.query_policy, catalog, (QueryPolicy,), resources),
+            ),
+            candidate_source=None
+            if config.candidate_source is None
+            else cast(
+                CandidateSource,
+                _registered_plugin(config.candidate_source, catalog, (CandidateSource,), resources),
+            ),
+            ranking_policy=None
+            if config.ranking_policy is None
+            else cast(
+                RankingPolicy,
+                _registered_plugin(config.ranking_policy, catalog, (RankingPolicy,), resources),
+            ),
+            context_selector=None
+            if config.context_selector is None
+            else cast(
+                ContextSelector,
+                _registered_plugin(config.context_selector, catalog, (ContextSelector,), resources),
+            ),
+            ingestion_stages=stages,
+            tools=tools,
         )
         cleanup.pop_all()
     return MemoryComposition(config.data_dir, plugins, settings)
+
+
+def _registered_plugin(
+    config: PluginConfig,
+    factories: Mapping[str, PluginFactory],
+    expected: tuple[type[object], ...],
+    resources: list[Closable],
+) -> Closable:
+    factory = factories.get(config.factory)
+    if factory is None:
+        raise ValidationError(f"unregistered plugin factory: {config.factory}")
+    plugin = factory(config.options)
+    resources.append(plugin)
+    if not isinstance(plugin, expected):
+        raise ValidationError(
+            f"plugin factory {config.factory} returned an incompatible capability"
+        )
+    return plugin
+
+
+def _build_tools(
+    configs: tuple[PluginConfig, ...],
+    factories: Mapping[str, PluginFactory],
+    resources: list[Closable],
+) -> ToolRegistry:
+    registry = ToolRegistry()
+    resources.append(registry)
+    for config in configs:
+        tool = cast(
+            RegisteredTool, _registered_plugin(config, factories, (RegisteredTool,), resources)
+        )
+        registry.register(tool)
+    return registry
+
+
+def _builtin_factories(
+    *,
+    completions: list[tuple[_OpenAICompletionConfig, Closable]],
+) -> dict[str, PluginFactory]:
+    """Create an instance-local catalog; bundled factories follow the application contract."""
+
+    def configured(
+        schema: type[_ConfigT],
+        build: Callable[[_ConfigT], Closable],
+        provider: str | None = None,
+        *,
+        share_completion: bool = False,
+    ) -> PluginFactory:
+        def factory(options: Mapping[str, object]) -> Closable:
+            values = dict(options) if provider is None else {"provider": provider, **options}
+            try:
+                declared = schema.model_validate(values)
+            except PydanticValidationError:
+                raise ValidationError("invalid bundled plugin options") from None
+            plugin = build(declared)
+            if share_completion:
+                assert isinstance(declared, _OpenAICompletionConfig)
+                completions.append((declared, plugin))
+            return plugin
+
+        return factory
+
+    return {
+        "sensemem.embedding.openai": configured(OpenAIEmbeddingConfig, _build_embedding, "openai"),
+        "sensemem.embedding.sentence-transformers": configured(
+            SentenceTransformersEmbeddingConfig, _build_embedding, "sentence-transformers"
+        ),
+        "sensemem.generation.openai": configured(
+            OpenAIGenerationConfig, _build_generation, "openai", share_completion=True
+        ),
+        "sensemem.formation.openai": configured(
+            OpenAIFormationConfig, _build_formation, "openai", share_completion=True
+        ),
+        "sensemem.vision.openai": configured(OpenAIVisionConfig, _build_vision, "openai"),
+        "sensemem.consolidation.openai": configured(
+            OpenAIConsolidationConfig,
+            lambda declared: _build_consolidation(declared, completions=completions),
+            "openai",
+        ),
+        "sensemem.speech.openai": configured(OpenAITranscriptionConfig, _build_speech, "openai"),
+        "sensemem.speech.funasr": configured(FunASRSpeechConfig, _build_speech, "funasr"),
+        "sensemem.face.opencv": configured(OpenCVFaceConfig, _build_face, "opencv"),
+        "sensemem.reranking.sentence-transformers": configured(
+            SentenceTransformersRerankingConfig, _build_reranking, "sentence-transformers"
+        ),
+        "sensemem.reranking.qwen3-vl": configured(
+            Qwen3VLRerankingConfig, _build_reranking, "qwen3-vl"
+        ),
+        "sensemem.reranking.vllm": configured(VLLMRerankingConfig, _build_reranking, "vllm"),
+        "sensemem.ranking.default": configured(_ConfigModel, lambda _: DefaultRankingPolicy()),
+        "sensemem.query.default": configured(_ConfigModel, lambda _: DefaultQueryPolicy()),
+        "sensemem.candidates.default": configured(_ConfigModel, lambda _: DefaultCandidateSource()),
+        "sensemem.context.default": configured(_ConfigModel, lambda _: DefaultContextSelector()),
+    }
 
 
 def _build_reranking(config: RerankingProviderConfig) -> RerankingBackend:
@@ -483,7 +724,7 @@ def _build_reranking(config: RerankingProviderConfig) -> RerankingBackend:
     )
 
 
-def _with_retention(config: SenseMemConfig) -> MemoryConfig:
+def _with_retention(config: MemorySpec) -> MemorySettings:
     """Fold the top-level `retention` section into the settings `Memory` is constructed from."""
     if config.retention is None:
         return config.settings
@@ -494,17 +735,19 @@ def _with_retention(config: SenseMemConfig) -> MemoryConfig:
     return replace(config.settings, retention=config.retention)
 
 
-def _validated_config(value: SenseMemConfig | Mapping[str, object]) -> SenseMemConfig:
-    if isinstance(value, SenseMemConfig):
+def _validated_config(value: MemorySpec | Mapping[str, object]) -> MemorySpec:
+    if isinstance(value, MemorySpec):
         return value
     if not isinstance(value, Mapping):
-        raise ValidationError("config must be a SenseMemConfig or mapping")
+        raise ValidationError("config must be a MemorySpec or mapping")
     try:
-        return SenseMemConfig.model_validate(value)
+        return MemorySpec.model_validate(value)
     except PydanticValidationError as error:
         issues = []
         for issue in error.errors(include_url=False, include_context=False, include_input=False):
             location = tuple(issue["loc"])
+            if len(location) >= 2 and location[1] in {"provider", "factory"}:
+                location = (location[0], *location[2:])
             if issue["type"] in {"union_tag_invalid", "union_tag_not_found"}:
                 location = (*location, "provider")
             elif len(location) >= 2 and location[0] in _DISCRIMINATED_SLOTS:
@@ -540,7 +783,7 @@ def _build_embedding(config: EmbeddingProviderConfig) -> EmbeddingBackend:
             values["embedding_space"] = config.space
         if config.image_max_pixels is not None:
             values["image_max_pixels"] = config.image_max_pixels
-        return recipes._owned_openai_models(**values)
+        return recipes._owned_openai(OpenAIEmbedder, **values)
     return SentenceTransformersEmbedder(
         model_id=config.model,
         revision=config.revision,
@@ -608,7 +851,7 @@ def _build_native_generation(config: OpenAIGenerationConfig) -> GenerationBacken
         values["generation_video_limit"] = config.video_limit
     if config.min_video_seconds is not None:
         values["generation_min_video_seconds"] = config.min_video_seconds
-    backend = recipes._owned_openai_models(**values)
+    backend = recipes._owned_openai(OpenAICompletion, **values)
     if config.media_policy == "all" and config.offline_gazetteer is None:
         return backend
     with ExitStack() as cleanup:
@@ -630,7 +873,7 @@ def _build_formation(config: OpenAIFormationConfig) -> FormationBackend:
     values = _completion_values(config)
     if config.image_max_pixels is not None:
         values["image_max_pixels"] = config.image_max_pixels
-    return recipes._owned_openai_models(**values)
+    return recipes._owned_openai(OpenAICompletion, **values)
 
 
 def _build_vision(config: OpenAIVisionConfig) -> VisionDescriptionBackend:
@@ -640,32 +883,25 @@ def _build_vision(config: OpenAIVisionConfig) -> VisionDescriptionBackend:
         values["vision_video_frames"] = config.video_frames
     if config.image_max_pixels is not None:
         values["image_max_pixels"] = config.image_max_pixels
-    return recipes._owned_openai_models(**values)
+    return recipes._owned_openai(OpenAICompletion, **values)
 
 
 def _build_consolidation(
-    config: SenseMemConfig,
+    config: OpenAIConsolidationConfig,
     *,
-    answerer: GenerationBackend | None,
-    former: FormationBackend | None,
-) -> ConsolidationBackend | None:
+    completions: Sequence[tuple[_OpenAICompletionConfig, Closable]],
+) -> ConsolidationBackend:
     """Build the consolidation adapter, reusing an identical generation or formation client.
 
-    `OpenAIModels` implements every reasoning protocol on one generation client, so a slot that
+    `OpenAICompletion` implements every reasoning protocol on one generation client, so a slot that
     declares exactly the same completion values wants that same object, not a second HTTP client
     and connection pool against the same endpoint.
     """
-    if config.consolidation is None:
-        return None
-    values = _completion_values(config.consolidation)
-    for built, declared in ((answerer, config.generation), (former, config.formation)):
-        if (
-            isinstance(built, ConsolidationBackend)
-            and isinstance(declared, _OpenAICompletionConfig)
-            and _completion_values(declared) == values
-        ):
+    values = _completion_values(config)
+    for declared, built in completions:
+        if isinstance(built, ConsolidationBackend) and _completion_values(declared) == values:
             return built
-    return recipes._owned_openai_models(**values)
+    return recipes._owned_openai(OpenAICompletion, **values)
 
 
 def _build_speech(config: SpeechProviderConfig) -> SpeechBackend | TranscriptionBackend:
@@ -680,7 +916,7 @@ def _build_speech(config: SpeechProviderConfig) -> SpeechBackend | Transcription
     values["transcription_model"] = config.model
     if config.space is not None:
         values["transcription_space"] = config.space
-    return recipes._owned_openai_models(**values)
+    return recipes._owned_openai(OpenAITranscriber, **values)
 
 
 def _build_face(config: OpenCVFaceConfig) -> FaceBackend:
@@ -699,6 +935,7 @@ __all__ = [
     "EmbeddingProviderConfig",
     "FunASRSpeechConfig",
     "MemoryComposition",
+    "MemorySpec",
     "OpenAIConsolidationConfig",
     "OpenAIEmbeddingConfig",
     "OpenAIFormationConfig",
@@ -706,12 +943,13 @@ __all__ = [
     "OpenAITranscriptionConfig",
     "OpenAIVisionConfig",
     "OpenCVFaceConfig",
+    "PluginConfig",
+    "PluginFactory",
     "Qwen3VLRerankingConfig",
     "RerankingProviderConfig",
-    "SenseMemConfig",
     "SentenceTransformersEmbeddingConfig",
     "SentenceTransformersRerankingConfig",
     "SpeechProviderConfig",
     "VLLMRerankingConfig",
-    "resolve_memory_config",
+    "build_memory_composition",
 ]

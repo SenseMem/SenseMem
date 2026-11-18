@@ -1,8 +1,29 @@
 # Plugin architecture
 
-Compose the models your application needs while keeping one consistent memory system.
-SenseMem's typed backend protocols make inference replaceable; the kernel keeps evidence,
-identity, storage, and retrieval semantics consistent across providers.
+Compose models, algorithms and knowledge sources while keeping one consistent memory system.
+SenseMem supplies two routes: a fixed perception-to-memory-to-context pipeline and an optional
+tool-using agent. Developers choose their composition. Either route can call the same registered
+capability; an agent can asynchronously supply temporary context to the pipeline.
+
+A VLM's ability to see a face does not supply a person's identity, and a VLM without audio input
+does not transcribe audio. Register an identity lookup or ASR tool and let the chosen agent request
+it when needed. The host selects implementations, devices and model revisions; SenseMem does not
+rank their quality or cost or choose an implementation on the host's behalf.
+
+```mermaid
+flowchart LR
+    I[Perception input] --> P[Developer pipeline]
+    P --> K[Memory kernel]
+    K --> C[Context output]
+    I --> A[Optional agent]
+    P <--> T[Shared typed tools]
+    A <--> T
+    T --> K
+    A -. Async temporary supplements .-> C
+```
+
+The tools-to-kernel edge represents explicitly granted public SDK operations. Registration alone
+grants no memory mutation authority. The kernel keeps evidence, identity and durability consistent.
 
 ## Kernel and capability model
 
@@ -10,8 +31,9 @@ Applications select plugins explicitly at construction. This implements the
 [Swifter principle](design-principles.md#smarter--swifter--stronger): make capabilities easy to
 compose and integrations easy to extend.
 
-Applications normalize input and capture formats at their boundary. Replaceable model plugins
-implement narrow capabilities behind the same memory operations.
+Applications normalize input and capture formats at their boundary. Replaceable models,
+retrieval policies, context selectors, and ordered ingestion stages implement typed computations
+behind the same memory operations. Plugins propose results; the kernel validates and applies them.
 
 The kernel owns memory identity and semantics, capability routing, validation, SQLite and media-CAS
 durability, the index outbox, SQLite hydration, and final context construction. A plugin may perform
@@ -20,10 +42,20 @@ process's privileges and must be trusted.
 
 ## Implemented composition
 
-The supported plugins are the narrow backend protocols inventoried in
-[architecture](architecture.md#model-boundary). That page owns the list; this page owns
-the rules for adding to it. The declarative entry point constructs bundled implementations without
-exposing runtime details:
+The composition boundaries are:
+
+- [Typed backend protocols](api/python-backends.md) integrate computations into built-in memory
+  operations, with declared modalities and durable recipe identities.
+- [Typed tools](api/python-tools.md) register arbitrary computations without adding a kernel slot.
+  Both a fixed pipeline and [AgentRunner](api/python-agents.md) call the same registry.
+- [Application factories](configuration/plugins.md) construct third-party backends and tools from
+  configuration using explicitly supplied Python callables. Bundled implementations use the
+  same instance-local factory catalog and resolution contract.
+- [Computation policies and stages](api/python-policies.md) replace query preparation, candidate
+  discovery, retrieval scoring and context selection, or add ordered interpretation stages before
+  ingestion's perception and embedding. Built-in implementations use the same public protocols.
+
+The bundled declarative entry point remains available:
 
 ```python
 from sensemem import Memory
@@ -40,23 +72,24 @@ with Memory.from_config(
     memory.add("Remember this")
 ```
 
-`Memory.from_config` validates a closed catalog of bundled providers, constructs owned adapters, and
-then delegates through `Memory.from_plugins` to the normal constructor. Plugin bundles contain
+`Memory.from_config` accepts bundled provider configurations or registered application factories,
+constructs owned adapters, and delegates through `Memory.from_plugins` to the constructor. Plugin bundles contain
 values; protocols and declarations are validated once at assembly, before storage opens.
 Inject custom and third-party backends as objects. All paths share capability validation, durable
 identity checks, storage, and execution. Omitting an optional plugin adds no model call or optional
 dependency. Reusing one object for several protocols is supported by the object API, and the bundled
-OpenAI adapter does exactly that.
+OpenAI completion adapter can share its completion roles.
 
-Declarative configuration reaches a slot when there is a bundled implementation for its closed
-provider catalog to name; [configuration](configuration.md#2-declare-a-composition) owns the
-current list of accepted keys. A protocol with no bundled implementation deliberately has no key,
-and is composed by passing an object to `Memory`, `Memory.from_plugins`, or `MemoryPlugins` — see
-[the Python backend reference](api/python-backends.md) for the signatures.
+The bundled `provider` catalogs name included integrations. `MemorySpec` also accepts a
+`PluginConfig` in each backend field; `factories=` resolves those names from the host catalog.
+Its `tools` list adds capabilities beyond the existing slots. Configuration names registered factories; it
+does not import executable code from arbitrary paths.
 
-Composition is fixed for one `Memory` lifetime. Changing an adapter requires closing and reopening
+Backend composition is fixed for one `Memory` lifetime. Changing a backend requires closing and reopening
 the instance; changing the embedder also requires a compatible durable space or a new directory.
 There is no mid-operation hot swap.
+Additional tools can be explicitly registered in `memory.tools`; duplicate names are rejected.
+An agent run snapshots the available definitions at its start.
 Routing and `Memory.capabilities` share the immutable assembly snapshot; reading the public
 document never probes the plugin again. An unsupported Sentence Transformers capability returns
 `False`; an exception during discovery fails assembly rather than silently removing a modality.
@@ -89,16 +122,40 @@ Lexical queries use available speech-to-text preparation without calling the que
 
 ## Kernel and plugin boundary
 
-Current computation plugins own model and runtime details such as device, precision, batching,
-thresholds intrinsic to that model, or a caller-supplied remote SDK client. Potential OCR, emotion,
-visual-grounding and semantic-extraction capabilities belong on this side only after a
-concrete implementation proves a narrow contract.
+Computation plugins own model and runtime details such as device, precision, batching,
+thresholds intrinsic to that model, or a caller-supplied remote SDK client. Additional OCR,
+emotion or visual-grounding tools can be registered immediately with typed input and output.
+An `IngestionStage` can add labelled derived interpretations through the ordinary validated write
+path. Promoting results into factual assertions, identity, consent, or other durable semantics
+continues to require the corresponding typed proposal contract.
 
-Validation has one owner per boundary. Assembly validates configuration and backend declarations;
-typed input values validate scope and spatial constraints; model output validation precedes any
-durable effect. Embedding adapters decode vectors, and the kernel owns L2 normalization. The
-local store keeps database constraints and persisted-data/FP32 checks, without revalidating
-configured recognition thresholds or typed retrieval scopes on each call.
+`QueryPolicy` replaces query rewriting and representation selection; `Querying` validates and
+executes embedding requests against leased assets and declared capabilities. `CandidateSource`
+replaces discovery through a bounded native read port or external local-memory references.
+The kernel fixes request scope and hydrates every candidate from authoritative SQLite records.
+
+`RankingPolicy` replaces query-local scoring over hydrated candidates. The kernel retains candidate
+identity, observation-confidence scaling, relevance and ambiguity admission, and final hydration.
+`ContextSelector` proposes anchor IDs; the compiler retains all authorized candidates for conflict
+detection and admits only complete evidence under the requested budget. Custom selection cannot
+hide a conflict by omitting one side or replace a record with altered content. These computations
+have no store handle, and invalid proposals fail explicitly. Defaults use the same plugin paths.
+
+`memory_tools(memory)` lends read-only perception, identity lookup, search and context compilation
+to an agent. `transcription_tool(memory, backend)` exposes an existing speech backend through the
+same registry. Custom media stages use `memory.prepare_input(...)` to lease verified assets for
+the duration of a synchronous context manager, without writing a memory record.
+
+`AsyncContextSource` runs an application-supplied async context producer. Revision tracking drops
+stale completions. The host passes its current supplements to `compile(supplements=...)`; budget,
+freshness and expiry apply before rendering. Supplements never become durable facts implicitly.
+See [context composition](context-compilation.md) and [agent composition](api/python-agents.md).
+
+Assembly validates configuration and backend declarations; value constructors validate their
+fields, including scope and spatial constraints. Internal helpers consume those validated values.
+Model output validation precedes durable effects, with embedding decoding in the adapter and L2
+normalization in the kernel. The store validates persisted data and FP32 encodings; operation-specific
+checks enforce current evidence eligibility and budgets.
 
 Adapters classify provider errors and own their request retry budgets. The kernel makes one
 vision call per batch, propagates failures of required modality conversion, and may skip failed
@@ -148,7 +205,7 @@ The kernel stores typed descriptions in the `typed-v1` cache format.
 
 `EvidenceGeneration` composes any generation backend with independent `MediaSelectionBackend`
 and `SourceMetadataBackend` implementations. The kernel owns bounded selection and evidence
-preservation; `OpenAIModels.select_media` supplies only the diagnostic computation.
+preservation; `OpenAICompletion.select_media` supplies only the diagnostic computation.
 `GazetteerEnricher` implements local source metadata lookup. `GenerationMediaBackend` optionally
 reports which original assets fit a provider request before enrichment. Metadata is untrusted
 request context and never becomes a durable fact.
@@ -156,14 +213,18 @@ request context and never becomes a durable fact.
 The optional `server` and `mcp` dependencies are packaging boundaries, not plugins. REST, MCP, and
 the product CLI remain thin transports over the application-composed `Memory`.
 
-`Memory.add_stream` is also not a plugin boundary. It repeats the existing durable `add` operation
-over caller-segmented observations. `AsyncOmniPrefetch` is a thin lifecycle helper over the same
-`AsyncMemory.search`; it neither performs perception nor owns a second execution plane. Capture,
-ASR partials, frame selection, and finality stay with the application.
+`Memory.add_stream` repeats the existing durable `add` operation over completed observations.
+`AsyncOmniPrefetch` is a lifecycle helper over the same `AsyncMemory.search`. For continuous media,
+`AsyncEventStream` calls an explicit `EventSegmentationBackend` to understand the pending window
+and choose complete semantic events; its output is validated before ordinary durable writes.
+`OpenAICompletion` implements the backend, whose model and recipe are preserved with each event.
+The caller owns the segmenter. Sensor capture, encoding, synchronization, and frame selection
+stay with the application. Explicit capture reducers still accept host finality. See
+[the streaming contract](omni-streaming-and-interaction-memory.md#automatic-event-segmentation).
 
 ## Admission rule
 
-A new public capability protocol is admitted only together with all of:
+A new kernel-semantic backend protocol is admitted only together with all of:
 
 1. A concrete implementation in `src/`, not a test double.
 2. A reachable caller on a product path a user invokes, not only on an adjacent or optional one.
@@ -175,7 +236,10 @@ A new public capability protocol is admitted only together with all of:
 `FaceBackend` illustrates this rule: the local OpenCV adapter supports recognition and naming
 through the public identity API, with product-path tests for that integration.
 
-`VisionDescriptionBackend` meets the rule through `OpenAIModels.describe`, the optional
+Application tools need no bundled implementation, new backend protocol or change to `src/`.
+Their Pydantic contracts, explicit registration and resource ownership are the extension boundary.
+
+`VisionDescriptionBackend` meets the rule through `OpenAICompletion.describe`, the optional
 [`vision` configuration](configuration/models.md#visual-descriptions), and the `add`/`add_many` product path.
 
 `RerankingBackend` meets it through `Qwen3VLReranker` and `SentenceTransformersReranker`, the optional
@@ -207,6 +271,12 @@ isolation, or trust.
 Typed declarative construction makes bundled adapters concise; explicit construction keeps custom
 dependencies, lifecycle, privacy, and hardware selection visible. Both require reopening `Memory`
 to change composition.
+
+Define replaceable decisions separately from mandatory consistency rules. New computation should
+use a typed proposal boundary and share the default implementation's assembly and execution path.
+Keep source identity, evidence validation, SQLite commits, index outbox ordering, and final
+admission in the consistency kernel. An unrestricted hook around a transaction is not a substitute
+for a computation contract.
 
 Add package entry-point discovery only when an independently distributed plugin requires it. Add a
 new public capability only with a concrete adapter plus lifecycle, failure, privacy, provenance, and

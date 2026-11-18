@@ -33,8 +33,10 @@ from typing import Annotated, Literal, Self, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
+from sensemem.evidence import evidence_aliases
 from sensemem.exceptions import ModelError
-from sensemem.types import AbstentionReason, AnswerResult, SearchHit
+from sensemem.records import AnswerResult, SearchHit
+from sensemem.types import AbstentionReason
 
 _Label = Annotated[str, StringConstraints(pattern=r"^E[1-9][0-9]*$")]
 _Text = Annotated[str, StringConstraints(min_length=1)]
@@ -146,15 +148,6 @@ def parse_answer_draft(payload: str) -> AnswerDraft:
         return _Envelope.model_validate_json(payload).draft
     except PydanticValidationError:
         raise _invalid("generation model returned an invalid structured answer") from None
-
-
-def evidence_aliases(hits: Sequence[SearchHit]) -> dict[str, str]:
-    """Use the E1-based, first-occurrence rule of answer_evidence_payloads."""
-    aliases: dict[str, str] = {}
-    for hit in hits:
-        if hit.id not in aliases:
-            aliases[hit.id] = f"E{len(aliases) + 1}"
-    return aliases
 
 
 def _hit(label: str, visible: Mapping[str, SearchHit]) -> SearchHit:

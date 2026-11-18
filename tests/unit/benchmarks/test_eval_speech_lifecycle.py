@@ -6,14 +6,14 @@ from collections.abc import Sequence
 from hashlib import sha256
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
-from sensemem import AssetRef, MemoryComposition, Modality
-from sensemem.benchmarks.eval import _BackendPool, _BorrowedSpeechBackend
+from sensemem import AssetRef, MemoryComposition, MemoryPlugins, Modality, SpeechAnalysis
 from sensemem.benchmarks.eval_adapters import MemoryItem
-from sensemem.models.base import SpeechAnalysis
+from sensemem.benchmarks.eval_backends import _BackendPool, _BorrowedSpeechBackend
 
 
 def test_backend_pool_drains_speech_prefetch_before_closing_its_model(tmp_path: Path) -> None:
@@ -43,7 +43,7 @@ def test_backend_pool_drains_speech_prefetch_before_closing_its_model(tmp_path: 
             lifecycle.append("model closed")
             model_closed.set()
 
-    class ResolvedConfig:
+    class Composition:
         def __init__(self, backend: Backend) -> None:
             self._backend = backend
 
@@ -61,8 +61,8 @@ def test_backend_pool_drains_speech_prefetch_before_closing_its_model(tmp_path: 
     borrowed = _BorrowedSpeechBackend(backend)
     pool = object.__new__(_BackendPool)
     pool._description_cache = None
-    pool._resolved_config = cast(MemoryComposition, ResolvedConfig(backend))
-    pool._transcriber = borrowed
+    pool._composition = cast(MemoryComposition, Composition(backend))
+    pool._plugins = cast(MemoryPlugins, SimpleNamespace(transcriber=borrowed))
 
     borrowed.prefetch((MemoryItem("first", (first,)),))
     assert analysis_started.wait(timeout=1)

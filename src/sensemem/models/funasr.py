@@ -19,10 +19,11 @@ from sensemem._telemetry import (
     mark_model_requests,
     record_unmetered_model_usage,
 )
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models._media import media_duration_seconds
-from sensemem.models.base import SpeakerEmbedding, SpeechAnalysis, SpeechTurn
-from sensemem.types import AssetRef, Modality
+from sensemem.perception import SpeakerEmbedding, SpeechAnalysis, SpeechTurn
+from sensemem.types import Modality
 
 DEFAULT_FUNASR_MODEL_ID = "FunAudioLLM/Fun-ASR-Nano-2512"
 DEFAULT_FUNASR_MODEL_REVISION = "05201c46f1c38592b1567f857c0d56eab3d0d8ef"
@@ -193,17 +194,9 @@ class FunASRTranscriber:
                     or self._recipe.punctuation_model is not None
                 ),
             )
-        durations = []
-        for asset in audible:
-            path = asset.path
-            if path is None:  # AssetRef.is_resolved was checked above.
-                raise ValidationError("speech asset path is missing")
-            durations.append(
-                media_duration_seconds(
-                    path,
-                    stream_kind="audio",
-                )
-            )
+        durations = [
+            media_duration_seconds(cast(Path, asset.path), stream_kind="audio") for asset in audible
+        ]
         record_unmetered_model_usage(
             request_count=calls,
             audio_seconds=(
@@ -291,25 +284,20 @@ class FunASRTranscriber:
                     )
                     for key in path_keys
                 ), 1
-        if len(assets) > 1:
-            analyses = tuple(
-                FunASRTranscriber._analyze_one(
-                    pipeline,
-                    asset,
-                    speaker_analysis=speaker_analysis,
-                    sentence_timestamp=sentence_timestamp,
-                )
-                for asset in assets
-            )
-            return analyses, 1 + len(assets)
-        return (
+        if len(assets) == 1:
+            if output == []:
+                return (SpeechAnalysis((), ()),), 1
+            raise ModelError("FunASR returned an invalid transcription batch")
+        analyses = tuple(
             FunASRTranscriber._analyze_one(
                 pipeline,
-                assets[0],
+                asset,
                 speaker_analysis=speaker_analysis,
                 sentence_timestamp=sentence_timestamp,
-            ),
-        ), 2
+            )
+            for asset in assets
+        )
+        return analyses, 1 + len(assets)
 
     @staticmethod
     def _analyze_one(
@@ -342,11 +330,8 @@ def _device(value: str, *, allow_auto: bool = False) -> str:
 
 
 def _speech_path(asset: AssetRef) -> str:
-    path = asset.path
-    if path is None:  # AssetRef.is_resolved was checked at the boundary.
-        raise ValidationError("speech asset path is missing")
     try:
-        return str(path.resolve(strict=True))
+        return str(cast(Path, asset.path).resolve(strict=True))
     except OSError:
         raise ValidationError("speech asset path does not exist") from None
 

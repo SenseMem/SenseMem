@@ -106,6 +106,11 @@ def answer_system_prompt(question_type: str) -> str:
     )
 
 
+def answer_query_prompt(question_type: str, question: str) -> str:
+    """Carry the native answer policy through the SDK's single query text surface."""
+    return answer_system_prompt(question_type) + f"\nQuestion: {question}\nAnswer:"
+
+
 def parse_judge_score(response: str) -> tuple[float, bool]:
     """Return the official parsed score and whether parsing/coercion succeeded."""
     from json_repair import loads

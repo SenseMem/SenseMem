@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import math
 import sqlite3
-import unicodedata
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Literal
 
 import numpy as np
 
+from sensemem.control import CONSENT_PREDICATE
+from sensemem.identity import ConsentState
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
     datetime_text,
@@ -27,18 +29,12 @@ from sensemem.infrastructure.local.store._lineage import (
     current_evidence_ids,
 )
 from sensemem.infrastructure.local.store.rows import validated_identity_modality
-from sensemem.types import ConsentState, EvidenceBasis, MemoryKind
-
-# The predicate that makes one identity-bound STATE assertion a consent statement. Shared with
-# `sensemem.memory`, which writes those assertions, so the writer and the projection can never
-# disagree about which records they are.
-CONSENT_PREDICATE = "consent"
-
+from sensemem.types import EvidenceBasis, RecordKind
 
 # The one basis a consent statement can carry, hardcoded by `_consent_proposal`. Both consent
 # reads below filter on it as well as on the predicate, so a row reaching this table by any
 # other route -- a future writer, a hand-edited database -- cannot be read as a person's own
-# statement. Defence in depth: `Memory._bound_identity` already reserves the predicate, so no
+# statement. Defence in depth: the kernel's claim identity guard reserves the predicate, so no
 # model-originated claim is bound to an identity in the first place.
 _CONSENT_BASIS = EvidenceBasis.USER_STATEMENT.value
 
@@ -68,7 +64,7 @@ def delete_unobserved_identities(
 
     Only identities this asset observed are candidates. A sweep of every unobserved identity
     would also destroy one `unlink_identity()` deliberately left anonymous with its exemplars and
-    no observations, which is the state continued ingestion is supposed to corroborate again.
+    no observations. New ingestion may recognize those templates independently.
     """
     if not identity_ids:
         return
@@ -89,10 +85,6 @@ def delete_unobserved_identities(
           AND NOT EXISTS (
               SELECT 1 FROM identity_aliases AS a
               WHERE a.identity_id = identities.identity_id
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM identity_link_evidence AS e
-              WHERE e.voice_id = identities.identity_id OR e.face_id = identities.identity_id
           )
         """,
         tuple(identity_ids),
@@ -122,7 +114,7 @@ def displaced_naming_versions(
               AND s.kind = ? AND s.identity_id IS NOT NULL
             ORDER BY v.version
             """,
-            (memory_id, MemoryKind.ENTITY.value),
+            (memory_id, RecordKind.ENTITY.value),
         ).fetchall()
     )
 
@@ -142,7 +134,7 @@ def current_naming_assertion(
     placeholders = ", ".join("?" for _memory_id in dropped)
     row: sqlite3.Row | None = connection.execute(
         f"""
-        SELECT s.memory_id, s.subject, s.value
+        SELECT s.memory_id, s.subject, s.value, s.basis
         FROM memory_semantics AS s
         JOIN memory_versions AS v ON v.memory_id = s.memory_id
         JOIN memory_records AS r ON r.memory_id = s.memory_id
@@ -152,7 +144,7 @@ def current_naming_assertion(
         ORDER BY v.recorded_at DESC, s.memory_id DESC
         LIMIT 1
         """,
-        (identity_id, MemoryKind.ENTITY.value, *dropped),
+        (identity_id, RecordKind.ENTITY.value, *dropped),
     ).fetchone()
     return row
 
@@ -175,7 +167,7 @@ def current_consent_state(connection: sqlite3.Connection, identity_id: str) -> s
         ORDER BY v.recorded_at DESC, s.memory_id DESC
         LIMIT 1
         """,
-        (identity_id, MemoryKind.STATE.value, CONSENT_PREDICATE, _CONSENT_BASIS),
+        (identity_id, RecordKind.STATE.value, CONSENT_PREDICATE, _CONSENT_BASIS),
     ).fetchone()
     return None if row is None else optional_row_text(row, "value")
 
@@ -201,7 +193,7 @@ def restrained_identities(connection: sqlite3.Connection) -> frozenset[str]:
               AND v.retired_at IS NULL AND v.visible = 1 AND r.forgotten_at IS NULL
             ORDER BY s.identity_id, v.recorded_at, s.memory_id
             """,
-            (MemoryKind.STATE.value, CONSENT_PREDICATE, _CONSENT_BASIS),
+            (RecordKind.STATE.value, CONSENT_PREDICATE, _CONSENT_BASIS),
         ).fetchall()
     }
     return frozenset(
@@ -229,7 +221,7 @@ def visible_naming_assertions(
         WHERE s.kind = ? AND s.identity_id IS NOT NULL
           AND v.retired_at IS NULL AND v.visible = 1 AND r.forgotten_at IS NULL
     """
-    parameters: list[object] = [MemoryKind.ENTITY.value]
+    parameters: list[object] = [RecordKind.ENTITY.value]
     if known_at is not None:
         known_text = datetime_text(known_at)
         query = query.replace(
@@ -332,18 +324,10 @@ def has_naming_assertion(connection: sqlite3.Connection, identity_id: str) -> bo
     return (
         connection.execute(
             "SELECT 1 FROM memory_semantics WHERE identity_id = ? AND kind = ? LIMIT 1",
-            (identity_id, MemoryKind.ENTITY.value),
+            (identity_id, RecordKind.ENTITY.value),
         ).fetchone()
         is not None
     )
-
-
-def canonical_subject(subject: str | None) -> str | None:
-    """Normalize a semantic subject the one way the whole kernel compares them."""
-    if subject is None:
-        return None
-    canonical = unicodedata.normalize("NFKC", subject).casefold().strip()
-    return canonical or None
 
 
 def naming_assertion_identities(
@@ -365,7 +349,7 @@ def naming_assertion_identities(
                 WHERE kind = ? AND identity_id IS NOT NULL
                   AND memory_id IN ({placeholders})
                 """,
-                (MemoryKind.ENTITY.value, *batch),
+                (RecordKind.ENTITY.value, *batch),
             ).fetchall()
         )
     return tuple(dict.fromkeys(found))
@@ -474,7 +458,7 @@ def rebind_unlinked_claims(
         WHERE identity_id = ? AND kind <> ?
         ORDER BY memory_id
         """,
-        (target, MemoryKind.ENTITY.value),
+        (target, RecordKind.ENTITY.value),
     ).fetchall():
         memory_id = row_text(row, "memory_id")
         assets = {
@@ -698,6 +682,121 @@ class _ExemplarBank:
             self._position[identity_id] = len(self._ids)
             self._ids.append(identity_id)
         self._written[identity_id] = list(exemplars)
+
+
+def match_identities(
+    connection: sqlite3.Connection,
+    observations: Mapping[str, tuple[tuple[float, ...], ...]],
+    *,
+    claim_groups: Mapping[str, int | None],
+    modality: Literal["face", "voice"],
+    model_id: str,
+    space_id: str,
+    minimum_similarity: float,
+    minimum_margin: float,
+    exemplar_limit: int,
+    now: datetime,
+    preferred_identity: str | None = None,
+    new_identities: Mapping[str, str] | None = None,
+) -> dict[str, tuple[str, float | None]]:
+    """Match media observations and enroll permitted exemplars in the caller's transaction."""
+    if not observations:
+        return {}
+    dimension = len(next(iter(observations.values()))[0])
+    rows = connection.execute(
+        """
+        SELECT identity_id, position, vector, created_at
+        FROM identity_exemplars
+        WHERE modality = ? AND space_id = ? AND dimension = ?
+        ORDER BY identity_id, position
+        """,
+        (modality, space_id, dimension),
+    ).fetchall()
+    # ponytail: the bank is rebuilt from a full-table read on every recognised asset (about
+    # 60 ms at 46k rows); cache it per (modality, space, dimension) and invalidate at every
+    # `identity_exemplars` writer -- including the `identities` cascades -- if that matters.
+    bank = _ExemplarBank(rows, dimension=dimension, modality=modality)
+    preferred_identity = (
+        None if preferred_identity is None else resolve_identity_id(connection, preferred_identity)
+    )
+    preferred_exists = preferred_identity is not None
+    preferred_missing_modality = (
+        preferred_identity is not None
+        and connection.execute(
+            """
+            SELECT 1 FROM identity_exemplars
+            WHERE identity_id = ? AND modality = ?
+            LIMIT 1
+            """,
+            (preferred_identity, modality),
+        ).fetchone()
+        is None
+    )
+    known_identities = bank.identity_ids
+    if preferred_exists and preferred_identity is not None:
+        known_identities.add(preferred_identity)
+    # Consent restrains enrolment, not recognition. A person who withheld or withdrew it
+    # still matches the exemplars already held -- destroying those is `forget_identity` --
+    # but this observation adds nothing to their template, so the bank stops growing from
+    # the moment they said so.
+    restrained = restrained_identities(connection)
+    claimed: dict[int | None, set[str]] = {}
+    matches: dict[str, tuple[str, float | None]] = {}
+    now_text = datetime_text(now)
+    for label, vectors in observations.items():
+        group_claims = claimed.setdefault(claim_groups[label], set())
+        accepted = bank.best(
+            vectors,
+            claimed=group_claims,
+            minimum_similarity=minimum_similarity,
+            minimum_margin=minimum_margin,
+        )
+        if accepted is not None:
+            identity_id, score = accepted
+        elif (
+            preferred_exists
+            and preferred_missing_modality
+            and preferred_identity is not None
+            and len(observations) == 1
+            and preferred_identity not in group_claims
+        ):
+            identity_id, score = preferred_identity, None
+        else:
+            identity_id = (new_identities or {}).get(label) or f"identity_{uuid.uuid4().hex}"
+            score = None
+        if identity_id in restrained:
+            # Recognized, reported, and nothing written: no exemplar, no `identities` row
+            # update, and so nothing for a rollback to undo either.
+            matches[label] = (
+                identity_id,
+                None if score is None else max(0.0, min(1.0, score)),
+            )
+            group_claims.add(identity_id)
+            continue
+        identity_exists = identity_id in known_identities
+        bank.replace(
+            identity_id,
+            write_identity_exemplars(
+                connection,
+                identity_id,
+                bank.stored(identity_id),
+                vectors,
+                modality=modality,
+                model_id=model_id,
+                space_id=space_id,
+                dimension=dimension,
+                exemplar_limit=exemplar_limit,
+                identity_exists=identity_exists,
+                now_text=now_text,
+            ),
+        )
+        known_identities.add(identity_id)
+        matches[label] = (
+            identity_id,
+            None if score is None else max(0.0, min(1.0, score)),
+        )
+        group_claims.add(identity_id)
+    return matches
 
 
 def write_identity_exemplars(

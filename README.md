@@ -39,11 +39,14 @@ connect today's question with last week's conversation. SenseMem gives you the b
 for that continuity: preserve the original observation, organize what it means, retrieve it by
 meaning and context, and deliver evidence your agent can use.
 
-![Multimodal observations become revisable knowledge and evidence-backed task context.](docs/assets/tech-report/memory-lifecycle.png)
+![Multimodal observations become revisable knowledge and evidence-backed task context.](docs/assets/tech-report/memory-lifecycle.gif)
 
-*From the SenseMem technical report, Figure 2: an image places a headset on a desk; a later
-observation moves it to a cabinet. The original observations remain available while the current
-claim and its supporting source feed context compilation or grounded answering.*
+[View the static figure.](docs/assets/tech-report/memory-lifecycle.png)
+
+*The original technical-report Figure 2, animated in place: an image places a headset on a desk;
+a later observation moves it to a cabinet. The animation follows durable capture, explicit
+settlement, validated knowledge revision, and the separate compile and ask branches. The
+original observations remain available as supporting evidence.*
 
 ## Why SenseMem
 
@@ -108,6 +111,40 @@ multimodal input. To use a model endpoint, install `sensemem[openai]` and follow
 Runtime requirements and the full extra catalog live in the
 [installation guide](docs/configuration.md#1-install-only-the-surfaces-you-use).
 
+## Watch audio/video become memory
+
+Open the [best practices notebook](examples/best_practices.ipynb), fill in its API key and
+model settings, and execute the cells from the beginning. Use the
+[repository environment](CONTRIBUTING.md#setup) with `ffmpeg` available.
+The replay, event formation, retrieval, and playback code runs directly in the notebook.
+
+The bundled 52-second Sintel trailer includes **14 prepared, timestamped audio/video input windows**.
+Each window pairs an independently playable MP4 with sound and synchronized WAV audio. Three async tasks
+accept these windows, form searchable events, and query the growing memory concurrently.
+`append()` durably accepts a window; `process()` asks the model to group consecutive windows
+into complete events. Each event retains its source interval, summary, and original media.
+
+After processing, the event table shows which input windows belong to each event. The notebook
+then combines semantic queries with `occurred_from` / `occurred_until` bounds:
+
+```python
+result = await async_memory.search(
+    text,
+    memory_type=MemoryCategory.EPISODIC,
+    occurred_from=start,
+    occurred_until=end,
+    limit=10,
+)
+```
+
+The notebook directly plays the matching original audio/video retrieved through `read_asset()`.
+Time filters return complete overlapping events. The notebook also exercises an empty time
+window and an event's exclusive end boundary. Event counts and boundaries come from each run.
+
+The [included media](examples/media/README.md) contains the Sintel trailer and a public speech
+recording. Sintel is an animated film: © copyright Blender Foundation | durian.blender.org,
+[CC BY 3.0](https://durian.blender.org/sharing/).
+
 ## From stored evidence to agent context
 
 Choose the output your application needs:
@@ -155,11 +192,13 @@ your own configuration and compare changes.
 | Goal | Guide |
 | --- | --- |
 | Store and retrieve your first memory | [Quick start](docs/quickstart.md) |
+| Run memory recipes and concurrent audio/video recall | [Best practices notebook](examples/best_practices.ipynb) |
 | Understand the memory model | [Core concepts](docs/concepts.md) |
 | Choose models and optional capabilities | [Configuration](docs/configuration.md) |
 | Integrate an agent or application | [SDK](docs/api/python-sdk.md) · [REST](docs/api/rest.md) · [MCP](docs/api/mcp.md) · [CLI](docs/api/cli.md) |
 | Build a bounded prompt context | [Context compilation](docs/context-compilation.md) |
 | Capture continuous input | [Streaming and interaction memory](docs/omni-streaming-and-interaction-memory.md) |
+| Try a live microphone and camera conversation | [Local audio/video demo](docs/live-demo.md) |
 | Operate and recover an instance | [Operations](docs/operations.md) · [Troubleshooting](docs/troubleshooting.md) |
 | Understand or extend the kernel | [Architecture](docs/architecture.md) · [Plugin architecture](docs/plugin-architecture.md) |
 

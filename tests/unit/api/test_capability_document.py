@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from sensemem import cli
 from sensemem.api import app as rest
 from sensemem.api import mcp as mcp_adapter
-from sensemem.types import MemoryCapabilities, Modality
+from sensemem.capabilities import MemoryCapabilities
+from sensemem.types import Modality
 
 # Every optional backend declared at once, so each operation is derivable and the publishing
 # surface is the only thing that can be the reason one is missing.
@@ -68,7 +69,9 @@ class _Consolidator:
     consolidation_model = "qwen3-omni"
     consolidation_recipe = "qwen3-omni:consolidate"
 
-    def consolidate(self, evidence: object, *, trigger: object) -> tuple[()]:
+    def consolidate(
+        self, evidence: object, *, trigger: object, query_failure: object = None
+    ) -> tuple[()]:
         raise AssertionError("capability discovery must not call the model")
 
     def close(self) -> None:

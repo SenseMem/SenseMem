@@ -8,11 +8,12 @@ import json
 from pathlib import Path
 
 from sensemem.benchmarks.atm_bench import atm_sgm_block, load_atm_sgm
-from sensemem.benchmarks.eval_adapters import MediaResolver, parse_media_manifest
+from sensemem.benchmarks.eval_adapters import MediaResolver
 from sensemem.benchmarks.task_catalog import TASKS
 
 
-def build(inputs: Path, destination: Path) -> dict[str, object]:
+def write_source_manifest(inputs: Path, destination: Path) -> dict[str, object]:
+    """Write source and provenance manifests, returning provenance for the caller."""
     spec = TASKS["atm-bench-main"]
     raw = MediaResolver(spec.name, spec.media_root(inputs), None, None).parts(
         "main", allow_all=True
@@ -42,7 +43,6 @@ def build(inputs: Path, destination: Path) -> dict[str, object]:
             }
         )
     payload = {"version": 1, "tasks": {"atm-bench-main": {"units": {"main": rows}}}}
-    parse_media_manifest(payload)
     encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode() + b"\n"
     destination.write_bytes(encoded)
     provenance: dict[str, object] = {
@@ -66,4 +66,4 @@ if __name__ == "__main__":
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(build(args.inputs, args.output)))
+    print(json.dumps(write_source_manifest(args.inputs, args.output)))

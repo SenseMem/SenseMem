@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -17,10 +18,15 @@ from sensemem.infrastructure.local.store._candidates import (
     idle_candidates,
     merge_weighed,
     pressure_candidates,
-    weighed_at_by_memory,
 )
-from sensemem.infrastructure.local.store._codec import datetime_text, parse_datetime, row_text
+from sensemem.infrastructure.local.store._codec import (
+    SQLITE_PARAMETER_BATCH,
+    datetime_text,
+    parse_datetime,
+    row_text,
+)
 from sensemem.infrastructure.local.store._connections import Connections
+from sensemem.infrastructure.local.store._corroboration import _load_nodes
 from sensemem.infrastructure.local.store._identity import reproject_named_identities
 from sensemem.infrastructure.local.store._lineage import (
     add_evidence_clause,
@@ -37,9 +43,10 @@ from sensemem.infrastructure.local.store._lineage import (
     reverse_evidence_clause_changes,
     set_forgotten,
     version_retired,
+    withdraw_corrected_evidence,
 )
 from sensemem.infrastructure.local.store._naming_projection import (
-    NamingProjectionFactory,
+    NamingProjection,
     naming_snapshot,
     refresh_naming_documents,
 )
@@ -48,6 +55,7 @@ from sensemem.infrastructure.local.store._operations import (
     insert_operation,
     later_operation_depends_on,
     operation_from_row,
+    retained_evidence_edges,
 )
 from sensemem.infrastructure.local.store.errors import ProtectedMemoryError, StaleOperationError
 from sensemem.infrastructure.local.store.identities import (
@@ -55,7 +63,7 @@ from sensemem.infrastructure.local.store.identities import (
     merge_identity_rows,
     split_identity_rows,
 )
-from sensemem.infrastructure.local.store.records import delete_memory
+from sensemem.infrastructure.local.store.records import delete_memory, read_memories
 from sensemem.infrastructure.local.store.rows import (
     StoredAsset,
     StoredCandidate,
@@ -65,6 +73,52 @@ from sensemem.infrastructure.local.store.rows import (
     require_aware,
     require_identifier,
 )
+
+
+def _replayable_sources(
+    connection: sqlite3.Connection, memory_id: str, source_ids: set[str]
+) -> set[str]:
+    """Keep roots that participate in a complete current proof of this live dependent."""
+    nodes, _truncated = _load_nodes(connection, memory_id)
+    retained = retained_evidence_edges(connection, tuple(nodes))
+    retained_ids = frozenset(source for _parent, source in retained)
+    eligible = {
+        memory.memory_id
+        for memory in read_memories(
+            connection, tuple(nodes), active_only=True, retained_ids=retained_ids
+        )
+    }
+    grounded = {
+        node_id
+        for node_id, node in nodes.items()
+        if node_id in eligible
+        and node.root_group is not None
+        and not node.assessments
+        and node.confidence > 0
+    }
+    origins = {node_id: {node_id} & source_ids for node_id in grounded}
+    changed = True
+    while changed:
+        changed = False
+        for parent, node in nodes.items():
+            if parent not in eligible:
+                continue
+            for assessment in node.assessments:
+                if not assessment.sources or not all(
+                    source in grounded
+                    and (source not in retained_ids or (parent, source) in retained)
+                    for source in assessment.sources
+                ):
+                    continue
+                inherited = {origin for source in assessment.sources for origin in origins[source]}
+                previous = origins.setdefault(parent, set())
+                if parent not in grounded or not inherited <= previous:
+                    grounded.add(parent)
+                    previous.update(inherited)
+                    changed = True
+    # The bounded loader may omit branches. Only complete proofs found above can contribute;
+    # omitted or cyclic-only support therefore cannot authorize replay.
+    return origins.get(memory_id, set())
 
 
 class OperationLog:
@@ -118,18 +172,75 @@ class OperationLog:
         ]
         return tuple(interleaved[:limit])
 
-    def read_weighed_at(self, memory_ids: Sequence[str]) -> dict[str, datetime]:
-        """Return, per named memory, when a standing operation or deliberation last weighed it."""
-        # ponytail: builds the whole weighed map and then filters, because the two contributing
-        # queries already aggregate over their whole tables. Narrow both to `IN (...)` over the
-        # named IDs once a store's log is long enough for the scan to matter.
-        for memory_id in memory_ids:
-            require_identifier(memory_id, "memory_id")
-        if not memory_ids:
-            return {}
+    def retained_evidence_edges(self, memory_ids: Sequence[str]) -> frozenset[tuple[str, str]]:
+        """Sources hidden by consolidation may prove only that consolidation's outputs."""
         with self._connections.read_transaction() as connection:
-            weighed = weighed_at_by_memory(connection)
-        return {memory_id: weighed[memory_id] for memory_id in memory_ids if memory_id in weighed}
+            return retained_evidence_edges(connection, memory_ids)
+
+    def retained_evidence_sources(self, source_ids: Sequence[str]) -> frozenset[str]:
+        with self._connections.read_transaction() as connection:
+            return frozenset(
+                source
+                for _memory, source in retained_evidence_edges(connection, source_ids=source_ids)
+            )
+
+    def replayable_evidence_sources(self, source_ids: Sequence[str]) -> frozenset[str]:
+        """Retired originals with a live dependent through current positive support clauses.
+
+        Consolidation permission alone does not establish a surviving dependent. Traverse the
+        existing clause graph, including legally retained intermediate summaries, and stop at
+        current visible knowledge. Explicit withdrawal cannot be crossed by this traversal.
+        """
+        accepted: set[str] = set()
+        pending = {source_id: {source_id} for source_id in source_ids}
+        visited: dict[str, set[str]] = {}
+        with self._connections.read_transaction() as connection:
+            while pending:
+                current, pending = pending, {}
+                memories = read_memories(connection, tuple(current))
+                retained_edges = retained_evidence_edges(connection, source_ids=tuple(current))
+                withdrawn = {
+                    memory.memory_id for memory in memories if memory.forgotten_at is not None
+                }
+                retained = {source for _parent, source in retained_edges}
+                eligible = tuple(
+                    memory.memory_id
+                    for memory in memories
+                    if memory.forgotten_at is None or memory.memory_id in retained
+                )
+                active = {
+                    memory.memory_id
+                    for memory in read_memories(connection, eligible, active_only=True)
+                }
+                for memory_id in active:
+                    accepted.update(_replayable_sources(connection, memory_id, current[memory_id]))
+                for offset in range(0, len(eligible), SQLITE_PARAMETER_BATCH):
+                    batch = eligible[offset : offset + SQLITE_PARAMETER_BATCH]
+                    placeholders = ", ".join("?" for _memory_id in batch)
+                    rows = connection.execute(
+                        f"""
+                        SELECT DISTINCT m.source_memory_id, m.memory_id
+                        FROM memory_evidence_clause_members AS m
+                        JOIN memory_evidence_clauses AS c
+                          ON c.memory_id = m.memory_id AND c.clause_id = m.clause_id
+                        WHERE m.source_memory_id IN ({placeholders})
+                          AND c.retired_at IS NULL AND c.confidence > 0
+                        """,
+                        batch,
+                    ).fetchall()
+                    for row in rows:
+                        source, parent = (
+                            row_text(row, "source_memory_id"),
+                            row_text(row, "memory_id"),
+                        )
+                        if source in withdrawn and (parent, source) not in retained_edges:
+                            continue
+                        seen = visited.setdefault(parent, set())
+                        origins = current[source] - accepted - seen
+                        if origins:
+                            seen.update(origins)
+                            pending.setdefault(parent, set()).update(origins)
+        return frozenset(accepted)
 
     def record_query_failure(
         self,
@@ -138,6 +249,7 @@ class OperationLog:
         *,
         failed_at: datetime,
         keep: int,
+        context_json: str,
     ) -> None:
         """Append one empty-recall signal, keeping at most `keep` of them.
 
@@ -151,8 +263,8 @@ class OperationLog:
             raise ValueError("keep must be positive")
         with self._connections.transaction() as connection:
             connection.execute(
-                "INSERT INTO query_failures (query, normalized, failed_at) VALUES (?, ?, ?)",
-                (query, normalized, datetime_text(failed_at)),
+                "INSERT INTO query_failures (query, normalized, failed_at, context_json) VALUES (?, ?, ?, ?)",
+                (query, normalized, datetime_text(failed_at), context_json),
             )
             connection.execute(
                 """
@@ -179,13 +291,18 @@ class OperationLog:
         with self._connections.read_transaction() as connection:
             rows = connection.execute(
                 """
-                SELECT normalized, COUNT(*) AS failures, MAX(failed_at) AS failed_at,
-                       MAX(query) AS query
-                FROM query_failures
-                WHERE failed_at >= ?
-                GROUP BY normalized
-                HAVING failures >= ?
-                ORDER BY failed_at DESC, normalized
+                WITH repeated AS (
+                    SELECT normalized, COUNT(*) AS failures, MAX(failure_id) AS newest
+                    FROM query_failures WHERE failed_at >= ?
+                    GROUP BY normalized HAVING failures >= ?
+                )
+                SELECT f.query, f.normalized, f.failed_at, f.context_json, repeated.failures
+                FROM repeated JOIN query_failures AS f ON f.failure_id = repeated.newest
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM memory_deliberations AS d
+                    WHERE d.query_failure_key = f.normalized AND d.weighed_at >= f.failed_at
+                )
+                ORDER BY f.failed_at DESC, f.normalized
                 LIMIT ?
                 """,
                 (datetime_text(since), minimum, limit),
@@ -196,6 +313,7 @@ class OperationLog:
                 normalized=row_text(row, "normalized"),
                 failures=int(row["failures"]),
                 failed_at=parse_datetime(row_text(row, "failed_at")),
+                context_json=row_text(row, "context_json"),
             )
             for row in rows
         )
@@ -209,6 +327,7 @@ class OperationLog:
         proposed: int,
         applied: int,
         rejected: int,
+        query_failure_key: str | None = None,
     ) -> int:
         """Mark one evidence set weighed, whatever the pass yielded.
 
@@ -225,10 +344,17 @@ class OperationLog:
             cursor = connection.execute(
                 """
                 INSERT INTO memory_deliberations (
-                    trigger, weighed_at, proposed, applied, rejected
-                ) VALUES (?, ?, ?, ?, ?)
+                    trigger, weighed_at, proposed, applied, rejected, query_failure_key
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (trigger, datetime_text(weighed_at), proposed, applied, rejected),
+                (
+                    trigger,
+                    datetime_text(weighed_at),
+                    proposed,
+                    applied,
+                    rejected,
+                    query_failure_key,
+                ),
             )
             deliberation_id = int(cursor.lastrowid or 0)
             connection.executemany(
@@ -273,9 +399,10 @@ class OperationLog:
         require_active: Sequence[str] = (),
         require_unretired: Sequence[str] = (),
         require_visible: Sequence[str] = (),
+        withdraw_retained: Sequence[str] = (),
         preserve_response_policies: bool = False,
         record_budget: int | None = None,
-        naming_projection_factory: NamingProjectionFactory | None = None,
+        naming_projection: NamingProjection | None = None,
     ) -> StoredOperation | None:
         """Apply one already-validated operation and its log row in one transaction.
 
@@ -302,6 +429,13 @@ class OperationLog:
             if active_operation_id(connection, operation.operation_key) is not None:
                 return None
             require_active_memories(connection, require_active)
+            retained = {
+                source
+                for _memory, source in retained_evidence_edges(
+                    connection, source_ids=withdraw_retained
+                )
+            }
+            require_every(tuple(retained), withdraw_retained, "withdraw retained evidence")
             require_unretired_memories(connection, require_unretired)
             require_visible_memories(connection, require_visible)
             if preserve_response_policies:
@@ -343,10 +477,23 @@ class OperationLog:
             )
             require_every(retired, correct_ids, "retire")
             changed.extend(retired)
-            forgotten = set_forgotten(connection, forget_ids, forgotten_at=operation.applied_at)
-            require_every(forgotten, forget_ids, "forget")
-            changed.extend(forgotten)
-            reproject_named_identities(connection, (*changed, *correct_ids, *forget_ids))
+            clause_changes.extend(
+                withdraw_corrected_evidence(
+                    connection, correct_ids, changed_at=operation.applied_at
+                )
+            )
+            newly_forgotten = tuple(
+                memory_id for memory_id in forget_ids if memory_id not in retained
+            )
+            forgotten = set_forgotten(
+                connection, newly_forgotten, forgotten_at=operation.applied_at
+            )
+            require_every(forgotten, newly_forgotten, "forget")
+            changed.extend(forget_ids)
+            reproject_named_identities(
+                connection,
+                (*changed, *(change.memory_id for change in clause_changes)),
+            )
             applied = replace(
                 operation,
                 changed_ids=tuple(dict.fromkeys(changed)),
@@ -355,7 +502,7 @@ class OperationLog:
                 clause_changes=tuple(clause_changes),
             )
             logged = replace(applied, operation_id=insert_operation(connection, applied))
-            refresh_naming_documents(connection, naming_before, naming_projection_factory)
+            refresh_naming_documents(connection, naming_before, naming_projection)
             return logged
 
     def rollback_operation(
@@ -374,7 +521,7 @@ class OperationLog:
         merge_identities: tuple[str, str] | None = None,
         projection_identity_ids: Sequence[str] = (),
         require_no_later_dependencies: Sequence[str] = (),
-        naming_projection_factory: NamingProjectionFactory | None = None,
+        naming_projection: NamingProjection | None = None,
     ) -> tuple[bool, tuple[StoredAsset, ...]]:
         """Apply the caller's reversal and mark one operation rolled back, atomically.
 
@@ -445,7 +592,13 @@ class OperationLog:
             # re-merging under the wrong survivor would silently rename a person.
             if merge_identities is not None:
                 survivor, restored = merge_identities
-                plan = identity_link_plan(connection, survivor, restored)
+                plan = identity_link_plan(
+                    connection,
+                    survivor,
+                    restored,
+                    allow_rejected_pair=True,
+                    preferred_identity=survivor,
+                )
                 if plan is None or plan.target_id != survivor:
                     return False, ()
                 merge_identity_rows(connection, plan)
@@ -468,6 +621,9 @@ class OperationLog:
             # in force: a naming assertion is retracted rather than deleted, because the log row
             # that recorded it stays readable and the audit trail must show both names.
             retire_memory_versions(connection, retire_versions, retired_at=reverted_at)
+            withdrawn = withdraw_corrected_evidence(
+                connection, retire_versions, changed_at=reverted_at
+            )
             restore_memory_versions(connection, restore_versions, recorded_at=reverted_at)
             set_forgotten(connection, clear_forgotten, forgotten_at=None)
             reproject_named_identities(
@@ -475,6 +631,7 @@ class OperationLog:
                 (
                     *(memory_id for memory_id, _source in retire_evidence),
                     *(change.memory_id for change in reverse_clause_changes),
+                    *(change.memory_id for change in withdrawn),
                     *retire_versions,
                     *(entry if isinstance(entry, str) else entry[0] for entry in restore_versions),
                     *clear_forgotten,
@@ -487,7 +644,7 @@ class OperationLog:
             refresh_naming_documents(
                 connection,
                 naming_before,
-                naming_projection_factory,
+                naming_projection,
                 force_ids=projection_identity_ids,
             )
         return True, tuple({asset.asset_id: asset for asset in unreferenced}.values())

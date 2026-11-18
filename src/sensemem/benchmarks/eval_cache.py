@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import sqlite3
 import threading
@@ -12,38 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-
-@dataclass(frozen=True, slots=True)
-class EvidenceInterval:
-    """One retrieved benchmark memory and its original source interval."""
-
-    memory_id: str
-    source_id: str | None
-    start_seconds: float | None
-    end_seconds: float | None
-
-    def __post_init__(self) -> None:
-        if not self.memory_id:
-            raise ValueError("evidence memory_id must not be empty")
-        if self.source_id is not None and not self.source_id:
-            raise ValueError("evidence source_id must not be empty")
-        for value in (self.start_seconds, self.end_seconds):
-            if value is not None and (
-                isinstance(value, bool) or not math.isfinite(value) or value < 0
-            ):
-                raise ValueError("evidence interval values must be finite and non-negative")
-        if self.end_seconds is not None and (
-            self.start_seconds is None or self.end_seconds <= self.start_seconds
-        ):
-            raise ValueError("evidence end_seconds must be later than start_seconds")
-
-    def json(self) -> dict[str, object]:
-        return {
-            "memory_id": self.memory_id,
-            "source_id": self.source_id,
-            "start_seconds": self.start_seconds,
-            "end_seconds": self.end_seconds,
-        }
+from sensemem.benchmarks.eval_evidence import EvidenceInterval
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +31,7 @@ class CachedAnswer:
     trace_id: str | None = None
     answer_span_id: str | None = None
     excerpt_evidence: tuple[EvidenceInterval, ...] = ()
+    projection_evidence: tuple[EvidenceInterval, ...] = ()
 
 
 class ResponseCache:
@@ -109,6 +78,7 @@ class ResponseCache:
                 "trace_id": answer.trace_id,
                 "answer_span_id": answer.answer_span_id,
                 "excerpt_evidence": tuple(item.json() for item in answer.excerpt_evidence),
+                "projection_evidence": tuple(item.json() for item in answer.projection_evidence),
             },
             ensure_ascii=False,
             allow_nan=False,
@@ -130,19 +100,6 @@ class ResponseCache:
             return
         if self._write is not self._root:
             self._write.close()
-            self._root.execute("ATTACH DATABASE ? AS run_cache", (str(self.write_path),))
-            self._root.execute("BEGIN IMMEDIATE")
-            try:
-                self._root.execute(
-                    "INSERT OR IGNORE INTO responses(cache_key, payload) "
-                    "SELECT cache_key, payload FROM run_cache.responses"
-                )
-                self._root.execute("COMMIT")
-            except BaseException:
-                self._root.execute("ROLLBACK")
-                raise
-            finally:
-                self._root.execute("DETACH DATABASE run_cache")
         self._root.close()
         self._closed = True
 
@@ -192,6 +149,7 @@ def _answer(payload: str) -> CachedAnswer:
         "trace_id",
         "answer_span_id",
         "excerpt_evidence",
+        "projection_evidence",
     }:
         raise ValueError("response cache payload must use the current answer fields")
     (
@@ -243,6 +201,10 @@ def _answer(payload: str) -> CachedAnswer:
         if not isinstance(excerpts, list):
             raise ValueError("invalid excerpt evidence")
         excerpt_intervals = tuple(_evidence(item) for item in excerpts)
+        projections = value["projection_evidence"]
+        if not isinstance(projections, list):
+            raise ValueError("invalid projection evidence")
+        projection_intervals = tuple(_evidence(item) for item in projections)
         trace_id = _trace_identifier(value["trace_id"], 32)
         answer_span_id = _trace_identifier(value["answer_span_id"], 16)
     except (TypeError, ValueError):
@@ -259,6 +221,7 @@ def _answer(payload: str) -> CachedAnswer:
         trace_id,
         answer_span_id,
         excerpt_intervals,
+        projection_intervals,
     )
 
 

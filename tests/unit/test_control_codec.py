@@ -11,8 +11,8 @@ from sensemem import (
     FormationProposal,
     IdentityClaim,
     MemoryIntent,
-    MemoryKind,
     MemoryOperation,
+    RecordKind,
     SpatialAnchor,
     SpatialContext,
     StorageError,
@@ -47,7 +47,7 @@ from sensemem.control import dump_operation, load_operation
                     intent=MemoryIntent.CONSOLIDATE,
                     evidence_ids=("m",),
                     proposal=FormationProposal(
-                        kind=MemoryKind.EVENT,
+                        kind=RecordKind.EVENT,
                         content="Ana arrived.",
                         confidence=0.9,
                         spatial=SpatialContext(

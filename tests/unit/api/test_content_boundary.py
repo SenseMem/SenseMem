@@ -5,10 +5,10 @@ import base64
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from sensemem.api.app import MemoryCreate
 from sensemem.api.content import InputPart, content_input
+from sensemem.api.schemas import MemoryCreate
+from sensemem.content import Blob
 from sensemem.exceptions import ValidationError as ContentValidationError
-from sensemem.types import Blob
 
 
 @pytest.mark.parametrize(

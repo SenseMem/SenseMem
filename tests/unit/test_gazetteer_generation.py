@@ -18,26 +18,28 @@ from _gazetteer_support import index_fixture, multi_index_fixture
 from openai import OpenAI
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
-from test_openai_sdk import _sdk_client
+from test_openai_adapters import _sdk_client
 
 import sensemem.configuration as configuration
+import sensemem.models._openai_media as openai_media
+import sensemem.models._openai_protocol as openai_protocol
+import sensemem.models._openai_requests as openai_requests
 import sensemem.recipes as recipes
 from sensemem import (
     AssetRef,
     EvidenceGeneration,
     GazetteerEnricher,
     Memory,
-    MemoryConfig,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
     OfflineGazetteer,
-    OpenAIModels,
     SearchHit,
 )
 from sensemem.evidence import answer_evidence_payloads
-from sensemem.models import openai_sdk as backend
 from sensemem.models.base import GenerationBackend
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 def _answer_text_parts(
@@ -55,7 +57,9 @@ def _answer_text_parts(
                 (*question.assets, *(asset for hit in hits for asset in hit.assets))
             ),
         )
-    return backend._answer_text_parts(question, hits, payloads, capture_metadata=capture_metadata)
+    return openai_requests._answer_text_parts(
+        question, hits, payloads, capture_metadata=capture_metadata
+    )
 
 
 def _models(
@@ -65,7 +69,7 @@ def _models(
     generation_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
 ) -> EvidenceGeneration:
     return EvidenceGeneration(
-        OpenAIModels(client, generation_capabilities=generation_capabilities),
+        OpenAICompletion(client, generation_capabilities=generation_capabilities),
         enricher=GazetteerEnricher(generation_gazetteer),
     )
 
@@ -139,7 +143,7 @@ def test_public_memory_answer_uses_external_map_without_changing_source(
             tmp_path / "memory",
             embedder=TinyEmbedder(),
             answerer=answerer,
-            config=MemoryConfig(reinforce_on_answer=False, minimum_relevance=0),
+            settings=MemorySettings(reinforce_on_answer=False, minimum_relevance=0),
         ) as memory:
             assert asset.path is not None
             source = memory.add(asset.path, metadata={"source_id": "caller-photo"})
@@ -223,15 +227,15 @@ def test_omitted_pixels_and_changed_original_never_receive_map_candidates(
         generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
         generation_gazetteer=gazetteer,
     )
-    monkeypatch.setattr(backend, "_MAX_INLINE_MODEL_BYTES", 1)
-    question, filtered = adapter.prepare(ModelInput(text="What is known?"), (hit(asset),))
-    inner = cast(OpenAIModels, adapter.resources()[0])
-    prepared = inner._answer_request(question, filtered)
+    monkeypatch.setattr(openai_media, "_MAX_INLINE_MODEL_BYTES", 1)
+    question, filtered = adapter._prepare_evidence(ModelInput(text="What is known?"), (hit(asset),))
+    inner = cast(OpenAICompletion, adapter.resources()[0])
+    prepared = inner._requests.answer_request(question, filtered)
     assert isinstance(prepared, tuple)
     assert "offline_osm_candidates" not in json.dumps(prepared[0])
     monkeypatch.undo()
     monkeypatch.setattr(gazetteer, "nearby", forbidden)
-    cached = backend._source_capture_metadata((asset,))
+    cached = openai_media._source_capture_metadata((asset,))
     assert asset.path is not None
     asset.path.write_bytes(b"changed")
     with pytest.raises(ModelError) as failure:
@@ -248,7 +252,7 @@ def test_omitted_pixels_and_changed_original_never_receive_map_candidates(
 def test_disabled_path_and_write_recipes_remain_unchanged(tmp_path: Path) -> None:
     path, digest = index_fixture(tmp_path / "map.sqlite3")
     gazetteer = OfflineGazetteer(path, index_sha256=digest)
-    plain = OpenAIModels()
+    plain = OpenAICompletion()
     enabled = EvidenceGeneration(plain, enricher=GazetteerEnricher(gazetteer))
     assert enabled.resources()[0] is plain
     asset = photo(tmp_path)
@@ -273,11 +277,11 @@ def test_config_factory_injects_only_the_generation_adapter(
         SimpleNamespace(generation_capabilities=frozenset({Modality.TEXT}), close=lambda: None),
     )
 
-    def build(**values: object) -> GenerationBackend:
+    def build(_backend_type: object, **values: object) -> GenerationBackend:
         captured.update(values)
         return marker
 
-    monkeypatch.setattr(recipes, "_owned_openai_models", build)
+    monkeypatch.setattr(recipes, "_owned_openai", build)
     value = configuration.OpenAIGenerationConfig.model_validate(
         {
             "provider": "openai",
@@ -368,4 +372,4 @@ def test_v1_reader_header_keeps_its_single_source_serialized_contract(tmp_path: 
         "global_complete": False,
         "candidates": gazetteer.nearby(0.022, 0.049)["candidates"],
     }
-    assert backend._json_text(actual) == backend._json_text(expected)
+    assert openai_protocol._json_text(actual) == openai_protocol._json_text(expected)

@@ -61,7 +61,7 @@ def _trajectory(trajectory_id: str, **overrides: object) -> dict[str, object]:
                 "url": "http://forum.test/start",
                 "action": None,
                 "thought": "Inspect navigation",
-                "accessibility_tree": "Menu Settings",
+                "accessibility_tree": "Menu ResolvedSettings",
                 "screenshot": f"screenshots/{trajectory_id}/0.png",
             },
             {
@@ -70,7 +70,7 @@ def _trajectory(trajectory_id: str, **overrides: object) -> dict[str, object]:
                 "url": "http://forum.test/settings",
                 "action": "click [7]",
                 "thought": None,
-                "accessibility_tree": "Settings page",
+                "accessibility_tree": "ResolvedSettings page",
                 "screenshot": None,
             },
         ],
@@ -220,7 +220,7 @@ def test_long_observations_are_split_without_dropping_the_screenshot(tmp_path: P
 @pytest.mark.parametrize(
     ("spec", "answer", "prediction", "score"),
     [
-        (_PHRASES, "nav-bar; settings", r"Reasoning. \boxed{Settings and NAV_bar}", 1.0),
+        (_PHRASES, "nav-bar; settings", r"Reasoning. \boxed{ResolvedSettings and NAV_bar}", 1.0),
         (_PHRASES, "app", r"\boxed{application}", 0.0),
         (_PHRASES, "app", "UNKNOWN", 0.0),
         (_PHRASES.replace("match|", "match_ordered|"), "Reports;Problems", "Problems;Reports", 0.0),
@@ -244,7 +244,7 @@ def test_long_observations_are_split_without_dropping_the_screenshot(tmp_path: P
             1.0,
         ),
         ("mc_choice_set_match|require_non_empty=true", "A, C", "A,B,C", 0.0),
-        (_PHRASES, "{Settings}", r"\boxed{{Settings}}", 1.0),
+        (_PHRASES, "{ResolvedSettings}", r"\boxed{{ResolvedSettings}}", 1.0),
     ],
 )
 def test_official_deterministic_scores(

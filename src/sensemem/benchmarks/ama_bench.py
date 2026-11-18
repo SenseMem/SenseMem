@@ -282,10 +282,10 @@ def export_submission(dataset: Path, samples: Path, output: Path) -> None:
         }
         for ep in episodes
     ]
-    from sensemem.benchmarks.eval_artifacts import _atomic_replace, _jsonl_bytes
+    from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_replace(((output, _jsonl_bytes(rows)),))
+    replace_artifact_files(((output, encode_jsonl_bytes(rows)),))
 
 
 def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:

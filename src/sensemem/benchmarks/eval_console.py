@@ -32,14 +32,7 @@ _ROOT_PACKAGE = __name__.split(".", 1)[0]
 
 
 class _TqdmHandler(logging.Handler):
-    """Emit every record through `tqdm.write`, so a live progress bar survives a log line.
-
-    The alternative, wrapping the run in `tqdm.contrib.logging.logging_redirect_tqdm`, swaps this
-    handler out for one of tqdm's own for the duration of the bar, and carrying the filters across
-    is a detail tqdm only started honouring in 4.69.1. Owning the handler keeps `_VerbosityFilter`
-    attached to the thing that actually emits, at every version, bar or no bar. `sys.stderr` is
-    read per record rather than captured, so redirecting it after configuration still works.
-    """
+    """Preserve progress bars and handler filters, reading redirected stderr per record."""
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -49,17 +42,7 @@ class _TqdmHandler(logging.Handler):
 
 
 class _VerbosityFilter(logging.Filter):
-    """Admit SenseMem's records at the requested level and everyone else's at ``third_party``.
-
-    A root level alone does not hold: `modelscope`, `numba`, `jieba` and `torch.__trace` each set
-    their own logger level when imported, and a logger with an explicit level never consults the
-    root's, so their INFO and DEBUG records reach the root handler whatever it was configured
-    with. Deciding per record on the handler needs no list of names to keep up to date, and no
-    dependency that reaches the root handler can get around it.
-
-    A dependency that installs its own handler and sets `propagate = False` never reaches this
-    filter at all; `_dependency_log_levels` is where those are turned down by name.
-    """
+    """Filter dependency records at the handler; their own logger levels bypass the root's."""
 
     def __init__(self, level: int, third_party: int) -> None:
         super().__init__()
@@ -71,32 +54,8 @@ class _VerbosityFilter(logging.Filter):
         return record.levelno >= (self._level if own else self._third_party)
 
 
-def _dependency_log_levels(third_party: int) -> None:
-    """Turn down the dependencies that log through a handler of their own, not the root's.
-
-    `modelscope.utils.logger` attaches its own stderr handler to the `modelscope` logger and sets
-    `propagate = False`, so `_VerbosityFilter` never sees those records: every FunASR run --
-    `import funasr` imports modelscope -- printed its INFO whatever `--verbosity` said, through a
-    plain `StreamHandler` that also smears the live progress bar. It reads its level from the
-    environment once, at import, so this has to be set before anything imports it, and an
-    explicit setting from the caller wins.
-
-    ponytail: one name, because one installed dependency does this today. The next one gets a
-    line here; there is no generic hook short of patching `logging.Logger.addHandler`.
-    """
-    os.environ.setdefault("MODELSCOPE_LOG_LEVEL", str(third_party))
-
-
 def _configure_logging(verbosity: str) -> None:
-    """Claim the root handler before an imported dependency installs a noisier one.
-
-    `import funasr` runs `logging.basicConfig(level=INFO)` at module scope, which switches every
-    library in the process to INFO: each successful model call then prints its own
-    `HTTP Request: ... 200 OK` line and buries the warnings worth reading. Configuring first makes
-    that call a no-op. `--verbosity` then applies to SenseMem only; a dependency has to reach
-    WARNING to be heard, because a benchmark run is not the place to read anyone else's INFO.
-    `DEBUG` is the exception that opens the whole process, transport chatter included.
-    """
+    """Configure before importing model dependencies that call `basicConfig` themselves."""
     level: int = logging.getLevelName(verbosity)
     third_party = level if verbosity == "DEBUG" else max(level, logging.WARNING)
     logging.basicConfig(
@@ -107,7 +66,8 @@ def _configure_logging(verbosity: str) -> None:
     )
     for handler in logging.getLogger().handlers:
         handler.addFilter(_VerbosityFilter(level, third_party))
-    _dependency_log_levels(third_party)
+    # Modelscope's private, non-propagating handler reads this once at import.
+    os.environ.setdefault("MODELSCOPE_LOG_LEVEL", str(third_party))
 
 
 def _announce(message: str) -> None:
@@ -246,23 +206,20 @@ def _table(results: Mapping[str, object]) -> str:
         usage = cast(Mapping[str, object], performance["token_usage"])
         controls = cast(Mapping[str, object], task["controls"])
         mean = score.get("mean")
-        interval = score.get("confidence_interval_95")
-        total_duration = duration.get("total")
-        average_duration = duration.get("average")
-        total_tokens = usage.get("total_tokens")
-        average_tokens = usage.get("average_tokens")
+        interval = cast(Sequence[float] | None, score["confidence_interval_95"])
+        total_duration = cast(float | None, duration["total"])
+        average_duration = cast(float | None, duration["average"])
+        total_tokens = cast(int | None, usage["total_tokens"])
+        average_tokens = cast(float | None, usage["average_tokens"])
         # When the judge's usage is incomplete the task total is honestly null, but the product's
         # own spend is usually complete; print that with a marker rather than a dash.
         token_marker = ""
-        product = usage.get("product")
-        if (
-            total_tokens is None
-            and isinstance(product, Mapping)
-            and product.get("total_tokens") is not None
-        ):
-            total_tokens = product.get("total_tokens")
-            average_tokens = product.get("average_tokens")
+        product = cast(Mapping[str, object] | None, usage.get("product"))
+        if total_tokens is None and product is not None and product["total_tokens"] is not None:
+            total_tokens = cast(int, product["total_tokens"])
+            average_tokens = cast(float | None, product["average_tokens"])
             token_marker = "*"
+        random_ranker = cast(Mapping[str, object] | None, controls["random_ranker"])
         valid = task.get("score_valid") is not False
         rows.append(
             (
@@ -281,42 +238,19 @@ def _table(results: Mapping[str, object]) -> str:
                 ),
                 (
                     "—"
-                    if not isinstance(interval, list)
+                    if interval is None
                     else f"[{float(interval[0]):.4f}, {float(interval[1]):.4f}]"
                 ),
                 str(task["question_count"]),
                 str(task["error_count"]),
                 str(task["ingest_failure_count"]),
-                (
-                    "—"
-                    if isinstance(total_duration, bool)
-                    or not isinstance(total_duration, int | float)
-                    else f"{float(total_duration):.3f}"
-                ),
-                (
-                    "—"
-                    if isinstance(average_duration, bool)
-                    or not isinstance(average_duration, int | float)
-                    else f"{float(average_duration) * 1_000:.1f}"
-                ),
-                (
-                    "—"
-                    if isinstance(total_tokens, bool) or not isinstance(total_tokens, int)
-                    else f"{total_tokens}{token_marker}"
-                ),
-                (
-                    "—"
-                    if isinstance(average_tokens, bool)
-                    or not isinstance(average_tokens, int | float)
-                    else f"{float(average_tokens):.1f}{token_marker}"
-                ),
+                ("—" if total_duration is None else f"{total_duration:.3f}"),
+                ("—" if average_duration is None else f"{average_duration * 1_000:.1f}"),
+                ("—" if total_tokens is None else f"{total_tokens}{token_marker}"),
+                ("—" if average_tokens is None else f"{average_tokens:.1f}{token_marker}"),
                 _control_cell(controls.get("recall_at_1")),
                 _control_cell(controls.get("recall_at_20")),
-                _control_cell(
-                    cast(Mapping[str, object], controls["random_ranker"]).get("20")
-                    if isinstance(controls.get("random_ranker"), Mapping)
-                    else None
-                ),
+                _control_cell(None if random_ranker is None else random_ranker.get("20")),
                 ("SELF" if controls.get("is_blind_run") else _control_cell(controls.get("blind"))),
                 (
                     "ok"
@@ -376,11 +310,9 @@ def _table(results: Mapping[str, object]) -> str:
                 if mean is None or not count
                 else f"{float(cast(float, mean)):.4f}"
             )
-            interval = summary["confidence_interval_95"]
+            interval = cast(Sequence[float] | None, summary["confidence_interval_95"])
             confidence = (
-                "—"
-                if not isinstance(interval, list)
-                else f"[{float(interval[0]):.4f}, {float(interval[1]):.4f}]"
+                "—" if interval is None else f"[{float(interval[0]):.4f}, {float(interval[1]):.4f}]"
             )
             level_lines.append(f"  {name:<22} {value:<10} 95% CI {confidence}  n={count}")
     return "\n".join((table, *level_lines))
@@ -388,12 +320,12 @@ def _table(results: Mapping[str, object]) -> str:
 
 def _control_cell(value: object) -> str:
     """Render one control value, and never let an absent control render as a number."""
-    if not isinstance(value, Mapping):
+    if value is None:
         return "MISSING"
-    mean = value.get("mean")
-    if isinstance(mean, bool) or not isinstance(mean, int | float):
+    mean = cast(float | None, cast(Mapping[str, object], value)["mean"])
+    if mean is None:
         return "MISSING"
-    return f"{float(mean):.4f}"
+    return f"{mean:.4f}"
 
 
 def _uninterpretable_tasks(results: Mapping[str, object]) -> tuple[str, ...]:

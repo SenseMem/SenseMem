@@ -11,8 +11,10 @@ from typing import cast
 import pytest
 
 import sensemem.models.funasr as funasr_module
+from sensemem import SpeechTurn
+from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.models.base import SpeechBackend, SpeechTurn
+from sensemem.models.base import SpeechBackend
 from sensemem.models.funasr import (
     DEFAULT_FUNASR_MODEL_ID,
     DEFAULT_FUNASR_MODEL_REVISION,
@@ -21,7 +23,7 @@ from sensemem.models.funasr import (
     DEFAULT_FUNASR_VAD_MODEL_ID,
     FunASRTranscriber,
 )
-from sensemem.types import AssetRef, Modality
+from sensemem.types import Modality
 
 
 def test_funasr_delegates_execution_to_official_automodel_and_maps_speech(
@@ -195,7 +197,7 @@ def test_funasr_rejects_invalid_sentence_time_ranges(start: float, end: float) -
         )
 
 
-def test_funasr_usage_counts_full_media_duration_for_batch_retry(
+def test_funasr_usage_counts_full_media_duration_for_silence_without_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -229,7 +231,8 @@ def test_funasr_usage_counts_full_media_duration_for_batch_retry(
         lambda **kwargs: usage.append(kwargs),
     )
     transcriber = FunASRTranscriber()
-    transcriber._pipeline = _Pipeline()
+    pipeline = _Pipeline()
+    transcriber._pipeline = pipeline
     digest = sha256(audio.read_bytes()).hexdigest()
     result = transcriber.analyze(
         (
@@ -245,11 +248,13 @@ def test_funasr_usage_counts_full_media_duration_for_batch_retry(
         )
     )[0]
 
-    assert result.turns[-1].end_ms == 700
-    assert usage == [{"request_count": 2, "audio_seconds": pytest.approx(4.0)}]
+    assert result.turns == ()
+    assert result.speakers == ()
+    assert pipeline.calls == 1
+    assert usage == [{"request_count": 1, "audio_seconds": pytest.approx(2.0)}]
 
 
-def test_funasr_counts_a_failed_fallback_request(
+def test_funasr_rejects_invalid_single_asset_output_without_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -262,9 +267,7 @@ def test_funasr_counts_a_failed_fallback_request(
 
         def generate(self, **_kwargs: object) -> list[dict[str, object]]:
             self.calls += 1
-            if self.calls == 1:
-                return []
-            raise RuntimeError("fallback failed")
+            return [{"text": "unexpected first"}, {"text": "unexpected second"}]
 
     monkeypatch.setattr(
         funasr_module,
@@ -289,10 +292,10 @@ def test_funasr_counts_a_failed_fallback_request(
         path=audio,
     )
 
-    with pytest.raises(ModelError, match="failed to analyze speech"):
+    with pytest.raises(ModelError, match="invalid transcription batch"):
         transcriber.analyze((asset,))
 
-    assert counts == [0, 1, 2]
+    assert counts == [0, 1]
 
 
 def test_funasr_supports_timestamp_only_transcription_without_speaker_model(

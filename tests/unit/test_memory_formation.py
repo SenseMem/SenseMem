@@ -22,15 +22,15 @@ from sensemem import (
     FormationInput,
     FormationProposal,
     Memory,
-    MemoryConfig,
     MemoryIntent,
-    MemoryKind,
     MemoryNotFoundError,
     MemoryOperation,
+    MemorySettings,
     Modality,
     ModelError,
     ModelInput,
     ObservationContext,
+    RecordKind,
     RetrievalScope,
     SearchHit,
     SpatialAnchor,
@@ -53,13 +53,13 @@ class PreferenceFormer:
         return tuple(
             (
                 FormationProposal(
-                    kind=MemoryKind.ENTITY,
+                    kind=RecordKind.ENTITY,
                     content="The user is an entity",
                     subject="user",
                     confidence=0.99,
                 ),
                 FormationProposal(
-                    kind=MemoryKind.STATE,
+                    kind=RecordKind.STATE,
                     content="The user's preferred drink is tea",
                     subject="user",
                     predicate="preferred_drink",
@@ -90,7 +90,7 @@ def test_history_named_events_require_a_standing_cited_name(
                 return (
                     (
                         FormationProposal(
-                            kind=MemoryKind.ENTITY, subject="Ana", content="The person is Ana"
+                            kind=RecordKind.ENTITY, subject="Ana", content="The person is Ana"
                         ),
                     ),
                 )
@@ -98,18 +98,18 @@ def test_history_named_events_require_a_standing_cited_name(
             naming = next(
                 record
                 for record in source.history
-                if record.context is not None and record.context.kind is MemoryKind.ENTITY
+                if record.context is not None and record.context.kind is RecordKind.ENTITY
             )
             witnesses = (source.memory_id, naming.id) if cite_name else (source.memory_id,)
             return (
                 (
                     FormationProposal(
-                        kind=MemoryKind.EVENT,
+                        kind=RecordKind.EVENT,
                         subject="Ana",
                         content="Ana entered the room",
                         evidence_ids=witnesses,
                     ),
-                    FormationProposal(kind=MemoryKind.EVENT, content="A person entered the room"),
+                    FormationProposal(kind=RecordKind.EVENT, content="A person entered the room"),
                 ),
             )
 
@@ -117,13 +117,13 @@ def test_history_named_events_require_a_standing_cited_name(
         tmp_path,
         embedder=TinyEmbedder(),
         former=NamedEventFormer(),
-        config=MemoryConfig(minimum_relevance=0, formation_history_max_rows=8),
+        settings=MemorySettings(minimum_relevance=0, formation_history_max_rows=8),
     ) as memory:
         memory.add("A person is introduced as Ana")
         name = next(
             record
             for record in memory.list(limit=20).items
-            if record.context is not None and record.context.kind is MemoryKind.ENTITY
+            if record.context is not None and record.context.kind is RecordKind.ENTITY
         )
         if withdrawn:
             memory.apply(MemoryOperation(intent=MemoryIntent.CORRECT, target_ids=(name.id,)))
@@ -148,7 +148,7 @@ def test_new_observation_forms_typed_memories_once_without_changing_source_ident
         tmp_path / "formed",
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea", occurred_at=occurred, context=context)
         duplicate = memory.add("I prefer tea", occurred_at=occurred, context=context)
@@ -157,8 +157,8 @@ def test_new_observation_forms_typed_memories_once_without_changing_source_ident
         assert source == duplicate
         assert former.calls == 1
         assert source.context is not None
-        assert source.context.kind is MemoryKind.OBSERVATION
-        states = [hit for hit in hits if hit.context and hit.context.kind is MemoryKind.STATE]
+        assert source.context.kind is RecordKind.OBSERVATION
+        states = [hit for hit in hits if hit.context and hit.context.kind is RecordKind.STATE]
         assert len(states) == 1
         state = states[0].context
         assert state is not None
@@ -169,7 +169,7 @@ def test_new_observation_forms_typed_memories_once_without_changing_source_ident
         assert state.model_id == "preference-test"
 
     with Memory(
-        tmp_path / "plain", embedder=TinyEmbedder(), config=MemoryConfig(minimum_relevance=0)
+        tmp_path / "plain", embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         plain = memory.add("I prefer tea", occurred_at=occurred, context=context)
 
@@ -202,7 +202,7 @@ def test_concurrent_duplicate_source_runs_formation_once(tmp_path: Path) -> None
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         with ThreadPoolExecutor(max_workers=2) as executor:
             records = tuple(
@@ -226,7 +226,7 @@ def test_implicit_and_explicit_default_context_have_one_identity(tmp_path: Path)
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         implicit = memory.add("I prefer tea")
         explicit = memory.add("I prefer tea", context=ObservationContext())
@@ -248,7 +248,7 @@ def test_known_at_only_exposes_evidence_known_at_that_time(tmp_path: Path) -> No
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(
             "first entity witness",
@@ -267,12 +267,12 @@ def test_known_at_only_exposes_evidence_known_at_that_time(tmp_path: Path) -> No
                 limit=10,
                 scope=RetrievalScope(known_at=known_after_first),
             ).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
+            if hit.context is not None and hit.context.kind is RecordKind.ENTITY
         )
         current = next(
             hit.context
             for hit in memory.search("user entity", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
+            if hit.context is not None and hit.context.kind is RecordKind.ENTITY
         )
 
         assert historical.evidence_ids == (first.id,)
@@ -284,7 +284,7 @@ def test_deleting_a_source_removes_unsupported_derived_records(tmp_path: Path) -
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea")
         assert any(
@@ -304,7 +304,7 @@ def test_unsupported_source_modality_is_kept_without_calling_the_former(tmp_path
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first = memory.add(Blob(b"audio", "audio/wav"))
         duplicate = memory.add(Blob(b"audio", "audio/wav"))
@@ -312,14 +312,14 @@ def test_unsupported_source_modality_is_kept_without_calling_the_former(tmp_path
         assert first == duplicate
         assert former.calls == 0
         assert first.context is not None
-        assert first.context.kind is MemoryKind.OBSERVATION
+        assert first.context.kind is RecordKind.OBSERVATION
 
     former.formation_capabilities = ATOMIC_MODALITIES
     with Memory(
         tmp_path,
         embedder=TinyEmbedder(),
         former=former,
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         upgraded = memory.add(Blob(b"audio", "audio/wav"))
         assert upgraded == first
@@ -346,7 +346,7 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="The user's preferred drink is tea",
                         subject="user",
                         predicate="preferred_drink",
@@ -355,7 +355,7 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
                     ),
                     # The source is text; no image was ever observed.
                     FormationProposal(
-                        kind=MemoryKind.AFFECT,
+                        kind=RecordKind.AFFECT,
                         content="The user looked happy",
                         subject="user",
                         value="happy",
@@ -372,7 +372,7 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
         tmp_path,
         embedder=TinyEmbedder(),
         former=MisgroundedAffectFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         source = memory.add("I prefer tea, and I shared a photo described as a smile")
@@ -383,8 +383,8 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
             for hit in memory.search("preferred drink happy", limit=10).hits
             if hit.context is not None
         }
-        assert MemoryKind.STATE in kinds
-        assert MemoryKind.AFFECT not in kinds
+        assert RecordKind.STATE in kinds
+        assert RecordKind.AFFECT not in kinds
         assert memory.pending_captures(memory_ids=(source.id,)) == ()
 
     assert [
@@ -408,7 +408,7 @@ def test_a_damaged_formation_envelope_still_fails_the_write(tmp_path: Path) -> N
         tmp_path,
         embedder=TinyEmbedder(),
         former=ShortBatchFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         with pytest.raises(ModelError) as failure:
             memory.add("I prefer tea")
@@ -436,7 +436,7 @@ def test_a_trait_formed_from_two_observations_in_one_batch_is_one_assessment(
                 (),
                 (
                     FormationProposal(
-                        kind=MemoryKind.TRAIT,
+                        kind=RecordKind.TRAIT,
                         content="Lin Yue is patient",
                         subject="Lin Yue",
                         predicate="disposition",
@@ -451,7 +451,7 @@ def test_a_trait_formed_from_two_observations_in_one_batch_is_one_assessment(
         tmp_path,
         embedder=TinyEmbedder(),
         former=JointTraitFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first, second = memory.add_many(("Lin Yue waited calmly.", "Lin Yue waited again."))
         with closing(sqlite3.connect(memory._store.database_path)) as connection:
@@ -499,7 +499,7 @@ def test_batch_witnesses_are_persisted_and_compiled_as_one_evidence_closure(
                 (),
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="Lin Yue lives in Suzhou",
                         subject="Lin Yue",
                         predicate="lives_in",
@@ -514,13 +514,13 @@ def test_batch_witnesses_are_persisted_and_compiled_as_one_evidence_closure(
         tmp_path / str(deleted_source),
         embedder=TinyEmbedder(),
         former=CrossWitnessFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first, second = memory.add_many(("My sister is named Lin Yue.", "She lives in Suzhou."))
         formed = next(
             hit
             for hit in memory.search("Lin Yue lives Suzhou", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         )
 
         assert formed.context is not None
@@ -559,7 +559,7 @@ def test_singleton_alternative_survives_withdrawal_of_joint_witness(
                 (),
                 (
                     FormationProposal(
-                        kind=MemoryKind.ENTITY,
+                        kind=RecordKind.ENTITY,
                         content="Lin Yue is a person",
                         subject="Lin Yue",
                         evidence_ids=(inputs[0].memory_id, inputs[1].memory_id),
@@ -567,7 +567,7 @@ def test_singleton_alternative_survives_withdrawal_of_joint_witness(
                 ),
                 (
                     FormationProposal(
-                        kind=MemoryKind.ENTITY,
+                        kind=RecordKind.ENTITY,
                         content="Lin Yue is a person",
                         subject="Lin Yue",
                     ),
@@ -578,13 +578,13 @@ def test_singleton_alternative_survives_withdrawal_of_joint_witness(
         tmp_path,
         embedder=TinyEmbedder(),
         former=AlternativeWitnessFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first, _second, third = memory.add_many(("A", "B", "C"))
         entity = next(
             hit
             for hit in memory.search("Lin Yue person", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
+            if hit.context is not None and hit.context.kind is RecordKind.ENTITY
         )
 
         assert memory.delete(first.id) is True
@@ -618,7 +618,7 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
                 (),
                 (
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content="Lin Yue lives in Suzhou",
                         subject="Lin Yue",
                         predicate="lives_in",
@@ -633,13 +633,13 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
         data_dir,
         embedder=CountingEmbedder(),
         former=CrossWitnessFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         first, _second = memory.add_many(("My sister is Lin Yue", "She lives in Suzhou"))
         derived_id = next(
             hit.id
             for hit in memory.search("Lin Yue Suzhou", limit=10).hits
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         )
 
     shutil.rmtree(data_dir / "zvec")
@@ -648,7 +648,7 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
         data_dir,
         embedder=rebuilt,
         former=CrossWitnessFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         assert derived_id in {hit.id for hit in memory.search("Lin Yue Suzhou", limit=10).hits}
         assert rebuilt.document_inputs == 0
@@ -660,7 +660,7 @@ def test_missing_index_rebuild_uses_sqlite_clause_withdrawal_without_reembedding
         data_dir,
         embedder=rebuilt_after_withdrawal,
         former=CrossWitnessFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         assert derived_id not in {hit.id for hit in memory.search("Lin Yue Suzhou", limit=10).hits}
         assert rebuilt_after_withdrawal.document_inputs == 0
@@ -672,7 +672,7 @@ def test_formation_proposal_rejects_empty_or_duplicate_witnesses(
 ) -> None:
     with pytest.raises(ValidationError):
         FormationProposal(
-            kind=MemoryKind.EVENT,
+            kind=RecordKind.EVENT,
             content="bad",
             evidence_ids=evidence_ids,
         )
@@ -691,7 +691,7 @@ def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, m
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.EVENT,
+                        kind=RecordKind.EVENT,
                         content="bad",
                         evidence_ids=evidence_ids,
                     ),
@@ -703,13 +703,13 @@ def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, m
         tmp_path,
         embedder=TinyEmbedder(),
         former=InvalidWitnessFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         with pytest.raises(ModelError) as failure:
             memory.add_many(("first source", "second source"))
         assert failure.value.reason == "response_invalid"
         assert all(
-            hit.context is None or hit.context.kind is MemoryKind.OBSERVATION
+            hit.context is None or hit.context.kind is RecordKind.OBSERVATION
             for hit in memory.list().items
         )
 
@@ -724,7 +724,7 @@ def _formed(
 def _entities(memory: Memory, *, scope: RetrievalScope | None = None) -> list[SearchHit]:
     hits = memory.search("entity user", limit=10, scope=scope).hits
     return [
-        hit for hit in hits if hit.context is not None and hit.context.kind is MemoryKind.ENTITY
+        hit for hit in hits if hit.context is not None and hit.context.kind is RecordKind.ENTITY
     ]
 
 
@@ -739,7 +739,7 @@ def test_formed_records_inherit_the_place_they_were_observed_in(tmp_path: Path) 
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea", context=ObservationContext(place_id="kitchen"))
 
@@ -747,8 +747,8 @@ def test_formed_records_inherit_the_place_they_were_observed_in(tmp_path: Path) 
         garage = _formed(memory, source.id, scope=RetrievalScope(place_id="garage"))
 
         assert {hit.context.kind for hit in kitchen if hit.context} == {
-            MemoryKind.ENTITY,
-            MemoryKind.STATE,
+            RecordKind.ENTITY,
+            RecordKind.STATE,
         }
         assert {hit.place_id for hit in kitchen} == {"kitchen"}
         assert garage == []
@@ -761,7 +761,7 @@ def test_formed_records_inherit_the_metadata_of_their_source(tmp_path: Path) -> 
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea", metadata={"household": "flat-2"})
 
@@ -777,7 +777,7 @@ def test_a_formed_record_from_a_placeless_source_has_no_place(tmp_path: Path) ->
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         source = memory.add("I prefer tea")
 
@@ -800,7 +800,7 @@ def test_a_shared_formed_record_keeps_only_what_its_sources_agree_on(tmp_path: P
         tmp_path / "disagree",
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -823,7 +823,7 @@ def test_a_shared_formed_record_keeps_only_what_its_sources_agree_on(tmp_path: P
         tmp_path / "agree",
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -854,7 +854,7 @@ def test_deleting_the_disagreeing_source_gives_a_shared_record_its_place_back(
         tmp_path,
         embedder=TinyEmbedder(),
         former=PreferenceFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         memory.add(
             "I prefer tea",
@@ -895,7 +895,7 @@ def test_two_contradictory_states_from_one_source_cost_only_the_later_one(
             return tuple(
                 tuple(
                     FormationProposal(
-                        kind=MemoryKind.STATE,
+                        kind=RecordKind.STATE,
                         content=f"The user's preferred drink is {drink}",
                         subject="user",
                         predicate="preferred_drink",
@@ -914,7 +914,7 @@ def test_two_contradictory_states_from_one_source_cost_only_the_later_one(
         tmp_path,
         embedder=TinyEmbedder(),
         former=ContradictingFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         source = memory.add("I prefer tea")
@@ -922,7 +922,7 @@ def test_two_contradictory_states_from_one_source_cost_only_the_later_one(
         states = [
             hit.context.value
             for hit in _formed(memory, source.id)
-            if hit.context is not None and hit.context.kind is MemoryKind.STATE
+            if hit.context is not None and hit.context.kind is RecordKind.STATE
         ]
         assert states == ["tea"]
         assert memory.pending_captures(memory_ids=(source.id,)) == ()
@@ -949,7 +949,7 @@ def test_refused_proposals_are_totalled_over_the_whole_settle(tmp_path: Path) ->
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.AFFECT,
+                        kind=RecordKind.AFFECT,
                         content="The user looked happy",
                         subject="user",
                         value="happy",
@@ -969,7 +969,7 @@ def test_refused_proposals_are_totalled_over_the_whole_settle(tmp_path: Path) ->
         tmp_path,
         embedder=TinyEmbedder(),
         former=PhotoAffectFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         memory.capture("I shared a photo described as a smile")
@@ -1000,7 +1000,7 @@ def test_a_pose_in_another_frame_is_refused_on_the_formation_path(tmp_path: Path
             return tuple(
                 (
                     FormationProposal(
-                        kind=MemoryKind.EVENT,
+                        kind=RecordKind.EVENT,
                         content="The user poured tea in the study",
                         subject="user",
                         spatial=SpatialContext(
@@ -1022,7 +1022,7 @@ def test_a_pose_in_another_frame_is_refused_on_the_formation_path(tmp_path: Path
         tmp_path,
         embedder=TinyEmbedder(),
         former=MisplacedPoseFormer(),
-        config=MemoryConfig(minimum_relevance=0),
+        settings=MemorySettings(minimum_relevance=0),
         tracer=provider.get_tracer("test"),
     ) as memory:
         source = memory.add(

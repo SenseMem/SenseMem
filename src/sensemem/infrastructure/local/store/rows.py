@@ -11,10 +11,12 @@ from datetime import datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
-from sensemem.types import MemoryContext, SpeakerSegment
+from sensemem.content import ContentPart
+from sensemem.identity import SpeakerSegment
+from sensemem.semantics import RecordSemantics
 
 if TYPE_CHECKING:
-    from sensemem.models.base import SpeechAnalysis
+    from sensemem.perception import SpeechAnalysis
 
 MEMORY_MODALITIES = frozenset({"text", "image", "video", "audio", "omni"})
 
@@ -156,8 +158,9 @@ class StoredMemory:
     last_accessed_at: datetime | None = None
     access_count: int = 0
     forgotten_at: datetime | None = None
-    context: MemoryContext | None = None
+    context: RecordSemantics | None = None
     place_id: str | None = None
+    parts: tuple[ContentPart, ...] = ()
 
     def __post_init__(self) -> None:
         require_identifier(self.memory_id, "memory_id")
@@ -165,10 +168,6 @@ class StoredMemory:
         object.__setattr__(self, "modality", validated_modality(self.modality, asset=False))
         if self.memory_type not in MEMORY_TYPES:
             raise ValueError("memory_type must be semantic, episodic, or procedural")
-        if not isinstance(self.assets, tuple) or not all(
-            isinstance(asset, StoredAsset) for asset in self.assets
-        ):
-            raise ValueError("assets must be a tuple of StoredAsset values")
         asset_modalities = {asset.modality for asset in self.assets}
         if self.modality == "text" and self.assets:
             raise ValueError("text memories cannot contain media assets")
@@ -179,14 +178,21 @@ class StoredMemory:
         if not self.content.strip() and not self.assets:
             raise ValueError("a memory must contain text or at least one asset")
         object.__setattr__(self, "metadata_json", canonical_object_json(self.metadata_json))
+        if not self.parts:
+            object.__setattr__(
+                self,
+                "parts",
+                (
+                    *((ContentPart("text", self.content),) if self.content else ()),
+                    *(ContentPart("asset", asset.asset_id) for asset in self.assets),
+                ),
+            )
         require_aware(self.created_at, "created_at")
         require_aware(self.updated_at, "updated_at")
         _require_interval(self.occurred_at, self.occurred_end)
         if self.last_accessed_at is not None:
             require_aware(self.last_accessed_at, "last_accessed_at")
         _access_count(self.access_count)
-        if self.context is not None and not isinstance(self.context, MemoryContext):
-            raise ValueError("context must be a MemoryContext or None")
         if self.updated_at < self.created_at:
             raise ValueError("updated_at must not precede created_at")
 
@@ -223,13 +229,6 @@ class StoredTextSelector:
         require_identifier(self.recipe_version, "text selector recipe version")
         if not self.pieces:
             raise ValueError("a text selector must contain at least one source piece")
-        if any(not isinstance(piece, StoredTextSpanPiece) for piece in self.pieces):
-            raise ValueError("text selector pieces must be StoredTextSpanPiece values")
-        positions = tuple(
-            (piece.start_codepoint, piece.end_codepoint, piece.role) for piece in self.pieces
-        )
-        if len(positions) != len(set(positions)):
-            raise ValueError("text selector pieces must be unique")
         roles = tuple(piece.role for piece in self.pieces)
         if roles not in {("body",), ("context", "body")}:
             raise ValueError("text selector pieces must be one body or one context then one body")
@@ -239,13 +238,8 @@ class StoredTextSelector:
 class StoredEmbedding:
     """An FP32 vector retained in SQLite so the search index is rebuildable.
 
-    Vector *content* is checked once, where a vector enters SQLite (`write_embedding`), and not
-    here. Hydrating a search candidate rebuilds this value ~100 times per search while the search
-    path reads only `embedding_id`, `memory_id` and `object_part` from it -- the vector itself is
-    consumed solely by `ZvecIndex.upsert`, which validates what it consumes. Re-checking finiteness
-    and unit length in `__post_init__` therefore cost two O(dimension) Python loops per candidate
-    per search and bought nobody anything: 4.91 ms to hydrate 100 candidates of 1024 dimensions, of
-    which 3.39 ms was those loops.
+    The SQLite writer and Zvec consumer validate vector contents; row hydration checks the
+    identifiers and descriptor without scanning every vector component again.
     """
 
     embedding_id: str
@@ -268,8 +262,6 @@ class StoredEmbedding:
         require_aware(self.created_at, "created_at")
         if self.object_part < 0:
             raise ValueError("object_part must not be negative")
-        if any(not isinstance(value, StoredTextSelector) for value in self.text_selectors):
-            raise ValueError("text_selectors must contain StoredTextSelector values")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -335,7 +327,7 @@ class StoredOperation:
     outcome: str | None = None
     outcome_note: str | None = None
 
-    def __post_init__(self) -> None:  # noqa: C901 - validates durable operation effects
+    def __post_init__(self) -> None:
         require_identifier(self.operation_key, "operation_key")
         require_identifier(self.intent, "intent")
         require_identifier(self.trigger, "trigger")
@@ -352,10 +344,6 @@ class StoredOperation:
         for memory_id, source_memory_id in self.linked:
             require_identifier(memory_id, "memory_id")
             require_identifier(source_memory_id, "source_memory_id")
-        if not all(
-            isinstance(change, StoredEvidenceClauseChange) for change in self.clause_changes
-        ):
-            raise ValueError("clause_changes must contain StoredEvidenceClauseChange values")
         for memory_id, version in self.superseded:
             require_identifier(memory_id, "memory_id")
             if version <= 0:
@@ -373,6 +361,7 @@ class StoredQueryFailure:
     normalized: str
     failures: int
     failed_at: datetime
+    context_json: str
 
     def __post_init__(self) -> None:
         if not self.query.strip() or not self.normalized:
