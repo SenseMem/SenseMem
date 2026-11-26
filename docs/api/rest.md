@@ -8,9 +8,9 @@ Jump to [startup](#start-the-adapter), [content](#content-input), [endpoints](#e
 
 ## Surface
 
-The optional FastAPI adapter exposes fourteen routes under `/v1`, or twenty-three when the host
-enables both `identity_operations` and `embodied_operations`. The routes call the injected
-synchronous `Memory` and serialize its results.
+The optional FastAPI adapter exposes fourteen `Memory` operations under `/v1`, or twenty-three when
+the host enables both `identity_operations` and `embodied_operations`. The routes call the
+injected synchronous `Memory` and serialize its results.
 
 `capture`, `settle`, and `pending_captures` are available by default. Identity administration
 and perception require explicit host opt-in. Both REST switches default to `False`; MCP enables
