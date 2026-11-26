@@ -176,6 +176,6 @@ to transcription does not by itself authorize every derived analysis. SenseMem's
 mechanism is not a complete per-modality consent workflow. Affect estimates must not be presented
 as clinical diagnoses or verified psychological traits.
 
-New analysis capabilities follow the [plugin admission rule](plugin-architecture.md#admission-rule).
+New analysis capabilities follow the [plugin admission rule](architecture.md#admission-rule).
 They use the same authoritative records, evidence links, and lifecycle as other derived memory.
 See [Security](../SECURITY.md) for model-data and deletion boundaries.

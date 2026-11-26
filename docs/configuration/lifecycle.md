@@ -27,6 +27,10 @@ This example targets a compatible local server. Use `json_schema` when it suppor
 The endpoint implements chat completions with one nonempty message or an explicit refusal.
 Source observations remain durable; failed formation can be retried without duplicating work
 already completed under the same recipe. Formation is one completion per add or batched add-many.
+Keep `add_many()` batches within the [SDK input bound](../operations.md#admission-limits) and the
+endpoint's request and output budgets. After fixing a formation failure, inspect
+`pending_captures()` and resume the affected sources with `settle(memory_ids=[...])`.
+See [settlement controls](../api/python-memory.md#settle) for retry and selection options.
 
 ### Input and output requirements
 

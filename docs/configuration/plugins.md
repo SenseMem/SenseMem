@@ -263,6 +263,10 @@ recipe. Empty stores may change their stage composition.
 
 ## Validation and ownership
 
+`Memory(...)` accepts constructed objects directly, `Memory.from_plugins()` accepts a bundle, and
+`Memory.from_config()` resolves bundled providers and host-supplied factories before delegating to
+the same assembly path. Optional backends only participate when configured.
+
 Unknown factory names, unsupported backend slots, and incompatible returned capabilities fail
 before local storage opens. Factory names are dictionary keys supplied by the host; configuration
 does not import a module, evaluate an expression, or discover executable entry points.
@@ -276,3 +280,14 @@ slots and registered tools.
 Factories own creation of their clients. Declare nested tool resources with `resources=(client,)`
 so the common resource traversal can deduplicate them. A factory that raises before returning an
 object is responsible for releasing any resources it allocated before that failure.
+
+Backend and computation plugin composition is fixed for one `Memory` lifetime. Close and reopen
+to change implementations, and keep persisted recipe spaces compatible or
+[replay the sources](../operations.md#changing-the-runtime-or-stored-representations). Routing and
+`Memory.capabilities` use the same immutable assembly snapshot. Reading capabilities does not
+probe backends again. An exception during capability discovery fails assembly.
+
+The host can register additional tools in `memory.tools` after opening. Duplicate names are
+rejected, and an agent run snapshots its tool definitions at startup. Registration exposes only
+the operations the host granted to that tool. See the [plugin boundaries](../architecture.md#plugin-boundaries)
+and [admission rule](../architecture.md#admission-rule) for kernel contracts.

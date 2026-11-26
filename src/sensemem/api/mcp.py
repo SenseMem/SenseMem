@@ -669,7 +669,7 @@ def _request_telemetry(tracer: Tracer) -> ServerMiddleware[None]:
 
 # Which of `MemoryCapabilities.operations` one of the thirteen tools can actually reach, mirroring
 # `app._ROUTED_OPERATIONS`. Consolidation, cognitive forgetting and rollback stay with the owning
-# process (`docs/context-os.md`), so the greeting's prose and its JSON must agree that there is no
+# process (docs/architecture.md#public-and-trust-boundaries), so the greeting must agree there is no
 # `consolidate` here; `perceive` reaches a tool only when the host opts in, and so do
 # `formation` and `describe_vision`, which run on the write path alone -- a read-only server has
 # no tool that forms, and none that captions a frame. `transcribe` stays unconditional: a read

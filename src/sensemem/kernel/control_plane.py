@@ -138,7 +138,7 @@ class ControlPlane(Traced):
         self._identities = identities
 
     # -- Agentic memory control plane ----------------------------------------------------------
-    # One bounded memory-management loop (gate 3 of docs/context-os.md). The backend sees a
+    # Bounded memory management (docs/memory-management.md). The backend sees a
     # bounded evidence set and only proposes; every field is validated here, each accepted
     # operation commits with its own append-only log row, and `rollback()` reverses it. Physical
     # deletion is not an intent: it stays on `delete()` under host authority. None of these

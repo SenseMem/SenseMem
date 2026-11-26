@@ -2873,7 +2873,7 @@ def test_a_concurrent_duplicate_is_refused_inside_the_transaction(tmp_path: Path
 
 
 def test_a_logged_operation_sequence_replays_against_a_fresh_store(tmp_path: Path) -> None:
-    """Gate 3's replay item: the log alone is enough to reproduce the derived state.
+    """The operation log supplies the operations needed to reproduce the derived state.
 
     Replay is the public `apply()` surface, not a backend impersonating one: the fresh store is
     configured with the same consolidation recipe -- a derived representation belongs to a

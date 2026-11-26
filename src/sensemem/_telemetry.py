@@ -41,9 +41,8 @@ EMBEDDING_TASK = "sensemem.embedding.task"
 ASYNC_QUEUE_TIME = "sensemem.async.queue_time_ms"
 CAPTURE_SETTLED = "sensemem.capture.records_settled"
 CAPTURE_FAILED = "sensemem.capture.records_failed"
-# The capture-to-searchable interval `docs/context-os.md` requires measured separately from the
-# capture acknowledgement and from settle duration. Reported as the batch maximum: one span
-# attribute answers "how stale was the oldest record this pass made searchable".
+# Capture timing (docs/observability.md#capture-timing) tracks the longest interval from
+# enqueue to searchable in this settle batch, independently of the settle duration.
 CAPTURE_TIME_TO_SEARCHABLE = "sensemem.capture.max_time_to_searchable_ms"
 # What one `sensemem.recall` stage actually planned and read. Every planning failure resolves
 # to the same fallback plan on purpose, so a result document reporting only scores cannot tell

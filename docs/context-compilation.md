@@ -293,11 +293,9 @@ alternatives produce unknowns; an uncertifiable or oversized witness union withh
 Historical `scope.known_at` retains full-closure delivery. This opt-in changes no stored record,
 schema, or default policy.
 
-![Complete support preserves AND premises, combines count and confidence witnesses, and charges shared sources once.](assets/tech-report/support-compilation.gif)
+![Complete support preserves AND premises, combines count and confidence witnesses, and charges shared sources once.](assets/tech-report/support-compilation.png)
 
-[View the static figure.](assets/tech-report/support-compilation.png)
-
-*The original technical-report Figure 4, animated in place. Panels (a–c) illustrate selected
+*From the SenseMem technical report, Figure 4. Panels (a–c) illustrate selected
 delivery certificates: every chosen AND assessment remains complete, and count and confidence
 can need different witnesses. The nine-to-three-record example uses `selected_proofs=True`;
 default compilation retains the full audit union. Panel (d) shows why shared sources support

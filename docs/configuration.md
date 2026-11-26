@@ -87,7 +87,7 @@ or consolidation.
 
 | Need | Slot or policy | Guide |
 | --- | --- | --- |
-| Select local/remote embedding | `embedding` | [Embedding choices](configuration/models.md#embedding-choices) |
+| Select local/remote embedding | `embedding` | [Embedding choices](configuration/models.md#embedding-choices) · [Local WeMM](configuration/models.md#local-wemm-embedding-service) |
 | Rerank text or multimodal candidates | `reranking` | [Semantic reranking](configuration/models.md#semantic-reranking) |
 | Transcribe and identify speech | `speech` | [FunASR](configuration/models.md#local-speech-with-funasr) |
 | Index visual captions/OCR | `vision` | [Visual descriptions](configuration/models.md#visual-descriptions) |

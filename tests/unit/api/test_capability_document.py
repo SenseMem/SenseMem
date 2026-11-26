@@ -1,8 +1,9 @@
 """Each surface's capability document must promise only what that surface can serve.
 
 `MemoryCapabilities.operations` is derived from the declared backends, but a derivation is not a
-routing table. The memory control plane is SDK-only by design (`docs/context-os.md`), so
-`consolidate` has no `/v1` route and none of the thirteen MCP tools, and the embodied operations
+routing table. The control plane stays in the owning SDK
+(`docs/architecture.md#public-and-trust-boundaries`). `consolidate` has no `/v1` route or MCP tool.
+The embodied operations
 reach a route or a tool only when the host opts in. An agent that read `consolidate` in the MCP
 greeting would go looking for a tool that is not there, so every surface narrows the list to what
 it serves -- except `sensemem doctor`, which reports for a CLI that does have the command.

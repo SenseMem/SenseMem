@@ -148,9 +148,8 @@ def _run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, object, l
 # Surface derivation
 
 
-# `docs/design-principles.md` lets the CLI omit an operation only when a transport limitation is
-# documented explicitly, so a gap needs an entry here and a row in `docs/api/cli.md` rather than
-# silence. Everything else must be a command.
+# Document each omitted operation here and in docs/api/cli.md. Every other public operation
+# must have a local command.
 UNEXPOSED_OPERATIONS: dict[str, str] = {
     "ask_stream": (
         "incremental delivery cannot survive one stable JSON document per invocation; `ask` "

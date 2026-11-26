@@ -103,6 +103,48 @@ differs from generic messages, unprompted stores, and the local recipe. Use fres
 switching. An explicit space must describe the actual server recipe; record the resolved server
 revision and validate numerical parity before treating local/served embeddings as equivalent.
 
+### Local WeMM embedding service
+
+Connect a separately served `tencent/WeMM-Embedding-2B` checkpoint to embed text, images, and
+video in one space. This recipe uses the OpenAI-compatible `messages` format and 2,048 dimensions.
+Install `sensemem[openai]` for transport and add `local` if you want FunASR for speech. Configure
+your service URL and credential, then load this YAML with
+[`Memory.from_config()`](../configuration.md#loading-a-configuration-file).
+
+```yaml
+data_dir: /absolute/path/to/a-new-sensemem-store
+
+embedding:
+  provider: openai
+  base_url: http://127.0.0.1:18871/v1
+  api_key: EMPTY
+  model: tencent/WeMM-Embedding-2B
+  dimension: 2048
+  modalities: [text, image, video]
+  request_format: messages
+  timeout: 120.0
+  max_retries: 0
+
+speech:
+  provider: funasr
+  device: cuda
+
+settings:
+  index_speech: true
+```
+
+WeMM accepts no audio embeddings in this recipe. FunASR turns audio and video speech into
+searchable text when `index_speech` is enabled. Omit `speech` and `index_speech` for an
+embedding-only setup. Configure a separate `generation` slot for grounded answers and an
+optional [`formation` slot](lifecycle.md#automatic-memory-formation) for typed assertions.
+An explicit `api_key` overrides SDK environment lookup.
+
+Obtain the checkpoint and serving requirements from the
+[WeMM-Embedding-2B model card](https://huggingface.co/tencent/WeMM-Embedding-2B). Keep its
+serving runtime separate, and pin the checkpoint revision and serving recipe for a compatible
+embedding space on reopen. Verify batching, inline bytes, and video frame limits on your server
+as well as the [SDK adapter bounds](../api/python-adapters.md#openaiembedder).
+
 ## Semantic reranking
 
 Reranking is off unless configured. It runs after authoritative hydration, scope/type/time

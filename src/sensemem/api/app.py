@@ -421,10 +421,8 @@ class _RequestTelemetry:
                 span.set_attribute("sensemem.transport.response_started", response_started)
 
 
-# Which of `MemoryCapabilities.operations` a `/v1` route can actually reach. Consolidation --
-# like cognitive forgetting and operation rollback, which are not derived capabilities at all --
-# has no route by design (`docs/context-os.md`), so `/healthz` must not advertise it; `perceive` reaches `perceiveMemory` only when the host opts in. An operation
-# added to the derivation stays unadvertised here until it is given a route.
+# `/healthz` advertises operations reachable through `/v1`. The control plane stays in the
+# owning SDK (docs/architecture.md#public-and-trust-boundaries), and perception is opt-in.
 _ROUTED_OPERATIONS = frozenset({"ask", "transcribe", "describe_vision", "formation"})
 _EMBODIED_ROUTED_OPERATIONS = frozenset({"perceive"})
 

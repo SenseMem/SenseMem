@@ -388,7 +388,8 @@ Every command whose operation has a `/v1` route runs under `--url`; the `--url` 
 the complete list. Eleven commands exit 10 with `unsupported_in_remote_mode` because the
 operation has no route at all, not because the CLI declines to send one:
 
-- The control plane is SDK-only by [documented design](../context-os.md): `consolidation-candidates`,
+- The [control plane](../architecture.md#public-and-trust-boundaries) runs in the SDK owner process.
+  Its local commands are `consolidation-candidates`,
   `consolidate`, `consolidate-pending`, `apply`, `record-outcome`, `forget`, `rollback`, and `operations`.
 - `add-stream`, `reindex`, and `optimize` are local ingestion and index maintenance on the owner's
   own directory.

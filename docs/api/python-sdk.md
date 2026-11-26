@@ -16,6 +16,7 @@ for the same operations in an async application.
 | Await operations or consume live streams | [Async and streaming](python-streams.md) |
 | Look up returned fields, enums, or root exports | [Public values](python-values.md) |
 | Implement inference or select a bundled model | [Backend protocols](python-backends.md), [adapters](python-adapters.md) |
+| Replace retrieval decisions or add ingestion stages | [Computation plugins](python-policies.md) |
 | Register capabilities or compose an optional tool-using agent | [Tools](python-tools.md), [agents](python-agents.md) |
 | Handle failures and input bounds | [Errors and limits](#errors-and-limits) |
 
@@ -50,6 +51,11 @@ Memory(
     former: FormationBackend | None = None,
     consolidator: ConsolidationBackend | None = None,
     reranker: RerankingBackend | None = None,
+    query_policy: QueryPolicy | None = None,
+    candidate_source: CandidateSource | None = None,
+    ranking_policy: RankingPolicy | None = None,
+    context_selector: ContextSelector | None = None,
+    ingestion_stages: tuple[IngestionStage, ...] = (),
     tools: ToolRegistry | None = None,
     settings: MemorySettings | None = None,
     tracer: opentelemetry.trace.Tracer | None = None,
@@ -81,7 +87,9 @@ build_memory_composition(
 visual description, faces, formation, consolidation, or reranking. An omitted slot does not inherit
 another slot's capability. `MemorySettings` carries policies; `tracer` is a separate dependency.
 
-`MemoryPlugins` is a value bundle with the same backend slots and optional tool registry.
+`MemoryPlugins` bundles the same backend slots, computation plugins, and optional tool registry.
+Use the [computation plugin contracts](python-policies.md) to replace query preparation, candidate
+discovery, ranking, or context selection, or add ordered ingestion stages.
 Construction validates protocols and declarations before storage opens. `Memory.from_config`
 constructs bundled providers or [host-registered factories](../configuration/plugins.md).
 `build_memory_composition` validates the specification and constructs the adapters, returning a
@@ -189,5 +197,6 @@ is separate. See [the shared error vocabulary](rest.md#codes-and-reasons).
 These are local ceilings; backend and REST/MCP limits may be narrower. One operation/process shares
 a 512 MiB materialization budget. Oversized input is invalid; contention is retryable capacity
 exceeded. Capture backlog caps at 10,000 per directory, while duplicate capture remains idempotent.
-[Runtime limits](../runtime-limits.md) defines worker/store/connection admission and cancellation.
+[Runtime limits](../operations.md#admission-limits) cover worker, store, and connection admission,
+and [cancellation](../operations.md#workers-and-cancellation).
 [Adapter limits](python-adapters.md#openai-request-behavior) defines media degradation and payloads.

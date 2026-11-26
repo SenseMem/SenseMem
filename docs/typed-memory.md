@@ -223,10 +223,16 @@ Unsupported on-disk predicate provenance is refused rather than silently reinter
 value is the relationship, and place/metadata are not inherited. All names of one identity share
 a lineage, so renaming retires the earlier assertion.
 
-The registry name/relationship and indexed transcript text project the current visible assertion
-in one commit. Naming logs a manual `IDENTIFY`; rollback restores its predecessor and both
-projections. It also withdraws complete downstream assessments that depend on the retracted
-naming assertion. Repeating a standing name changes nothing. Model-proposed identification, including
+The registry name and relationship and the indexed transcript text project the current visible
+assertion. When naming or rollback requires a speech refresh, SQLite evaluates and rolls back the
+candidate mutation to collect preparation inputs. The kernel prepares refreshed text and embeds it
+outside SQLite. The final transaction repeats the mutation, revalidates the inputs, and commits
+the names, evidence, operation log, text, vectors, and index outbox together. See
+[write consistency](architecture.md#write-consistency).
+
+Naming logs a manual `IDENTIFY`. Rollback restores its predecessor and projections and withdraws
+complete downstream assessments that depend on the retracted naming assertion. Repeating a standing
+name changes nothing. Model-proposed identification, including
 typed `speaker_names` returned by a vision model, instead carries `MODEL_INFERENCE`, the producing
 model and recipe, and the original source-memory IDs. It requires two independent groups before
 the name is projected; `IdentityProfile.confirmed` remains false until the host registers a name.

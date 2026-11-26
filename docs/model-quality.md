@@ -36,35 +36,7 @@ These checks establish SDK behavior and extension contracts. They do not measure
 quality or dataset-scale latency. Each deployed custom policy or stage needs its own fixture set,
 model revision where applicable, and task-specific quality thresholds.
 
-### Structural refactor evidence
-
-The 2026-11-17 refactor retains the default model identifiers `text-embedding-3-small`,
-`gpt-5-mini-2025-08-07` and `whisper-1`, their request recipes and prompt components.
-Embedding, transcription and completion now have separate adapters and explicit client ownership.
-The deterministic OpenAI transport fixtures require the same ordered media, response validation,
-error mapping, usage accounting and bounded retries for each role.
-
-Compiler qualification uses `context-selection-fixture-v1` and the
-`metamorphic-rank-test:4:l2-v1` / `metamorphic-claim-test:v1` fixtures through the public SDK.
-The latter proposes `MODEL_INFERENCE` preference states: assertions in one write batch may
-conflict, while later assertions obey validity and transaction time. Pass criteria require
-low-ranked counterevidence to survive budget changes, repeated values to remain answerable,
-unsafe closures to be withheld, and recall to avoid additional formation calls. One admission
-ledger accounts for complete records, excerpts, projections, certificates and section diversity.
-
-Naming failure tests require unchanged names, evidence, documents, vectors, operation logs and
-outbox rows after a failed embedding. A second SQLite connection must acquire a write transaction
-inside the embedding fixture, proving model preparation holds no SQLite write transaction.
-Real model-service qualification was not run for this structural refactor; these fixtures establish
-runtime and transport behavior, and do not establish learned-model quality or throughput.
-
 ## Prompt contracts
-
-The remote EmbeddingGemma 2 `special-tokens-v3` recipe fixes ordered text/media transport.
-Deterministic request fixtures cover query/document prefixes, media-first and interleaved inputs,
-and media-only inputs. This changes no checkpoint or prefix wording. Historical v2 measurements
-retain their original identities; no real-service quality or retrieval-accuracy comparison has
-been run for v3.
 
 SenseMem follows OpenAI's [prompt engineering guidance](https://developers.openai.com/api/docs/guides/prompt-engineering)
 on instruction priority, explicit output formats, and separating instructions from supplied data.
@@ -72,28 +44,26 @@ Its [reasoning guidance](https://developers.openai.com/api/docs/guides/reasoning
 also recommends direct tasks and clear boundaries without requesting a chain of thought.
 The bundled prompts request answers, typed proposals, plans, or bounded evidence justifications.
 
-Bundled templates and prompt composers live in
-[`src/sensemem/prompts/`](../src/sensemem/prompts/), grouped by operation.
-See [Maintain prompts](prompts.md) for the runtime and benchmark component inventory.
-The OpenAI adapter's request serialization and evidence fitting live in `_openai_requests.py`; local media encoding
-and integrity checks live in `_openai_media.py`; domain-response parsing lives in
-`_openai_output.py`. `_openai_completion.py` uses the official SDK's `ChatCompletionStreamState`
-for delta accumulation. Local lifecycle and output checks still classify incomplete streams,
-refusals, truncation, and cleanup failures. Model controls, closed schemas, recipe identities,
-and telemetry have their own internal
-components. See [the model boundary](architecture.md#model-boundary) for the complete layout.
+Bundled instructions and text composition live in
+[`src/sensemem/prompts/`](../src/sensemem/prompts/). The kernel supplies facts, scope, evidence,
+authority, and budgets. Prompt components render those decisions, and adapters serialize the
+result to the provider's request format. Keep prompt components pure and keep dynamic input,
+schemas, source aliases, and attachment markers structured.
 
-`OpenAICompletion` calls official SDK clients, which own authentication, HTTP transport, timeouts,
-and network retries. The adapter's one bounded retry after a malformed HTTP 200 JSON result
-validates a model response rather than repeating failed transport; refusals and truncation are
-excluded. The component split preserves the public backend protocols; prompt revisions require
-separate behavioral qualification and do not establish model quality by themselves.
+| Component | Responsibility |
+| --- | --- |
+| `generation.py` | Answering, formation, consolidation, event segmentation, visual descriptions, recall plans, and structured output. |
+| `recall.py` | Coverage, replanning, reference time, and the shared host query-budget suffix for text recall. |
+| `events.py`, `evidence_operations.py` | Continuation evidence and native evidence-tool instructions, examples, and recovery. |
+| `agent.py`, `tools.py`, `mcp.py`, `demo.py` | Default agent instructions and the SDK, MCP, and demo tool surfaces. |
+| `embedding.py`, `reranking.py` | Checkpoint-defined retrieval prefixes and classification templates. |
+| `context.py` | Context reading guides and rendering of evidence, omissions, and provenance. |
 
-Prompt-derived recipe identities include the extracted component. Benchmark caches bind to
-explicit runner, schema, prompt, and adapter versions, along with data and model settings.
-The full-context reader now uses `sensemem_full_context_v4`; qualify it with fresh measured
-results under the revised prompts. Earlier protocol results do not establish this version's
-quality, and the structural checks below do not claim an improvement in model behavior.
+Keep instructions direct and show only examples that exercise the actual schema and parser. Use
+[structured output](https://developers.openai.com/api/docs/guides/structured-outputs) and
+[function calling](https://developers.openai.com/api/docs/guides/function-calling) guidance for the
+chosen protocol. The [model boundary](architecture.md#model-boundary) covers request serialization,
+output validation, and retry behavior.
 
 | Surface | Contract |
 | --- | --- |
@@ -117,35 +87,25 @@ output protocols, effective controls, fixtures, and returned model identities be
 records. Structured output and local validation constrain shape and meaning; they do not establish
 factual accuracy or guarantee resistance to prompt injection.
 
-Published dataset query and judge wording remains pinned to its upstream protocol, including any
-requests for reasoning or unusual role formatting. These prompts belong only to the benchmark
-harness. Changing their wording, rubric, or transport requires a separately versioned protocol
-and renewed calibration; it cannot silently retain the same official-comparability claim.
+Benchmark-only prompts live under [`src/sensemem/benchmarks/`](../src/sensemem/benchmarks/).
+`prompts.py` owns dataset query specifications, `baseline_prompts.py` owns reader instructions,
+and `_official/` contains pinned query and judge wording. Reuse the official wording and rubric
+with the [upstream provenance](../src/sensemem/benchmarks/_official/NOTICE.md). Changes to wording,
+rubric, or transport require a separately versioned protocol and renewed calibration. Keep held-out
+answers and scorer-only fields out of generation inputs.
 Use OpenAI's [evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
 to compare representative, missing-evidence, and adversarial cases before accepting a quality claim.
 
 ## Prompt revision qualification
 
-The runtime instructions separate tasks, evidence boundaries, decision rules, and closed output
-contracts. They define schema-typed numeric strings, the selected strict or
-best-effort policy, observed counts, and uncertainty for indiscernible visuals or activities.
-Evidence-operation instructions distinguish function arguments from executor outcomes. Tool
-descriptions match actual IDs, optional planners, and host authority; event summaries have explicit
-quoted-data boundaries. Complete JSON examples include the fields required by their response
-schemas. EmbeddingGemma's checkpoint prefixes and Qwen's trained reranker template remain unchanged.
-See [the component review criteria](prompts.md#review-prompt-behavior).
+Run the [prompt example tests](../tests/unit/test_prompt_examples.py) against the runtime schema
+and parsers after editing a complete example. Qualify wording or policy changes with the relevant
+behavioral fixtures and a matched baseline.
 
-[`test_prompt_examples.py`](../tests/unit/test_prompt_examples.py) checks each complete example's
-closed fields, required fields, variants, and primitive types against the runtime schema; answer
-and recall examples also pass their local parsers. These checks establish executable examples,
-not factual accuracy, injection resistance, or an improvement over the previous prompts.
-
-The additional real-service fixture
-[`sensemem-prompt-stage-quality-v2`](../tests/integration/test_prompt_quality.py) covers previously
-unmeasured branches. Each case runs three times against a caller-selected model and declared
-immutable deployment revision, using strict JSON Schema, a 4,096-token output ceiling, a
-60-second request timeout, and no SDK transport retries. It uses synthetic observations and backend
-contracts without storage; it does not measure retrieval or application-data quality.
+The [`sensemem-prompt-stage-quality-v2` fixture](../tests/integration/test_prompt_quality.py)
+runs each synthetic case three times against a caller-selected model and declared immutable
+revision. It uses backend contracts, strict JSON Schema, a 4,096-token output ceiling, a
+60-second timeout, and no SDK transport retries.
 
 | Fixture | Pass criterion on every repeat |
 | --- | --- |
@@ -169,12 +129,6 @@ before claiming an improvement:
 SENSEMEM_PROMPT_EVAL=1 uv run --frozen pytest -W error -rP \
   tests/integration/test_prompt_quality.py
 ```
-
-For this revision, no real-service model or immutable deployment revision was selected and no
-live model checks or baseline comparison were run. Default collection skips these 30 case/repeat
-combinations before constructing a client. The existing reader, workflow, formation-time,
-affective, context, evidence-operation, and event/media gates remain necessary for the stages and
-modalities they cover. Local contract checks alone do not qualify this prompt revision for deployment.
 
 ## Answering and workflow checks
 
@@ -242,10 +196,8 @@ Version 5 keeps the original observation's `user_statement` provenance while req
 automatically extracted subclaim to remain `model_inference`. Quoting original words cannot
 authorize the model's subject, polarity, or property interpretation. Host-confirmed typed claims
 use an explicit typed `apply` operation. Preference checks require both the inferred state and
-the retained source provenance. Earlier version 4 scores do not validate this changed contract.
-
-The current full fixture has no claimed pass on an immutable model revision. Qualify the pipeline
-on a selected immutable revision before claiming trait alignment or named-trait quality.
+the retained source provenance. Qualify the pipeline on an immutable revision before making
+application-level trait or preference claims.
 
 Run the opt-in [integration fixture](../tests/integration/test_affective_memory_quality.py) with
 `SENSEMEM_AFFECTIVE_EVAL=1`, `OPENAI_API_KEY`, and the appropriate `OPENAI_BASE_URL`.
@@ -262,11 +214,8 @@ or quality on application recordings.
 
 ### Attribution qualification
 
-The expanded formation contract can propose typed emotional targets, elicitors, explicit denials,
-and original-text reporting witnesses. Credential-free tests cover local references, required
-evidence, separate reporters, exact scoped peer completion, and budget/deadline withholding.
-These are storage, grounding, and delivery checks. Earlier focused trait/state runs do not
-qualify attribution, and no real-model attribution pass is claimed.
+The formation gate assesses model-proposed targets, elicitors, denials, and original-text reporting
+witnesses. Run the attribution cases alongside the deterministic grounding and delivery tests.
 
 The `sensemem-affective-quality-v5` fixture has 29 cases. Its attribution checks cover distinct targets
 and elicitors, positive low-arousal affect, unknown causes, other-person reports, polarity,
@@ -365,10 +314,7 @@ model identifiers. Detailed measurement records belong in local research artifac
 ## Check event segmentation
 
 Event recipe v3 preserves interleaved source parts, derived interpretation roles, and explicit
-media references. Earlier native-media checks used an unpinned `qwen3.8-omni-flash` alias and
-local EmbeddingGemma 2. They preserved before/after colors but also produced an incorrect
-media-type description. They do not establish general perception accuracy or improvement over
-an earlier recipe. Qualify the deployed revision with the text and native-media fixtures below.
+media references. Qualify the deployed revision with both annotated text and original media.
 
 The `sensemem-event-segmentation-v2` fixture defaults to `gpt-5-mini-2025-08-07` and strict JSON
 Schema. Set `SENSEMEM_EVENT_MODEL` to qualify another configured revision. Event gates omit both
@@ -421,15 +367,6 @@ This gate measures the lossy continuation path separately from full-window reaso
 same explicitly pinned native deployment, omitted output-token limits, and three repeats;
 `-k native` runs both. Negative audio claims do not satisfy the completion-signal criterion.
 
-On 16 November 2026, the configured Qwen alias was assessed again without changing the native
-media fixture. Full-window native cases passed 5/9, with exact completed boundaries in 7/9.
-The corrected incremental diagnostic passed 2/3, with exact boundaries and an unfinished tail in
-all three repeats. Its first diagnostic run also exposed two harness errors when a model closed
-only an earlier prefix; those aborted runs are retained separately and are not scored as model
-failures or mixed into the corrected denominator. These measurements used recipe
-`qwen3.8-omni-flash:sensemem-event-segmentation-v2:d0d1a3960190bfd4:json-schema-v1:befb3a3e20347b64`;
-the model alias still has no known immutable revision.
-
 Event storage separates the synopsis as `model_interpretation`, records
 `summary_coverage="unverified"` and supplied modalities, and maps each original chunk to asset IDs.
 Multipart records do not copy whole-event factual claims into each local part's searchable body.
@@ -447,93 +384,41 @@ may claim that the media was delivered. A larger-budget control must deliver the
 A separate structured consumer request must identify the description as a model interpretation
 and deny having verified native media.
 
-On 16 November 2026, all three repeats passed these ten delivery and consumer checks with
-`qwen3.8-omni-flash`, `reasoning_effort=none`, strict JSON Schema, no output-token limit fields,
-120-second request timeouts, and no SDK retries. Real `google/embeddinggemma-2` embeddings used
-768 dimensions, the messages request format, and recipe
-`google/embeddinggemma-2:768:embeddinggemma2-ordered-text-prompts-special-tokens-v2:l2-v1`.
-The event recipe was
-`qwen3.8-omni-flash:sensemem-event-segmentation-v2:d0d1a3960190bfd4:json-schema-v1:befb3a3e20347b64`.
-Configured and returned names matched; neither service supplied an immutable model revision.
-These final checks used the renderer that normalizes displayed whitespace while preserving
-the complete structured source parts.
+Use the generation and embedding endpoints configured through `SENSEMEM_PROJECTION_*` in the
+fixture. Record both model revisions and score native perception separately from evidence delivery.
 
-Native perception is scored separately: the blue square appeared in all three summaries,
-and a positive completion-signal mention appeared in two. All three summaries contained the
-word “rocket”; this lexical diagnostic also counts rejected or quoted instructions, so it does
-not establish whether the model adopted the invented event. Neither these diagnostics nor
-successful projection delivery qualify native audio accuracy, exact tone counts, injection
-resistance, or a pinned deployment. Separate audio-only and multimodal diagnostics also missed
-exact tone counts and included a protocol failure. Event compression alone does not explain
-those errors; successful evidence delivery does not qualify native sound recognition.
+```bash
+SENSEMEM_PROJECTION_EVAL=1 uv run --frozen pytest -W error -rP \
+  tests/integration/test_media_context_projection_quality.py
+```
 
 The `sensemem-unverified-synopsis-count-delivery-v1`
-[fixture](../tests/integration/test_event_synopsis_delivery_quality.py) tests honest delivery
-instead of native perception. Its original media contains two sounds, paired with deliberately
+[fixture](../tests/integration/test_event_synopsis_delivery_quality.py) evaluates text-only delivery.
+Its original media contains two sounds, paired with deliberately
 scripted summaries claiming one, claiming two, or omitting sound. Each case repeats three times.
 Default compilation must deliver a clearly limited projection; a 48,000-character control must
 still deliver the four original media parts. The text-only consumer must leave the actual exact
 count unknown while retaining the separately requested summary claim as one, two, or unknown.
 It must not claim to have verified native media.
 
-The quoted wrapper explicitly treats positive details
-and exact counts as unverified model interpretations, without preventing inspection of original
-media when supplied. Its public SDK fixture passed all nine cases, including full-media controls.
-This qualifies interpretation delivery on this fixture, not native audio accuracy.
-Those controls checked SDK delivery only: the consumer still received the projected render text,
-not the admitted native media. This gate therefore does not test whether sufficient original
-audio produces a correct affirmative answer; a consumer that always leaves actual counts unknown
-could satisfy that part of the gate.
-
-These diagnostics used configured and returned `qwen3.8-omni-flash`, `reasoning_effort=none`, strict
-JSON Schema, no output-token limit fields, 120-second request timeouts, and no SDK retries.
-The final SDK gate used real `google/embeddinggemma-2`, 768 dimensions, messages requests, and
-recipe `google/embeddinggemma-2:768:embeddinggemma2-ordered-text-prompts-special-tokens-v3:l2-v1`.
-Neither service supplied an immutable revision. Set the generation and embedding endpoint,
-credential, and model environment variables named `SENSEMEM_PROJECTION_*` by the test privately:
+The consumer in this test receives projection text. The larger-budget control checks SDK media
+admission. Use the separate native-count gate to assess affirmative answers from original audio.
+Set `SENSEMEM_PROJECTION_MODEL`, `SENSEMEM_PROJECTION_BASE_URL`, `SENSEMEM_PROJECTION_API_KEY`,
+`SENSEMEM_PROJECTION_EMBEDDING_BASE_URL`, and any `SENSEMEM_PROJECTION_EMBEDDING_API_KEY` required by
+that endpoint. These fixtures use the EmbeddingGemma 2 messages recipe and strict JSON Schema.
 
 ```bash
 SENSEMEM_SYNOPSIS_DELIVERY_EVAL=1 uv run --frozen pytest -W error -rP \
   tests/integration/test_event_synopsis_delivery_quality.py
 ```
 
-The separately preregistered `sensemem-positive-native-count-v1` diagnostic addresses that
-coverage gap without changing the negative gate or its standard. It uses the unchanged original
-three-second WAV through default public `Memory.add` or `add_stream` and `ask`, with a fresh
-directory for every case and no relevance, budget, or answer-policy changes. Three repeats retain
-the original sound-count question. Three use a separately defined unit: every audible tonal burst
-separated by a silent gap. Three use that same question and original audio with a deliberately
-incorrect model synopsis claiming one burst. Every case requires the actual count two and a
-non-abstained answer; unknown is a failure. The correct count is never supplied to the model.
-
-All nine requests returned the correct affirmative count, and every generation request carried
-the matching original WAV bytes. The old and explicit-unit results remain separate populations.
-These trials used configured and returned `qwen3.8-omni-flash` and the same Gemma messages-v3
-recipe, reasoning control, absent token-limit fields, timeout, and retry controls described above;
-no immutable deployment revision was available. Five answers also added descriptions of timing,
-pitch, or duration that disagreed with the fixture construction. Those errors remain recorded
-separately from the preregistered count score. This audio-only diagnostic demonstrates useful
-affirmative counting on this source despite an incorrect synopsis. It does not qualify those
-extra details, audiovisual sound counting, general audio accuracy, or an improvement caused by
-the synopsis wrapper. Positive native-evidence checks must accompany text-only unknown checks;
-neither can substitute for the other.
-
 The independent `sensemem-positive-native-count-json-v1`
-[integration fixture](../tests/integration/test_native_count_positive_quality.py) makes that
-positive check reproducible without a word-matching scorer or a model judge. It uses the same
-original WAV and incorrect one-burst synopsis, default `Memory.ask` settings, and an explicit
-presentation request for only `{"count": integer}`. Every repeat requires strict JSON with no
+[integration fixture](../tests/integration/test_native_count_positive_quality.py) evaluates an
+explicit native-audio answer. It uses a three-second WAV containing two tonal bursts, an incorrect
+one-burst synopsis, default `Memory.ask` settings, and a presentation request for only
+`{"count": integer}`. Every repeat requires strict JSON with no
 extra fields, the integer two, no abstention, retrieval of the source, and matching original audio
 bytes in the actual generation request. This is a separate presentation fixture and population.
-
-On 16 November 2026, two of its three repeats passed. The other failed strict parsing while
-source retrieval, native audio delivery, non-abstention, and request controls all passed. Its
-answer body and validation-error category were not retained, so that failure cannot establish
-whether the audio count itself was correct. The failure remains in the denominator and was not
-retried. Subsequent fixture diagnostics record validation-error types and an answer hash without
-logging the response body. The original nine natural-language results and their five additional
-detail errors remain unchanged. No production prompt was changed; native audiovisual accuracy
-and this complete JSON presentation gate remain unqualified.
 
 Using the same private `SENSEMEM_PROJECTION_*` endpoint, credential, and model variables:
 
@@ -542,10 +427,7 @@ SENSEMEM_NATIVE_COUNT_EVAL=1 uv run --frozen pytest -W error -rP \
   tests/integration/test_native_count_positive_quality.py
 ```
 
-Credential-free tests prove that 130 synchronized chunks retain every original asset in one semantic event, bounded
-analysis windows, location scope, and recovery after a real process exit; they do not establish
-model quality. Synthetic inputs also do not establish quality on application
-recordings. Before deployment, qualify the chosen media-capable revision with authorized recordings
+Before deployment, qualify the chosen media-capable revision with authorized recordings
 covering pauses, camera changes, overlapping sound and vision, adjacent events, truncated
 recordings, and embedded instructions. Score boundaries against annotated chunk edges, summary
 grounding, unfinished-tail preservation, continuation fidelity, and source-media coverage separately.
@@ -577,11 +459,7 @@ protocol switches, SDK revision and every repeat's result when qualifying a depl
 alias alone does not qualify an immutable revision. Custom tools and changed instructions need
 their own fixtures and task-specific criteria, including missing evidence and adversarial outputs.
 
-The fixture is opt-in and was not run against a real service for this change. Credential-free tests
-verify native multimodal transport, tool-error repair, explicit `store=False`, failure mapping,
-resource ownership and execution bounds. They establish integration behavior, not model quality or
-prompt-injection resistance. The three synthetic cases also do not qualify ASR/face accuracy or
-real application recordings; evaluate the actual registered implementations separately.
+Evaluate the actual tools and modalities your application registers on representative inputs.
 
 ## Configure CI
 
@@ -608,18 +486,16 @@ fit the final budget; stored instructions must not change records or runtime lim
 evidence and a missing planner must remain visible. Planning must execute only when configured,
 and compilation must make no answer-generation call.
 
-The gate uses `qwen3.8-omni-flash` by default and local `google/embeddinggemma-2`, 768 dimensions,
-with the `messages` request recipe. Set `OPENAI_API_KEY`, optionally `OPENAI_BASE_URL`, and
+The gate uses `qwen3.8-omni-flash` by default and a served `google/embeddinggemma-2` model with
+768 dimensions and `messages` requests. Set `OPENAI_API_KEY`, optionally `OPENAI_BASE_URL`, and
 `SENSEMEM_EMBEDDING_BASE_URL` for your endpoints. Override the planner with
 `SENSEMEM_CONTEXT_EVAL_MODEL`. For Qwen's `qwen3.8-omni-flash` basename, this gate explicitly
 sets `extra_body.reasoning_effort: none` to disable thinking, retains strict JSON Schema,
 and uses a 120-second client timeout without transport retries. Other model overrides retain
 their own reasoning defaults. Output-token limit fields are omitted.
 
-These reasoning controls define a separate evaluation recipe; results under default thinking
-must remain separate. This fixture's stored-instruction case passed three repeats with thinking
-disabled, while earlier default-thinking runs included fallback after 120- and 180-second client
-deadlines. The gate's Qwen control does not change product defaults for other models.
+Report these reasoning controls with the configured model and keep results using other settings
+separate.
 
 ```bash
 SENSEMEM_CONTEXT_EVAL=1 uv run --frozen pytest -W error -rP \
@@ -639,13 +515,8 @@ This is a deterministic SDK contract, separate from language-model quality. Publ
 `Memory.apply` supplies typed assessments; a local deterministic embedder provides retrieval.
 No generated claim, parser acceptance rate, or model refusal earns a pass.
 
-On 16 November 2026, ten preregistered SDK cases passed: three singleton groups delivered .936
-in default mode and .84 in independent mode; a repeated capture stayed one group; budget failure
-withheld the anchor without editing its stored score; complete AND witnesses retained a weaker
-raw member; derived OR sources kept their full-store group; overlapping summary paths were
-reported under default grouping without being labelled independent. Withdrawal and reopening
-preserved those results. The fixtures used separate physical directories and made no external
-model requests. These results do not qualify extraction, perception, or personality accuracy.
+Cover both scoring modes, distinct and repeated capture groups, budget withholding, complete AND
+witnesses, full-store OR groups, overlapping summary paths, evidence withdrawal, and reopening.
 
 The [selected-proof tests](../tests/unit/test_selected_proofs.py) and
 [SDK/REST/MCP contract](../tests/contracts/test_context_proof_scoring_contract.py) cover the

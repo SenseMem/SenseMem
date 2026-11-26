@@ -147,6 +147,25 @@ evaluation.
 
 ## Architecture rules
 
+### Follow an operation
+
+1. Read [concepts](docs/concepts.md) and [typed memory](docs/typed-memory.md) for the public model.
+2. Use [`Memory.__init__`](src/sensemem/memory.py) as the dependency graph. Follow the public call
+   to the kernel plane that owns it.
+3. Trace writes through `Ingestion`, SQLite, and `Projection.drain`. Trace reads through
+   `Retrieval` and authoritative SQLite hydration. `Recall` supplies `Answering` and
+   `Compilation`, which deliver their results independently.
+4. Use [architecture](docs/architecture.md#code-layout) to find the owning module and follow its
+   direct callers. Open provider and transport adapters when the change crosses their boundaries.
+
+Check imports, exports, console entry points, framework callbacks, and protocols before removing
+a callable. For naming changes, verify that failed embedding leaves the whole mutation untouched
+and that model preparation holds no SQLite write transaction. Keep complete evidence, consent,
+and budget checks in compiler tests. Use [model quality](docs/model-quality.md#prompt-contracts)
+for prompt component ownership and qualification.
+
+### Local runtime invariants
+
 The supported local path is intentionally direct:
 
 ```text

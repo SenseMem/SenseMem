@@ -101,10 +101,8 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
     "export": ("exportSubject", None),
     "apply_retention": ("applyRetention", None),
 }
-# Operations no transport exposes, each with the reason. `docs/design-principles.md` requires a
-# transport gap to be documented rather than silently left out, and the union of this and
-# `SHARED_OPERATIONS` must be every public operation, so a new SDK operation cannot arrive without
-# someone deciding which of the two it belongs in.
+# Every operation must appear in `SHARED_OPERATIONS` or have an explicit reason for its absence
+# from REST and MCP. See docs/architecture.md#public-and-trust-boundaries.
 UNEXPOSED_OPERATIONS: dict[str, str] = {
     "call_tool": "application-defined capabilities are granted by the host, outside fixed transports",
     "prepare_input": "a leased model-input context manager is an in-process lifecycle boundary",
@@ -112,8 +110,7 @@ UNEXPOSED_OPERATIONS: dict[str, str] = {
     "replay_sources": "source replay runs between two host-owned directories",
     "reindex": "unbounded index maintenance an operator schedules, not a caller",
     "optimize": "index maintenance an operator schedules, not a caller",
-    # The control plane rewrites derived memory under policy. `docs/context-os.md` keeps that
-    # authority with the host: an agent must not gain it by holding ordinary recall access.
+    # The control plane rewrites derived memory under policy inside the owner process.
     "consolidation_candidates": "the control plane's own due-work queue, read by the host loop",
     "consolidate": "derives and retires memory under host authority, not agent authority",
     "consolidate_pending": "schedules due consolidation candidates under host authority",

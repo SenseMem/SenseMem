@@ -32,18 +32,76 @@ and loaders without writing memory. Remote doctor checks REST liveness.
 
 ## Concurrency and overload
 
-Fixed directory/process budgets bound operations, model work, async submission, stream workers,
-index routes, SQLite connections, input materialization, and captures. See
-[runtime limits](runtime-limits.md) for the complete table and worker semantics.
-
 Overload raises retryable `StorageError(reason="capacity_exceeded", stage="admission")`.
-REST returns 503 with `Retry-After: 1`; MCP preserves reason/retryability. Bound producers and
-retry with bounded backoff. Health checks stay outside admission.
+REST returns 503 with `Retry-After: 1`, and MCP preserves the reason and retryability. Bound
+producers and retry with bounded backoff. `/healthz` stays outside admission.
 
-Close abandoned streams; cancelling a waiter retains capacity until its synchronous work stops.
-These limits do not cap process RSS, GPU memory, provider quotas, or framework queues. Measure
-successful throughput, tail latency, and rejection rates with
-[the local SDK load test](benchmarks/local.md#measure-local-sdk-concurrency) before sizing producers.
+### Admission limits
+
+Directory limits apply to one physical `data_dir`. Process limits are shared across directories.
+
+| Resource | Limit |
+| --- | --- |
+| Active memory operations across SDK, REST, and MCP | 32 per directory, 128 per process |
+| Operations that can invoke a model | 28 per directory and per process |
+| Submitted async SDK calls, including live vision descriptions | 32 per directory, 128 per process |
+| Pinned answer-stream workers shared by `AsyncMemory` and REST | 8 per directory, 32 per process |
+| Index-route workers | 4 per directory, 16 per process |
+| Speech-overlap workers | 2 per directory, 8 per process |
+| SQLite handles, borrowed and idle | 32 per directory, 128 per process |
+| REST `/v1` requests and MCP tool calls sharing one directory | 32 per directory, 128 per process |
+| Open local stores | 16 per process |
+| Cached candidate identity projections | 1,024 per directory |
+| Cached hydrated plain-text records | 1,024 per directory, at most 2,048 content and metadata characters each |
+| Materialized text and media retained by active operations | 512 MiB per operation and per process |
+| Inputs in one SDK `add_many()` | 1,024 |
+| Captures awaiting enrichment or formation | 10,000 per directory |
+
+Admission is immediate. Text is charged by UTF-8 size and media by byte size before materialization.
+Inputs above the per-operation byte cap raise `ValidationError`. Otherwise valid inputs raise
+retryable `capacity_exceeded` if the process budget is full. A full capture backlog refuses new
+queued records atomically and still accepts idempotent duplicate captures. Settle existing captures
+before retrying. Cache reuse bypasses active writes and invalidates at transaction end. A working
+set above its bound disables that cache until the next write generation. Hydrated record caching
+excludes scoped reads, media, and semantic context, and retains at most 8 MiB of UTF-8 content and
+metadata per directory plus object overhead.
+
+### Workers and cancellation
+
+The model budget leaves four directory operation slots available to lightweight reads. Backend
+inference locks and unrelated host work can still delay progress. Formation calls on distinct
+sources can overlap. Concurrent writes of the same source share a formation call, with serialized
+and transactionally checked application. Naming and rollback use the
+[atomic write path](architecture.md#write-consistency).
+
+The process creates and reuses up to 64 asynchronous parent threads, 16 index threads, eight
+speech threads, and 32 pinned stream threads. Index routes run in batches of up to four per
+operation, including temporal supplements. At most 128 index jobs and 32 speech-overlap jobs can
+be pending or running. Index jobs acquire directory quota before dispatch. Failed submissions
+wait for earlier routes before releasing assets. Parent calls have their own pool so child routes
+can run. Cancelling an async waiter retains capacity until synchronous work stops. Close abandoned
+streams with `close()` or `aclose()`. A stream worker stays pinned through cleanup and is reusable
+before terminal delivery.
+
+REST reads a request body within 30 seconds total and allows up to 30 seconds for each response
+send. Body timeout returns a retryable 503 `timeout` envelope. A send timeout ends the response
+and frees request capacity. MCP admits tool calls before framework worker dispatch. Configure HTTP
+connection and MCP session limits at the host.
+
+SQLite and native index allocation preserve file-descriptor headroom under shared admission.
+Descriptor exhaustion reports `capacity_exceeded`, including at open. The process retains at most
+64 idle SQLite handles, with each directory's first four idle handles protected from eviction.
+Oldest surplus handles close first. Active requests can reclaim idle handles before reporting
+overload. Handles closing during eviction still count against the directory limit. Directory
+closure waits for its own borrowers, evictions, and jobs without shutting down other directories'
+workers. Each closing directory can use one cleanup thread.
+
+These bounds cover runtime-owned work. Size process RSS, GPU memory, decoded media, caller buffers,
+native allocations, provider quotas, and framework queues separately. Measure throughput, tail
+latency, and rejections with the [local SDK load test](benchmarks/local.md#measure-local-sdk-concurrency).
+Use finite backend timeouts and a host-side producer bound. Uvicorn's
+[concurrency limit](https://uvicorn.dev/server-behavior/#resource-limits) can bound connections and
+in-flight tasks in addition to the runtime's admission.
 
 ## Health
 

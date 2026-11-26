@@ -13,17 +13,9 @@
 </p>
 
 <p align="center">
-  <strong>Give your agents memory that lasts—and context that matters.</strong>
-</p>
-
-<p align="center">
   SenseMem is a unified context and memory layer for agents. It turns conversations, images,
   audio, and video into durable, searchable memory, then brings the right evidence back to the
   agent's current task.
-</p>
-
-<p align="center">
-  <strong>Capture once. Remember across sessions. Build context for every task.</strong>
 </p>
 
 <p align="center">
@@ -39,14 +31,10 @@ connect today's question with last week's conversation. SenseMem gives you the b
 for that continuity: preserve the original observation, organize what it means, retrieve it by
 meaning and context, and deliver evidence your agent can use.
 
-![Multimodal observations become revisable knowledge and evidence-backed task context.](docs/assets/tech-report/memory-lifecycle.gif)
+![Multimodal observations become revisable knowledge and evidence-backed task context.](docs/assets/tech-report/memory-lifecycle.png)
 
-[View the static figure.](docs/assets/tech-report/memory-lifecycle.png)
-
-*The original technical-report Figure 2, animated in place: an image places a headset on a desk;
-a later observation moves it to a cabinet. The animation follows durable capture, explicit
-settlement, validated knowledge revision, and the separate compile and ask branches. The
-original observations remain available as supporting evidence.*
+*From the SenseMem technical report, Figure 2. An observation places a headset on a desk and a later
+observation moves it to a cabinet. Both remain available as evidence after the state is revised.*
 
 ## Why SenseMem
 
@@ -113,37 +101,9 @@ Runtime requirements and the full extra catalog live in the
 
 ## Watch audio/video become memory
 
-Open the [best practices notebook](examples/best_practices.ipynb), fill in its API key and
-model settings, and execute the cells from the beginning. Use the
-[repository environment](CONTRIBUTING.md#setup) with `ffmpeg` available.
-The replay, event formation, retrieval, and playback code runs directly in the notebook.
-
-The bundled 52-second Sintel trailer includes **14 prepared, timestamped audio/video input windows**.
-Each window pairs an independently playable MP4 with sound and synchronized WAV audio. Three async tasks
-accept these windows, form searchable events, and query the growing memory concurrently.
-`append()` durably accepts a window; `process()` asks the model to group consecutive windows
-into complete events. Each event retains its source interval, summary, and original media.
-
-After processing, the event table shows which input windows belong to each event. The notebook
-then combines semantic queries with `occurred_from` / `occurred_until` bounds:
-
-```python
-result = await async_memory.search(
-    text,
-    memory_type=MemoryCategory.EPISODIC,
-    occurred_from=start,
-    occurred_until=end,
-    limit=10,
-)
-```
-
-The notebook directly plays the matching original audio/video retrieved through `read_asset()`.
-Time filters return complete overlapping events. The notebook also exercises an empty time
-window and an event's exclusive end boundary. Event counts and boundaries come from each run.
-
-The [included media](examples/media/README.md) contains the Sintel trailer and a public speech
-recording. Sintel is an animated film: © copyright Blender Foundation | durian.blender.org,
-[CC BY 3.0](https://durian.blender.org/sharing/).
+The notebook replays timestamped audio and video, forms searchable events, and plays the original
+media behind time-bounded search hits. Follow the [example catalog](docs/examples/README.md) for
+notebook setup and the [included media](examples/media/README.md) for source licenses.
 
 ## From stored evidence to agent context
 
@@ -170,7 +130,7 @@ analysis connects voice and face observations with explicit naming and consent o
 
 Deploy one owner per physical data directory. Share that owner through a transport when several
 clients need access. For a network deployment, configure authentication and TLS at the host boundary.
-See [product capabilities](docs/product-capabilities.md), [deployment](docs/deployment.md), and
+See the [capability map](docs/README.md#choose-capabilities), [deployment](docs/deployment.md), and
 [security](SECURITY.md).
 
 ## Measured on multimodal memory tasks
@@ -192,7 +152,7 @@ your own configuration and compare changes.
 | Goal | Guide |
 | --- | --- |
 | Store and retrieve your first memory | [Quick start](docs/quickstart.md) |
-| Run memory recipes and concurrent audio/video recall | [Best practices notebook](examples/best_practices.ipynb) |
+| Run memory recipes and concurrent audio/video recall | [Examples](docs/examples/README.md) |
 | Understand the memory model | [Core concepts](docs/concepts.md) |
 | Choose models and optional capabilities | [Configuration](docs/configuration.md) |
 | Integrate an agent or application | [SDK](docs/api/python-sdk.md) · [REST](docs/api/rest.md) · [MCP](docs/api/mcp.md) · [CLI](docs/api/cli.md) |
@@ -200,7 +160,7 @@ your own configuration and compare changes.
 | Capture continuous input | [Streaming and interaction memory](docs/omni-streaming-and-interaction-memory.md) |
 | Try a live microphone and camera conversation | [Local audio/video demo](docs/live-demo.md) |
 | Operate and recover an instance | [Operations](docs/operations.md) · [Troubleshooting](docs/troubleshooting.md) |
-| Understand or extend the kernel | [Architecture](docs/architecture.md) · [Plugin architecture](docs/plugin-architecture.md) |
+| Understand or extend the kernel | [Architecture](docs/architecture.md) · [Plugin extension rules](docs/architecture.md#admission-rule) |
 
 Browse the [documentation index](docs/README.md) for the complete learning and reference paths.
 

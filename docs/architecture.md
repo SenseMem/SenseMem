@@ -16,6 +16,12 @@ This page defines implementation invariants. See [core concepts](concepts.md) fo
 
 ## System boundary
 
+![Finalized multimodal capture, supported memory, and bounded task context.](assets/tech-report/contextos-overview.png)
+
+*From the SenseMem technical report, Figure 1. SQLite and original media retain observations,
+revisable assertions, and their support. Zvec supplies rebuildable search. The model boxes illustrate
+roles that depend on configuration, and the host controls goals, scheduling, and actions.*
+
 | Component | Responsibility |
 | --- | --- |
 | `Memory` | Validate policy and backend contracts once, open storage in order, wire the kernel planes, and forward every public operation to the plane that owns it. |
@@ -31,7 +37,7 @@ data, not an account, authorization, request, or isolation boundary.
 
 ## Code layout
 
-[The maintainer map](maintaining.md) gives a reading route and maps changes to their owners.
+For a code change, start with the [maintainer reading route](../CONTRIBUTING.md#follow-an-operation).
 Public values live in small domain modules (`content.py`, `records.py`, `semantics.py`,
 `identity.py`, `context_values.py`, `stream_values.py`); `types.py` contains shared enums.
 `context_bundle.py` validates delivered bundles, while `context_rendering.py` renders them.
@@ -133,10 +139,9 @@ with its primary record write.
 `store/_capture_queue.py` admits deferred captures for settlement; `store/_outbox.py` schedules
 search-index projection. These queues share SQLite transactions without sharing queue policy.
 
-`Embedding` builds speech-document refresh callbacks for naming changes. Formation and control
-operations obtain these callbacks directly from it. SQLite invokes them inside the naming
-transaction, so an embedding failure rolls back names, evidence, documents, vectors, and outbox
-rows together.
+[`store/_naming_projection.py`](../src/sensemem/infrastructure/local/store/_naming_projection.py)
+owns the naming document snapshot and projection validation. The kernel prepares refreshed
+speech documents and embeddings between the two passes of the [write path](#write-consistency).
 
 `store/_selection.py` owns version eligibility for both predicate selection and authoritative
 hydration. It selects the latest eligible version in SQLite before transferring a context row,
@@ -193,12 +198,12 @@ retain historical clause versions on rollback.
 
 ## Write consistency
 
-Naming can change indexed speech documents. SQLite first evaluates the proposed mutation in a
-transaction and returns an exact `NamingDocuments` snapshot by rolling that transaction back.
-The kernel prepares text and vectors outside SQLite. The store replays the same mutation with
-that `NamingProjection`, verifies that the snapshot still matches, and commits names, evidence,
-text, vectors, operation log and outbox together. A changed snapshot raises a stale-operation
-error; a model failure commits nothing. Storage receives values and never a model callback.
+When a naming mutation changes indexed speech documents, SQLite first evaluates and rolls back
+the candidate mutation to return an exact `NamingDocuments` snapshot. The kernel prepares text
+and vectors outside SQLite. The store repeats the mutation with that `NamingProjection`,
+verifies that the snapshot still matches, and commits names, evidence, text, vectors, operation
+log, and outbox together. An embedding failure or changed snapshot leaves the naming mutation
+uncommitted.
 
 ```mermaid
 flowchart LR
@@ -328,8 +333,9 @@ the claim. Naming creates a bound `ENTITY` assertion and uses the same versionin
 and rollback rules without requiring formation.
 
 `identities.name`, `identities.relationship`, and indexed speech text project the current visible
-naming assertion. Every operation that changes its visibility or binding updates these projections
-in the same SQLite transaction, keeping names, evidence, and search documents consistent.
+naming assertion. A change to visibility or binding that needs speech refresh uses the
+[two-pass write](#write-consistency) to prepare vectors outside SQLite and commit the validated
+projections with the assertion.
 
 The binding is deterministic policy, never a model's choice: the kernel stamps it when a
 proposed claim's subject matches the canonical subject of a cited, current visible naming
@@ -571,7 +577,7 @@ preserves the public backend protocols and current prompt text.
 The kernel and adapters pass facts and selected settings into the prompt components rather than
 embedding instructions in execution branches. Benchmark query, baseline, and judge prompts remain
 in `benchmarks/`, with pinned upstream wording under `benchmarks/_official/`. See
-[Maintain prompts](prompts.md) for component ownership and change validation.
+[prompt contracts](model-quality.md#prompt-contracts) for component ownership and qualification.
 
 The two reasoning contracts differ only in horizon and authority scope. A `FormationBackend`
 proposes typed semantics from one committed observation. A `ConsolidationBackend` proposes
@@ -637,6 +643,43 @@ representation checks. Required caption conversion preserves its original failur
 and answer stages. Optional enhancement may be skipped when native or derived content already
 supplies a usable representation. Programming errors are not relabelled as storage I/O failures.
 
+## Plugin boundaries
+
+The host selects backends, models, and hardware. A fixed pipeline and an optional
+[tool-using agent](api/python-agents.md) can call the same [registered tools](api/python-tools.md).
+An agent can supply temporary context through `AsyncContextSource`. The host must explicitly
+grant each tool access to memory operations. Tool registration grants no mutation authority.
+
+[Backend protocols](api/python-backends.md) supply inference with declared modalities and typed
+proposals. [Computation plugins](api/python-policies.md) can choose query representations,
+discover or score candidates, propose context anchors, or add labelled interpretations before
+perception and embedding. The kernel enforces scope, hydrates source IDs from SQLite, and applies
+evidence, consent, conflict, and budget rules to the final context. Plugins cannot persist their
+proposals directly or replace final hydration. The store, media CAS, outbox, and index are kernel
+infrastructure. Plugin code runs with the host process's privileges and must be trusted.
+
+Plugins that produce persisted derivations declare the corresponding recipe space. Changes to
+weights, prompts, preprocessing, or other output-affecting controls must change that declaration
+even if the model name stays the same. Request-local reranking scores need no persisted space.
+See [plugin configuration](configuration/plugins.md#validation-and-ownership) for assembly,
+capability snapshots, and resource ownership.
+
+### Admission rule
+
+A new backend protocol that gives results kernel semantics needs all of the following:
+
+1. A concrete implementation in `src/`.
+2. A reachable caller on a public product path.
+3. Declared input modalities and typed output.
+4. Documented provenance, configuration, resource lifecycle, concurrency, privacy, and failure mapping.
+5. Tests that exercise the capability through the public product path.
+
+Application tools use typed contracts, explicit registration, and declared resource ownership.
+They need no bundled implementation or new kernel slot. An ingestion stage can add source-labelled
+interpretations. Promotion to facts, identity, or consent requires the corresponding typed proposal
+or host-authorized operation. For example, the identity plane validates typed naming proposals and
+owns reversible `IDENTIFY` operations. A name mentioned in a caption remains observation text.
+
 ## Public and trust boundaries
 
 Validate caller values once at the boundary that owns them, then pass typed values inward.
@@ -663,12 +706,13 @@ operations exposed by REST; host switches still gate sensitive routes.
 The mapping is listed in [the CLI reference](api/cli.md#operations-without-a-remote-route).
 
 Compiling context creates no memory records, but can persist query caches and failure signals.
-The memory control plane — `consolidation_candidates()`,
-`consolidate()`, `consolidate_pending()`, `apply()`, `record_outcome()`, `forget()`, `rollback()`, and
-`operations()` — stays in the owner process, which is also the process that
-can audit and reverse an operation through its log. `export()` is the one read that crosses that
-line, because a data subject's right of access covers the log rows that moved their records; it
-proposes and reverses nothing, and rides the `identity_operations` switch.
+The [memory control plane](api/python-control.md) is SDK-only in the owner process.
+`consolidation_candidates()`, `consolidate()`, `consolidate_pending()`, `apply()`,
+`record_outcome()`, `forget()`, `rollback()`, and `operations()` have no REST route or MCP tool.
+The local CLI calls the owning SDK directly. A server host can schedule bounded maintenance
+through the SDK in its own process. The `identity_operations` switch can expose `export()` so a
+data subject can receive operation log rows concerning their records. Export grants no authority
+to propose, apply, or reverse an operation.
 
 Python callers may intentionally pass regular local `Path` values; SenseMem opens only regular
 files and avoids following the final symlink where the platform supports it. REST and MCP accept

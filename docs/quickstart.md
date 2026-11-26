@@ -169,7 +169,7 @@ Choose model backends in [configuration](configuration.md), and use the
 
 | Goal | Guide |
 | --- | --- |
-| Choose capabilities for an application | [Product capabilities](product-capabilities.md) |
+| Choose capabilities for an application | [Capability map](README.md#choose-capabilities) |
 | Understand records, evidence, and model routing | [Core concepts](concepts.md) |
 | Configure models and optional formation | [Configuration](configuration.md) |
 | Use the complete API | [SDK reference](api/python-sdk.md) |

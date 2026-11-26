@@ -872,11 +872,7 @@ class Memory:
         return self._records.reinforce(memory_ids)
 
     # -- Agentic memory control plane ----------------------------------------------------------
-    # One bounded memory-management loop (gate 3 of docs/context-os.md). The backend sees a
-    # bounded evidence set and only proposes; every field is validated here, each accepted
-    # operation commits with its own append-only log row, and `rollback()` reverses it. Physical
-    # deletion is not an intent: it stays on `delete()` under host authority. None of these
-    # methods is exposed on REST or MCP.
+    # The control plane runs in the owning SDK (docs/architecture.md#public-and-trust-boundaries).
 
     def consolidation_candidates(
         self,

@@ -5,7 +5,7 @@ current task. One `Memory` instance handles storage, retrieval, context compilat
 grounded answers. Your application supplies observations, model backends, and the agent's goals.
 
 This guide explains the concepts behind the [quick start](quickstart.md). Use
-[product capabilities](product-capabilities.md) to choose features,
+[the capability map](README.md#choose-capabilities) to choose features,
 [architecture](architecture.md) for consistency guarantees, and the
 [SDK reference](api/python-sdk.md) for exact signatures.
 
