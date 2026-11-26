@@ -1,25 +1,20 @@
 # Application plugin factories
 
-Use `Memory.from_config(..., factories=...)` to construct application-owned integrations from
-data. The host supplies a mapping of factory names to already imported Python callables. A
-`PluginConfig` names a bundled or host factory and passes its `options` object to it. Both use
-the same per-instance catalog, capability validation and resource ownership.
+Compose custom models, computation policies, ingestion stages, and typed tools around the SenseMem kernel. `Memory.from_config(..., factories=...)` constructs application-owned integrations from configuration data using explicitly supplied Python callables, sharing the same capability validation and resource ownership as bundled providers.
 
-`MemorySpec` is the only declarative composition shape. Each backend field accepts either
-a typed bundled `provider` declaration or a `PluginConfig` with `factory` and `options`.
-Already validated provider values go directly to their typed builders; only factory options
-are validated by the selected factory. Tools and ingestion stages use factory declarations.
+## Kernel and plugin boundary
 
-A factory has the signature `Callable[[Mapping[str, object]], Closable]`. Backend factories
-return an object implementing the slot's [backend protocol](../api/python-backends.md). Tool
-factories return a [registered tool](../api/python-tools.md), typically a `Tool` with Pydantic
-input and output models. Factories validate their own options, including model revisions and
-runtime settings specific to their implementation.
+Plugins supply inference, scoring, selection, or interpretation; the kernel retains memory identity, validation, SQLite and media-CAS durability, the index outbox, SQLite hydration, consent, evidence closure, and budget admission. Composition stays fixed for one `Memory` lifetime—changing a backend requires closing and reopening the instance.
+
+- **[Backend protocols](../api/python-backends.md):** integrate model inference into built-in memory slots (`embedder`, `answerer`, `transcriber`, `vision_describer`, `face_analyzer`, `former`, `consolidator`, `reranker`, `EventSegmentationBackend`). Compose multiple models cleanly with `GenerationRouter`, `EmbeddingRouter` (shared vector space and dimension), and `EvidenceGeneration` (media selection and source metadata enrichment).
+- **[Computation policies and stages](../api/python-policies.md):** replace `QueryPolicy`, `CandidateSource`, `RankingPolicy`, and `ContextSelector`, or append ordered `IngestionStage` interpretations before built-in perception and embedding. Built-in defaults implement the same public protocols.
+- **[Typed tools](../api/python-tools.md):** register arbitrary Pydantic-validated computations in `ToolRegistry` without adding a kernel slot, shared by fixed pipelines (`memory.call_tool`) and [optional agents](../api/python-agents.md).
+
+Any backend whose output is persisted (`embedding_space`, `transcription_space`, `face_space`, `formation_space`, `vision_space`, or `IngestionStage.space`) must change its declared space whenever its model, prompt, or preprocessing recipe changes so cached derivations never mix incompatible recipes. Request-local components (`RerankingBackend`, `QueryPolicy`, `CandidateSource`, `RankingPolicy`, `ContextSelector`) have no persisted space and can change on reopen without replay.
 
 ## Define factories in the host
 
-These examples reuse bundled adapters; a factory can construct a third-party protocol
-implementation through the same interface.
+A factory has signature `Callable[[Mapping[str, object]], Closable]`. Backend factories return an object implementing the slot's backend protocol; tool factories return a `Tool`. Factories validate their own options:
 
 ```python
 from collections.abc import Mapping
@@ -86,15 +81,11 @@ factories: dict[str, PluginFactory] = {
 }
 ```
 
-Install the optional runtimes required by those particular adapters, such as `sensemem[local]`
-for this example. The registry itself introduces no model runtime dependency.
+Install the optional extras required by the adapters your factories construct (such as `sensemem[local]` above).
 
 ## Construct backend slots through factories
 
-The declarative fields are `embedding` (required), `generation`, `speech`, `vision`, `face`,
-`formation`, `consolidation`, `reranking`, `query_policy`, `candidate_source`, `ranking_policy`,
-and `context_selector`. They are the same fields used for bundled providers. Declare ordered
-computations in `ingestion_stages`, and additional tools in the separate `tools` list.
+`MemorySpec` accepts either a bundled `provider` declaration or a `PluginConfig` (`factory` + `options`) in each backend field (`embedding`, `generation`, `speech`, `vision`, `face`, `formation`, `consolidation`, `reranking`, `query_policy`, `candidate_source`, `ranking_policy`, `context_selector`), plus `ingestion_stages` and `tools` lists:
 
 ```python
 from sensemem import Memory, MemorySpec
@@ -124,15 +115,7 @@ with Memory.from_config(config, factories=factories) as memory:
     print(result.document())
 ```
 
-`Memory.from_config()` also accepts this shape as a plain mapping. `settings` and top-level
-`retention` retain their existing meanings. Declaring a registered backend does not add an
-automatic Pipeline stage; its existing memory capability determines where the kernel uses it.
-The host chooses when to invoke additional tools directly or through an agent.
-
-## Add tool factories to the bundled provider catalog
-
-Keep `MemorySpec` when bundled providers cover the backend slots. Its `tools` field accepts
-the same factory declarations:
+`Memory.from_config()` and `AsyncMemory.from_config()` also accept plain mappings. You can mix bundled `provider` slots with custom `factory` slots and `tools` in the same `MemorySpec`:
 
 ```python
 from sensemem import Memory, MemorySpec
@@ -157,14 +140,9 @@ with Memory.from_config(config, factories=factories) as memory:
     print(memory.call_tool("lookup", {"term": "episodic"}).document())
 ```
 
-The `provider` fields remain concise declarations for bundled models. To mix bundled models
-with third-party backends, put a factory declaration directly in the corresponding field.
-`AsyncMemory.from_config()` accepts the same configurations and explicit factory mapping.
-
 ## Bundled factories and computation policies
 
-Bundled names are reserved and cannot be overridden by the host. The catalog is built for each
-composition; registration changes neither other instances nor process-wide state.
+Bundled factory names are reserved and cannot be overridden by the host. The catalog is per-instance with no global registry or dynamic module import:
 
 | Factory | Role |
 | --- | --- |
@@ -185,9 +163,7 @@ composition; registration changes neither other instances nor process-wide state
 | `sensemem.ranking.default` | `ranking_policy` |
 | `sensemem.context.default` | `context_selector` |
 
-Model factories accept the corresponding bundled provider's options without a `provider` field.
-The four default computation factories accept no options. For example, combine a bundled encoder with
-an application ranking policy:
+Model factories accept the corresponding bundled provider's options without a `provider` field; the four default computation factories accept no options:
 
 ```python
 from sensemem import DefaultRankingPolicy, Memory
@@ -207,34 +183,11 @@ with Memory.from_config(
     memory.add("The spare key is in the workshop")
 ```
 
-`QueryPolicy.plan(QueryRequest)` selects query text and representations; the kernel executes
-embedding calls against the declared capabilities. `CandidateSource.search(CandidateRequest,
-CandidateReadPort)` proposes native index references or existing local memory IDs. Sources with
-`requires_embeddings=False` skip query embeddings. The scoped read port cannot broaden the
-request's bounds or mutate storage. See [computation plugins](../api/python-policies.md) for
-contracts and examples.
-
-`RankingPolicy.rank(RankingRequest)` proposes scores for the supplied authoritative candidates.
-`ContextSelector.select(ContextSelectionRequest)` returns `ContextSelection` with candidate
-anchor IDs in priority order and an optional diversity preference.
-Candidates report full closure costs and optional `excerpt_chars` and `projection_chars` costs.
-The request prices the corresponding section headings through `excerpt_section_chars` and
-`projection_section_chars`. These are alternative delivery costs; a text-only projection has
-omitted native media and cannot satisfy a required evidence closure. The compiler admits that projection when the complete record exceeds character or media limits.
-Selectors do not simulate or consume budgets; one compiler admission ledger owns those decisions.
-The kernel validates results and retains identity, visibility, consent, evidence closure and budget
-checks. `Memory` selects the corresponding default implementation for each omitted computation
-role. Object compositions pass `query_policy=`, `candidate_source=`, `ranking_policy=`, and
-`context_selector=` to `Memory` or `MemoryPlugins`. `MemorySpec` also accepts factory
-declarations in these four fields.
+See [computation plugins](../api/python-policies.md) for the exact `QueryPolicy`, `CandidateSource`, `RankingPolicy`, `ContextSelector`, and `IngestionStage` contracts.
 
 ## Ordered ingestion stages
 
-An `IngestionStage` declares a nonempty `name`, a nonempty durable recipe `space`, and
-`process(ModelInput) -> StageResult`. Stages run in declared order before built-in perception and
-embedding. Each receives the preceding interpretations and verified input assets. The result's
-`interpretation` adds explicitly labelled, untrusted model context; it cannot replace the original
-source, assets, identity or metadata.
+An `IngestionStage` declares a nonempty `name`, a nonempty durable recipe `space`, and `process(ModelInput) -> StageResult`. Stages run in declared order before built-in perception and embedding, appending labelled `model_interpretation` parts without altering original text, assets, identity, or metadata:
 
 ```python
 from sensemem import ModelInput, StageResult
@@ -251,28 +204,10 @@ class WorkshopStage:
         pass
 ```
 
-Register a factory returning this object and declare `"ingestion_stages": [{"factory":
-"application_workshop"}]` alongside either configuration shape. Object compositions use
-`ingestion_stages=(WorkshopStage(),)`. Stage names must be unique within one composition, and
-stage objects must be thread-safe. `Memory` owns them, including their `close()` calls.
-
-The ordered names and spaces are pinned to the physical store. Keep the same recipe when
-reopening a populated store; changing or removing stages, reordering them, or adding a stage to
-existing data is rejected. Use a fresh directory and ingest original sources to change that
-recipe. Empty stores may change their stage composition.
+Register a factory returning this object and declare `"ingestion_stages": [{"factory": "application_workshop"}]` in `MemorySpec`, or pass `ingestion_stages=(WorkshopStage(),)` to `Memory` / `MemoryPlugins`. Stage names must be unique, stages must be thread-safe, and the ordered stage recipe is pinned in SQLite metadata for populated stores; changing stages requires replaying sources into a fresh directory.
 
 ## Validation and ownership
 
-Unknown factory names, unsupported backend slots, and incompatible returned capabilities fail
-before local storage opens. Factory names are dictionary keys supplied by the host; configuration
-does not import a module, evaluate an expression, or discover executable entry points.
+Unknown factory names, unsupported slots, and invalid capability declarations fail before local storage opens. Configuration names registered dictionary keys and never imports arbitrary module paths.
 
-`build_memory_composition(config, factories=factories)` constructs a `MemoryComposition` without
-opening its store. Its caller must close the composition or transfer its plugins into `Memory`.
-Normal `Memory.from_config()` construction transfers ownership automatically. If later construction
-fails, already constructed resources are closed once, including clients shared between backend
-slots and registered tools.
-
-Factories own creation of their clients. Declare nested tool resources with `resources=(client,)`
-so the common resource traversal can deduplicate them. A factory that raises before returning an
-object is responsible for releasing any resources it allocated before that failure.
+`build_memory_composition(config, factories=factories)` validates and constructs a `MemoryComposition` without opening storage; close it unless its plugins are transferred into `Memory`. `Memory.from_config()` transfers ownership automatically and closes already-constructed resources once on partial construction failure, including shared clients declared via `Tool(..., resources=(client,))`.

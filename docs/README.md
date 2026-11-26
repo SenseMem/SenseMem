@@ -1,8 +1,6 @@
 # SenseMem documentation
 
-Build agents that remember across sessions and use the right evidence for the current task.
-SenseMem connects durable multimodal memory, evolving assertions, retrieval, and context
-construction through one runtime.
+Build agents that remember across sessions and use the right evidence for the current task. SenseMem connects durable multimodal memory, evolving assertions, retrieval, and context construction through one runtime.
 
 ## Start here
 
@@ -11,66 +9,45 @@ construction through one runtime.
 3. **[Configuration](configuration.md):** choose models and enable the capabilities you need.
 4. **[Integrate](api/python-sdk.md):** connect your application through the SDK, REST, MCP, or CLI.
 
-Read [product capabilities](product-capabilities.md) for use cases and the complete capability map.
-These guides describe SenseMem 0.3.0; the [changelog](../CHANGELOG.md#unreleased) lists release changes.
-
 ## Choose by task
 
 | I want to… | Read |
 | --- | --- |
+| Track what changed across sessions and verify sources | [Best practices](best-practices.md) |
 | Replay timed audio/video, form events, and play recalled media | [Best practices notebook](../examples/best_practices.ipynb) |
 | Give an agent useful context within a prompt budget | [Context compilation](context-compilation.md) |
 | Remember events, preferences, and changing facts | [Memory types, time, and decay](memory-types-time-and-decay.md) · [Typed memory](typed-memory.md) |
 | Consolidate, correct, forget, or undo a change | [Memory management](memory-management.md) |
 | Capture live audio, vision, or interaction | [Streaming and interaction memory](omni-streaming-and-interaction-memory.md) |
 | Try a continuous webcam and voice conversation | [Local audio/video demo](live-demo.md) |
-| Share capabilities between a pipeline and a tool-using agent | [Tools](api/python-tools.md) · [Agents](api/python-agents.md) · [Plugin composition](plugin-architecture.md) |
-| Connect a local WeMM endpoint | [Local WeMM integration](use-local-wemm.md) |
+| Share capabilities between a pipeline and a tool-using agent | [Tools](api/python-tools.md) · [Agents](api/python-agents.md) · [Plugin factories](configuration/plugins.md) |
 | Serve EmbeddingGemma 2 through vLLM | [Model server](deployment.md#embeddinggemma-2-model-server) · [Client configuration](configuration/models.md#embeddinggemma-2-through-vllm) |
 | Add text or multimodal reranking | [Semantic reranking](configuration/models.md#semantic-reranking) |
-| Choose a working evaluation configuration | [Example catalog](examples/README.md) |
-| See measured results or evaluate my own setup | [Benchmark results](benchmarks/results.md) · [Benchmarking](benchmarking.md) |
+| Evaluate my own setup on benchmarks | [Benchmarking](benchmarking.md) · [Evaluation template](examples/eval.example.yaml) |
 | Deploy, back up, or recover memory | [Deployment](deployment.md) · [Operations](operations.md) |
 | Diagnose an error or empty search | [Troubleshooting](troubleshooting.md) |
 
 ## Understand memory
 
-- [Product capabilities](product-capabilities.md) — what you can build and which capabilities to enable.
 - [Core concepts](concepts.md) — content, records, evidence, model capabilities, and directory ownership.
-- [Memory types, time, and decay](memory-types-time-and-decay.md) — cognitive roles, event time,
-  historical validity, spatial scope, ranking decay, and reinforcement.
-- [Typed memory and evidence](typed-memory.md) — entities, events, states, support clauses,
-  conflict handling, and naming.
-- [Affective memory](affective-memory.md) — sourced affect cues, corroborated traits, and
-  host-authorized response guidance.
+- [Memory types, time, and decay](memory-types-time-and-decay.md) — cognitive roles, event time, historical validity, spatial scope, ranking decay, and reinforcement.
+- [Typed memory and evidence](typed-memory.md) — entities, events, states, support clauses, conflict handling, and naming.
+- [Affective memory](affective-memory.md) — sourced affect cues, corroborated traits, and host-authorized response guidance.
 - [Memory management](memory-management.md) — deliberate maintenance, scheduling, audit, and rollback.
-- [Context compilation](context-compilation.md) — structured evidence, budgets, source closure,
-  conflicts, excerpts, and rendering.
-- [Streaming and interaction memory](omni-streaming-and-interaction-memory.md) — completed
-  observations, speculative recall, and explicit update/final/cancel lifecycles.
+- [Context compilation](context-compilation.md) — structured evidence, budgets, source closure, conflicts, excerpts, and rendering.
+- [Streaming and interaction memory](omni-streaming-and-interaction-memory.md) — completed observations, speculative recall, and explicit update/final/cancel lifecycles.
 
 ## Configure and integrate
 
-- [Configuration](configuration.md) — installation, model slots, composition, and resource ownership.
-  Detailed references: [provider fields](configuration/providers.md),
-  [model setup](configuration/models.md), [runtime settings](configuration/settings.md), and
-  [formation, consolidation, and retention](configuration/lifecycle.md).
-- [Application plugin factories](configuration/plugins.md) — configure third-party backends and tools.
-- [Computation plugins](api/python-policies.md) — replace retrieval scoring and context selection,
-  and compose ordered ingestion stages around the consistency kernel.
-- [SDK reference](api/python-sdk.md) — construction, lifecycle, content, errors, and API navigation.
-  Detailed references: [memory operations](api/python-memory.md),
-  [identity and data lifecycle](api/python-identity.md), [control operations](api/python-control.md),
-  [async and streams](api/python-streams.md), [public values](api/python-values.md),
-  [backend protocols](api/python-backends.md), and [bundled adapters](api/python-adapters.md).
+- [Configuration](configuration.md) — installation, model slots, composition, and resource ownership. Detailed references: [provider fields](configuration/providers.md), [model setup](configuration/models.md), [runtime settings](configuration/settings.md), and [formation, consolidation, and retention](configuration/lifecycle.md).
+- [Application plugin factories](configuration/plugins.md) — configure third-party backends, extension rules, and tools.
+- [Computation plugins](api/python-policies.md) — replace query planning, candidate discovery, retrieval scoring, context selection, and ordered ingestion stages.
+- [SDK reference](api/python-sdk.md) — construction, lifecycle, content, errors, and API navigation. Detailed references: [memory operations](api/python-memory.md), [identity and data lifecycle](api/python-identity.md), [control operations](api/python-control.md), [async and streams](api/python-streams.md), [public values](api/python-values.md), [backend protocols](api/python-backends.md), and [bundled adapters](api/python-adapters.md).
 - [Python tools](api/python-tools.md) — register typed computations and reuse existing perception.
 - [Optional agents](api/python-agents.md) — choose a core model and compose tool calls with async context.
 - [REST API](api/rest.md) — routes under `/v1`, request/response shapes, SSE, errors, and limits.
 - [MCP tools](api/mcp.md) — thirteen tools, authority switches, schemas, and transport behavior.
 - [Command line](api/cli.md) — local and remote operations, JSON input/output, diagnostics, and exit codes.
-- [Local WeMM integration](use-local-wemm.md) — a multimodal embedding endpoint with optional speech
-  and formation.
-- [Example catalog](examples/README.md) — prerequisites and customization for every committed YAML.
 
 ## Deploy and operate
 
@@ -83,27 +60,15 @@ These guides describe SenseMem 0.3.0; the [changelog](../CHANGELOG.md#unreleased
 
 ## Evaluate quality
 
-- [Benchmark results](benchmarks/results.md) — measured multimodal configurations and scoring scope.
 - [Benchmarking](benchmarking.md) — configure, run, interpret, and compare an evaluation.
 - [Benchmark tasks](benchmarks/tasks.md) — workload selection, data requirements, and scoring protocols.
-- [Evaluation reference](benchmarks/reference.md) — run controls, baseline arms, diagnostics,
-  performance, resume, and exports.
+- [Evaluation reference](benchmarks/reference.md) — run controls, baseline arms, diagnostics, performance, resume, and exports.
 - [Local measurements](benchmarks/local.md) — index storage, SDK concurrency, and consolidation.
-- [MOSAIC native multimodal recipe](benchmarks/mosaic-native.md) — service setup and full-run commands.
 - [Model quality gate](model-quality.md) — focused real-model checks and CI configuration.
-- [Agent Memory Leaderboard](agent-memory-leaderboard.md) — participant Add/Search hosting.
 
-## Understand and extend the design
+## Understand and extend the runtime
 
-- [Maintainer map](maintaining.md) — reading route, vocabulary, ownership and focused verification.
 - [Architecture](architecture.md) — code layout, storage authority, write/retrieval paths, and concurrency.
 - [Maintain prompts](prompts.md) — runtime components, official benchmark wording, and validation.
-- [Documentation figures](assets/README.md) — static originals and reproducible GIF animations.
-- [Design principles](design-principles.md) — Smarter / Swifter / Stronger and the criteria behind the design.
-- [Context OS direction](context-os.md) — the lifecycle connecting capture, memory management,
-  and context compilation.
-- [Plugin architecture](plugin-architecture.md) — typed capabilities, kernel responsibilities,
-  and extension requirements.
 
-For development setup, documentation conventions, and quality gates, read
-[Contributing](../CONTRIBUTING.md).
+For development setup, documentation conventions, and quality gates, read [Contributing](../CONTRIBUTING.md).

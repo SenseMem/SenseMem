@@ -1,17 +1,12 @@
 # Contributing to SenseMem
 
-Contribute model integrations, memory behavior, evaluations, examples, or documentation.
-This guide takes you from a locked development environment to a reviewable change.
-Automated contributors must also follow [AGENTS.md](AGENTS.md).
+Contribute model integrations, memory behavior, evaluations, examples, or documentation. This guide takes you from a locked development environment to a reviewable change. Automated contributors must also follow [AGENTS.md](AGENTS.md).
 
 ## Setup
 
-SenseMem supports Python 3.11 through 3.14. The project uses
-[uv](https://docs.astral.sh/uv/) and the checked-in `uv.lock`.
+SenseMem supports Python 3.11 through 3.14. The project uses [uv](https://docs.astral.sh/uv/) and the checked-in `uv.lock`.
 
-Local development accepts uv 0.12.5 or newer; there is no need to downgrade a newer installation.
-CI pins uv 0.12.5 explicitly for reproducibility. Keep the CI version pins and this minimum version
-aligned when raising the minimum supported uv version.
+Local development accepts uv 0.12.5 or newer; CI pins uv 0.12.5 explicitly for reproducibility. Keep the CI version pins and this minimum version aligned when raising the minimum supported uv version.
 
 ```bash
 git clone https://github.com/SenseMem/SenseMem.git
@@ -26,20 +21,16 @@ uv sync --locked --default-index https://pypi.org/simple \
   --all-groups --extra local --extra openai --extra server
 ```
 
-`uv sync` is exact. Add extras to the same command instead of running a second, narrower sync that
-would remove packages from the first environment.
+`uv sync` is exact. Add extras to the same command instead of running a second, narrower sync that would remove packages from the first environment.
 
-Use `uv add` and `uv remove` for dependency changes, then normalize and verify the shared lockfile
-against PyPI even when your shell configures a private mirror:
+Use `uv add` and `uv remove` for dependency changes, then normalize and verify the shared lockfile against PyPI even when your shell configures a private mirror:
 
 ```bash
 uv lock --default-index https://pypi.org/simple
 uv lock --check --default-index https://pypi.org/simple
 ```
 
-No external database, cache, queue, or object store is required. Unit tests allocate isolated
-temporary SQLite and Zvec directories. Integration tests that contact a real model endpoint are
-marked `integration` and require credentials for that endpoint.
+No external database, cache, queue, or object store is required. Unit tests allocate isolated temporary SQLite and Zvec directories. Integration tests that contact a real model endpoint are marked `integration` and require credentials for that endpoint.
 
 ## Quality gates
 
@@ -53,14 +44,9 @@ uv run --frozen mypy
 git diff --check
 ```
 
-Mypy runs in strict mode over `src` and `tests`. Ruff checks project style and formats Python code
-blocks inside Markdown. Pytest treats warnings as errors.
+Mypy runs in strict mode over `src` and `tests`. Ruff checks project style and formats Python code blocks inside Markdown. Pytest treats warnings as errors.
 
-Select the smallest tests covering the changed behavior and its direct callers. Include contract
-tests when a public surface changes. Once the relevant checks pass, do not expand or repeat them
-unless a new change, failure, or unresolved concern warrants it. Local full-suite runs require an
-explicit user request; CI continues to run its configured checks. Record the commands actually run
-and relevant checks not run. For example:
+Select the smallest tests covering the changed behavior and its direct callers. Include contract tests when a public surface changes. Once the relevant checks pass, stop expanding them unless another change, failure, or unresolved concern warrants it. Record the commands actually run and any relevant checks not run. For example:
 
 ```bash
 uv run --frozen pytest -W error tests/unit/test_memory_api.py
@@ -74,32 +60,27 @@ Documentation changes must pass the same pinned tools and arguments as CI:
 ```bash
 docker run --rm -v "$PWD:/workdir:ro" davidanson/markdownlint-cli2:v0.23.0 \
   "**/*.md" "!.git/**" "!**/.venv/**" "!.pytest_cache/**" "!.benchmarks/**" \
-  "!.superpowers/**" "!docs/superpowers/**" "!.claude/worktrees/**" "!autoresearch/**"
+  "!.claude/worktrees/**"
 docker run --rm -v "$PWD:/input:ro" -w /input lycheeverse/lychee:0.23.0 \
   --no-progress --root-dir /input \
   --exclude-path 'docs/research/' \
   './*.md' './docs/**/*.md' './.github/**/*.md'
 ```
 
-Do not add a host exclusion for a transient outage. Fix invalid local links and replace links that
-no longer identify a stable source.
+Do not add a host exclusion for a transient outage. Fix invalid local links and replace links that no longer identify a stable source.
 
-Without Docker, use a compatible Node.js/npm installation and the
-[lychee 0.23.0 release](https://github.com/lycheeverse/lychee/releases/tag/lychee-v0.23.0) on
-`PATH`. The same pinned versions and file arguments are:
+Without Docker, use Node.js/npm and the [lychee 0.23.0 release](https://github.com/lycheeverse/lychee/releases/tag/lychee-v0.23.0) on `PATH`:
 
 ```bash
 npm exec --yes --package markdownlint-cli2@0.23.0 -- markdownlint-cli2 \
   "**/*.md" "!.git/**" "!**/.venv/**" "!.pytest_cache/**" "!.benchmarks/**" \
-  "!.superpowers/**" "!docs/superpowers/**" "!.claude/worktrees/**" "!autoresearch/**"
+  "!.claude/worktrees/**"
 lychee --no-progress --root-dir "$PWD" \
   --exclude-path 'docs/research/' \
   './*.md' './docs/**/*.md' './.github/**/*.md'
 ```
 
-The Markdown configuration excludes the ignored installability and wheel-test environments, so
-local checks do not lint third-party packages installed there. It does not exclude source
-documentation. After changing headings, also validate local fragments:
+After changing headings, also validate local fragments:
 
 ```bash
 lychee --offline --include-fragments --no-progress --root-dir "$PWD" \
@@ -118,32 +99,13 @@ New behavior needs the smallest test that proves the intended contract can fail:
 | Integration | `tests/integration/` | Explicit real-service boundaries |
 | Benchmark | `tests/benchmarks/` | Deterministic quality fixtures |
 
-Every local store test must use a distinct temporary directory. When testing concurrency, assert
-that the same directory rejects a second owner and that different directories operate in parallel.
-Never simulate isolation by adding a hidden scope field.
+Every local store test must use a distinct temporary directory. When testing concurrency, assert that the same directory rejects a second owner and that different directories operate in parallel. Never simulate isolation by adding a hidden scope field.
 
-Warnings fail the suite. Close `Memory`, SQLite, Zvec, and HTTP resources deterministically by
-using their context managers or an explicit `close()`.
-
-There is no numeric coverage threshold. A new test should fail when the implementation is
-deliberately broken; assertions that only restate the implementation are not useful evidence.
+Warnings fail the suite. Close `Memory`, SQLite, Zvec, and HTTP resources deterministically by using their context managers or an explicit `close()`.
 
 ### Model quality changes
 
-For prompt, model, or retrieval-policy changes, attach task-specific evaluation results as well as
-the ordinary test results. Record the configured model snapshot, returned model identity when
-available, fixture version, pass criteria, and the commands run. Include grounded answers,
-insufficient evidence, and instructions embedded in stored content. Compare an equivalent
-baseline before accepting a quality claim; a mocked HTTP response verifies the adapter contract,
-not a model's behavior. Pin model snapshots for reproducible comparisons and re-evaluate before
-changing them. A current model alias alone is not a reproducibility guarantee.
-
-Keep real-service evaluation separate from the credential-free test suite. Use protected CI
-secrets or caller-owned clients, bound requests and output tokens, and report unavailable service
-checks explicitly. Retain aggregate case outcomes and safe model/request identifiers rather than
-private prompts or response bodies. See the [model quality gate](docs/model-quality.md)
-for the small recurring regression suite and [benchmarking](docs/benchmarking.md) for dataset
-evaluation.
+For prompt, model, or retrieval-policy changes, attach task-specific evaluation results alongside ordinary test results. Record the configured model snapshot, returned model identity when available, fixture version, pass criteria, and commands run. Keep real-service evaluation separate from the credential-free test suite. See the [model quality gate](docs/model-quality.md) for the small recurring regression suite and [benchmarking](docs/benchmarking.md) for dataset evaluation.
 
 ## Architecture rules
 
@@ -154,65 +116,28 @@ Memory -> SQLite transaction -> durable outbox -> Zvec flush
        -> provider SDK adapter
 ```
 
-- SQLite owns memory records, canonical embeddings, configuration metadata, and pending index
-  operations.
-- Zvec is a disposable search projection. It must be rebuildable from SQLite.
+- SQLite owns memory records, canonical embeddings, configuration metadata, and pending index operations.
+- Zvec is a disposable search projection and must be rebuildable from SQLite.
 - A failed Zvec write must leave its outbox work pending.
 - Stored embedding identity or dimension changes must fail at open time rather than mixing spaces.
 - One data directory has one live owner. Server deployments use one worker.
 - Metadata is payload, never an isolation or authorization mechanism.
 
-Keep the public API small. Reuse existing values and errors before adding layers. Do not introduce
-a repository interface, worker service, compatibility shim, or provider registry without a current
-public use case that cannot be expressed by the existing boundary.
+Keep the public API small. Reuse existing values and errors before adding layers. Do not introduce a repository interface, worker service, compatibility shim, or provider registry without a current public use case.
 
-Benchmark packages are leaves: no product module may import them. Dataset and behavior runners use
-the public SDK. The local-index microbenchmark is the narrow exception that measures the storage
-adapters directly.
+Benchmark packages are leaves: no product module may import them. Dataset and behavior runners use the public SDK. The local-index microbenchmark is the narrow exception that measures the storage adapters directly.
 
 ## Public contracts
 
-Public Python imports are re-exported from `sensemem`. REST routes are under `/v1`, with
-one error envelope documented in [the REST reference](docs/api/rest.md). The MCP adapter exposes
-thirteen tools documented in [the MCP reference](docs/api/mcp.md). Update tests and docs in the
-same change whenever any surface changes.
+Public Python imports are re-exported from `sensemem`. REST routes are under `/v1`, with one error envelope documented in [the REST reference](docs/api/rest.md). The MCP adapter exposes thirteen tools documented in [the MCP reference](docs/api/mcp.md). Update tests and docs in the same change whenever any surface changes.
 
-Backward compatibility is not required. Remove obsolete interfaces, format readers, and migration
-paths rather than preserving them with aliases or fallbacks. Document and test the current
-contract in the same patch. Applications that need separate memory domains allocate separate
-directories or separate processes.
+Backward compatibility is not required. Remove obsolete interfaces, format readers, and migration paths rather than preserving them with aliases or fallbacks. Applications that need separate memory domains allocate separate directories or separate processes.
 
 ## Documentation style
 
-Use short sections, descriptive headings, fenced code blocks for multi-line examples, and backticks
-for commands and paths. Use UTF-8, LF endings, and a trailing newline. Examples must be executable
-against the current public API. Keep `docs/README.md` current when adding, renaming, or removing a
-page.
+Use short sections, descriptive headings, one line per prose paragraph, fenced code blocks for multi-line examples, and backticks for commands and paths. Use UTF-8, LF endings, and a trailing newline. Examples must be executable against the current public API. Keep `docs/README.md` current when adding, renaming, or removing a page.
 
-Keep `CHANGELOG.md` focused on the final changes a release delivers. Link to the owning guides
-for detailed contracts; omit intermediate implementations, review transcripts, and test counts.
-
-Research reports, protocols, measurements, source pins, and rejected hypotheses belong in the
-ignored local `docs/research/` directory. Do not force-add, upload, or include them in distributions.
-Public guides must stand alone without links into that directory and use the public API in this
-checkout. A documentation review should compare signatures, defaults, exports, transport switches,
-and example configurations against their implementations, not only check Markdown.
-
-Write for the task a reader wants to complete. Open each guide with its outcome, use a minimal
-working example where appropriate, and explain a capability's practical value before its fields.
-Keep the README focused on the problem, core features, first result, and next steps. Describe
-supported behavior directly and confidently, with claims tied to code or measured results.
-
-Give each contract one owning guide and link to it from related pages. Public measurement pages
-state results, model choices, metrics, and scoring populations; linked manifests retain exact
-revisions and checksums. Experiment chronology, internal run names, trial narratives, and review
-notes belong in ignored local research or `.superpowers/`, rather than user guides.
-
-Keep one-off experiment runners, ablation recipes, and their supporting tests in `docs/research/`.
-Tracked benchmarks and tests should exercise supported behavior rather than preserve an
-experiment's measured limitations. Generated distributions, isolated installability environments,
-Python/tool caches, logs, and manuscript build intermediates are disposable; keep source files,
-finished documents, local data, and reproducibility evidence when cleaning the workspace.
+Research notes, experiment logs, and rejected hypotheses belong in the ignored local `docs/research/` directory. Public guides must stand alone without links into that directory and focus on helping developers use SenseMem.
 
 ## Pull requests
 
@@ -226,9 +151,7 @@ Use a concise imperative commit subject such as `Add index recovery test`. A pul
 
 ## Reporting issues
 
-Open an issue with the SenseMem version, expected behavior, actual behavior, and the smallest
-reproduction. Include the REST `trace_id` when available; it identifies a failing request without
-containing memory content.
+Open an issue with the SenseMem version, expected behavior, actual behavior, and the smallest reproduction. Include the REST `trace_id` when available; it identifies a failing request without containing memory content.
 
 Report security vulnerabilities through [SECURITY.md](SECURITY.md), not the public issue tracker.
 

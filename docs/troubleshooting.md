@@ -1,8 +1,6 @@
 # Troubleshooting
 
-Find the failing stage, take the corresponding action, and retry when the error says the request
-can succeed later. SenseMem's structured errors share the same classification across interfaces.
-This example assumes an open `memory` with a configured answerer:
+Find the failing stage, take the corresponding action, and retry when the error says the request can succeed later. SenseMem's structured errors share the same classification across interfaces. This example assumes an open `memory` with a configured answerer:
 
 ```python
 from sensemem import SenseMemError
@@ -13,15 +11,9 @@ except SenseMemError as error:
     print(error.code, error.reason, error.stage, error.subject, error.retryable)
 ```
 
-`code` is the stable family, `reason` narrows the cause, `stage` locates the failed pipeline step,
-`subject` identifies the affected item when available, and `retryable` states whether the identical
-request can succeed later. CLI, REST, and MCP envelopes return the same classification fields and
-add a `trace_id`; preserve it with request metadata. See the
-[REST error contract](api/rest.md#codes-and-reasons).
+`code` is the stable family, `reason` narrows the cause, `stage` locates the failed pipeline step, `subject` identifies the affected item when available, and `retryable` states whether the identical request can succeed later. CLI, REST, and MCP envelopes return the same classification fields and add a `trace_id`; preserve it with request metadata. See the [REST error contract](api/rest.md#codes-and-reasons).
 
-For composition failures, run the same selection with `sensemem ... doctor`. Bundled recipes
-exercise their loaders, `--app` verifies the import without calling a factory that could open the
-store, and `--url` checks `/healthz`.
+For composition failures, run the same selection with `sensemem ... doctor`. Bundled recipes exercise their loaders, `--app` verifies the import without calling a factory that could open the store, and `--url` checks `/healthz`.
 
 ## Error triage
 
@@ -34,208 +26,96 @@ store, and `--url` checks `/healthz`.
 | `storage_error` | Local state or ownership failed validation or I/O | Check the directory owner, filesystem, assets, SQLite, schema, and model identities. |
 | `memory_not_found`, REST 404 | The authoritative record is absent | Verify the ID and directory with `get()` or `list()`. |
 
-Retry only when `retryable` is true. The closed retryable reasons are `connection_failed`,
-`capacity_exceeded`, `data_dir_in_use`, `flush_failed`, `index_missing`, `provider_unavailable`,
-`rate_limited`, and `timeout`. REST returns
-`Retry-After: 1` only for retryable 503 responses.
-
-TokenHub's documented [`502001` upstream failure](https://cloud.tencent.com/document/product/1823/131595)
-maps to `model_error` with `reason="provider_unavailable"` and `retryable=true`, including SSE
-errors delivered after HTTP 200. String and integer forms have the same classification. Unknown
-provider codes remain unclassified; this mapping adds no retry loop to the model adapter.
+Retry only when `retryable` is true. The retryable reasons are `connection_failed`, `capacity_exceeded`, `data_dir_in_use`, `flush_failed`, `index_missing`, `provider_unavailable`, `rate_limited`, and `timeout`. REST returns `Retry-After: 1` only for retryable 503 responses.
 
 ## Memory does not open
 
 ### A configuration filename is rejected
 
-`Memory.from_config()` accepts a mapping or `MemorySpec`, not a path. Decode JSON with
-`json.loads()` or YAML with the host's `yaml.safe_load()` before passing it. Unknown fields,
-providers, and invalid numeric or Boolean values are rejected at this boundary. See
-[file loading](configuration.md#loading-a-configuration-file).
+`Memory.from_config()` accepts a mapping or `MemorySpec`, not a path. Decode JSON with `json.loads()` or YAML with the host's `yaml.safe_load()` before passing it. Unknown fields, providers, and invalid values are rejected at this boundary; see [file loading](configuration.md#loading-a-configuration-file).
 
 ### The directory is in use
 
-`reason="data_dir_in_use"` means a live `Memory` owns the physical directory. Close that owner,
-call its REST interface, or choose a different directory. Do not add a tenant field to share one
-directory: physical directories are the isolation boundary. Do not delete `.sensemem.lock`
-either; the file is only the operating-system lock target and deleting it does not release an
-owner.
+`reason="data_dir_in_use"` means a live `Memory` owns the physical directory. Close that owner, call its REST interface, or choose a different directory. Do not delete `.sensemem.lock`; the file is only the operating-system lock target and deleting it does not release an owner.
 
-The error is retryable because the current owner may exit. Python, CLI, and MCP retain the local
-path in `subject`; unauthenticated REST redacts storage, index, and internal subjects. Protect MCP
-envelopes when the host uses a network transport.
+The error is retryable because the current owner may exit. Python, CLI, and MCP retain the local path in `subject`; unauthenticated REST redacts storage, index, and internal subjects.
 
 ### The schema is unsupported
 
-`reason="schema_unsupported"` means this SenseMem version cannot read the SQLite schema or its
-required tables. Use a version that supports the store, or reopen a backup with one. Do not edit
-`state.sqlite3` or its `PRAGMA user_version` by hand.
+`reason="schema_unsupported"` means this SenseMem version cannot open the SQLite schema or required tables. Reopen with the matching runtime and replay sources into a fresh directory. Do not edit `state.sqlite3` or `PRAGMA user_version` by hand.
 
 ### Store metadata mismatch
 
-The store records the embedding model, vector space and dimension, transcription space, configured
-face spaces, and the index recipe. Reopen with the original configuration or ingest the source
-content into a new directory. A nonempty store with missing required markers is rejected.
-
-`reindex()` cannot convert incompatible embeddings, transcripts, or face analyses; it rebuilds the
-Zvec projection from the durable values already in SQLite. Changing quantization within the current
-index recipe rebuilds Zvec from stored vectors. Older recipes and different embedding spaces are
-rejected without rewriting the store or its index.
+The store records embedding space and dimension, transcription space, configured face spaces, ingestion-stage recipe, and index recipe. Reopen with matching configuration or replay sources into a fresh directory. `reindex()` rebuilds Zvec from stored FP32 vectors without converting embedding spaces.
 
 ### Zvec is missing or damaged
 
-A missing `zvec/` directory is rebuilt on the next open without re-embedding stored content. If
-Zvec is damaged, follow the [index repair runbook](operations.md#index-maintenance-and-repair):
-stop the owner, retain a backup, move only `zvec/` aside, and reopen. Keep the moved directory
-until a known search succeeds. Never move `state.sqlite3` or `assets/`; they are authoritative.
+A missing `zvec/` directory rebuilds automatically on next open without re-embedding stored content. If Zvec is damaged, follow the [index repair runbook](operations.md#index-maintenance-and-repair): stop the owner, retain a backup, move only `zvec/` aside, and reopen. Never move `state.sqlite3` or `assets/`.
 
 ## A write returned an index error
 
-SenseMem commits SQLite before applying Zvec changes, and flushes Zvec in batches behind them.
-An `index_unavailable` response can therefore mean the record or deletion is durable even though
-the call failed, and a flush failure surfaces in the call that took the flush -- a later write,
-`optimize()`, `reindex()`, or `close()` -- rather than in the write that enqueued the row. The
-corresponding outbox rows stay pending until startup or another draining operation succeeds.
+SenseMem commits SQLite before applying Zvec changes and flushes Zvec in batches. An `index_unavailable` error can therefore mean the record or deletion is already durable in SQLite, with outbox rows pending until the next drain succeeds:
 
 1. Preserve the error envelope and `trace_id`.
 2. Check authoritative state with `get()` or `list()` if the ID is known.
 3. Correct the Zvec, disk-space, or file-descriptor failure.
-4. Reopen the owner or run index maintenance from the existing owner.
-5. Retry an add only with the exact same canonical input; its content-derived ID makes that retry
-   idempotent.
+4. Reopen the owner or run `reindex()` / `optimize()`.
+5. Retry an add only with the exact same canonical input (its content-derived ID makes it idempotent).
 
-Do not delete SQLite rows or clear `search_index_queue` to make the error disappear.
+Do not delete SQLite rows or clear `search_index_queue` manually.
 
 ## Search returns no hits
 
-A `SearchResult` with `hits=()` is a valid result. Candidates below `minimum_relevance` are rejected, and an
-unresolved top-two tie may be withheld when `limit=1`.
+A `SearchResult` with `hits=()` is a valid result. Candidates below `minimum_relevance` are rejected, and an unresolved top-two tie may be withheld when `limit=1`. `minimum_relevance` compares against `gate_relevance`, not the final `SearchHit.score`; use `search(..., explain=True)` to inspect both.
 
-`minimum_relevance` is not compared against the `score` on a returned `SearchHit`. That score is
-the final ranking score, while the gate compares the separate `gate_relevance` quantity, so tuning
-the floor against observed scores gives the wrong value. `search(..., explain=True)` reports both per
-candidate; use it rather than inferring the threshold from hits that were returned.
-
-Before changing thresholds, rule out a record that was captured but never settled:
-`pending_captures()` lists durable records with deferred work. An `awaiting="enrichment"` row has
-no searchable vectors; an `awaiting="formation"` row is already searchable. Nothing settles them
-on its own; pass `memory_ids=` to ask about one record, and
-read its `awaiting`, `attempts`, and `last_error` if it keeps failing. Call `settle()` —
-`settle(memory_ids=...)` for that record alone, past its retry ceiling — or add the same content,
-which settles it, and search again. A record whose `forgotten_at` is set is excluded
-from recall by policy; `rollback()` on the logged operation restores it.
+Before changing thresholds, check whether a captured record is still unsettled via `pending_captures()`. An `awaiting="enrichment"` row has no vectors yet; call `settle()` (or `settle(memory_ids=...)` past the retry ceiling) and search again. A record with `forgotten_at` set is excluded by policy until its operation is rolled back.
 
 Then:
 
 1. Confirm the record exists with `get()` or `list()`.
 2. Confirm query and stored modalities are supported by the embedder.
 3. Remove unintended memory-type, event-time, bitemporal, or spatial filters.
-4. Run `search(..., explain=True)` and inspect terminal rejection reasons such as `stale_index`,
-   `occurrence_range`, `missing_memory`, `memory_type`, `minimum_relevance`, `ambiguity`, and
-   `limit`.
-5. If authoritative records exist but the projection is suspect, run the
-   [index repair procedure](operations.md#index-maintenance-and-repair).
+4. Run `search(..., explain=True)` and inspect `rejected_by` (`stale_index`, `occurrence_range`, `missing_memory`, `memory_type`, `minimum_relevance`, `ambiguity`, `limit`).
+5. If authoritative records exist but the projection is suspect, run [index repair](operations.md#index-maintenance-and-repair).
 
-SQLite hydration deliberately drops stale Zvec IDs. The defaults and valid ranges are in
-[local memory settings](configuration/settings.md).
-
-Check `retrieval_mode` before diagnosing an embedding outage. `lexical` skips query embedding
-and dense candidates, but writes still need embeddings. An image with no text or configured
-caption may have no lexical match; changing to lexical mode is not a substitute for visual
-descriptions. Mode changes do not require re-embedding, but close the owner before reopening.
+Check `retrieval_mode` as well: `lexical` skips query embedding and dense candidates, so an uncaptioned image without text has no lexical match. See [runtime settings](configuration/settings.md).
 
 ## A stored media record fails to load
 
-SQLite cannot recreate original media bytes. If `get()`, search hydration, or model work reports a
-storage failure for a known media record, verify that the digest-named regular file exists under
-`assets/` and restore the whole asset from a tested backup. Do not create an empty placeholder or
-edit the SQLite descriptor.
+SQLite cannot recreate original media bytes. If `get()`, search hydration, or model work reports a storage failure for a known media record, verify that the digest-named regular file exists under `assets/` and restore it from a tested backup. Do not create an empty placeholder or edit the SQLite descriptor.
 
 ## A model operation fails
 
 ### Backend is not configured
 
-Every `Memory` needs an embedder. `ask()` also needs an answerer. With `kinds=None`, `perceive()` uses the
-configured speech and face backends; inspect its `coverage` to distinguish skipped assets from
-completed analysis with no detections. Explicit `kinds` require the matching capability. Add the
-missing declarative slot, inject the backend, or use a configured operation. See
-[configuration](configuration.md) and [memory operations](api/python-memory.md).
+Every `Memory` needs an embedder, and `ask()` needs an answerer. With `kinds=None`, `perceive()` uses configured speech and face backends and reports per-asset `coverage`; explicit `kinds` require the matching capability. See [configuration](configuration.md) and [memory operations](api/python-memory.md).
 
 ### Optional dependency is missing
 
-Install the extra for the selected adapter: `local`, `openai`, `face`, `reranking`, or `gazetteer`. REST and MCP use
-the `server` and `mcp` extras. See the
-[extras table](configuration.md#1-install-only-the-surfaces-you-use).
+Install the extra for the selected adapter (`local`, `openai`, `face`, `reranking`, `gazetteer`, `server`, `mcp`); see the [extras table](configuration.md#1-install-only-the-surfaces-you-use).
 
 ### Modality is unsupported
 
-Select a backend that declares the required modality. Audio may use transcript fallback only when
-a configured transcription backend supports it. Images and video can use a source-backed caption
-when the configured vision backend supports them. If neither native input nor a usable derivation
-is available, the operation fails explicitly.
+Select a backend that declares the required modality, or configure a transcription/vision backend for source-backed text fallback. If neither native input nor a usable derivation is available, the operation fails explicitly.
 
 ### Provider request or output fails
 
-Inspect `reason` and `stage`, then check credentials, base URL, proxy, timeout, rate limit,
-provider status, and response shape. SenseMem preserves the provider exception as the Python
-`__cause__` and classifies known SDK failures in `reason`, but REST and MCP never serialize
-provider bodies. Configure credentials, base URL, timeout, proxy, and provider retry policy on the
-provider SDK or the declarative OpenAI slot.
+Inspect `reason` and `stage`, then check credentials, base URL, proxy, timeout, rate limit, provider status, and response shape. SenseMem preserves the provider exception as Python `__cause__` without serializing provider bodies in REST or MCP envelopes.
 
-For `reason="context_length_exceeded"`, the provider rejected the request against its context
-window. Reduce the selected evidence or choose sufficient model capacity, reserving room for
-output and reasoning. `evidence_budget_chars` only controls expansion beyond mandatory `limit`
-hits: lowering it cannot remove those hits. Setting it to `None` and lowering `limit` reduces
-the basic ranked window; optional planning and linked expansion can still add records. None of
-these controls guarantees a token fit. Use the provider's own token counter on the
-complete request when available; character/media estimates and local byte ceilings are not
-token limits. Answer overflow is not retried with evidence silently removed.
-
-For `code="model_output_truncated"`, generation reached its output-token limit: raise the adapter's
-generation limit or reduce the `ask()` evidence limit. Retrying the identical request is not a fix.
-For `reason="payload_too_large"`, check both SenseMem's byte ceilings and the provider or proxy
-upload limit. An upstream HTTP 413 has this reason even when the proxy returns HTML. Reduce the
-request or choose sufficient serving capacity; the adapter does not silently remove evidence
-and retry. This classification does not increase the provider's upload limit.
-Provider-specific controls and media limits are in the
-[Python adapter reference](api/python-adapters.md) and
-[REST input limits](api/rest.md#input-limits).
+- **`context_length_exceeded`**: the provider rejected the request against its context window. Reduce selected evidence (`limit`, `evidence_budget_chars=None`) or choose a larger-context model; answers are not retried by silently dropping evidence.
+- **`model_output_truncated`**: generation hit its output-token ceiling. Raise the adapter's `max_tokens` or reduce `ask()` evidence.
+- **`payload_too_large`**: request exceeded SenseMem's byte ceilings or an upstream HTTP 413 limit. Reduce request size or increase serving limits. See [Python adapters](api/python-adapters.md) and [REST input limits](api/rest.md#input-limits).
 
 ## Content is rejected or not fetched
 
-SenseMem never fetches HTTP(S) content. In Python, a URL-shaped string is application text.
-Download media with the application's HTTP client, then pass a `Blob` or a regular local `Path`.
-REST and MCP reject remote URLs and server filesystem paths; use inline bytes or an existing asset
-ID.
-
-REST rejects invalid content with 422 and request bodies over its limit with 413. Use the ordered
-part shapes and limits in the [REST reference](api/rest.md#input-limits); do not send a local path
-from the client machine.
+SenseMem never fetches HTTP(S) URLs: in Python a URL-shaped string is treated as text, and REST/MCP reject remote URLs and server paths. Download remote media in application code, then pass a `Blob` or regular local `Path`. REST rejects invalid payloads with 422 and bodies over 8 MiB with 413.
 
 ## REST or MCP cannot share the store
 
-Separate Python, REST, and MCP processes cannot open the same `data_dir`. Put the required
-adapters around one constructed `Memory`, call the running REST owner, or allocate deliberately
-separate memory domains. REST has fourteen product routes under `/v1`, or twenty-three with both
-opt-in switches enabled; MCP has thirteen tools.
-
-Neither network adapter adds SenseMem authentication, and stdio MCP inherits the host process
-principal. Apply the controls in [deployment](deployment.md#choose-a-topology).
+Separate Python, REST, and MCP processes cannot open the same `data_dir`. Wrap one constructed `Memory` with the needed adapters, call the running REST owner, or allocate separate directories. See [deployment](deployment.md#choose-a-topology).
 
 ## Latency or telemetry looks wrong
 
-`/healthz` is liveness, not a model or retrieval probe. Compare operation, stage, and model spans
-to separate model latency from SQLite, index synchronization, search, and ranking. If token totals
-look low, check `sensemem.token_usage.complete`, the expected request count, and the reported
-request count; SenseMem does not estimate missing usage.
+`/healthz` reports liveness, not model or retrieval readiness. Compare operation, stage, and model spans in [observability](observability.md) to separate model latency from SQLite, index sync, and ranking. Check `sensemem.token_usage.complete` when token totals appear lower than expected; SenseMem never estimates missing provider usage.
 
-For face or speaker recognition, read the `sensemem.identity.faces` and
-`sensemem.identity.speakers` spans and compare `sensemem.identity.observations`,
-`.matched_existing`, and `.created`. Zero observations means the analyzer ran and detected none.
-Many creations with few existing matches indicate identity fragmentation; changing a similarity
-threshold cannot fix an embedding model that does not separate the deployed material. See
-[the identity thresholds](configuration/settings.md#identity-thresholds).
-
-`AsyncMemory` runs the synchronous embedded core in worker threads. Backends must be thread-safe
-and own their network concurrency and timeouts. Tune or replace the backend; do not open a second
-owner on the same directory. See [telemetry](observability.md) for the attribute contract.
+For face or speaker recognition, inspect `sensemem.identity.faces` and `sensemem.identity.speakers` spans (`observations`, `matched_existing`, `created`) to diagnose fragmentation, and calibrate thresholds per [identity thresholds](configuration/settings.md#identity-thresholds).

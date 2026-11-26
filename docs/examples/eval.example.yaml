@@ -81,9 +81,9 @@ benchmark:
 
   download:
     # Defaults: <repository>/.benchmarks and <benchmarks_root>/data.
-    # benchmarks_root: /corpus/.benchmarks
-    # data_root: /corpus/.benchmarks/data
-    # hf_home: /corpus/huggingface
+    # benchmarks_root: .benchmarks
+    # data_root: .benchmarks/data
+    # hf_home: ~/.cache/huggingface
     hf_endpoint: https://huggingface.co
     youtube_sleep_seconds: 30
 
@@ -152,10 +152,10 @@ benchmark:
 
     # Per-task input overrides:
     # task_data:
-    #   locomo-refined: /corpus/locomo-refined/custom.json
+    #   locomo-refined: path/to/locomo_refined.json
     # media_root:
-    #   videozerobench: /corpus/videozerobench/compressed
-    # media_manifest: /corpus/prepared/media-manifest.jsonl
+    #   videozerobench: path/to/compressed
+    # media_manifest: path/to/media-manifest.jsonl
 
 # Invocation-only flags include --resume, --blind, --blind-baseline, --deliberate,
 # --fallback-reference-at, --list-tasks, and --check-integrity.

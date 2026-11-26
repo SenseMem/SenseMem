@@ -1,12 +1,8 @@
 # Bundled Python model adapters
 
-Choose a bundled adapter for local embedding, model endpoints, reranking, speech, faces, or map
-context. Pass inference adapters to the [Memory constructor](python-sdk.md#construction) or
-`MemoryPlugins`; compose the optional tool-using agent separately with `AgentRunner`.
-This reference lists constructors and resource ownership.
+Choose a bundled adapter for local embedding, model endpoints, reranking, speech, faces, or map context. Pass inference adapters to the [Memory constructor](python-sdk.md#construction) or `MemoryPlugins`; compose the optional tool-using agent separately with `AgentRunner`.
 
-[Backend protocols](python-backends.md) define inference methods;
-[model setup](../configuration/models.md) provides declarative examples and runtime requirements.
+[Backend protocols](python-backends.md) define inference methods; [model setup](../configuration/models.md) provides declarative examples and runtime requirements.
 
 | Adapter | Role |
 | --- | --- |
@@ -18,7 +14,7 @@ This reference lists constructors and resource ownership.
 | [OpenCVFaceAnalyzer](#opencvfaceanalyzer) | Local face analysis |
 | [OpenAIEmbedder](#openaiembedder) | Compatible embedding endpoint |
 | [OpenAITranscriber](#openaitranscriber) | Compatible transcription endpoint |
-| [OpenAICompletion](#openaicompletion) | Completion, formation, vision, planning and consolidation |
+| [OpenAICompletion](#openaicompletion) | Completion, formation, vision, planning, event segmentation, and consolidation |
 | [OpenAIAgent](#openaiagent) | Optional multimodal agent steps with native tool calls |
 | [Offline gazetteer](#offline-gazetteer) | Explicit map-source enrichment |
 | [Named recipes](#named-recipes) | Published compositions and probes |
@@ -38,33 +34,10 @@ SentenceTransformersEmbedder(
     modalities: Iterable[Modality] | None = None,
 )
 
-SentenceTransformersEmbedder.load(
-    model_id: str,
-    *,
-    revision: str | None = None,
-    dimension: int | None = None,
-    device: str | None = None,
-    batch_size: int = 32,
-    dtype: Literal["auto", "float32", "bfloat16"] = "auto",
-    modalities: Iterable[Modality] | None = None,
-) -> SentenceTransformersEmbedder
+SentenceTransformersEmbedder.load(...) -> SentenceTransformersEmbedder
 ```
 
-A supplied encoder implements supports, `get_embedding_dimension`, `encode_query`, and `encode_document`.
-Without one, constructor/load immediately load the checkpoint. Explicit revision is a complete
-40-character commit; omission resolves the Hub revision and needs access. An injected encoder
-needs an immutable model _commit_hash or explicit revision. Remote model code is disabled.
-
-For EmbeddingGemma 2, `dtype="auto"` uses BF16 on the selected CUDA GPU when it has native
-support, otherwise FP32. Explicit FP32/BF16 is supported; FP16 is rejected. Other models keep
-their checkpoint precision with `auto`. These loading options cannot alter an injected encoder.
-
-EmbeddingGemma 2 accepts an optional nonempty set of atomic `modalities`: unused vision/audio
-encoders are omitted at load time and routes advertise only the selected modalities. Video uses
-the vision encoder. Omission loads all modalities. Other models do not accept this selection.
-It supports 128/256/512/768 dimensions without optional Matryoshka metadata. BF16 has a distinct
-space. The PyAV audio recipe requires source replay for older local stores. Prompts and limits are in
-[model setup](../configuration/models.md#embeddinggemma-2).
+Loads the checkpoint immediately with remote code disabled unless an `encoder` is supplied. Explicit `revision` is a 40-character commit; omission resolves the Hub revision. For EmbeddingGemma 2, `dtype="auto"` uses BF16 on capable CUDA GPUs and FP32 otherwise (FP16 is rejected), and `modalities` selects which encoders to load (`128`/`256`/`512`/`768` dimensions). See [EmbeddingGemma 2 setup](../configuration/models.md#embeddinggemma-2).
 
 ## SentenceTransformersReranker
 
@@ -79,21 +52,10 @@ SentenceTransformersReranker(
     max_length: int = 1024,
 )
 
-SentenceTransformersReranker.load(
-    model_id: str,
-    *,
-    revision: str | None = None,
-    device: str | None = None,
-    batch_size: int = 32,
-    max_length: int = 1024,
-) -> SentenceTransformersReranker
+SentenceTransformersReranker.load(...) -> SentenceTransformersReranker
 ```
 
-Loads a pinned cross-encoder when no encoder is supplied. Omitted revision resolves through Hub;
-an injected encoder also needs an explicit revision to avoid resolution. Loading disables remote
-code. Inference/batching serialize per adapter. Predict requests raw logits with identity activation
-and no softmax. `max_length` bounds the pair with cross-encoder truncation. `Memory` owns the adapter;
-changing it requires reopen, not re-embedding.
+Loads a pinned cross-encoder with remote code disabled and serializes per-adapter inference. Predict requests raw logits without softmax; `max_length` bounds pairs. `Memory` owns the adapter, and changing it requires reopening rather than re-embedding.
 
 ## VLLMReranker
 
@@ -113,14 +75,7 @@ VLLMReranker(
 )
 ```
 
-Uses the openai extra's HTTP transport for `base_url`/score and restores finite input-order scores.
-The server must support vLLM's `queries`/`documents` protocol; score responses omit source media.
-It owns its client, including an injected client, and waits for active calls on close.
-`request_concurrency` bounds HTTP batches across callers sharing the adapter; batch completion
-order does not change returned score positions.
-Server deployment owns revision/media/context policy. Optional `media_candidates`/`media_weight`
-add bounded text/media probability-logit fusion; usage counts both passes.
-See [remote reranking](../configuration/models.md#remote-vllm-service).
+Calls `base_url/score` with vLLM's `queries`/`documents` protocol and restores finite scores in input order. Owns and closes its HTTP client (waiting for active calls). `request_concurrency` bounds concurrent batches; optional `media_candidates`/`media_weight` enable text-shortlist multimodal logit fusion. See [remote reranking](../configuration/models.md#remote-vllm-service).
 
 ## Qwen3VLReranker
 
@@ -141,33 +96,10 @@ Qwen3VLReranker(
     video_cache_bytes: int = 268435456,
 )
 
-Qwen3VLReranker.load(
-    model_id: str,
-    *,
-    revision: str | None = None,
-    device: str | None = None,
-    batch_size: int = 32,
-    max_length: int = 8192,
-    gpu_memory_utilization: float = 0.9,
-    image_limit: int = 8,
-    video_limit: int = 2,
-    image_max_pixels: int = 262144,
-    video_frames: int = 8,
-    video_cache_bytes: int = 268435456,
-) -> Qwen3VLReranker
+Qwen3VLReranker.load(...) -> Qwen3VLReranker
 ```
 
-Requires the reranking extra on Linux x86-64/CUDA. Device is `None` or cuda; CPU/MPS/cuda:N are
-rejected. Select GPUs through `CUDA_VISIBLE_DEVICES`. Create the owner inside a main guard for spawn.
-
-The vLLM pooling runner classifies all text/native-image/native-video pairs with pinned model and
-tokenizer revisions, remote code disabled, and checkpoint yes/no sigmoid scores. Batch size limits
-pairs per classify call, with one batch of media prepared ahead during inference. A shared LRU cache
-retains up to `video_cache_bytes` frame-array bytes; zero disables retention. Oversized tokenized
-pairs or media counts raise `payload_too_large` at
-reranking with no truncation/removal/retry. Query decoding is reused, source timing retained,
-and transcripts can represent unsupported raw audio. Close shuts down the engine.
-[Model setup](../configuration/models.md#local-qwen3-vl) owns complete input limits and sampling.
+Requires the `reranking` extra on Linux x86-64/CUDA (`device` is `None` or `"cuda"`; select GPUs via `CUDA_VISIBLE_DEVICES` inside a `main()` guard). Classifies text, image, and video pairs with pinned revisions and remote code disabled, caching decoded video frames up to `video_cache_bytes`. Oversized inputs raise `payload_too_large`. See [local Qwen3-VL](../configuration/models.md#local-qwen3-vl).
 
 ## FunASRTranscriber
 
@@ -196,11 +128,7 @@ FunASRRecipe(
 )
 ```
 
-`DEFAULT_FUNASR_MODEL_ID` and `DEFAULT_FUNASR_RECIPE` publish the speech defaults.
-`FunASRRecipe.auto_model_arguments()` returns a `dict[str, object]`. The transcription space includes the
-immutable FunASR revision and complete recipe; execution placement/CPU budget do not change it.
-`ncpu` affects process-wide PyTorch/BLAS threads; VAD/speaker devices can differ.
-See [speech setup](../configuration/models.md#local-speech-with-funasr).
+`DEFAULT_FUNASR_MODEL_ID` and `DEFAULT_FUNASR_RECIPE` publish the speech defaults. `transcription_space` encodes the pinned FunASR revision and recipe; device placement and `ncpu` do not alter it. See [speech setup](../configuration/models.md#local-speech-with-funasr).
 
 ## OpenCVFaceAnalyzer
 
@@ -217,8 +145,7 @@ OpenCVFaceAnalyzer(
 )
 ```
 
-Supply caller-managed detector/recognizer model files and evaluate matching thresholds against
-the intended camera/population. See [identity calibration](../configuration/settings.md#identity-thresholds).
+Supply caller-managed detector and recognizer model files and calibrate thresholds against your target camera and population; see [identity thresholds](../configuration/settings.md#identity-thresholds).
 
 ## OpenAIEmbedder
 
@@ -230,15 +157,13 @@ OpenAIEmbedder(
     embedding_model: str = "text-embedding-3-small",
     embedding_space: str | None = None,
     embedding_dimension: int = 1536,
-    embedding_request_format: Literal['input', 'messages'] = 'input',
+    embedding_request_format: Literal["input", "messages"] = "input",
     embedding_capabilities: frozenset[Modality] = frozenset({Modality.TEXT}),
     image_max_pixels: int | None = None,
 )
 ```
 
-This adapter implements `EmbeddingBackend`. Its space identifies the model, dimension, task
-prefix, normalization and media transport recipe. Use a separate adapter for transcription or
-completion, even when the endpoint is the same.
+Implements `EmbeddingBackend`. Its space identifies model, dimension, task prefix, normalization, and media transport recipe.
 
 ## OpenAITranscriber
 
@@ -256,8 +181,7 @@ OpenAITranscriber(
 )
 ```
 
-This adapter implements `TranscriptionBackend`. Prompt, keyword and language hints are part of
-its transcription recipe. Speech with speaker analysis uses `FunASRTranscriber` instead.
+Implements `TranscriptionBackend`. Prompt, keyword, and language hints participate in `transcription_space`.
 
 ## OpenAICompletion
 
@@ -272,35 +196,24 @@ OpenAICompletion(
     generation_temperature: float | None = None,
     generation_max_tokens: int | None = None,
     generation_media_max_tokens: int = 8192,
-    generation_response_format: Literal['json_object', 'json_schema'] = 'json_schema',
+    generation_response_format: Literal["json_object", "json_schema"] = "json_schema",
     generation_store: bool = False,
     generation_min_video_seconds: float | None = None,
     generation_video_limit: int | None = 8,
     generation_extra_body: Mapping[str, object] | None = None,
     generation_stream: bool = False,
-    generation_answer_style: Literal['default', 'concise'] = 'default',
-    generation_answer_format: Literal['text', 'structured'] = 'text',
+    generation_answer_style: Literal["default", "concise"] = "default",
+    generation_answer_format: Literal["text", "structured"] = "text",
     generation_evidence_operation_tool: bool = False,
-    generation_image_source_prose: Literal['include', 'context_when_supplied'] = 'include',
-    generation_source_metadata_key: str = 'source_id',
+    generation_image_source_prose: Literal["include", "context_when_supplied"] = "include",
+    generation_source_metadata_key: str = "source_id",
     vision_video_frames: int = 4,
     image_max_pixels: int | None = None,
     generation_request_max_bytes: int | None = None,
 )
 ```
 
-Each adapter accepts one SDK client. Missing clients fail when an operation needs them.
-The caller owns a supplied client by default; `owns_client=True` explicitly transfers its
-closure to the adapter. Declarative factories create and transfer their own clients.
-`Memory` closes each distinct adapter once, including a completion adapter shared by several
-completion roles. The embedder and transcriber expose only their own operation protocols.
-
-The adapter also implements `EventSegmentationBackend` for
-[`AsyncEventStream`](python-streams.md#asynceventstream). It uses the configured completion model,
-controls, and declared media capabilities to assess ordered original media chunks. Configure an
-endpoint that accepts those modalities; declaring a modality does not add provider support.
-`event_model` and `event_recipe` identify the configured model and segmentation recipe.
-The stream's caller owns this adapter separately from `Memory`.
+Each OpenAI adapter accepts one SDK client (`owns_client=False` by default so caller-supplied clients stay open on adapter close; `owns_client=True` transfers closure). `OpenAICompletion` also implements `EventSegmentationBackend` (`event_model`, `event_recipe`) for [`AsyncEventStream`](python-streams.md#asynceventstream).
 
 | Direct control | Declarative counterpart |
 | --- | --- |
@@ -313,66 +226,13 @@ The stream's caller owns this adapter separately from `Memory`.
 | `generation_media_max_tokens` | `generation.media_max_tokens` |
 | `generation_min_video_seconds` / `generation_video_limit` | `generation.min_video_seconds` / `video_limit` |
 | `vision_video_frames` | `vision.video_frames` |
-| `generation_stream` | stream on the corresponding completion slot |
+| `generation_stream` | `stream` on the corresponding completion slot |
 
-Transcription prompt/keywords/languages are provider hints. Source identities and recipes include
-the corresponding input options. [Provider fields](../configuration/providers.md) owns connection,
-sampling, routing, response format, storage, image fitting, and request-byte behavior.
-
-`generation_image_source_prose="context_when_supplied"` changes final answer wire content only.
-After fitting complete original evidence, it moves the full text of an originally image-only
-record with nonblank text into its own `auxiliary_source_text`, leaving `content` empty, when
-all its images are actually supplied. A prompt assigns visible facts to image verification and
-nonvisual context to the accompanying text, without treating either as instructions or changing
-abstention policy.
-Other modalities, mixed-media records, metadata, typed context, timestamps, source identities
-and original supporting hits remain intact. Partial image omission and technical rejection
-retain ordinary full text. If the optional view's added field or prompt exceeds a text or
-configured wire bound, the already-fitted ordinary view is used without that prompt. No source
-text is truncated and no more media is admitted. Recall planning is unchanged. This adds no
-model call, but adds role-prompt tokens when applied; evaluate quality before deployment.
-
-`generation_evidence_operation_tool=True` requires text answers and a provider that supports
-native function calling. After fitting complete original evidence, the adapter may offer
-`submit_evidence_operation` within the remaining text and wire budgets. The model supplies
-scoped member/value witnesses; validated source selection, distinct counting and numeric
-operations render directly into the answer. Source IDs use `generation_source_metadata_key`.
-Text quotes must refer to supplied text, and native observations must reference media actually
-supplied. These checks do not establish visual truth, real-world identity or corpus completeness;
-scope sufficiency can remain a fallible model assessment.
-
-No function call preserves the ordinary text path. An invalid initial proposal is discarded and
-may trigger at most one final read from the same original fitted evidence without tools; a valid
-proposal with unresolved required evidence remains an abstention. Final failures keep their
-normal errors, and all actual requests and missing usage reports remain accounted for. Public
-streaming yields only the validated executed answer or final ordinary text. The option defaults
-to false; when enabled, `generation_extra_body` cannot replace `tools`, `tool_choice` or
-`parallel_tool_calls`. Qualify both quality and cost on the intended model and task.
-
-### Structured answer witnesses
-
-A direct adapter returns supporting hits in draft order; `Memory` intersects them with fitted evidence
-and preserves kernel order. Labels must refer to final fitted evidence; source lists require the
-configured metadata key. Invalid labels/missing IDs/unsupported witnesses raise `ModelError`.
-
-Numeric/date witnesses are exact uniquely located quotes with matching literals, or permitted
-`occurred_at` date witnesses. Arithmetic uses validated operands; durations declare closed/half-open
-intervals. This does not prove relevance, event uniqueness, unit conversion, or set completeness.
-Dates require `source_value` plus granularity/format. `iso8601` preserves timezone; `utc_datetime` needs
-explicit zone and minute/second precision, rendering UTC without suffix. Number/duration formats
-are `with_unit` or number and preserve unit checks. Missing format is `response_invalid`.
-Structured streaming buffers the draft and yields rendered text, never raw JSON.
+See [provider fields](../configuration/providers.md) for answer presentation (`concise`, `structured`, `image_source_prose`, `evidence_operation_tool`), sampling, image resizing, and request-byte fitting.
 
 ### Image source metadata
 
-Answering/descriptions read only validated GPS and capture time from original image EXIF, preserving
-an explicit UTC offset when available. Unzoned capture time remains local and never replaces
-caller occurrence. Camera IDs/comments/free-form fields are excluded. Invalid metadata is omitted
-without rejecting pixels, while source bytes must match SHA.
-
-Metadata stays untrusted and source-bound even after request resizing; it adds no `AssetRef`/durable
-fields. No address lookup occurs unless the offline gazetteer is enabled. Existing stores need no
-re-ingest for answer metadata; caption recipe identity changes, embedding identity does not.
+Answering and descriptions read only validated GPS and EXIF capture time from original image bytes (preserving explicit UTC offsets while omitting camera IDs and free-form tags). Metadata stays untrusted and source-bound without adding durable fields.
 
 ## OpenAIAgent
 
@@ -390,30 +250,11 @@ OpenAIAgent(
 )
 ```
 
-Implements `AgentBackend.step` over Chat Completions. `AgentRunner` publishes a caller-selected
-tool registry, executes proposed calls, and returns typed results to the model. The adapter
-preserves ordered original media and prior tool messages; it executes no tools itself and is
-independent of the `Memory` answerer slot. See [optional agents](python-agents.md) for composition,
-execution bounds, temporary results and async context-source delivery.
-`AgentRunner.run(input)` returns `AgentResult`; `await AgentRunner.run_async(input)` runs off-thread and
-drains started work before propagating cancellation. Caller-owned resources can then be closed;
-synchronous providers and tools still need their own timeouts.
-
-Declare the endpoint's actual modalities. Output-token limits and audio encoding use the explicit
-protocol switches above. The adapter adds no sampling controls and sends `store=False` on every
-request. Strict tools require compatible schemas and endpoint support; there is no downgrade.
-The SDK client owns authentication, transport, timeouts and retries, and remains caller-owned
-after `close()`. Refusals, truncation, and provider failures retain their distinct error mapping.
-Raw provider errors and response bodies do not enter the mapped exception chain.
-
-The default tool-use instructions are a new behavioral surface. Local native-request tests do
-not establish model quality; qualify the intended revision against the
-[agent tool quality gate](../model-quality.md#check-agent-tool-reasoning) before deployment.
+Implements `AgentBackend.step` over Chat Completions for [`AgentRunner`](python-agents.md), preserving ordered media and prior tool messages with `store=False`. `OpenAIAgent.close()` leaves caller-owned SDK clients open.
 
 ## Offline gazetteer
 
-This construction example assumes an open, caller-owned OpenAI client named `client`. Keep it
-open for the owning `Memory` lifetime and close it afterward.
+Install `sensemem[openai,gazetteer]` and supply an immutable local SQLite map index (using an open caller-owned OpenAI `client`):
 
 ```python
 from sensemem import (
@@ -425,7 +266,7 @@ from sensemem import (
 )
 
 gazetteer = OfflineGazetteer(
-    "/absolute/path/named-geometries.sqlite3",
+    "./data/named-geometries.sqlite3",
     index_sha256="<complete lowercase SHA256>",
     radius_m=500,
     limit=8,
@@ -440,117 +281,25 @@ answerer = EvidenceGeneration(
 )
 ```
 
-Declare the modalities supported by the provider. Pass the answerer through the existing `Memory` constructor or
-`MemoryPlugins`. Declarative configuration exposes the same resource through
-`generation.offline_gazetteer`; see [configuration](../configuration/providers.md).
-Install `sensemem[openai,gazetteer]`; importing `sensemem` does not import Shapely or pyproj.
-
-`OfflineGazetteer.nearby(latitude, longitude)` returns a detached dictionary with `status`,
-`candidates`, source/license provenance, `global_complete=False` and
-`photo_identity_confidence="unknown"`. Candidate fields include OSM type/ID, kind, geometry type,
-original names and aliases, explicit address tags, metric distance, coverage/boundary flags and
-spatial relation. Names and map data are untrusted. Proximity refers to the recorded coordinate,
-not an assertion about what a photo depicts. The source snapshot may postdate capture.
-`provenance` returns a detached dictionary; `index_sha256` and `budget_chars` are read-only
-properties. No persistent database connection is held between lookups. Multiple instances may
-share this immutable external index; it is not a SenseMem `data_dir` or an isolation boundary.
-
-The single-region v1 index has SQLite tables `metadata(key,value)`,
-`features(id,osm_type,osm_id,kind,tags_json,geometry_wkb)` and RTree
-`bounds(id,min_lon,max_lon,min_lat,max_lat)`. Metadata values are JSON. Its recipe is exactly
-`offline-osm-named-geometries-v1-aeqd-wgs84-step0005`; source geometry must be densified to at
-most 0.0005 degrees. Source metadata requires an HTTPS URL, source SHA256, ISO snapshot date,
-`extract_bbox_lonlat` and optional header fields. Attribution is
-`© OpenStreetMap contributors; ODbL 1.0`, with license URL
-`https://www.openstreetmap.org/copyright`. The index declares
-`geometry_segment_max_degrees=0.0005` and `complete_world_or_region_map=false`.
-No alternate schema is migrated or guessed, and the SDK does not build an index from raw OSM.
-
-A multi-region index uses the explicit recipe
-`offline-osm-named-geometries-v2-aeqd-wgs84-step0005`. Its `features` table adds
-`source_index` after the six v1 columns; `bounds` is unchanged. Metadata replaces `source`
-with `sources`, an ordered list of at least two complete source mappings with the same
-provenance fields described above. Mixing `source` and `sources`, an invalid source index,
-or duplicate `(osm_type, osm_id)` features rejects the index. Each feature belongs to exactly
-one source; the adapter does not choose between duplicate copies of an OSM feature.
-
-The constructor is unchanged. For v2, `nearby` and `provenance` return the complete `sources`
-list instead of `source`, and each candidate carries its original zero-based `source_index`.
-A lookup first admits sources whose own extract bounds contain the coordinate, then sorts
-their geometry candidates together by distance before applying the same candidate limit.
-The answer context includes `map_sources` in stable source-index order for only the sources
-represented by the candidates actually admitted under the budget. Each entry identifies its
-source index, URL, PBF SHA, snapshot date and replication timestamp; there is no synthesized
-single date or source file. Source headers and candidates share the character budget,
-including every repeated metadata occurrence. V1 retains its existing single-source fields.
-
-Supply a complete, checkpointed main SQLite snapshot and keep it immutable. Only that main file
-is SHA-verified and queried, using SQLite's immutable read-only mode; adjacent WAL/SHM files
-are ignored. Its file identity, size and modification time are subsequently checked, including
-cached lookups.
-Invalid options, missing dependencies, index or provenance raise
-`ValidationError`; changed/unavailable indexes and SQLite read failures raise `StorageError`.
-Coordinates and provider bodies are not logged. A lookup exceeding 10000 prefilter features or
-32 MiB of geometry returns unknown with `lookup_incomplete=True`, rather than claiming that a
-partial scan found the nearest place. Empty/out-of-region results also remain unknown.
-The added map context has a separate whole-candidate character budget; the existing total answer
-byte bound remains in force. Enabling this resource changes the available external knowledge,
-requires task-specific quality evaluation and must be declared in comparisons.
+`OfflineGazetteer.nearby(latitude, longitude)` queries the SHA-verified read-only SQLite RTree index (`features`, `bounds`, `metadata`) with no network calls and returns detached candidate dictionaries (`status`, `candidates`, source provenance, `global_complete=False`, `photo_identity_confidence="unknown"`). Supports both single-region (`offline-osm-named-geometries-v1-aeqd-wgs84-step0005`) and multi-region (`offline-osm-named-geometries-v2-aeqd-wgs84-step0005`) indexes with geometry densified to at most 0.0005 degrees. Lookups exceeding 10,000 prefilter features or 32 MiB of geometry return `lookup_incomplete=True`. Declarative configuration uses `generation.offline_gazetteer`; see [offline map context](../configuration/providers.md#offline-map-context).
 
 ## OpenAI request behavior
 
-Direct methods use `ModelInput`; public `Memory` methods accept `ContentInput` directly.
+Direct methods use `ModelInput`; public `Memory` methods accept `ContentInput` directly:
 
 ```text
-embed(
-    inputs: Sequence[ModelInput],
-    task: EmbedTask = EmbedTask.DOCUMENT,
-) -> tuple[tuple[float, ...], ...]
-
+embed(inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT) -> tuple[tuple[float, ...], ...]
 form(inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]
-
-answer(
-    question: ModelInput,
-    hits: Sequence[SearchHit],
-    *,
-    answer_policy: AnswerPolicy = "strict",
-    exhaustive: bool = False,
-) -> AnswerResult
-
-stream_answer(
-    question: ModelInput,
-    hits: Sequence[SearchHit],
-    *,
-    answer_policy: AnswerPolicy = "strict",
-    exhaustive: bool = False,
-) -> Generator[str, None, AnswerResult]
-
+answer(question: ModelInput, hits: Sequence[SearchHit], *, answer_policy: AnswerPolicy = "strict", exhaustive: bool = False) -> AnswerResult
+stream_answer(question: ModelInput, hits: Sequence[SearchHit], *, answer_policy: AnswerPolicy = "strict", exhaustive: bool = False) -> Generator[str, None, AnswerResult]
 transcribe(assets: Sequence[AssetRef]) -> tuple[str, ...]
 ```
 
-Close releases the adapter's own resources, not injected OpenAI clients.
-
-Structural requests default to strict JSON schema; JSON-object mode is explicit and retains
-validation. Strict rejection never silently downgrades. `generation_store` is a strict boolean,
-default false, and cannot be overridden through provider fields. Sampling/token serialization and
-provider SSE are documented in [Provider fields](../configuration/providers.md#sampling-and-streaming).
-
-Media data URLs are bounded at 20 MiB each and 64 MiB aggregate, roughly 15/48 MiB untransformed
-on-disk bytes. Embedding oversized video uses four locally decoded ordered stills or fails if
-decoding cannot meet bounds; answering can use sixteen stills with explicit lost motion/audio/
-timing labels. Stored assets remain unchanged. Required original-whole media needs a custom
-provider upload adapter.
-
-Grounded answer text, including system/user text and attachment labels, is capped at 4 MiB.
-Question capacity is reserved before ranked evidence; overflow media may remain as text. A single
-oversized embedding key can be elided while usable keys keep the write searchable, recorded as
-`sensemem.embedding.elided_parts`. Refusing every key fails. Technical context-length video fallback
-records `sensemem.embedding.video_sampled_inputs` and preserves original assets for answering.
+Media data URLs are bounded at 20 MiB each and 64 MiB aggregate. Oversized videos fall back to four ordered stills for embedding and sixteen for answering (with explicit lost-motion/audio/timing notes) while stored assets remain unchanged. Grounded answer text is capped at 4 MiB; oversized individual embedding keys elide with `sensemem.embedding.elided_parts` while usable keys keep the record searchable.
 
 ## Named recipes
 
-Named recipes are available through the supported `sensemem.recipes` submodule, not as a root
-re-export:
+Named recipes live in `sensemem.recipes`:
 
 ```text
 import sensemem.recipes as recipes
@@ -565,14 +314,7 @@ recipes.answerer(name: str, *, load: bool = False) -> GenerationBackend
 recipes.former(name: str, *, load: bool = False) -> FormationBackend
 recipes.consolidator(name: str, *, load: bool = False) -> ConsolidationBackend
 recipes.vision(name: str, *, load: bool = False) -> VisionDescriptionBackend
-recipes.transcriber(
-    name: str,
-    *,
-    load: bool = False,
-) -> SpeechBackend | TranscriptionBackend
+recipes.transcriber(name: str, *, load: bool = False) -> SpeechBackend | TranscriptionBackend
 ```
 
-Each construction function returns an object the caller owns and closes. `load=True` additionally
-exercises the recipe's published probe (`weights`, `import`, or `client`).
-`describe()` reports a `classes` mapping from slot to qualified adapter class, alongside its
-`models` mapping. A multi-role recipe no longer reports one class for unrelated operations.
+Each factory returns a caller-owned adapter (`load=True` runs its loader probe). `describe()` returns per-slot `classes` and `models` mappings.

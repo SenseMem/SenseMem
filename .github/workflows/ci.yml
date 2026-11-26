@@ -135,10 +135,7 @@ jobs:
             !**/.venv/**
             !.pytest_cache/**
             !.benchmarks/**
-            !.superpowers/**
-            !docs/superpowers/**
             !.claude/worktrees/**
-            !autoresearch/**
 
       - name: Check documentation links
         uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2.8.0

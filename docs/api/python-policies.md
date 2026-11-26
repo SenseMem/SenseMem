@@ -24,11 +24,13 @@ text, required `embedding_inputs`, optional `optional_embedding_inputs`, and `le
 The policy may rewrite text and choose representations; the kernel executes embedding calls.
 Required embeddings fail the operation on error. Optional embedding failures retain other routes.
 
-`DefaultQueryPolicy` prefers a supported aggregate, preserves focused atomic keys, and adds
-available visual descriptions. Lexical mode performs no embedding; dense mode adds no lexical
-routes. Custom plans obey those same mode constraints. Media references must match the leased
-query exactly, and each selected input must satisfy the configured encoder's joint modality and
-asset-count capabilities. Invalid plans fail with `ModelError` at `stage="query.plan"`.
+`DefaultQueryPolicy` embeds the supported aggregate and bounded atomic keys across the ordered
+input, including text after media. Lexical retrieval includes the full text alongside the focused
+query and available visual descriptions. Lexical mode performs no embedding, and dense mode
+adds no lexical routes. Custom plans obey those same mode constraints. Media references must
+match the leased query exactly, and each selected input must satisfy the configured encoder's
+joint modality and asset-count capabilities. Invalid plans fail with `ModelError` at
+`stage="query.plan"`.
 
 ```python
 from sensemem import QueryRepresentationPlan, QueryRequest

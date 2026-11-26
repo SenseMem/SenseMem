@@ -1,8 +1,6 @@
 # Configuration
 
-Choose your models without changing the memory API. Configure an embedding backend to enable
-storage and retrieval, then add answering, perception, formation, or maintenance independently.
-All construction paths validate the composition before opening the same embedded kernel.
+Choose your models without changing the memory API. Configure an embedding backend to enable storage and retrieval, then add answering, perception, formation, or maintenance independently. All construction paths validate the composition before opening the same embedded kernel.
 
 ## 1. Install only the surfaces you use
 
@@ -18,8 +16,7 @@ All construction paths validate the composition before opening the same embedded
 | `benchmarks` | Evaluation/download tooling; datasets download separately |
 | `all` | Union of the optional surfaces |
 
-The base package includes local storage, Zvec, public values, and backend protocols.
-The runtime supports Python 3.11–3.14; verify the selected optional runtimes on your target platform.
+The base package includes local storage, Zvec, public values, and backend protocols. The runtime supports Python 3.11–3.14; verify the selected optional runtimes on your target platform.
 
 ```bash
 uv add "sensemem[local,openai]"
@@ -27,8 +24,7 @@ uv add "sensemem[local,openai]"
 
 ## 2. Declare a composition
 
-`embedding` is required; `data_dir` defaults to `.sensemem`. Other slots are optional.
-This configuration uses local embedding and an OpenAI-compatible answerer:
+`embedding` is required; `data_dir` defaults to `.sensemem`. Other slots are optional. This configuration uses local embedding and an OpenAI-compatible answerer:
 
 ```python
 from sensemem import Memory
@@ -50,16 +46,9 @@ with Memory.from_config(config) as memory:
     print(memory.ask("Where is the spare key?").answer)
 ```
 
-Set `OPENAI_API_KEY` in the host environment. Each OpenAI slot can instead declare its own
-endpoint, credentials, timeout, and retries; see [provider fields](configuration/providers.md).
-Unknown fields/providers and out-of-range values are rejected. Declarative composition owns its
-adapters. `AsyncMemory.from_config()` accepts the same shape; use
-`MemorySpec.model_validate()` to validate without opening storage.
+Set `OPENAI_API_KEY` in the host environment. Each OpenAI slot can instead declare its own endpoint, credentials, timeout, and retries; see [provider fields](configuration/providers.md). Unknown fields/providers and out-of-range values are rejected. Declarative composition owns its adapters. `AsyncMemory.from_config()` accepts the same shape; use `MemorySpec.model_validate()` to validate without opening storage.
 
-For third-party implementations, use [application plugin factories](configuration/plugins.md).
-`MemorySpec` accepts either a bundled `provider` or a registered `factory` in each backend
-field, and a separate `tools` list. The host selects which tools a fixed pipeline or
-an [optional agent](api/python-agents.md) invokes.
+For third-party implementations, use [application plugin factories](configuration/plugins.md). `MemorySpec` accepts either a bundled `provider` or a registered `factory` in each backend field, and a separate `tools` list. The host selects which tools a fixed pipeline or an [optional agent](api/python-agents.md) invokes.
 
 ### Loading a configuration file
 
@@ -76,14 +65,11 @@ with Memory.from_config(config) as memory:
     print(memory.capabilities.embedding_model)
 ```
 
-For YAML, install a host parser and use `yaml.safe_load()`. The product SDK does not depend on
-YAML; the benchmark extra's `--config` handles it separately. SenseMem does not automatically
-load `.env`; hosts can use `uv run --env-file .env python application.py`.
+For YAML, install a host parser and use `yaml.safe_load()`. The product SDK does not depend on YAML; the benchmark extra's `--config` handles it separately. SenseMem does not automatically load `.env`; hosts can use `uv run --env-file .env python application.py`.
 
 ## 3. Add capabilities
 
-Each slot enables its own capability. Setting `generation` does not enable formation, vision,
-or consolidation.
+Each slot enables its own capability. Setting `generation` does not enable formation, vision, or consolidation.
 
 | Need | Slot or policy | Guide |
 | --- | --- | --- |
@@ -97,9 +83,7 @@ or consolidation.
 | Change retrieval, grounding, or identity thresholds | `settings` | [Runtime settings](configuration/settings.md) |
 | Declare explicit physical retention | Top-level `retention` | [Retention](configuration/lifecycle.md#retention-policy) |
 
-For native media, declare the modalities the deployed endpoint accepts. Add matching speech or
-vision backends for caption/transcript routes. `memory.capabilities` describes the resolved
-composition; use the [quality gate](model-quality.md) to qualify it for your tasks.
+For native media, declare the modalities the deployed endpoint accepts. Add matching speech or vision backends for caption/transcript routes. `memory.capabilities` describes the resolved composition; use the [quality gate](model-quality.md) to qualify it for your tasks.
 
 ## 4. Choose an ownership boundary
 
@@ -130,23 +114,12 @@ with OpenAI(timeout=30.0, max_retries=3) as client:
         print(memory.ask("Where is the spare key?").answer)
 ```
 
-`Memory` closes each distinct adapter once. `OpenAICompletion` leaves caller-supplied clients open;
-the outer context owns that client. One completion adapter may fill several completion slots, such as
-`answerer`, `former`, and `consolidator`. Pass policy through `settings=MemorySettings(...)`
-and tracing through the separate `tracer=` argument.
+`Memory` closes each distinct adapter once. `OpenAICompletion` leaves caller-supplied clients open; the outer context owns that client. One completion adapter may fill several completion slots, such as `answerer`, `former`, and `consolidator`. Pass policy through `settings=MemorySettings(...)` and tracing through the separate `tracer=` argument.
 
-`build_memory_composition()` returns a `MemoryComposition` for hosts needing to assemble before
-opening storage. Close it unless its plugins are transferred to a `Memory`. Exact constructors
-and custom inference protocols are in the [SDK](api/python-sdk.md) and
-[backend reference](api/python-backends.md).
+`build_memory_composition()` returns a `MemoryComposition` for hosts needing to assemble before opening storage. Close it unless its plugins are transferred to a `Memory`. Exact constructors and custom inference protocols are in the [SDK](api/python-sdk.md) and [backend reference](api/python-backends.md).
 
 ## Before reopening a store
 
-One physical directory has one live owner. Embedding space/dimension, persisted transcription/face
-recipes, and evidence policy must match the store. Deliberate representation changes need replay
-into a fresh directory; query-time policies such as reranking can change on reopen.
+One physical directory has one live owner. Embedding space/dimension, persisted transcription/face recipes, and evidence policy must match the store. Deliberate representation changes need replay into a fresh directory; query-time policies such as reranking can change on reopen.
 
-Use immutable model revisions for reproducible deployments and validate model/prompt changes
-through the [quality gate](model-quality.md). See [representation changes](operations.md#changing-the-runtime-or-stored-representations)
-for the required action per change, and [example configurations](examples/README.md) for runnable
-compositions.
+Use immutable model revisions for reproducible deployments and validate model/prompt changes through the [quality gate](model-quality.md). See [representation changes](operations.md#changing-the-runtime-or-stored-representations) for the required action per change, and the [annotated evaluation template](examples/eval.example.yaml) for a complete YAML layout.

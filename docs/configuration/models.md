@@ -1,11 +1,8 @@
 # Model setup
 
-Select an embedding model, add reranking or perception where useful, and keep stored model spaces
-compatible across restarts. This guide gives runnable configurations and runtime requirements
-for each bundled model path.
+Select an embedding model, add reranking or perception where useful, and keep stored model spaces compatible across restarts. This guide gives runnable configurations and runtime requirements for each bundled model path.
 
-Start with [extras and composition](../configuration.md).
-[Provider fields](providers.md) lists connection controls and defaults.
+Start with [extras and composition](../configuration.md). [Provider fields](providers.md) lists connection controls and defaults.
 
 ## Embedding choices
 
@@ -13,18 +10,12 @@ Every store needs an embedding backend. Space and dimension must match when reop
 
 | Provider | Selection and identity |
 | --- | --- |
-| `sentence-transformers` | Required model; optional full 40-character revision. Omission resolves the current Hub commit before immediate loading with remote code disabled |
-| `openai` | Explicit deployed model/space/dimension and modalities; request format is part of identity |
+| `sentence-transformers` | Required `model`; optional full 40-character `revision` (omission resolves the current Hub commit with remote code disabled) |
+| `openai` | Explicit deployed `model`, optional `space`, `dimension`, `modalities`, and `request_format` |
 
-An omitted local revision needs Hub access; pin a cached commit for reproducible offline loading.
-Native media routes use original assets. Matching speech/vision backends can supply labelled text
-fallback for unsupported media. Missing/empty required conversion raises `unsupported_modality`.
-A transcript does not establish visual understanding. Atomic-only encoders keep supported atomic
-keys while omitting an unsupported joint aggregate.
+Pin a cached `revision` for offline reproducibility. Native media routes use original assets; matching speech or vision backends supply labelled text fallback for unsupported media, and missing required conversion raises `unsupported_modality`.
 
-A directory without persisted speech derivations can enable/replace speech on reopen. Once stored,
-a configured producer's recipe must match. Omitting that producer preserves cached transcripts,
-identities, and recipe. A diagnostic model name alone does not invalidate an explicitly shared space.
+A directory without persisted speech derivations can add or change speech on reopen. Once speech data is stored, any configured speech backend must match the stored recipe; omitting the speech backend preserves cached transcripts and identities.
 
 ### EmbeddingGemma 2
 
@@ -44,35 +35,13 @@ Install `sensemem[local]`:
 }
 ```
 
-The local extra requires Sentence Transformers 6.1+ and Transformers 5.18+. The adapter uses
-PyTorch through Sentence Transformers and Transformers. `dtype="auto"` selects BF16 on the
-chosen CUDA GPU when it has native support, otherwise FP32. Explicit `float32` or `bfloat16`
-overrides automatic selection; FP16 is rejected. Use `device="cpu"` for CPU inference.
-Injected encoders own their loading configuration and must use FP32/BF16, never FP16.
-Text queries/documents
-receive the checkpoint's retrieval prompts automatically; pure media receives no prefix. Text,
-images, audio, video, and ordered combinations share a space. PyAV preserves model video sampling
-and decodes audio to float32 mono at 16 kHz without the deprecated audioread fallback.
+The `local` extra uses Sentence Transformers 6.1+ and Transformers 5.18+. `dtype="auto"` selects BF16 on CUDA GPUs with native support and FP32 otherwise; explicit `float32` or `bfloat16` overrides automatic selection, while FP16 is rejected. Text queries and documents receive the checkpoint's retrieval prompts automatically while pure media receives no prefix. PyAV decodes video frames and 16 kHz mono float32 audio.
 
-An optional `modalities` list omits unused encoders before weights are allocated. For example,
-`"modalities": ["text"]` loads the 270M text model; `["text", "image"]` or `["text", "video"]`
-keeps vision and drops audio; `["text", "audio"]` drops vision. Omission loads the full 740M
-model. Only declared modalities appear in capabilities and routes. Selecting towers preserves
-the vector space for common inputs; changing precision does not. BF16 has a distinct identity,
-and the local recipe identifies PyAV audio decoding. When reopening on different hardware, pin
-`dtype` to the original precision or replay into a fresh directory.
-
-Dimensions are 128/256/512/768 with renormalization after shortening. The shared context is 8192
-tokens; split larger inputs. The text prompt recipe has its own identity. The Apache-2.0 checkpoint
-loads with `trust_remote_code=False` and supplies embedding, not recognition or generation.
-Document titles currently use `none`; metadata is not implicitly promoted into a model instruction.
-See the [official best practices](https://huggingface.co/google/embeddinggemma-2#best-practices)
-and the [precision quality check](../model-quality.md#check-embeddinggemma-2-loading).
+An optional `modalities` list omits unused encoders before weights allocate (`["text"]` loads the 270M text encoder; `["text", "image"]` or `["text", "video"]` drops audio; `["text", "audio"]` drops vision; omission loads all 740M weights). Supported dimensions are 128, 256, 512, and 768 within an 8,192-token shared context. Because BF16 and FP32 have distinct vector-space identities, pin `dtype` when reopening across different hardware. See the [official best practices](https://huggingface.co/google/embeddinggemma-2#best-practices) and the [precision check](../model-quality.md#check-embeddinggemma-2-loading).
 
 ### EmbeddingGemma 2 through vLLM
 
-Install `sensemem[openai]` on the application and deploy
-[the model server](../deployment.md#embeddinggemma-2-model-server) separately:
+Install `sensemem[openai]` and deploy [the model server](../deployment.md#embeddinggemma-2-model-server) separately:
 
 ```json
 {
@@ -89,37 +58,22 @@ Install `sensemem[openai]` on the application and deploy
 }
 ```
 
-The exact model name enables query prefix `"task: search result | query: "` and document prefix
-`"title: none | text: "`; aliases do not. Mixed inputs retain attachment order, pure media has no
-prefix, BOS/EOS tokens are enabled, and media uses inline data URLs. Keep the checkpoint's chat
-template on the server.
-
-The automatic served recipe is `embeddinggemma2-ordered-text-prompts-special-tokens-v3`.
-Caller-supplied `embedding_space` values must identify the same ordered representation and
-retrieval prompts. Changing that representation requires source replay into a fresh directory.
-
-Messages mode validates native 768 dimensions and requests no Matryoshka truncation. Its identity
-differs from generic messages, unprompted stores, and the local recipe. Use fresh-store replay when
-switching. An explicit space must describe the actual server recipe; record the resolved server
-revision and validate numerical parity before treating local/served embeddings as equivalent.
+The exact `google/embeddinggemma-2` model name automatically applies the checkpoint's query (`"task: search result | query: "`) and document (`"title: none | text: "`) prefixes, preserves interleaved text/media order, enables BOS/EOS tokens, and validates 768-dimensional vectors. Keep the checkpoint's bundled chat template on the vLLM server. Local and served EmbeddingGemma 2 recipes use distinct vector-space identities.
 
 ## Semantic reranking
 
-Reranking is off unless configured. It runs after authoritative hydration, scope/type/time
-filters, relevance gating, and ambiguity checks, before the final result limit. It changes order,
-not stored embeddings or bounded `SearchHit.score`. Original rank breaks ties;
-`search(explain=True)` exposes the separate `reranking_score`.
+Reranking is off unless configured. It runs after authoritative hydration, filters, and relevance gating, before the final `limit`. It can resolve a close top-one pair when it scores both leaders and strictly prefers the first; ties preserve original rank. `SearchHit.score` keeps the bounded base score, and `search(..., explain=True)` exposes `reranking_score`. Changing rerankers requires reopening `Memory`, not re-embedding.
 
 ### Remote vLLM service
 
-The `openai` extra supplies transport:
+The `openai` extra supplies HTTP transport:
 
 ```yaml
 reranking:
   provider: vllm
-  model: Qwen3-VL-Rerank-8B
-  base_url: http://127.0.0.1:8002
-  api_key: EMPTY
+  model: your-reranker-model
+  base_url: https://reranker.example
+  api_key: replace-with-your-key
   batch_size: 32
   request_concurrency: 32
   media_candidates: 40
@@ -127,18 +81,7 @@ reranking:
   timeout: 240.0
 ```
 
-The absolute HTTP(S) server base must have no query/fragment; the client appends `/score`.
-The server must support vLLM's `queries`/`documents` scoring protocol. It returns the
-same pair scores without echoing the original text or base64 media in the response.
-An unset key sends no authorization header and does not read `OPENAI_API_KEY`.
-Counts/timeouts are positive, media weight is (0,1], and modalities include text/image/video.
-`request_concurrency` bounds active HTTP batches across calls sharing this adapter (default 32).
-Completed batches refill the pool immediately; returned scores retain input order. Close waits
-for started requests and media readers before closing the transport, including after failure.
-
-The server owns revision, context, templates, and preprocessing; local revision/device/max-length
-fields are unsupported. Omit `media_candidates` for direct multimodal pairs; setting it refines a
-text-ranked shortlist and combines probability logits using `media_weight`. Record server identity.
+`base_url` must be an absolute HTTP(S) base URL without query or fragment; the client appends `/score` using vLLM's `queries`/`documents` protocol. An unset `api_key` sends no authorization header and does not read `OPENAI_API_KEY`. `request_concurrency` bounds active HTTP batches (default `32`). Omit `media_candidates` for direct multimodal scoring, or set it to refine a text-ranked shortlist combined via `media_weight` in `(0, 1]`.
 
 ### Local Qwen3-VL
 
@@ -161,26 +104,9 @@ reranking:
   video_cache_bytes: 268435456
 ```
 
-Text and supported original images/videos automatically form query/candidate pairs, including
-media-only inputs. Raw audio is unsupported; transcripts can supply text. The adapter follows the
-[official pooling/classification recipe](https://github.com/QwenLM/Qwen3-VL-Embedding/blob/main/examples/reranker_vllm.ipynb)
-with its no/yes head. Each classify call contains at most `batch_size` pairs. Preparation of the
-next batch overlaps serialized inference, with at most one batch prepared ahead per call.
+Requires Linux x86-64/CUDA (`device` omitted or `"cuda"`; select GPUs via `CUDA_VISIBLE_DEVICES`). Text, images, and videos form query/candidate pairs following the [official vLLM reranker recipe](https://github.com/QwenLM/Qwen3-VL-Embedding/blob/main/examples/reranker_vllm.ipynb); raw audio uses transcripts. Oversized tokenized pairs or media counts raise `payload_too_large` without silent truncation. `video_cache_bytes` bounds decoded frame-array caching (default 256 MiB; `0` disables).
 
-`max_length` bounds the complete tokenized pair including template/suffix. Oversized text or
-expanded visual input raises `payload_too_large` at reranking without truncation, media removal,
-or retry. Media counts combine query and candidate: eight images/two videos by default.
-Processed images default to 262144 pixels; videos sample 2–64 ordered frames (default eight),
-retaining timestamps without model resampling. Decoded videos are cached with their timestamps.
-`video_cache_bytes` bounds retained frame-array bytes (default 256 MiB); zero disables retention.
-Active batches and decoder temporaries can use additional memory. Close clears the cache after
-active calls finish.
-
-The supported prebuilt runtime is Linux x86-64/CUDA with the lockfile's CUDA 13.0 PyTorch family.
-Device is omitted or `cuda`; use `CUDA_VISIBLE_DEVICES` for selection.
-`gpu_memory_utilization` is in (0,1] and defaults to 0.9.
-
-Create models inside a main guard because vLLM may spawn after the embedder initializes CUDA:
+Create `Memory` inside a `main()` guard so vLLM multiprocessing spawn works safely:
 
 ```python
 import json
@@ -203,29 +129,15 @@ if __name__ == "__main__":
 CUDA_VISIBLE_DEVICES=0 VLLM_WORKER_MULTIPROC_METHOD=spawn uv run --frozen python run_memory.py
 ```
 
-Setting spawn alone does not replace the main guard. See
-[vLLM multiprocessing](https://github.com/vllm-project/vllm/blob/main/docs/usage/troubleshooting.md#python-multiprocessing).
+See [vLLM multiprocessing](https://github.com/vllm-project/vllm/blob/main/docs/usage/troubleshooting.md#python-multiprocessing).
 
 ### Text reranking and scoring
 
-`sentence-transformers` uses the `local` extra, `batch_size=32`, and `max_length=1024`.
-An omitted revision resolves to an immutable commit; explicit revisions are full 40-character
-commits and remote code is disabled. Its cross-encoder owns truncation, while Qwen rejects overflow.
-
-Long documents supply exact query-related windows with opening context and matched middle/tail
-passages; stored text and original reader evidence stay unchanged. Supported media accompanies
-those windows. Unsupported candidates retain positions, and a query with no supported content skips
-scoring. Models return aligned finite scores: Qwen sigmoid values are in [0,1], while text
-cross-encoder logits can be negative. Neither is answer confidence. Failures raise classified
-`ModelError(stage="reranking")` instead of silent fallback. Changing rerankers needs reopen, not replay.
+`provider: sentence-transformers` uses the `local` extra (`batch_size=32`, `max_length=1024`, remote code disabled). Long documents send query-focused windows alongside opening context while stored text remains unchanged. Reranking failures raise `ModelError(stage="reranking")` explicitly.
 
 ## Local speech with FunASR
 
-The `local` extra installs FunASR at
-[`940b0d2463141a2e9ace8a9fd965b4aea93f2db5`](https://github.com/modelscope/FunASR/commit/940b0d2463141a2e9ace8a9fd965b4aea93f2db5),
-so installation needs Git. The recipe pins Fun-ASR-Nano, FSMN-VAD, and CAM++; Nano covers Chinese,
-English, and Japanese, rather than the MLT checkpoint's separate 31-language contract.
-The local extra requires ModelScope Hub 0.6.1+ to resolve the recipe's pinned commit revisions.
+The `local` extra installs the pinned FunASR package (requiring Git) with Fun-ASR-Nano (Chinese, English, and Japanese), FSMN-VAD, and CAM++ speaker embeddings via ModelScope Hub 0.6.1+:
 
 ```yaml
 speech:
@@ -236,60 +148,27 @@ speech:
   speaker_device: cpu
 ```
 
-ASR device accepts auto/cpu/cuda/cuda:index. Auto selects the upstream accelerator or CPU fallback;
-VAD/speaker placement accepts cpu/cuda/cuda:index and otherwise inherits ASR. Placement is fixed at
-first load and preserves pinned VAD limits. CPU submodels trade accelerator memory for latency.
-Videos without an audio track produce empty speech analysis without invoking ASR; their native
-visual evidence remains available. Unreadable video still raises a model error.
-For a single input, an empty VAD result is silence and an invalid result raises `ModelError`;
-neither repeats the same inference request.
-
-Positive `ncpu` changes process-wide PyTorch/BLAS budgets; another loaded model can replace them.
-It does not enable concurrent transcriber calls: the loaded FunASR pipeline serializes inference.
-Source revision and complete model recipe define transcription space, not placement/CPU budget.
-Changing a persisted recipe needs fresh-store replay.
+`device` accepts `auto`, `cpu`, `cuda`, or `cuda:index`; `vad_device` and `speaker_device` inherit `device` when omitted. Videos without an audio track return empty speech analysis without invoking ASR. Positive `ncpu` sets process-wide PyTorch/BLAS thread budgets; inference per adapter is serialized. Device placement and `ncpu` do not alter `transcription_space`.
 
 ## Visual descriptions
 
-A `vision` slot adds labelled captions/OCR to indexed text while preserving original media:
+A `vision` slot appends labelled captions and OCR to indexed text while preserving original media:
 
 ```yaml
 vision:
   provider: openai
-  model: gpt-5-mini-2025-08-07
+  model: your-vision-model
   modalities: [image]
 ```
 
-Each write batch describes applicable, not-yet-described visuals in one completion. Captions make
-otherwise wordless images searchable lexically and provide fallback to text-only encoders.
-Derived sections use `[visual description:<asset_id>]`; facts use `[facts:<asset_id>]`.
-Original media still enters native routes.
-
-Descriptions cover shown content, exact readable text, counts, places, clocks, ordered video
-events, and tags. Visible instructions remain untrusted content. With speech configured, clip
-descriptions also receive diarised transcripts. Bundled `Fact:` lines produce separately marked
-facts; explicit transcript-supported speaker names can register identities. Custom plain
-`describe()` text has no identity authority: proposals need optional `describe_analysis()`,
-`VisualDescription`, and `SpeakerName`. Description caches use typed-v1.
+Each write batch describes not-yet-described visuals in one completion, storing sections under `[visual description:<asset_id>]` and `[facts:<asset_id>]`. When speech is configured, video clip descriptions also receive diarised transcripts and may propose typed `SpeakerName` suggestions via `VisionAnalysisBackend`.
 
 | Control | Behavior |
 | --- | --- |
-| `modalities` | Only image/video; undeclared assets remain undescribed |
-| `video_frames` | 2–64, default 4; ordered locally decoded stills including the last frame, never uploaded video |
-| Reply shape | Exactly one nonempty caption per visual, not per frame; request carries pixels and ordinals, no stored IDs/paths |
+| `modalities` | `image` and/or `video`; undeclared media stay undescribed |
+| `video_frames` | `2`–`64`, default `4` locally decoded ordered stills |
 | Inline bounds | 20 MiB per item, 64 MiB aggregate across outbound images/stills |
-| Malformed reply | One correction attempt using only rejected JSON shape and expected count, never rejected caption text |
-| Transport retries | Owned by SDK `max_retries`; kernel adds no waits/attempts |
-| Failure | Optional if native media/transcript remains usable; otherwise preserve the original classified model error |
+| Malformed reply | One bounded correction attempt using only schema and expected count |
+| Failure | Optional if native media or transcript remains usable; otherwise raises classified `ModelError` |
 
-Unreadable video yields no caption. Failed writes are not cached; re-adding an embedded record
-does not backfill descriptions. A failed capture settlement stays pending. Telemetry records
-`sensemem.vision.failed_batches` and separate description tokens.
-Supported generic models receive default zero temperature/fixed seed; known reasoning models omit
-automatic sampling controls. Recipe/model identities must accompany comparisons.
-
-`settings.query_vision=True` additionally describes query media temporarily and searches full
-description/OCR routes beside native routes. Dense/hybrid can embed descriptions; lexical uses
-full-text only. It creates no durable memory, identity, or description, caches attempts only within
-the operation, and preserves original search on failure. Required caption fallback still runs
-without this option. See [runtime settings](settings.md).
+Setting `settings.query_vision=True` temporarily describes query media during search to add description/OCR routes without writing durable records or descriptions; see [runtime settings](settings.md).

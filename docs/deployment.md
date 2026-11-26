@@ -1,12 +1,8 @@
 # Deployment
 
-Run SenseMem inside your application, expose it over HTTP, or connect an agent host through MCP.
-All topologies use one live `Memory` owner per physical `data_dir`. Independent memory domains
-use separate directories.
+Run SenseMem inside your application, expose it over HTTP, or connect an agent host through MCP. All topologies use one live `Memory` owner per physical `data_dir`. Independent memory domains use separate directories.
 
-This page chooses and configures a topology. See [architecture](architecture.md) for invariants,
-[operations](operations.md) for runbooks, and [troubleshooting](troubleshooting.md) when startup or
-traffic fails.
+This page chooses and configures a topology. See [architecture](architecture.md) for invariants, [operations](operations.md) for runbooks, and [troubleshooting](troubleshooting.md) when startup or traffic fails.
 
 ## Choose a topology
 
@@ -17,38 +13,25 @@ traffic fails.
 | One agent host needs tools | Run `build_mcp_server()` in the owner process | Prefer stdio; secure SSE or streamable HTTP as a network service. |
 | Independent workers need independent state | Give each worker a distinct directory | The directories are separate memory domains; they do not synchronize. |
 
-Do not place a Python owner, REST process, and MCP process over the same directory. Put the desired
-adapters around one constructed `Memory`, or have other processes call the existing REST owner.
+Do not place a Python owner, REST process, and MCP process over the same directory. Put the desired adapters around one constructed `Memory`, or have other processes call the existing REST owner.
 
 ## Deployment checklist
 
 Before starting the owner, verify:
 
-- Python 3.11 through 3.14 and compatible 64-bit wheels exist for Zvec 0.8.1+ within 0.8.x and
-  every selected backend. Zvec's additional Intel Mac and Windows ARM64 builds do not establish support for
-  every optional model dependency; verify the complete environment on the target platform.
-- The data directory is on one local, durable filesystem with working SQLite WAL, file locking,
-  atomic rename, and durable writes.
-- The Python build links SQLite 3.35 or newer with the JSON1 extension, which is compiled in by
-  default from 3.38. `consolidation_candidates` reads the operation log with `json_tree`, so a
-  build without it fails that one call.
-- The service account alone can read the directory, model credentials, and backups.
-- Disk capacity covers SQLite, original media, the derived index, and temporary rebuild or
-  compaction space.
-- RAM, accelerator memory, and file-descriptor limits cover model inference and the memory-mapped
-  index.
-- The embedding, transcription, face, and index recipes match an existing store.
+- Python 3.11 through 3.14 and compatible 64-bit wheels exist for Zvec 0.8.1+ (within 0.8.x) and every selected backend on the target platform.
+- The data directory is on one local, durable filesystem supporting SQLite WAL, file locking, atomic rename, and durable writes.
+- Python links SQLite 3.35 or newer with the JSON1 extension (compiled in by default from 3.38, required by `consolidation_candidates`).
+- Only the service account can read the directory, model credentials, and backups.
+- Disk capacity covers SQLite, original media, the derived index, and temporary rebuild or compaction space; RAM, accelerator memory, and file-descriptor limits cover model inference and the memory-mapped index.
+- The embedding, transcription, face, and index recipes match any existing store.
 - A shutdown hook calls `Memory.close()` and closes caller-owned provider clients.
 
-Network filesystems and shared-volume multi-writer deployments are unsupported. On POSIX,
-SenseMem sets the top-level directory to `0700` and its SQLite, lock, staging, and asset files to
-restrictive modes. The operator still owns parent permissions, service accounts, disk encryption,
-backup access, and retention.
+Network filesystems and shared-volume multi-writer deployments are unsupported. On POSIX, SenseMem sets the top-level directory to `0700` and its SQLite, lock, staging, and asset files to restrictive modes. The operator owns parent permissions, service accounts, disk encryption, backup access, and retention.
 
 ## Embedded Python
 
-Install only the optional surfaces used by the application. This example uses the bundled local
-embedder and OpenAI generation adapter:
+Install only the optional surfaces used by the application:
 
 ```bash
 uv add "sensemem[local,openai]"
@@ -57,7 +40,7 @@ uv add "sensemem[local,openai]"
 ```python
 from openai import OpenAI
 
-from sensemem import SentenceTransformersEmbedder, Memory, OpenAICompletion
+from sensemem import Memory, OpenAICompletion, SentenceTransformersEmbedder
 
 with OpenAI(timeout=30.0, max_retries=3) as client:
     with Memory(
@@ -68,28 +51,13 @@ with OpenAI(timeout=30.0, max_retries=3) as client:
         memory.add("Process-owned memory")
 ```
 
-Keep one `Memory` open for a long-running process. `Memory.close()` closes supplied backend objects;
-`OpenAICompletion.close()` deliberately leaves caller-owned OpenAI clients open. Construct `Memory`
-after any process fork, never before it.
+Keep one `Memory` open for a long-running process. `Memory.close()` closes supplied backend objects; `OpenAICompletion.close()` leaves caller-owned OpenAI clients open. Construct `Memory` after any process fork, never before it.
 
-Review the selected model's license and retain its resolved identity when deploying; see
-[embedding choices](configuration/models.md#embedding-choices).
-
-For OpenAI generation slots, configure only parameters supported by the selected model and choose
-`response_format="json_schema"` when the endpoint supports strict structured output. A compatible
-server may instead require explicit `response_format="json_object"`. Configure the SDK base URL, without appending
-`/chat/completions`, and keep credentials in environment lookup or a secret manager. Pin model
-snapshots for reproducible rollout comparisons, run the
-[model quality gate](model-quality.md), and retain provider request IDs with local
-trace IDs for production diagnosis. Local storage does not imply that inference remains local.
+For OpenAI generation slots, configure `response_format="json_schema"` when supported or `response_format="json_object"` for JSON-only endpoints. Pass the SDK base URL without appending `/chat/completions`, keep credentials in environment lookup or a secret manager, and retain provider request IDs with local trace IDs for diagnosis. Local storage does not imply local inference.
 
 ## EmbeddingGemma 2 model server
 
-Run vLLM 0.32.0 or later separately from the SenseMem owner;
-[v0.32.0 introduced EmbeddingGemma 2 support](https://github.com/vllm-project/vllm/releases/tag/v0.32.0).
-SenseMem's optional local reranker dependency is not the embedding server runtime. Obtain access to the
-model checkpoint and install the model runtime dependencies required by that vLLM version in its
-own environment. Start a pooling server with the checkpoint's bundled chat template:
+Run vLLM separately from the SenseMem owner in its own environment with a version supporting EmbeddingGemma 2 pooling. Start the pooling server with the checkpoint's bundled chat template:
 
 ```bash
 vllm serve google/embeddinggemma-2 \
@@ -100,22 +68,11 @@ vllm serve google/embeddinggemma-2 \
   --port 8000
 ```
 
-Keep text, image, audio, and video enabled for full multimodal support. The 8,192-token limit is
-shared by text and media in each input; split larger inputs before ingestion. Do not substitute
-a generative Gemma chat template or rename the served model: SenseMem selects its retrieval
-recipe using the exact model name. Record the server's resolved model identity alongside the
-application configuration for rollout comparisons.
+Keep text, image, audio, and video enabled for full multimodal support; the 8,192-token limit is shared across text and media per input. Do not substitute a generative Gemma chat template or rename the served model: SenseMem selects its retrieval recipe from the exact model name.
 
-Use `--dtype float32` when BF16 is unavailable; do not use FP16. For text-only serving, add
-`--limit-mm-per-prompt image=0,audio=0,video=0` and declare only `"text"` in the application's
-embedding modalities. Keep a separate server environment so its PyTorch/CUDA requirements do
-not replace the application's local reranker runtime.
+Use `--dtype float32` when BF16 is unavailable; do not use FP16. For text-only serving, pass `--limit-mm-per-prompt image=0,audio=0,video=0` and declare `"modalities": ["text"]` in SenseMem.
 
-Install `sensemem[openai]` in the application environment and use the
-[EmbeddingGemma 2 vLLM configuration](configuration/models.md#embeddinggemma-2-through-vllm), which sends
-requests to `http://127.0.0.1:8000/v1/embeddings`. The `EMPTY` key is a placeholder for this local
-server; configure the actual key when server authentication is enabled. Keep one SenseMem
-owner per physical data directory even when several owners share the model server.
+Install `sensemem[openai]` in the application environment and follow the [EmbeddingGemma 2 vLLM configuration](configuration/models.md#embeddinggemma-2-through-vllm). Multiple SenseMem owners can share one model server while each keeps its own physical `data_dir`.
 
 ## REST owner
 
@@ -128,10 +85,10 @@ uv add "sensemem[local,openai,server]"
 Keep the owner and caller-owned client open around the ASGI server in `my_application.py`:
 
 ```python
-from openai import OpenAI
 import uvicorn
+from openai import OpenAI
 
-from sensemem import SentenceTransformersEmbedder, Memory, OpenAICompletion
+from sensemem import Memory, OpenAICompletion, SentenceTransformersEmbedder
 from sensemem.api import create_app
 
 
@@ -151,24 +108,15 @@ if __name__ == "__main__":
     main()
 ```
 
-Run the single-process owner. The context managers close memory before the provider client when
-the server exits, including after an exception:
+Run the single-process owner so context managers close memory before the provider client on exit:
 
 ```bash
 uv run python my_application.py
 ```
 
-`create_app()` does not own or close either resource. For an importable ASGI app, arrange the same
-cleanup in the host's lifespan and run one worker. The `server` extra includes Uvicorn; the
-ASGI app can also run on another host-selected server. The adapter adds no authentication,
-authorization, TLS, rate limiting, quota, or access audit log. Bind to a trusted interface or put the app
-behind the deployment's existing gateway or middleware. Keep `/healthz` protected consistently; it
-reports liveness and the live composition's capability declaration, not model or retrieval
-readiness. The app publishes fourteen product routes under `/v1`, or twenty-three when the host enables
-`identity_operations` and `embodied_operations`.
+`create_app()` does not own or close either resource. For an importable ASGI app, run the same cleanup in the host lifespan and run one worker. The adapter adds no authentication, authorization, TLS, rate limiting, quota, or access audit log: bind to a trusted interface or place it behind an authenticating gateway or middleware. Keep `/healthz` protected consistently; it reports liveness and declared capabilities, not model readiness. The app publishes fourteen always-on routes under `/v1`, or twenty-three with `identity_operations=True` and `embodied_operations=True`.
 
-Do not retry a timed-out request blindly. Adds are content-idempotent, but the SQLite commit can
-precede a transport timeout or index failure; preserve or recover the stable returned ID.
+Do not retry a timed-out request blindly: adds are content-idempotent, but SQLite commit can precede a transport timeout or index failure.
 
 ## MCP owner
 
@@ -194,38 +142,12 @@ with Memory.from_config(
     build_mcp_server(memory).run("stdio")
 ```
 
-`build_mcp_server()` does not close `memory`. It reads `memory.capabilities` once while building
-the server and publishes it as the server instructions, so build the server after the composition
-is final. A stdio server inherits the host user's filesystem, environment, and model credentials.
-If the host chooses SSE or streamable HTTP, it must add authentication, authorization, TLS, request
-limits, and rate limiting. The server publishes thirteen tools; MCP error subjects may contain
-owner-local paths.
-
-## Upgrading to SenseMem
-
-Use the `sensemem` distribution, root Python imports, and the `sensemem` and `sensemem-bench`
-commands. Install the extras required by the selected adapters and review
-[configuration](configuration.md) before changing a deployment.
-
-The current runtime accepts SQLite schema 25 and its declared representation identities.
-It does not migrate older schemas or convert incompatible model spaces. Read source data with
-its original runtime, then re-ingest into a fresh physical directory. Renaming a directory does
-not convert its format. Keep the original runtime and a tested backup until verification is complete.
-
-Run one version and one owner per data directory. Evaluation artifacts also have explicit schema
-and scorer identities; retain their original manifests and use compatible inputs for new runs.
-See [representation changes](operations.md#changing-the-runtime-or-stored-representations).
+`build_mcp_server()` does not close `memory`. It snapshots `memory.capabilities` once while building the server and publishes it as server instructions. A stdio server inherits the host user's filesystem, environment, and credentials; if exposed over SSE or streamable HTTP, the host must add authentication, authorization, TLS, request limits, and rate limiting. The server publishes thirteen tools, and MCP error subjects may include owner-local paths.
 
 ## Media and model placement
 
-Python accepts regular local `Path` values, inline `Blob` bytes, and `AssetRef` values from the
-same data directory. REST and MCP accept inline data or stored asset IDs, never server paths or
-HTTP(S) URLs. Fetch remote media in application code so redirects, SSRF controls, credentials,
-timeouts, retries, download limits, and telemetry remain in the application's network policy.
+Python accepts regular local `Path` values, inline `Blob` bytes, and `AssetRef` values from the same directory. REST and MCP accept inline bytes or stored asset IDs, never server paths or HTTP(S) URLs; fetch remote media in application code so redirects, SSRF controls, credentials, and download limits stay in the host's network policy.
 
-After a successful add, SenseMem owns an immutable copy under `assets/`; the source file is no
-longer required. Keep SQLite and `assets/` together through backup and restore.
+After a successful add, SenseMem owns an immutable copy under `assets/` and the original source file is no longer required. Keep SQLite and `assets/` together through backup and restore.
 
-Model placement is explicit. Local adapters accept or delegate device selection; custom backends
-may use local or remote inference. SenseMem does not schedule GPUs, select quantization for
-models, or move work between edge and cloud.
+Model placement is explicit: local adapters accept or delegate device selection, and custom backends may run locally or remotely. SenseMem does not schedule GPUs or move inference between edge and cloud.
