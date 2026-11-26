@@ -8,10 +8,9 @@ Jump to [startup](#start-the-adapter), [content](#content-input), [endpoints](#e
 
 ## Surface
 
-The optional FastAPI adapter exposes fourteen `Memory` operations under `/v1`, or twenty-three when
-the host builds it with `identity_operations=True` and `embodied_operations=True`. It validates
-transport input, calls the injected synchronous memory, and serializes the public SDK values; it
-is not a separate storage or retrieval implementation.
+The optional FastAPI adapter exposes fourteen routes under `/v1`, or twenty-three when the host
+enables both `identity_operations` and `embodied_operations`. The routes call the injected
+synchronous `Memory` and serialize its results.
 
 `capture`, `settle`, and `pending_captures` are available by default. Identity administration
 and perception require explicit host opt-in. Both REST switches default to `False`; MCP enables
@@ -102,8 +101,7 @@ shutdown and recovery.
 The [single-process deployment example](../deployment.md#rest-owner) keeps memory and its
 caller-owned model client in context managers around the server. Use that lifecycle when turning
 the adapter snippet above into a runnable service. The `server` extra includes Uvicorn; another
-ASGI server can also host the adapter. MCP enables its tool groups by default, whereas both REST
-authority switches default to `False`.
+ASGI server can also host the adapter.
 
 ## Contract
 
@@ -150,19 +148,19 @@ SDK validator and error contract.
 | --- | --- | --- | --- |
 | `GET /healthz` | `health` | none | `200 HealthResponse` |
 | `POST /v1/memories` | `createMemory` | `MemoryCreate` | `201 MemoryResponse` |
-| `POST /v1/memories/batch` | `createMemories` | `MemoryBatchCreate` | `201 {"memories":[...]}` |
+| `POST /v1/memories/batch` | `createMemories` | `MemoryBatchCreate` | `201 MemoryBatchResponse` |
 | `GET /v1/memories` | `listMemories` | `limit`, `cursor` query parameters | `200 PageResponse` |
 | `POST /v1/memories/search` | `searchMemories` | `QueryRequest` | `200 SearchResponse` |
 | `POST /v1/memories/reinforce` | `reinforceMemories` | `ReinforceRequest` | `200 ReinforceResponse` |
 | `GET /v1/memories/{memory_id}` | `getMemory` | non-empty path value | `200 MemoryResponse` |
 | `GET /v1/memories/{memory_id}/assets/{asset_id}` | `readAsset` | memory and asset IDs | `200` original binary media and MIME type |
-| `DELETE /v1/memories/{memory_id}` | `deleteMemory` | non-empty path value | `200 {"deleted":bool}` |
+| `DELETE /v1/memories/{memory_id}` | `deleteMemory` | non-empty path value | `200 DeleteResponse` |
 | `POST /v1/answers` | `answer` | `AnswerRequest` | `200 AnswerResponse` |
 | `POST /v1/answers/stream` | `answerStream` | `AnswerRequest` | `200 text/event-stream` |
 | `POST /v1/context` | `compileContext` | `ContextRequest` | `200 ContextBundleResponse` |
 | `POST /v1/capture` | `captureMemory` | `MemoryCreate` | `201 MemoryResponse` |
-| `POST /v1/settle` | `settleCaptures` | `SettleRequest` | `200 {"settled":int}` |
-| `GET /v1/pending_captures` | `pendingCaptures` | `limit`, `memory_ids`, `cursor` query parameters | `200 {"items":[PendingCaptureResponse,...],"next_cursor":str\|null}` |
+| `POST /v1/settle` | `settleCaptures` | `SettleRequest` | `200 SettleResponse` |
+| `GET /v1/pending_captures` | `pendingCaptures` | `limit`, `memory_ids`, `cursor` query parameters | `200 PendingCapturesResponse` |
 
 The next nine exist only when the host enables the matching switch:
 
@@ -190,12 +188,13 @@ Request fields and defaults are:
 | `ConsentRequest` | required `state` (`granted`, `withheld`, or `withdrawn`); optional `note` |
 | `RetentionRequest` | `dry_run=false` |
 | `ContextRequest` | required `goal`; optional `budget`, `reference_at`, `scope`; `allow_partial_sources=false`; `supplements=[]` |
-| `ContextSupplementInput` | required nonempty `content` and `source`; optional timezone-aware `observed_at` and `expires_at` |
+| `ContextSupplementInput` | required nonblank `content` and `source`; optional timezone-aware `observed_at` and `expires_at`, with expiry after observation when both are supplied |
 | `ContextBudgetRequest` | `max_chars=16000`; `max_items=24`; `min_confidence=0.0`; `selected_proofs=false`; optional `max_media_items` (`0` for a text-only bundle); optional `memory_types` with at least one value; optional `freshness_seconds`; optional `max_latency_ms` |
 | `SettleRequest` | `limit=100`; `max_attempts=3`; optional `memory_ids` with 1–100 IDs |
 | `PerceptionRequest` | required `memory_id`; optional `kinds` array containing `"speech"` and/or `"faces"` |
 | `IdentityRegisterRequest` | required `identity_id`, `name`; optional `relationship` |
 | List query | `limit=100`; optional opaque `cursor` |
+| Pending captures query | `limit=100`; optional repeated `memory_ids` with 1–100 IDs; optional opaque `cursor` |
 
 All timestamps must include a timezone. An event end requires a start and must be later than it.
 `freshness_seconds` must be positive, finite, and small enough to represent as a Python
@@ -269,7 +268,7 @@ Search-request scope:
 }
 ```
 
-Context-request budget:
+This context request sets a text-only budget and includes a temporary supplement.
 
 ```json
 {
@@ -277,6 +276,7 @@ Context-request budget:
   "budget": {
     "max_chars": 2000,
     "max_items": 8,
+    "max_media_items": 0,
     "memory_types": ["semantic", "episodic"],
     "min_confidence": 0.5,
     "freshness_seconds": 2592000,
@@ -329,17 +329,20 @@ the default instance or `independent_pair` for `independent_evidence=True`; it i
 not a request override. See [proof scoring](../context-compilation.md#selected-delivery-certificates).
 Certificate text and records spend the same character, item, and media
 budgets. Historical `scope.known_at` keeps full provenance. Disabled or historical delivery returns
-an empty `proofs` array. No endpoint changes.
+an empty `proofs` array.
 
 `captureMemory` commits without calling any model; the returned `MemoryResponse` is the same
 content-addressed record `createMemory` would return for identical input. A new capture is durable
 and readable through `getMemory` immediately, but is invisible to `searchMemories` until settled.
 An existing record retains its readiness and is not enqueued again.
 `settleCaptures` enriches, embeds, indexes, and forms up to `limit` queued records in enqueue
-order and returns how many settled; a record that has already failed `max_attempts` times is
-skipped rather than retried, so one poisoned capture cannot block the queue, and naming it in
-`memory_ids` bypasses that ceiling. `pendingCaptures` answers per-record readiness: an ID absent
-from `items` is not pending, and `getMemory` tells whether it is settled or was never stored.
+order and returns how many settled. Rows that have reached `max_attempts` stay queued. Naming an
+ID in `memory_ids` bypasses that ceiling.
+
+`pendingCaptures` returns the queue oldest first. Pass its opaque `next_cursor` back as `cursor`
+with the same filters. A full page returns its last item's `cursor` as `next_cursor`, even if
+the following page is empty. A shorter page returns `null`. When checking a specific ID, use
+`getMemory` to distinguish a settled record from one that was never stored.
 
 The identity and embodied routes follow the SDK operation they dispatch to, exactly as the
 [MCP tools](mcp.md#tools) do, because both adapters call the same injected `Memory`.
@@ -368,15 +371,18 @@ for score components, rejection reasons, and threshold interpretation.
 | Object | Fields |
 | --- | --- |
 | `AssetResponse` | `id`, `modality`, `media_type`, `size_bytes`, `sha256`, `name` |
-| `MemoryResponse` | `id`, `content`, `modality`, `memory_type`, `assets`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `context`, `place_id`, `forgotten_at` |
+| `ContentPart` | `kind` (`text`, `asset`, `audio_transcript`, `visual_description`, `model_interpretation`), `value` |
+| `MemoryResponse` | `id`, `content`, `modality`, `memory_type`, `assets`, ordered `parts` of `ContentPart`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `context`, `place_id`, `forgotten_at` |
+| `MemoryBatchResponse` | `memories` in input order |
 | `SearchHitResponse` | all memory fields plus `score` from 0 through 1 |
 | `SearchResponse` | `hits`, `trace`; `trace` is `null` unless the request set `explain=true` |
+| `DeleteResponse` | `deleted` |
 | `ReinforceResponse` | `reinforced` |
 | `AnswerResponse` | `answer`, `hits`, `abstained`, `abstention_reason` |
 | `PageResponse` | `items`, `next_cursor` |
 | `SettleResponse` | `settled` |
-| `PendingCaptureResponse` | `memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting` (`"enrichment"` or `"formation"`) |
-| `PendingCapturesResponse` | `items` |
+| `PendingCaptureResponse` | `memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting` (`"enrichment"` or `"formation"`), opaque `cursor` |
+| `PendingCapturesResponse` | `items`, nullable `next_cursor` |
 | `PerceptionResponse` | `speech`: `SpeakerSegment` values; `faces`: `FaceObservation` values; `coverage`: per-kind/asset `{kind, asset_id, reason}` entries |
 | `IdentityResponse` | `identity`: `identity_id`, `name`, `relationship`, `confirmed`, `evidence_ids`, or `null` |
 | `RegisterResponse` | `registered` |
@@ -392,14 +398,23 @@ for score components, rejection reasons, and threshold interpretation.
 | `ContextUnknownResponse` | `kind`, `detail` |
 | `TextSpanPieceResponse` | `role`, half-open `start_codepoint`, `end_codepoint`, exact `source_text`, `sha256` |
 | `TextSpanSelectorResponse` | `parent_content_sha256`, `embedding_input_sha256`, `recipe_version`, ordered `pieces` |
-| `ContextExcerptResponse` | `source_memory_id`, structured `matched_index_id`, partial `content`, `selector`, `score`, creation and occurrence times, `memory_type`, `context`, `place_id` |
-| `ContextBundleResponse` | `goal`, `reference_at`, `budget`, the hit arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResponse` array `affect`, the mixed `actors` array of hits, `NamedActorResponse`, and `ProvisionalActorResponse` objects, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `proof_scoring`, admitted `supplements`, `omitted_supplements`, `rendered` |
+| `ContextExcerptResponse` | `source_memory_id`, `matched_index_id` string, partial `content`, `selector`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id` |
+| `ContextProjectionResponse` | `source_memory_id`, ordered `parts` of `ContentPart`, `omitted_assets` of `AssetResponse`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id`, fixed `coverage="text_only"` |
+| `ContextBundleResponse` | `goal`, `reference_at`, `budget`, the hit arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResponse` array `affect`, the mixed `actors` array of hits, `NamedActorResponse`, and `ProvisionalActorResponse` objects, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts` and `projections`, `proofs`, `proof_scoring`, admitted `supplements`, `omitted_supplements`, `rendered` |
 | `ContextSupplement` | `content`, `source`, nullable `observed_at` and `expires_at`; temporary external evidence, never a stored memory |
 | `ProvisionalActorResponse` | `identity_id`, `memory_ids`: one recognized person in the included evidence whom no visible naming assertion names |
 | `NamedActorResponse` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id`: one person a naming assertion names, reached through other evidence |
 | `AffectCueResponse` | every hit field plus `event_ids`: the events formed from the same observations the cue cites in its own `context.evidence_ids`, which is co-occurrence inside one capture and not an attributed cause |
 | `CapabilitiesResponse` | `embedding`, `embedding_model`, `embedding_space`, `embedding_dimension`, `embedding_routes`, `generation`, `generation_routes`, `transcription`, `vision`, `face`, `formation`, `reranking`, `reranking_model`, `generation_model`, `transcription_space`, `vision_model`, `face_model`, `formation_model`, `consolidation_model`, `speaker_recognition`, `operations` |
-| `HealthResponse` | `status`, `capabilities` |
+| `HealthResponse` | `status="ok"`, `capabilities` |
+
+Read `parts` in order to recover the text and media positions of a record or hit. The `value` of
+an `asset` part references an entry in `assets` by ID. Other kinds carry text, with derived text
+labelled separately. The spare-key write above returns this `parts` array in the record and hit.
+
+```json
+[{"kind": "text", "value": "The spare key is in the blue toolbox."}]
+```
 
 `modality` is `text`, `image`, `video`, `audio`, or `omni`. `memory_type` is `semantic`,
 `episodic`, or `procedural`. `abstention_reason` is `no_evidence`, `insufficient_evidence`, or
@@ -411,29 +426,31 @@ some other way is an ordinary answer. See
 `answer_policy` is `strict` or `best_effort` and belongs to the caller. `strict`, the default,
 returns a fixed refusal sentence when the evidence is thin. `best_effort` returns the most likely
 answer the evidence supports and instructs the model to choose an offered option for multiple
-choice. It still sets `abstained` and `abstention_reason`, so a client whose protocol gives no credit
-for "unknown" keeps the confidence signal alongside a usable answer. It also costs one more
-generation call than the default on a question that grounds nothing, where `strict` refuses
-without calling the model. On `POST
-/v1/answers/stream` the deltas are the provider's own and may carry the marker; the terminal
-`result` event holds the cleaned answer. A response `context` is
-the authoritative `RecordSemantics`: typed kind and basis, confidence, valid and transaction time,
+choice. It still reports `abstained` and `abstention_reason` if grounding is insufficient.
+When retrieval finds no usable evidence, `best_effort` calls the model and `strict` does not.
+
+A response `context` is the authoritative `RecordSemantics`: kind and basis, confidence, valid and transaction time,
 visibility, lineage/source/evidence/supersession IDs, model recipe, optional
-subject/predicate/value, spatial pose, and affect cue fields. It is `null` on a raw record formed
-without typed context. `forgotten_at` is set on a cognitively forgotten record, which `get`
+subject/predicate/value, spatial pose, and affect fields. It is `null` on a raw record without
+typed context. `forgotten_at` is set on a cognitively forgotten record, which `get`
 still returns and retrieval skips. Asset filesystem paths are never serialized, in bundle sections
 as in hits, and `rendered` is the deterministic text of `ContextBundle.render()`.
 
-An excerpt is an exact partial rendering of a newly written raw text observation, not a shortened
-`MemoryResponse`. The response retains the parent and piece digests for machine verification;
-`rendered` shows the parent memory ID, code-point offsets, source timing, and a warning that omitted
-text may qualify the excerpt, while omitting the digests and `matched_index_id` from model-facing
-text. The `hits` array contains complete records; partial source text appears only in `excerpts`.
+An excerpt delivers exact spans of a raw text observation. The response retains parent and piece
+digests for machine verification. The `rendered` text shows the parent ID, code-point offsets and
+source timing, and warns that omitted text may qualify the excerpt. It omits the digests and
+`matched_index_id`. Partial source text appears in `excerpts`, not in the full-record sections.
 
-`ContextRequest.allow_partial_sources` must be explicitly true to select excerpts. Its default
-false preserves full-record-only compilation and avoids selector reads; `excerpts` remains an
-additive empty array in that mode. Non-boolean JSON values are rejected rather than coerced into
-the opt-in.
+`allow_partial_sources=true` enables excerpts. It defaults to `false`, which leaves `excerpts`
+empty. The option requires a JSON boolean.
+
+A text-only projection can fit a raw media observation into the context budget when the complete
+record would exceed the media or character limit. Use `budget.max_media_items=0` to request a
+text-only bundle. Projections can appear in `projections` with either value of
+`allow_partial_sources`. In each projection, `asset` parts refer to `omitted_assets` by ID and
+preserve positions, including repeat occurrences. The compilation excludes native media from
+projections and cannot use a projection to satisfy a proof. See
+[text-only sources](../context-compilation.md#text-only-sources-for-media).
 
 `/healthz` reports liveness and the composition behind the process, so an operator does not have
 to send a probe write to learn what the deployment can do:
@@ -464,7 +481,7 @@ to send a probe write to learn what the deployment can do:
     "formation_model": null,
     "consolidation_model": null,
     "speaker_recognition": true,
-    "operations": ["ask", "perceive", "transcribe"]
+    "operations": ["ask", "transcribe"]
   }
 }
 ```

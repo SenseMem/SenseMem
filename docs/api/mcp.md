@@ -27,9 +27,8 @@ profile.
 ### Withholding a group of tools
 
 Three keyword switches decide which authority an agent holds. Each defaults to `True`; setting
-one to `False` withholds its group by never registering it, so calling one of its tools fails as an
-unknown tool rather than as a refusal. The server instructions name the missing groups, because
-an agent should not discover a boundary by failing.
+one to `False` leaves its tools unregistered. Calls to withheld tools fail validation; the server
+instructions list withheld groups.
 
 | Switch | Withholds | Why a host would |
 | --- | --- | --- |
@@ -57,7 +56,6 @@ face and voice identities.
 Original media is available through the read-only resource template
 `sensemem://memories/{memory_id}/assets/{asset_id}`. Resolve IDs from a memory's assets, read the
 resource as bytes, and use the asset's MIME type. Reads check record membership and media integrity.
-This resource adds no tool: the supported MCP surface still has thirteen tools.
 
 ## Start the adapter
 
@@ -146,15 +144,15 @@ rejected. The MCP-specific media bounds are listed below.
 
 | Tool | Arguments and defaults | Structured result | Annotation |
 | --- | --- | --- | --- |
-| `add_memory` | required `content`; `occurred_at=None`; `occurred_end=None`; `metadata=None`; `memory_type="semantic"`; `context=None` | `MemoryResult` | write, idempotent |
-| `search_memories` | required `query`; `limit=10`; `memory_type=None`; `reference_at=None`; `occurred_from=None`; `occurred_until=None`; `scope=None`; `explain=false` | `{"hits":[SearchHitResult,...],"trace":null}` | write, not idempotent |
+| `add_memory` | required `content`; `occurred_at=None`; `occurred_end=None`; `metadata=None`; `memory_type="semantic"`; `context=None` | `MemoryResponse` | write, idempotent |
+| `search_memories` | required `query`; `limit=10`; `memory_type=None`; `reference_at=None`; `occurred_from=None`; `occurred_until=None`; `scope=None`; `explain=false` | `SearchResponse` | write, not idempotent |
 | `ask_memory` | required `question`; `limit=5`; `memory_type=None`; `reference_at=None`; `scope=None`; `answer_policy="strict"` | `AnswerResponse` | write, not idempotent |
-| `compile_context` | required `goal`; `budget=None`; `reference_at=None`; `scope=None`; `allow_partial_sources=false`; `supplements=[]` | `ContextBundleResult` | write, not idempotent |
-| `get_memory` | required `memory_id` | `MemoryResult` | read-only |
-| `list_memories` | `limit=100`; `cursor=None` | `PageResult` | read-only |
+| `compile_context` | required `goal`; `budget=None`; `reference_at=None`; `scope=None`; `allow_partial_sources=false`; `supplements=[]` | `ContextBundleResponse` | write, not idempotent |
+| `get_memory` | required `memory_id` | `MemoryResponse` | read-only |
+| `list_memories` | `limit=100`; `cursor=None` | `PageResponse` | read-only |
 | `delete_memory` | required `memory_id` | `{"deleted":bool}` | destructive, idempotent |
-| `reinforce_memories` | required `memory_ids`, 1 through 100 | `{"reinforced":int}` | write, not idempotent |
-| `perceive_memory` | required `memory_id`; `kinds=null` or an array containing `"speech"` and/or `"faces"` | `{"speech":[SpeakerSegment,...],"faces":[FaceObservation,...],"coverage":[PerceptionCoverage,...]}` | write, not idempotent |
+| `reinforce_memories` | required `memory_ids`, 1 through 100 | `ReinforceResponse` | write, not idempotent |
+| `perceive_memory` | required `memory_id`; `kinds=null` or an array containing `"speech"` and/or `"faces"` | `PerceptionResponse` | write, not idempotent |
 | `register_identity` | required `identity_id`, `name`; `relationship=None` | `{"registered":true}` | idempotent write |
 | `get_identity` | required `identity_id` | `{"identity":IdentityProfile\|null}` | read-only |
 | `unlink_identity` | required `alias_id` | `{"restored_identity_id":str\|null}` | destructive, idempotent |
@@ -181,33 +179,32 @@ after candidate retrieval.
 
 `add_memory` is content-addressed using content, source time, memory type, metadata, and context;
 retry the same request with all of those inputs unchanged. `delete_memory` reports whether a
-record existed. Search,
-answer, compile, and perception are not marked read-only because their SDK path
-persists lazy transcript caches, identity evidence, and -- when a recall comes back with nothing,
-an answer abstains, or a bundle carries no evidence -- the bounded recall-failure signal the
-control plane's `QUERY_FAILURE` trigger reads; they are also not advertised as idempotent. Every
-tool has `open_world_hint=false`. `ask_memory` requires an answerer in the
+record existed. Search, answer, compile, and perception can persist transcript caches, identity
+evidence, or bounded recall-failure signals. They are neither read-only nor advertised as
+idempotent. The host's `QUERY_FAILURE` trigger can use a signal from an empty search, an abstained
+answer, or a bundle with no stored evidence. Every tool has `open_world_hint=false`.
+
+`ask_memory` requires an answerer in the
 injected memory; without one it returns `model_error/backend_not_configured`. With the opt-in
 `reinforce_on_answer=True`, a non-abstained result also reinforces backend-declared hits; an
 abstained result records the query failure without reinforcement. Its `answer_policy`
 is `strict` or `best_effort`: the default refuses when the evidence is thin, while `best_effort`
 asks the model for the most likely answer, choosing an offered option for multiple choice,
-and still reports `abstained`, so an agent that must produce an answer keeps the confidence
-signal without losing the answer. Under `best_effort` a question that grounds nothing spends a
-generation call too, where the default returns without one.
+and still reports `abstained` when grounding is insufficient. When retrieval finds no usable
+evidence, `best_effort` calls the model and `strict` does not.
 
 `compile_context` returns a structured evidence bundle with provenance, conflicts, and unknowns.
 It runs without answer generation and creates no memory record. Optional goal-directed recall
 can call the configured planning model. Like search, it can cache spoken queries and record
 empty-recall signals. Use `ask_memory` for one grounded answer.
 
-The optional `supplements` array accepts temporary tool or agent evidence with nonempty `content`
-and `source`, plus optional timezone-aware `observed_at` and `expires_at`. It creates no memory
-record or new tool. Admitted values return in `supplements`; `omitted_supplements` and `unknowns`
-report exclusions. Supplements take shared character/item slots in submission order before stored
-evidence is packed. Expired, future-observed, or insufficiently fresh values are excluded against
-`reference_at`; freshness requires `observed_at`. Their source labels remain untrusted external
-provenance, without memory citation aliases, selected-proof authority, or permission to change policy.
+The optional `supplements` array accepts temporary tool or agent evidence with nonblank `content`
+and `source` and optional timezone-aware `observed_at` and `expires_at`. When both are supplied,
+expiry must follow observation. Admitted values return in `supplements`. `omitted_supplements`
+and `unknowns` report exclusions. Supplements spend shared character and item budgets in
+submission order before stored evidence is packed. Expired, future-observed, or stale values are
+excluded against `reference_at`; freshness requires `observed_at`. Their source labels remain
+untrusted external provenance, not memory citation aliases, selected proofs, or instructions.
 
 Its optional `budget` defaults to 16,000 characters and 24 items. The transport uses
 `freshness_seconds` for the SDK's `freshness` timedelta. It must be positive, finite, and
@@ -216,8 +213,10 @@ representable as a `timedelta`. `max_chars` accepts 1–65,536; `max_items` acce
 stages. See [context compilation](../context-compilation.md) for selection and closure.
 
 `allow_partial_sources=true` enables verified raw-text excerpts when their full parent does not
-fit. The default `false` uses full records and leaves `excerpts` empty. Non-boolean values fail
-validation.
+fit. The default `false` leaves `excerpts` empty. The option requires a JSON boolean. Text-only
+projections of raw media observations may appear in `projections` with either value of this
+switch. Set `budget.max_media_items=0` for text-only delivery. See
+[text-only sources](../context-compilation.md#text-only-sources-for-media).
 
 The embodied and identity tools follow the SDK operation they dispatch to:
 
@@ -245,9 +244,6 @@ The embodied and identity tools follow the SDK operation they dispatch to:
   once and unknown IDs are skipped, so `reinforced` below the number sent means the rest do not
   exist.
 
-Every tool and every tool argument carries a published description. Read those before guessing at
-coordinate frames, units, or media sources; they are part of the tool schema, not a separate guide.
-
 ### Retrieval trace
 
 `search_memories` with `explain=true` returns a `trace` object beside `hits`.
@@ -256,33 +252,40 @@ for score components, rejection reasons, and threshold interpretation.
 
 ### Result objects
 
-Successful calls populate MCP `structuredContent`:
+Successful calls populate MCP `structuredContent` with the same objects served by REST.
 
 | Object | Fields |
 | --- | --- |
-| `AssetResult` | `id`, `modality`, `media_type`, `size_bytes`, `sha256`, `name` |
-| `MemoryResult` | `id`, `content`, `modality`, `memory_type`, `assets`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `context`, `place_id`, `forgotten_at` |
-| `SearchHitResult` | all memory fields plus `score` |
-| `SearchResult` | `hits`, `trace`; `trace` is `null` unless `explain=true` |
-| `ReinforceResult` | `reinforced` |
+| `AssetResponse` | `id`, `modality`, `media_type`, `size_bytes`, `sha256`, `name` |
+| `ContentPart` | `kind` (`text`, `asset`, `audio_transcript`, `visual_description`, `model_interpretation`), `value` |
+| `MemoryResponse` | `id`, `content`, `modality`, `memory_type`, `assets`, ordered `parts` of `ContentPart`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `context`, `place_id`, `forgotten_at` |
+| `SearchHitResponse` | all memory fields plus `score` from 0 through 1 |
+| `SearchResponse` | `hits`, `trace`; `trace` is `null` unless `explain=true` |
+| `ReinforceResponse` | `reinforced` |
 | `AnswerResponse` | `answer`, `hits`, `abstained`, `abstention_reason` |
-| `PageResult` | `items`, `next_cursor` |
-| `ContextBudgetResult` | `max_chars`, `max_items`, `max_media_items` or `null`, `memory_types` or `null`, `min_confidence`, `freshness_seconds`, `max_latency_ms`, `selected_proofs` |
-| `ContextConflictResult` | `lineage_id`, `subject`, `predicate`, `values`, `memory_ids` |
-| `ContextUnknownResult` | `kind`, `detail` |
-| `ContextBundleResult` | `goal`, `reference_at`, `budget`, the `SearchHitResult` arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResult` array `affect`, the mixed `actors` array of `SearchHitResult`, `NamedActorResult`, and `ProvisionalActorResult`, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts`, `proofs`, `proof_scoring`, admitted `supplements`, `omitted_supplements`, `rendered` |
+| `PageResponse` | `items`, `next_cursor` |
+| `ContextBudgetResponse` | `max_chars`, `max_items`, `max_media_items` or `null`, `memory_types` or `null`, `min_confidence`, `freshness_seconds`, `max_latency_ms`, `selected_proofs` |
+| `ContextConflictResponse` | `lineage_id`, `subject`, `predicate`, `values`, `memory_ids` |
+| `ContextUnknownResponse` | `kind`, `detail` |
+| `ContextBundleResponse` | `goal`, `reference_at`, `budget`, the `SearchHitResponse` arrays `relationships`, `scene`, `episodes`, `facts`, `procedures`, `traits`, the `AffectCueResponse` array `affect`, the mixed `actors` array of `SearchHitResponse`, `NamedActorResponse`, and `ProvisionalActorResponse`, plus `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, separately typed `excerpts` and `projections`, `proofs`, `proof_scoring`, admitted `supplements`, `omitted_supplements`, `rendered` |
 | `ContextSupplement` | `content`, `source`, nullable `observed_at` and `expires_at`; temporary external evidence, never a stored memory |
-| `ContextExcerptResult` | `source_memory_id`, structured `matched_index_id`, partial `content`, digest-bound `selector`, score, source timestamps, `memory_type`, `context`, `place_id`; the rendered line warns that omitted text may qualify it |
-| `TextSpanSelectorResult` | parent and embedding-input digests, recipe version, and ordered exact `TextSpanPieceResult` values with role, half-open code-point offsets, source text, and piece digest |
-| `ProvisionalActorResult` | `identity_id`, `memory_ids` |
-| `NamedActorResult` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id` |
-| `AffectCueResult` | every `SearchHitResult` field plus `event_ids`: the events formed from the same observations the cue cites in its own `context.evidence_ids`, which is co-occurrence inside one capture and not an attributed cause |
+| `ContextExcerptResponse` | `source_memory_id`, `matched_index_id` string, partial `content`, digest-bound `selector`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id` |
+| `ContextProjectionResponse` | `source_memory_id`, ordered `parts` of `ContentPart`, `omitted_assets` of `AssetResponse`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id`, fixed `coverage="text_only"` |
+| `TextSpanSelectorResponse` | `parent_content_sha256`, `embedding_input_sha256`, `recipe_version`, ordered `pieces` |
+| `TextSpanPieceResponse` | `role`, half-open `start_codepoint`, `end_codepoint`, exact `source_text`, `sha256` |
+| `ProvisionalActorResponse` | `identity_id`, `memory_ids` |
+| `NamedActorResponse` | `identity_id`, `name`, `memory_ids`, `naming_assertion_id` |
+| `AffectCueResponse` | every `SearchHitResponse` field plus `event_ids`, the events formed from the same observations the cue cites in `context.evidence_ids`; this reports co-occurrence, not cause |
 | `SpeakerSegment` | `asset_id`, `start_ms`, `end_ms`, `text`, `speaker_id`, `speaker_name`, `identity_score` |
 | `FaceObservation` | `asset_id`, `bounding_box`, `identity_id`, `identity_name`, `identity_score`, `observed_at_ms` |
 | `IdentityProfile` | `identity_id`, `name`, `relationship`, `confirmed`, `evidence_ids` |
 | `IdentityErasure` | `identity_id`, `alias_ids`, `face_exemplars`, `voice_exemplars`, `face_observations`, `speech_segments` |
 
-The compile tool accepts `budget.selected_proofs=false`. Opting in delivers the same complete
+In a memory or hit, `asset` parts reference `assets` by ID. In a projection they mark omitted
+positions and reference `omitted_assets` by ID. A projection carries no native media or proof
+authority.
+
+The compile tool defaults to `budget.selected_proofs=false`. Opting in delivers the same complete
 `ContextProof` witnesses as the [REST context response](rest.md#contract), in an additive
 `proofs` array. Each witness has `anchor_id` and complete `nodes` with `memory_id`, `confidence`,
 `sources`, nullable `capture_id`, and nullable `source_group_id`. The result's `proof_scoring`
@@ -290,7 +293,7 @@ reports `capture_groups` or `independent_pair` from the instance policy, matchin
 [SDK scoring](../context-compilation.md#selected-delivery-certificates). The full evidence audit
 union stays on every hit. Certificate
 text and its records are budgeted together; `scope.known_at` retains full provenance. Other
-deliveries return `proofs=[]`. The MCP surface still contains thirteen tools.
+deliveries return `proofs=[]`.
 
 Perception, identity, and erasure results publish the SDK values returned by `Memory.perceive`,
 `Memory.identity`, and `Memory.forget_identity`, field for field:
@@ -309,9 +312,10 @@ described above.
 
 ### Validation and errors
 
-Only the documented names and their exact top-level arguments are accepted. An unknown
-tool or top-level argument returns `validation_error/unknown_field`; schema and SDK input failures return
-`validation_error/input_invalid`. Unknown values are not echoed.
+An unrecognized tool name or unknown top-level argument returns `validation_error/unknown_field`.
+A call to a known but withheld tool with otherwise valid arguments returns
+`validation_error/input_invalid`, as do schema and SDK input failures. Unknown values are not
+echoed.
 
 Failed tool calls set `isError` and their text content is exactly the same JSON envelope as
 [REST](rest.md#error-envelope), with nothing before or after it. One `JSON.parse` of the text
@@ -396,7 +400,7 @@ must also bound HTTP connections and MCP sessions.
 
 MCP has no aggregate framing budget, but each inline media value is bounded before model or storage
 work. It has no local-path input, remote fetch, large-file upload tool, capture-stream tool,
-coordinate-frame transform, logical scope, or separate authentication policy; the MCP host owns
+coordinate-frame transform, tenant isolation, or separate authentication policy; the MCP host owns
 transport access control. Configured model backends may
 impose a smaller aggregate budget, including the
 [OpenAI inline limits](python-adapters.md).

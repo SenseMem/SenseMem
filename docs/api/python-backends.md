@@ -23,21 +23,17 @@ kernel retains evidence, budget, and transaction admission.
 | Event segmentation | `event_model`, `event_recipe` |
 | Generation | `generation_capabilities` |
 
-Resource-owning backends implement close; optional routing/admission protocols add no resource.
+Primary backend protocols require `close()` except `EventSegmentationBackend`, whose caller
+manages the backend lifetime. `MediaSelectionBackend` and `SourceMetadataBackend` also require
+`close()`.
+
 A space identifies the whole recipe. Change it when a stored derivation's model/prompt/input recipe
 changes. For example, captions cache by asset content and `vision_space`; the bundled adapter hashes
 the model, controls, and caption prompt.
 
-The kernel depends on these protocols rather than provider SDK objects. The bundled `OpenAIEmbedder`, `OpenAITranscriber`, and `OpenAICompletion` implement
-embedding, transcription, and completion roles through explicit official OpenAI SDK clients. Its templates, request
-serialization and fitting, media encoding and integrity checks, and domain-output parsing live in
-separate internal components; [the model boundary](../architecture.md#model-boundary) lists their
-responsibilities. The component split preserves these public signatures and the current prompts.
-
-The official SDK handles authentication, HTTP transport, timeouts, and network retries. SenseMem
-retains one bounded semantic retry for a malformed HTTP 200 JSON result, with both attempts
-accounted for; a refusal or truncation does not enter that retry. Stream accumulation reuses the
-SDK's `ChatCompletionStreamState`, with local response-contract and resource-lifetime checks.
+The bundled OpenAI adapters use the caller's SDK client for authentication, timeouts, and network
+retries. For JSON completions, SenseMem can retry malformed output once. Refusals and truncations
+surface immediately.
 
 ## EmbeddingBackend
 
@@ -92,7 +88,7 @@ StreamingGenerationBackend.stream_answer(
 ) -> Generator[str, None, AnswerResult]
 ```
 
-The kernel always supplies `answer_policy` and exhaustive, including defaults. Streaming yields
+The kernel always supplies `answer_policy` and `exhaustive`, including defaults. Streaming yields
 deltas and returns `AnswerResult` as the generator completion value; missing results or bare hit
 tuples are invalid. Exhaustive describes the executed predicate evidence, not global knowledge.
 
@@ -109,7 +105,7 @@ matches for omitted records/assets; attachment labels preserve gaps after omissi
 ### Routing and evidence composition
 
 `GenerationRouter` selects native support first, then the narrowest backend covering question and
-evidence, then caller order. `GenerationRoutingBackend` exposes `select(question, hits, convertible=frozenset())`
+evidence, then caller order. `GenerationRoutingBackend` exposes `select(question, hits, *, convertible=frozenset())`
 and nonempty `generation_routes` whose union matches atomic capability. `EvidenceGeneration` preserves
 that selection when nested inside/outside routers.
 
@@ -122,7 +118,7 @@ Embedding keys follow the same distinction, including after capture settlement a
 Sentence Transformers snapshots joint/message support at construction. `Memory` closes distinct
 nested resources once; compositions also allow direct close.
 
-`EvidenceGeneration(backend, selector=None, enricher=None, media_max_items=2)` combines media selection
+`EvidenceGeneration(backend, *, selector=None, enricher=None, media_max_items=2)` combines media selection
 and source metadata independently of provider. `OpenAICompletion` supplies selection/asset admission;
 `GazetteerEnricher` supplies optional map context.
 
@@ -158,7 +154,7 @@ SpeechBackend.analyze(
 ) -> tuple[SpeechAnalysis, ...]
 ```
 
-Speech returns `SpeechAnalysis`(turns,speakers), with `SpeechTurn` and `SpeakerEmbedding`.
+Speech returns `SpeechAnalysis(turns, speakers)`, with `SpeechTurn` and `SpeakerEmbedding`.
 Plain transcription returns aligned text.
 
 ### FaceBackend
@@ -186,9 +182,8 @@ VisionAnalysisBackend.describe_analysis(
 `VisualDescription(text="", facts=(), speaker_names=())` carries observation text and explicit proposals.
 `SpeakerName` refers to local `speaker_N` labels. Plain strings have no naming authority. The kernel
 validates typed names and logs sourced, reversible `MODEL_INFERENCE` identity operations. One
-recording cannot confirm a name; independent support controls visibility, and only host
-registration makes `IdentityProfile.confirmed` true. Typed caches use the current
-`VisualDescription` representation.
+recording cannot confirm a name. Independent support controls visibility, and only host
+registration makes `IdentityProfile.confirmed` true.
 
 ## EventSegmentationBackend
 
@@ -275,6 +270,65 @@ proposal=FormationProposal(..., basis=EvidenceBasis.USER_STATEMENT)))`.
 That host operation retains the ordinary evidence and kind-specific validation. The source's
 `ObservationContext.basis` remains unchanged by automatic extraction.
 
+For linked affect proposals, return the cue, event, and relation in the same input's proposal
+tuple. Give the cue and event distinct `local_id` values and refer to them as `proposal:<local_id>`
+in the relation's `affect_link`. Name a `cue_modality` present in the source. The witness cites
+the original observation and quotes its original text, as in this example for a text report.
+
+```python
+from sensemem import (
+    AffectLink,
+    AffectObjectRef,
+    AffectWitness,
+    FormationInput,
+    FormationProposal,
+    Modality,
+    RecordKind,
+)
+
+
+def workshop_affect(source: FormationInput) -> tuple[FormationProposal, ...]:
+    return (
+        FormationProposal(
+            kind=RecordKind.AFFECT,
+            local_id="cue",
+            content="The user reported being upset.",
+            subject="user",
+            value="upset",
+            cue_modality=Modality.TEXT,
+            affect_witnesses=(
+                AffectWitness(
+                    source_id=source.memory_id,
+                    reporter="user",
+                    quote="I was upset because the workshop was canceled",
+                ),
+            ),
+        ),
+        FormationProposal(
+            kind=RecordKind.EVENT,
+            local_id="event",
+            content="The workshop was canceled.",
+        ),
+        FormationProposal(
+            kind=RecordKind.RELATION,
+            content="The user attributed their distress to the workshop cancellation.",
+            subject="user",
+            predicate="affect_elicitor",
+            value="workshop cancellation",
+            affect_link=AffectLink(
+                affect_id="proposal:cue",
+                role="elicitor",
+                object_ref=AffectObjectRef(memory_id="proposal:event"),
+            ),
+        ),
+    )
+```
+
+The kernel resolves the peer references to stored memory IDs, not persistent aliases, and
+includes the cue and event as premises of the relation. See
+[affective memory](../affective-memory.md#emotional-targets-and-elicitors) for witness authority
+and the distinction between a target, an elicitor, and a co-occurring event.
+
 ## ConsolidationBackend
 
 ```text
@@ -288,8 +342,9 @@ ConsolidationBackend.consolidate(
 
 Receives the kernel's bounded evidence set and may cite only that set. `IDENTIFY` uses `IdentityClaim`,
 not `FormationProposal`; the kernel builds its typed naming assertion.
-Explicitly selected hidden/retired assertions are target-only; never cite them as evidence.
-The optional `QueryFailure` preserves the failed request and its retrieval constraints for diagnosis.
+Explicitly selected hidden/retired assertions are target-only. The optional
+[`QueryFailure`](python-values.md#control-operations) preserves the failed request and its
+retrieval constraints for diagnosis.
 [Control operations](python-control.md) own eligibility, authority, and rollback.
 
 ## Optional recall planning
@@ -308,23 +363,23 @@ plan_recall(
 ) -> str | None
 ```
 
-Return JSON text, not an executed plan. The kernel validates and falls back for unusable or empty
-steps. First attempted is empty; a later abstained round can carry a bounded note/evidence excerpts.
-No keep/unresolved controls exist. A non-abstained answer stops. See
+Return a recall plan as JSON text. The kernel validates the plan and falls back to ordinary
+retrieval for unusable or empty steps. `attempted` is empty on the first round and may carry bounded
+notes and evidence excerpts on later rounds. A non-abstained answer ends planning. See
 [recall settings](../configuration/settings.md#recall-planning).
 
 ## Backend values
 
 | Backend value | Fields |
 | --- | --- |
-| `ModelInput` | `text`, `assets`, `image_retrieval_matches=()`, request-only `source_metadata={}`, `evidence_sources=()`; derived `modality` and `modalities` properties |
+| `ModelInput` | `text=""`, `assets=()`, `image_retrieval_matches=()`, request-only `source_metadata={}` and `evidence_sources=()`, ordered `parts=()`; derived `modality`, `modalities`, `assets_per_modality`, and `ordered_content` properties |
 | `EventObservation` | `content`, `occurred_at`, `occurred_end` |
 | `EventSegment` | `end_chunk`, `summary`, `complete=True`; only complete results establish finality |
 | `VisualRetrievalMatch` | `query_asset_id`, `memory_id`, `source_asset_id`, positive `rank`, `cosine_similarity` in `[-1, 1]` |
-| `SpeechTurn` | `start_ms`, `end_ms`, `text`, `speaker_label` |
+| `SpeechTurn` | `start_ms`, `end_ms`, `text`, `speaker_label=None` |
 | `SpeakerEmbedding` | `speaker_label`, `values` |
 | `SpeechAnalysis` | `turns`, `speakers` |
 | `FaceEmbedding` | `face_label`, `values`, `bounding_box`, `observed_at_ms` |
 | `FaceAnalysis` | `faces` |
 | `FormationInput` | `memory_id`, `content`, `context`, `history=()`, `history_truncated=False`, `occurred_at=None`, `occurred_end=None`, `created_at=None` |
-| `FormationProposal` | `kind`, `content`, `basis`, `subject`, `predicate`, `value`, `confidence`, `valid_from`, `valid_until`, `spatial`, `cue_modality`, `valence`, `arousal`, optional `evidence_ids` |
+| `FormationProposal` | Required `kind` and `content`; `basis=EvidenceBasis.MODEL_INFERENCE`, `confidence=1.0`, `affect_witnesses=()`; nullable `subject`, `predicate`, `value`, `valid_from`, `valid_until`, `spatial`, `cue_modality`, `valence`, `arousal`, `evidence_ids`, `local_id`, and `affect_link` default to `None`. Some kinds require `subject`, `predicate`, or `value`. |

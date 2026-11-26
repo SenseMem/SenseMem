@@ -6,27 +6,31 @@ Use the [SDK index](python-sdk.md) to find the methods that consume or return th
 
 `MemoryRecord.content` preserves caller text at the front, followed by derived sections marked
 `[transcript:<asset_id>]`, `[visual description:<asset_id>]`, `[facts:<asset_id>]`, or
-`[speech identities:<asset_id>]`. Add derives before its first write; settlement appends after
-capture. Original media remains content-addressed in assets.
+`[speech identities:<asset_id>]`. Model interpretations have their own marker. Use `parts` on a
+record or hit to recover the original text/media order and distinguish derived text. An `asset`
+part's value is an ID in `assets`, where the original media remains content-addressed.
 
 ## Records and retrieval
 
 | Value | Fields |
 | --- | --- |
 | `Blob` | `data`, `media_type`, `name` |
-| `ContentPart` | `kind` (`text`, `asset`, `audio_transcript`, `visual_description`, `model_interpretation`) and `value`; ordered text and asset IDs, with model-derived sections distinguished from original text |
+| `ContentPart` | `kind` (`text`, `asset`, `audio_transcript`, `visual_description`, `model_interpretation`) and nonblank string `value` |
 | `AssetRef` | `id`, `modality`, `media_type`, `size_bytes`, `sha256`, `name`, `path`; `is_resolved` property |
 | `StreamInput` | `content`, `occurred_at`, `occurred_end`, `metadata`, `memory_type`, `context`, `transcript`, `description`, `interpretation` |
 | `MemoryRecord` | `id`, `content`, ordered `parts`, `created_at`, `occurred_at`, `occurred_end`, `metadata`, `assets`, `modality`, `memory_type`, `context`, `place_id`, `forgotten_at` |
-| `PendingCapture` | `memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting` |
-| `SearchHit` | all visible memory fields plus `score` |
+| `PendingCapture` | `memory_id`, `enqueued_at`, `attempts`, `last_error`, `awaiting` (`enrichment` or `formation`), and opaque `cursor` property |
+| `SearchHit` | all `MemoryRecord` fields, including ordered `parts`, plus `score` in `[0, 1]` |
 | `AnswerResult` | `answer`, `hits`, `abstained`, `abstention_reason` |
 | `AnswerChunk` | `text`, `result` |
 | `Page` | `items`, `next_cursor` |
 | `SearchResult` | `hits`, optional `trace=None` |
 | `RetrievalTrace` | `candidates`, `candidate_limit`, `exhaustive`, `ambiguous` |
 | `RetrievalCandidateTrace` | `memory_id`, `index_ids`, `dense_relevance`, `dense_confidence`, `lexical_relevance`, `lexical_rerank_bonus`, `lexical_match`, `gate_relevance`, `base_relevance`, `reinforcement_factor`, `temporal_factor`, `retention_factor`, `final_score`, `reranking_score=None`, `rank`, `rejected_by` |
-| `RetrievalMode` | `hybrid`, `dense`, `lexical` instance candidate policy |
+
+`Memory.pending_captures()` returns a tuple in enqueue order. Resume by passing the last item's
+`cursor` back unchanged. `awaiting="enrichment"` means the capture is still invisible to search.
+`awaiting="formation"` means it is already searchable and has formation work pending.
 
 ## Typed context and scope
 
@@ -45,11 +49,8 @@ capture. Original media remains content-addressed in assets.
 explicit typed host operation to confirm a claim as described in
 [claim authority](../typed-memory.md#state-replacement).
 
-`FormationProposal` accepts the same affect link and witnesses, plus optional batch-local
-`local_id`. References `proposal:<local_id>` are resolved within that observation's formation
-batch; they are never stored. Typed relations require the predicate matching their link role.
-See [affective memory](../affective-memory.md#emotional-targets-and-elicitors) for witness authority
-and the distinction between a target, an elicitor, and a co-occurring event.
+See [formation proposals](python-backends.md#formationbackend) for `FormationProposal` fields,
+batch-local references, and a linked-affect example.
 
 ## Identity and retention
 
@@ -71,7 +72,7 @@ and the distinction between a target, an elicitor, and a co-occurring event.
 | Value | Fields |
 | --- | --- |
 | `ContextBudget` | `max_chars`, `max_items`, `max_media_items`, `memory_types`, `min_confidence`, `freshness`, `max_latency_ms`, `selected_proofs` |
-| `ContextSupplement` | nonempty `content` and `source`, optional timezone-aware `observed_at` and `expires_at`; temporary external evidence supplied to `compile()`, never an implicit durable write |
+| `ContextSupplement` | nonblank `content` and `source`, optional timezone-aware `observed_at=None` and `expires_at=None`; when both are supplied, expiry must follow observation |
 | `ContextProof` | `anchor_id`, complete `nodes`; derived `confidence`, structural `footprint`/`structurally_independent_of()`, and `render()` |
 | `ContextProofNode` | `memory_id`, `confidence`, `sources`, `capture_id`, `source_group_id` |
 | `ContextProofScoring` | `"capture_groups"` or `"independent_pair"`; the instance policy reported by compiled certificates |
@@ -82,16 +83,20 @@ and the distinction between a target, an elicitor, and a co-occurring event.
 | `AffectCue` | every `SearchHit` field plus `event_ids`: one affect entry of a compiled bundle, carrying the events formed from the same observations the cue cites in its own `context.evidence_ids` |
 | `TextSpanPiece` | `role` (`context` or `body`), half-open `start_codepoint`, `end_codepoint`, exact `source_text`, and `sha256` |
 | `TextSpanSelector` | `parent_content_sha256`, `embedding_input_sha256`, `recipe_version`, ordered `pieces` |
-| `ContextExcerpt` | `source_memory_id`, structured `matched_index_id`, partial `content`, `selector`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id` |
-| `ContextProjection` | `source_memory_id`, ordered `parts` with original/derived roles and omitted asset positions, path-free `omitted_assets`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id`, and fixed `coverage="text_only"`; excludes native media and cannot satisfy a proof |
+| `ContextExcerpt` | `source_memory_id`, `matched_index_id` string, partial `content`, `selector`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id` |
+| `ContextProjection` | `source_memory_id`, ordered `ContentPart` values in `parts`, path-free `AssetRef` values in `omitted_assets`, `score`, `created_at`, `occurred_at`, `occurred_end`, `memory_type`, `context`, `place_id`, and fixed `coverage="text_only"` |
 | `ContextSymbol` | request-local `symbol`, `namespace`, `stable_id`, `coverage`, structural `roles`, and `selector` only for partial memory coverage |
 | `ContextCitation` | decoded `memory_id`, full, partial, or text-only `coverage`, and `selector` exactly when partial; reference-only construction is rejected |
 | `ContextPresentation` | compact `text`, typed `symbols`, exact `chars`; pure `resolve()` identity decoding and eligibility-checking `resolve_citation()` |
 | `ContextBundle` | `goal`, `reference_at`, `budget`, `actors`, `relationships`, `scene`, `episodes`, `facts`, `procedures`, `affect`, `traits`, `conflicts`, `unknowns`, `occurred_from`, `occurred_until`, `frames`, `places`, `omitted`, `chars`, `elapsed_ms`, `deadline_exceeded`, `excerpts`, `projections`, `proofs`, `proof_scoring`, admitted `supplements`, and `omitted_supplements`; `hits` property, stable-ID `render()`, and opt-in `compact()` |
 
-Supplements share the bundle's item and character budget. Their source labels remain external
-provenance and never become memory citation aliases or instructions. Excluded, expired, or stale
-supplements are counted separately from omitted memory candidates; see
+A projection preserves all text sections of a raw observation and leaves each omitted media
+position as an `asset` part keyed into `omitted_assets`. It stays in `bundle.projections` and
+cannot satisfy a proof. See [text-only sources](../context-compilation.md#text-only-sources-for-media).
+
+Supplements are temporary external evidence passed to `compile()`. They share the bundle's item
+and character budget and authorize neither storage writes nor policy changes. Their source labels
+remain external provenance and never become memory citation aliases. See
 [context compilation](../context-compilation.md#temporary-context-from-an-application-or-agent).
 
 ## Control operations
@@ -102,7 +107,7 @@ supplements are counted separately from omitted memory candidates; see
 | `IdentityClaim` | `identity_id`, `name`, `relationship` |
 | `IdentityChange` | `identity_id`, `moved_ids` |
 | `MemoryOperationRecord` | `operation_id`, `operation`, `trigger`, `applied_at`, `model_id`, `recipe`, `created_ids`, `changed_ids`, `forgotten_ids`, `superseded`, `rolled_back_at`, `outcome`, `outcome_note` |
-| `QueryFailure` | `query`, `operation` (`search`, `compile`, `ask`), `memory_types`, `scope`, `reference_at`, `occurred_from`, `occurred_until` |
+| `QueryFailure` | nonblank `query`, `operation="search"` (`search`, `compile`, or `ask`), optional `memory_types`, `scope`, `reference_at`, `occurred_from`, `occurred_until`; supplied times must be timezone-aware and paired occurrence bounds must increase |
 | `ConsolidationCandidate` | `trigger`, `memory_ids`, `evidence_count`, optional `query_failure`; a failed request may have no nearby memory IDs |
 | `ConsolidationReport` | `operations`, `rejected` as `(MemoryOperation, reason)` pairs, `weighed`, `rounds`, `skipped`, `model_calls`, `unresolved_queries`; `applied` property |
 
@@ -124,7 +129,10 @@ supplements are counted separately from omitted memory candidates; see
 | `SceneBoundary` | `boundary`, `stream_id`, `occurred_at` |
 | `PrefetchResult` | `hits`, `bundle` (`None` for search-only prefetch; compiled evidence when a budget is supplied) |
 | `PrefetchUpdate` | Request-local `revision` and its completed speculative `result` |
-| `ContextSourceResult` | `revision` returned by `AsyncContextSource.submit()` and immutable `supplements`; no stored memory or automatic pipeline execution |
+| `ContextSourceResult` | positive `revision` matching the value returned by `AsyncContextSource.submit()`, and `supplements` as a tuple of `ContextSupplement` values |
+
+`AsyncContextSource.latest` and `finalize()` provide these results. Check the revision before
+using a speculative `latest` result and pass its supplements explicitly to `compile()`.
 
 ## Composition values
 
@@ -135,14 +143,13 @@ supplements are counted separately from omitted memory candidates; see
 
 ## Abstention signal
 
-`abstained` is a protocol signal, not a refusal rate. The bundled grounded prompt asks for the
-opaque token `[insufficient_evidence]`, and the adapter reports `abstained` when that bracketed
-token appears anywhere in the answer, when the bare token is the whole answer, or when the answer
-starts with the English fallback sentence. A model that refuses in its own words some other way is
-still an ordinary answer. `abstention_reason` is `no_evidence` when retrieval returned nothing and
+The bundled answerer reports `abstained` when `[insufficient_evidence]` appears anywhere in the
+answer, when the bare token is the whole answer, or when the answer starts with the English
+fallback sentence. A model that declines in its own words returns an ordinary answer.
+`abstention_reason` is `no_evidence` when retrieval returned nothing and
 `insufficient_evidence` when hits were retrieved but could not ground an answer; the reported
-`answer` is the readable fallback sentence rather than the token. Measure refusal rate separately
-if that is the quantity needed.
+`answer` is the cleaned answer. Under `best_effort` it may contain an answer alongside the
+abstention signal.
 
 ## Enums
 
@@ -217,7 +224,7 @@ The supported names exported by `sensemem` are:
 | Candidate discovery | `CandidateSource`, `DefaultCandidateSource`, `CandidateRequest`, `CandidateReadPort`, `CandidateQuery`, `CandidateBatch`, `CandidateHit`, `MemoryCandidate` |
 | Context selection | `ContextSelector`, `DefaultContextSelector`, `ContextSelectionRequest`, `ContextSelection`, `ContextCandidate` |
 | Tools and agents | `Tool`, `RegisteredTool`, `ToolDefinition`, `ToolCall`, `ToolResult`, `ToolError`, `ToolRegistry`, `memory_tools`, `transcription_tool`, `AgentBackend`, `AgentStep`, `AgentTurn`, `AgentResult`, `AgentRunner`, `OpenAIAgent` |
-| Content and records | `ContentAtom`, `ContentInput`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `RecordSemantics`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `PrefetchUpdate`, `StreamCommit`, `SearchResult`, `PerceptionResult`, `PerceptionCoverage`, `PerceptionSkipReason`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextPresentation`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
+| Content and records | `ContentAtom`, `ContentInput`, `ContentPart`, `Blob`, `AssetRef`, `StreamInput`, `MemoryRecord`, `SearchHit`, `AnswerResult`, `AnswerChunk`, `Page`, `ObservationContext`, `RecordSemantics`, `RetrievalScope`, `SpatialContext`, `SpeakerSegment`, `IdentityProfile`, `IdentityClaim`, `IdentityErasure`, `FaceObservation`, `MemoryCapabilities`, `PendingCapture`, `PrefetchResult`, `PrefetchUpdate`, `StreamCommit`, `SearchResult`, `PerceptionResult`, `PerceptionCoverage`, `PerceptionSkipReason`, `RetrievalTrace`, `RetrievalCandidateTrace`, `FormationProposal`, `ContextBudget`, `ContextBundle`, `ContextExcerpt`, `ContextProjection`, `ContextPresentation`, `ContextSourceResult`, `ContextSupplement`, `ContextSymbol`, `ContextCitation`, `TextSpanSelector`, `TextSpanPiece`, `ContextConflict`, `ContextUnknown`, `AffectCue`, `NamedActor`, `ProvisionalActor`, `IdentityChange`, `MemoryOperation`, `MemoryOperationRecord`, `ConsolidationReport`, `ConsolidationCandidate`, `QueryFailure`, `ConsentClaim`, `ExportBundle`, `RetentionPolicy`, `RetentionReport` |
 | Delivery certificates | `ContextProof`, `ContextProofNode`, `ContextProofScoring` |
 | Affective attribution | `AffectObjectRef`, `AffectLink`, `AffectWitness` |
 | Stream input | `AudioStreamPacket`, `PCMChunk`, `VADPacket`, `ASRPartial`, `AcousticBoundary`, `VisionStreamPacket`, `VisionFrame`, `VisionPartial`, `SceneBoundary`, `StreamEvent`, `EventChunk` |
