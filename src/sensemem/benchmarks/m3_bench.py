@@ -56,7 +56,7 @@ class _RawVideo(BaseModel):
 
 
 def load_m3_bench(annotation_path: Path) -> tuple[M3BenchVideo, ...]:
-    """Load `robot.json` or `web.json` while preserving official source paths."""
+    """Load robot.json or web.json while preserving official source paths."""
     records = TypeAdapter(dict[str, _RawVideo]).validate_json(annotation_path.read_bytes())
     videos = tuple(_video(video_id, record) for video_id, record in sorted(records.items()))
     if not videos:

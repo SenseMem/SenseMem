@@ -15,6 +15,7 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
+from examples.live import prompts as demo_prompts
 from sensemem import (
     AssetRef,
     GenerationBackend,
@@ -23,7 +24,6 @@ from sensemem import (
     SenseMemError,
     ValidationError,
 )
-from sensemem.prompts import demo as demo_prompts
 
 MAX_FRAME_BYTES = 256 * 1024
 PerceptionAction = Literal["quiet", "context", "wait", "interrupt"]

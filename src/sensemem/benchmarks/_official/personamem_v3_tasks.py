@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from sensemem.benchmarks._official.personamem_v3_prompts import ClusterResponse
-from sensemem.benchmarks._official.personamem_v3_scoring import _mapping, _string
+from sensemem.benchmarks._official.personamem_v3_scoring import mapping, string
 
 CLUSTER_TASK_TYPES = frozenset(
     {"over_personalization_repetition_chatbot", "over_personalization_repetition_recsys"}
@@ -69,10 +69,10 @@ def cluster_response(
 ) -> ClusterResponse:
     parsed = response_object(raw)
     return ClusterResponse(
-        title=_string(parsed, "title"),
-        caption=_string(parsed, "caption"),
+        title=string(parsed, "title"),
+        caption=string(parsed, "caption"),
         hashtags=strings(parsed, "hashtags"),
-        response=_string(parsed, "response") or raw,
+        response=string(parsed, "response") or raw,
         user_query=user_query,
         ts=timestamp,
         is_target=is_target,
@@ -92,11 +92,11 @@ def cluster_responses(prediction: str) -> tuple[ClusterResponse, ...]:
             raise ValueError("PersonaMem-v3 cluster response needs its timestamp and target flag")
         responses.append(
             ClusterResponse(
-                title=_string(row, "title"),
-                caption=_string(row, "caption"),
+                title=string(row, "title"),
+                caption=string(row, "caption"),
                 hashtags=strings(row, "hashtags"),
-                response=_string(row, "response"),
-                user_query=_string(row, "user_query"),
+                response=string(row, "response"),
+                user_query=string(row, "user_query"),
                 ts=timestamp,
                 is_target=target,
             )
@@ -161,8 +161,8 @@ def suggestion_metrics(prediction: str, evidence: Mapping[str, object]) -> dict[
 def mistake_metrics(prediction: str, evidence: Mapping[str, object]) -> dict[str, float]:
     """Score the released warning detector, coverage threshold, and foil engagement gate."""
     parsed = response_object(prediction)
-    response = _string(parsed, "response") or prediction
-    frame = _mapping(evidence, "expected_warning_frame")
+    response = string(parsed, "response") or prediction
+    frame = mapping(evidence, "expected_warning_frame")
     must_mention = strings(frame, "must_mention")
     must_not_mention = strings(frame, "must_not_mention")
     regex_warn = bool(_WARN_PHRASE_RE.search(response))
@@ -179,7 +179,7 @@ def mistake_metrics(prediction: str, evidence: Mapping[str, object]) -> dict[str
     leak = any(
         term.strip() and term.strip().lower() in response.lower() for term in must_not_mention
     )
-    polarity = _string(evidence, "polarity").lower()
+    polarity = string(evidence, "polarity").lower()
     engaged = substantive(response)
     correct = (
         warned and coverage >= 0.5 and not leak

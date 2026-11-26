@@ -11,7 +11,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import TypedDict, cast
 
-from sensemem.benchmarks._official.personamem_v3_scoring import _mapping, _string
+from sensemem.benchmarks._official.personamem_v3_scoring import mapping, string
 
 
 class ClusterResponse(TypedDict):
@@ -46,14 +46,14 @@ def e6_active_mistake_prevention_prompt(
     """Prompt for E6 — active mistake prevention.
 
     Fires in two modes:
-      • Reactive: `user_query` is set. The agent both answers the message
+      • Reactive: user_query is set. The agent both answers the message
         and decides whether to warn.
-      • Proactive: `user_query` is empty. The agent has no concurrent
+      • Proactive: user_query is empty. The agent has no concurrent
         message; it must decide on its own whether to volunteer a warning.
         Stay silent (return an empty response) when no mistake is detected.
 
     The agent has cross-app history (calendar, geo, social, prior chatbot)
-    via `history_block`. The instance does NOT disclose pair polarity
+    via history_block. The instance does NOT disclose pair polarity
     (warn/foil) — that is what we are measuring.
     """
     history = (
@@ -117,7 +117,7 @@ def over_personalization_repetition_recsys_prompt(
 ) -> str:
     """Build the per-anchor prompt for one over_personalization_repetition_recsys
     query. The same prompt template is reused across the cluster's 5
-    successive calls; what changes per call is `prior_responses`
+    successive calls; what changes per call is prior_responses
     (accumulating the agent's own outputs from earlier in the cluster).
 
     The prompt:
@@ -128,11 +128,11 @@ def over_personalization_repetition_recsys_prompt(
       (3) Surfaces an off-persona distractor pool — explicitly NOT to
           reach for. Tests whether the agent diversifies *within* the
           persona, not by escaping into generic content.
-      (4) Surfaces this cluster's `prior_responses` so any repetition
+      (4) Surfaces this cluster's prior_responses so any repetition
           is a deliberate choice, not because the agent forgot what
           it just said.
       (5) States the diversification rule explicitly: the first
-          `n_allowed_repetitions + 1` responses can repeat freely;
+          n_allowed_repetitions + 1 responses can repeat freely;
           starting from response #(n_allowed_repetitions + 2), the
           agent must use NEW hashtags (persona-aligned but not
           overlapping its own prior responses).
@@ -193,7 +193,7 @@ def over_personalization_repetition_chatbot_prompt(
     Surface: a NORMAL chatbot question (not a "give me a recommendation"
     framing). The agent is told that prior chats with this user have
     already invoked the target preference N times — past the
-    `n_allowed_repetitions + 1` head zone, the agent should answer THIS
+    n_allowed_repetitions + 1 head zone, the agent should answer THIS
     question on its own merits without falling back to the same
     preference, even though the question would naturally invite it.
 
@@ -285,12 +285,12 @@ def new_suggestions_chatbot_prompt(
     semantic alignment with the persona-grounded gold.
     """
     framing = _new_suggestions_trigger_framing(
-        trigger_kind=_string(instance, "trigger_kind"),
-        trigger_blurb=_string(instance, "trigger_blurb"),
-        user_query=_string(instance, "user_query"),
-        directive_action=_string(instance, "directive_action"),
-        directive_user_message=_string(instance, "directive_user_message"),
-        fatigued_pref=_string(instance, "fatigued_pref"),
+        trigger_kind=string(instance, "trigger_kind"),
+        trigger_blurb=string(instance, "trigger_blurb"),
+        user_query=string(instance, "user_query"),
+        directive_action=string(instance, "directive_action"),
+        directive_user_message=string(instance, "directive_user_message"),
+        fatigued_pref=string(instance, "fatigued_pref"),
     )
     history = f"\n## User history (time-masked)\n{history_block}\n" if history_block else ""
     return f"""# Task: recommend ONE thing for this user
@@ -370,7 +370,7 @@ def e5_prompt(instance: Mapping[str, object], history_block: str | None) -> str:
         + (" | sponsored" if c.get("is_sponsored") else "")
         for i, c in enumerate(candidates)
     )
-    geo = _mapping(instance, "geo_context")
+    geo = mapping(instance, "geo_context")
     cal = _mappings(instance, "calendar_context")
     cal_json = json.dumps(
         [
@@ -417,7 +417,7 @@ The list must be a permutation of every idx above.
 """
 
 
-_C1D_PREF_INVOCATION_JUDGE_PROMPT = """You are auditing whether a chatbot response invoked a specific user preference. The preference is given below. Rate how much the response — by topic choice, recommendation, framing, or specific reference — leans on this preference.
+C1D_PREF_INVOCATION_JUDGE_PROMPT = """You are auditing whether a chatbot response invoked a specific user preference. The preference is given below. Rate how much the response — by topic choice, recommendation, framing, or specific reference — leans on this preference.
 
 A response "invokes" the preference when:
   - It explicitly recommends content / activities / items in that preference area, OR

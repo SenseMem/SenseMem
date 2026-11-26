@@ -17,7 +17,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -46,53 +46,54 @@ from sensemem.benchmarks.eval_adapters import (
     parse_media_manifest,
 )
 from sensemem.benchmarks.eval_arms import (
-    _Arm,
-    _BaselineGenerator,
-    _generator_arms,
+    Arm,
+    BaselineGenerator,
+    generator_arms,
 )
-from sensemem.benchmarks.eval_artifacts import _config_artifact, _merged_manifest, _write_artifacts
-from sensemem.benchmarks.eval_backends import _BackendPool
+from sensemem.benchmarks.eval_artifacts import config_artifact, merged_manifest, write_artifacts
+from sensemem.benchmarks.eval_backends import BackendPool
 from sensemem.benchmarks.eval_cache import ResponseCache
 from sensemem.benchmarks.eval_config import (
-    _MEDIA_MANIFEST_FILE,
-    _MODALITY_BY_SUFFIX,
-    _PARTIAL_SAMPLES_FILE,
-    _Arguments,
-    _arguments,
-    _batch_size,
-    _build_parser,
-    _description_cache_path,
-    _evaluation_config,
-    _evaluation_memory_config,
-    _judge_config,
-    _JudgeConfig,
-    _load_memory_config,
-    _model_config,
-    _picked,
-    _require_output,
+    MEDIA_MANIFEST_FILE,
+    MODALITY_BY_SUFFIX,
+    PARTIAL_SAMPLES_FILE,
+    Arguments,
+    JudgeConfig,
+    build_parser,
+    description_cache_path,
+    evaluation_config,
+    evaluation_memory_config,
+    load_memory_config,
+    model_config,
+    picked,
+    require_output,
+    resolve_arguments,
+    resolve_batch_size,
+    resolve_judge_config,
 )
 from sensemem.benchmarks.eval_console import (
-    _announce,
-    _configure_logging,
-    _deferred_progress,
-    _progress,
-    _table,
-    _uninterpretable_tasks,
+    announce,
+    configure_logging,
+    deferred_progress,
+    progress_reporter,
+    render_summary_table,
+    uninterpretable_tasks,
 )
 from sensemem.benchmarks.eval_environment import (
+    TORCH,
     nvidia_smi_rows,
     unavailable_server_resources,
 )
 from sensemem.benchmarks.eval_ingest import IngestRunState
 from sensemem.benchmarks.eval_inputs import (
-    _all_cached,
-    _cache_namespace,
-    _has_question_cutoffs,
-    _ingest_digest,
+    are_all_cached,
+    cache_namespace,
+    has_question_cutoffs,
+    ingest_digest,
 )
-from sensemem.benchmarks.eval_judge import _apply_judges
+from sensemem.benchmarks.eval_judge import apply_judges
 from sensemem.benchmarks.eval_metrics import (
-    _comparisons,
+    build_comparisons,
 )
 from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_regression import (
@@ -100,19 +101,19 @@ from sensemem.benchmarks.eval_regression import (
     performance_comparisons,
 )
 from sensemem.benchmarks.eval_report import (
-    _incomplete_search_replay,
-    _regressed,
-    _results,
-    _task_performance,
-    _task_rows,
-    _with_grounding_loss,
+    build_results_document,
+    build_task_rows,
+    has_regression,
+    incomplete_search_replay,
+    task_performance,
+    with_grounding_loss,
 )
 from sensemem.benchmarks.eval_results import (
     DEFAULT_ARM,
     SampleResult,
 )
 from sensemem.benchmarks.eval_runner import run_loaded_task
-from sensemem.benchmarks.eval_runtime import MemoryFactory, _MemoryContext, _SearchReplay
+from sensemem.benchmarks.eval_runtime import MemoryContext, MemoryFactory, SearchReplay
 from sensemem.benchmarks.eval_server_metrics import (
     MetricsSnapshot,
     capture_metrics,
@@ -145,6 +146,15 @@ from sensemem.configuration import (
 )
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
 
+_LeaderboardMain = Callable[..., int]
+_SERVE_LEADERBOARD: _LeaderboardMain | None
+try:
+    from sensemem.benchmarks.eval_leaderboard import main as _serve_leaderboard
+except ImportError:
+    _SERVE_LEADERBOARD = None
+else:
+    _SERVE_LEADERBOARD = _serve_leaderboard
+
 # Called once per task, the moment that task has answered every question, and returns the samples
 # to keep. It is what lets a run persist and report a finished task without waiting for the rest.
 _TaskCompletion = Callable[
@@ -158,10 +168,10 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     """Parse one reproducible evaluation sweep and write its artifacts."""
     arguments_cli = list(sys.argv[1:] if argv is None else argv)
     if arguments_cli[:1] == ["serve"]:
-        from sensemem.benchmarks.eval_leaderboard import main as serve
-
-        return serve(arguments_cli[1:], prog=f"{prog or 'sensemem-bench eval'} serve")
-    parser = _build_parser(prog)
+        if _SERVE_LEADERBOARD is None:
+            raise RuntimeError("serving requires uvicorn and sensemem[benchmarks,server]")
+        return _SERVE_LEADERBOARD(arguments_cli[1:], prog=f"{prog or 'sensemem-bench eval'} serve")
+    parser = build_parser(prog)
     parsed = parser.parse_args(arguments_cli)
     # The configuration file can name the corpus root, so it is read before the listing and
     # before argument resolution derives the default output directory from that root.
@@ -169,10 +179,10 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
         None if parsed.memory_config is None else parsed.memory_config.expanduser().resolve()
     )
     try:
-        memory_config, overrides = _load_memory_config(config_path)
+        memory_config, overrides = load_memory_config(config_path)
     except ValueError as error:
         parser.error(str(error))
-    _configure_logging(_picked(parsed.verbosity, overrides.run.verbosity, "INFO"))
+    configure_logging(picked(parsed.verbosity, overrides.run.verbosity, "INFO"))
     if parsed.deliberate and (memory_config is None or memory_config.consolidation is None):
         # Refused rather than silently ignored: without a consolidation backend every round
         # would raise, and a run that quietly skipped the loop would report a score for it.
@@ -187,10 +197,12 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     if list_mode is not None:
         print(listing(download.benchmarks_root, list_mode))
         return 0
-    arguments = _arguments(parser, parsed, download, overrides=overrides)
+    arguments = resolve_arguments(parser, parsed, download, overrides=overrides)
     if arguments.ingest_concurrency > 1 and (
         memory_config is None
-        or any(getattr(memory_config, name) is not None for name in ("formation", "speech", "face"))
+        or memory_config.formation is not None
+        or memory_config.speech is not None
+        or memory_config.face is not None
     ):
         parser.error(
             "--ingest-concurrency above 1 requires an explicit --config without formation, "
@@ -199,7 +211,7 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     if parsed.check_integrity:
         manifest, manifest_directory = load_media_manifest(arguments.media_manifest)
         loaded = _load_tasks(arguments, manifest, manifest_directory)
-        if arguments.ingest_concurrency > 1 and _has_question_cutoffs(loaded):
+        if arguments.ingest_concurrency > 1 and has_question_cutoffs(loaded):
             parser.error(
                 "--ingest-concurrency above 1 requires static units without question cutoffs"
             )
@@ -227,14 +239,14 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     if memory_config is None and DEFAULT_ARM in arguments.arms:
         parser.error("the sensemem arm requires --config with an explicit embedding section")
     try:
-        base_config = _model_config(
+        base_config = model_config(
             arguments.model_args,
             memory_config=memory_config,
         )
-        judge_config = _judge_config(base_config, arguments, overrides=overrides)
+        judge_config = resolve_judge_config(base_config, arguments, overrides=overrides)
     except ValueError as error:
         parser.error(str(error))
-    _require_output(arguments.output_path, overwrite=arguments.overwrite, resume=arguments.resume)
+    require_output(arguments.output_path, overwrite=arguments.overwrite, resume=arguments.resume)
     manifest, manifest_directory = load_media_manifest(arguments.media_manifest)
     if arguments.download:
         for name in arguments.tasks:
@@ -245,7 +257,7 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
             )
     generated_manifest: dict[str, object] = {}
     for name in arguments.tasks:
-        with _deferred_progress(
+        with deferred_progress(
             f"preparing {name} media", "source", enabled=not arguments.quiet
         ) as progress:
             prepared = prepare_task_media(
@@ -259,31 +271,31 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
                 limit=arguments.limit,
                 offset=arguments.offset,
                 download=arguments.download,
-                announce=None if arguments.quiet else _announce,
+                announce=None if arguments.quiet else announce,
                 on_progress=None if arguments.quiet else progress,
             )
         if prepared is not None:
             generated_manifest[name] = prepared
     if generated_manifest:
-        merged = _merged_manifest(manifest, manifest_directory, generated_manifest)
+        merged = merged_manifest(manifest, manifest_directory, generated_manifest)
         manifest = parse_media_manifest(merged)
-        effective_manifest = arguments.output_path / _MEDIA_MANIFEST_FILE
+        effective_manifest = arguments.output_path / MEDIA_MANIFEST_FILE
         effective_manifest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         replace_artifact_files(((effective_manifest, encode_jsonl_bytes((merged,))),))
         arguments = replace(arguments, media_manifest=effective_manifest)
         manifest_directory = effective_manifest.parent
     loaded = _load_tasks(arguments, manifest, manifest_directory)
-    if arguments.ingest_concurrency > 1 and _has_question_cutoffs(loaded):
+    if arguments.ingest_concurrency > 1 and has_question_cutoffs(loaded):
         parser.error("--ingest-concurrency above 1 requires static units without question cutoffs")
-    config = _evaluation_config(base_config, loaded, memory_config=memory_config)
-    memory_config = _evaluation_memory_config(
+    config = evaluation_config(base_config, loaded, memory_config=memory_config)
+    memory_config = evaluation_memory_config(
         memory_config,
         config,
         gen_kwargs=arguments.gen_kwargs,
         seed=arguments.seed,
         device=arguments.device,
     )
-    batch_sizes = {task.spec.name: _batch_size(arguments, task) for task in loaded}
+    batch_sizes = {task.spec.name: resolve_batch_size(arguments, task) for task in loaded}
     run_state = IngestRunState()
     samples, duration, performance, resources, embedding_warmup_count = _execute(
         loaded,
@@ -295,7 +307,7 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
         server_metrics=overrides.server_metrics,
         run_state=run_state,
     )
-    results = _results(
+    results = build_results_document(
         arguments,
         config,
         judge_config,
@@ -309,7 +321,7 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
         resources=resources,
         embedding_warmup_count=embedding_warmup_count,
     )
-    comparisons = _comparisons(arguments, loaded, samples)
+    comparisons = build_comparisons(arguments, loaded, samples)
     if comparisons:
         results["comparisons"] = comparisons
     performance_rows = (
@@ -323,11 +335,11 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     )
     if performance_rows:
         results["performance_comparisons"] = performance_rows
-    _write_artifacts(
+    write_artifacts(
         arguments,
         samples,
         results,
-        config_bytes=_config_artifact(
+        config_bytes=config_artifact(
             arguments,
             config,
             judge_config,
@@ -336,12 +348,12 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
             overrides.server_metrics,
         ),
     )
-    for reason in _uninterpretable_tasks(results):
-        _announce(f"UNINTERPRETABLE: {reason}")
+    for reason in uninterpretable_tasks(results):
+        announce(f"UNINTERPRETABLE: {reason}")
     if not arguments.quiet:
-        print(_table(results))
+        print(render_summary_table(results))
     has_errors = _execution_has_errors(samples, results)
-    regressed = arguments.fail_on_regression and _regressed(
+    regressed = arguments.fail_on_regression and has_regression(
         comparisons, threshold=arguments.regression_threshold
     )
     performance_regressed = arguments.fail_on_regression and any(
@@ -358,11 +370,11 @@ def _execution_has_errors(samples: Sequence[SampleResult], results: Mapping[str,
         for sample in samples
     )
     rows = cast(Sequence[Mapping[str, object]], results["tasks"])
-    return sample_errors or (results["search_replay"] is True and _incomplete_search_replay(rows))
+    return sample_errors or (results["search_replay"] is True and incomplete_search_replay(rows))
 
 
 def _load_tasks(
-    arguments: _Arguments,
+    arguments: Arguments,
     manifest: MediaManifest | None,
     manifest_directory: Path | None,
 ) -> tuple[LoadedTask, ...]:
@@ -448,7 +460,7 @@ def _benchmark_device_lock(
             break
         except DataDirectoryInUseError:
             if not quiet and not announced:
-                _announce(f"waiting for local CUDA device {index}")
+                announce(f"waiting for local CUDA device {index}")
                 announced = True
             time.sleep(0.1)
     try:
@@ -499,11 +511,8 @@ def _release_device_memory(device: str | None) -> None:
     if (device or "auto").strip().lower() == "cpu":
         return
     gc.collect()
-    with suppress(ImportError):
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    if TORCH is not None and TORCH.cuda.is_available():
+        TORCH.cuda.empty_cache()
 
 
 def _server_metrics_endpoints(settings: ServerMetricsOverrides) -> dict[str, str]:
@@ -559,9 +568,9 @@ def _server_metric_results(
 
 def _execute(
     loaded: Sequence[LoadedTask],
-    arguments: _Arguments,
+    arguments: Arguments,
     config: ModelConfig,
-    judge_config: _JudgeConfig,
+    judge_config: JudgeConfig,
     batch_sizes: Mapping[str, int],
     *,
     memory_config: MemorySpec | None,
@@ -577,7 +586,7 @@ def _execute(
     run_state = run_state or IngestRunState()
     needs_speech = any(
         isinstance(atom, Path)
-        and _MODALITY_BY_SUFFIX.get(atom.suffix.casefold()) in {Modality.AUDIO, Modality.VIDEO}
+        and MODALITY_BY_SUFFIX.get(atom.suffix.casefold()) in {Modality.AUDIO, Modality.VIDEO}
         for task in loaded
         for unit in task.units
         for item in unit.memories
@@ -643,7 +652,7 @@ def _execute(
             else ResponseCache(
                 arguments.use_cache,
                 arguments.run_id,
-                _cache_namespace(
+                cache_namespace(
                     arguments,
                     config,
                     batch_sizes,
@@ -651,10 +660,12 @@ def _execute(
                 ),
             )
         )
-        pool: _BackendPool | None = None
+        pool: BackendPool | None = None
         memory_factory: MemoryFactory
-        arm_specs = tuple(_Arm(name) for name in arguments.arms)
-        all_cached = response_cache is not None and _all_cached(response_cache, loaded, arm_specs)
+        arm_specs = tuple(Arm(name) for name in arguments.arms)
+        all_cached = response_cache is not None and are_all_cached(
+            response_cache, loaded, arm_specs
+        )
         devices = _evaluation_devices(arguments.device, memory_config, needs_speech=needs_speech)
         with ExitStack() as device_locks:
             for device in devices:
@@ -670,11 +681,11 @@ def _execute(
                 if all_cached:
                     memory_factory = _cache_only_memory
                 else:
-                    pool = _BackendPool(
+                    pool = BackendPool(
                         config,
                         memory_config=memory_config,
                         tracer=telemetry.tracer,
-                        description_cache=_description_cache_path(arguments, memory_config),
+                        description_cache=description_cache_path(arguments, memory_config),
                     )
                     memory_factory = pool.memory
                     prefetch_speech = pool.prefetch_speech
@@ -724,7 +735,7 @@ def _execute(
                     response_cache.close()
         if not arguments.predict_only:
             samples = asyncio.run(
-                _apply_judges(
+                apply_judges(
                     loaded,
                     samples,
                     arguments=arguments,
@@ -733,8 +744,8 @@ def _execute(
                     already_judged=streamed,
                 )
             )
-        samples = _with_grounding_loss(samples, telemetry)
-        performance = _task_performance(telemetry, loaded, samples, arguments.arms)
+        samples = with_grounding_loss(samples, telemetry)
+        performance = task_performance(telemetry, loaded, samples, arguments.arms)
         duration = time.perf_counter() - started
         resources = sampler.json(wall_seconds=duration)
         resources["model_servers"] = model_servers
@@ -744,9 +755,9 @@ def _execute(
 
 
 def _task_completion(
-    arguments: _Arguments,
+    arguments: Arguments,
     *,
-    judge_config: _JudgeConfig,
+    judge_config: JudgeConfig,
     batch_sizes: Mapping[str, int],
     telemetry: EvaluationTelemetry,
     memory_config: MemorySpec | None,
@@ -758,16 +769,16 @@ def _task_completion(
     Answering every task before anything is written or scored made a multi-task run silent until
     the last task finished, and made an outage during the last task discard every earlier task's
     answers. The crash copy costs nothing and is always written. Immediate judging is the default;
-    `--no-stream-results` retains the former run-global scoring pass when explicitly requested.
+    --no-stream-results retains the former run-global scoring pass when explicitly requested.
     """
-    partial_path = arguments.output_path / _PARTIAL_SAMPLES_FILE
+    partial_path = arguments.output_path / PARTIAL_SAMPLES_FILE
     partial_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     partial_path.unlink(missing_ok=True)
 
     async def completed(
         task: LoadedTask, task_samples: tuple[SampleResult, ...]
     ) -> tuple[SampleResult, ...]:
-        task_samples = _with_grounding_loss(task_samples, telemetry)
+        task_samples = with_grounding_loss(task_samples, telemetry)
         # Persist before anything that can fail. Judging raises on a missing extra or an
         # unreachable judge, and it must not be able to take the answers down with it: those cost
         # a full ingest to produce, the scores cost one more model call. Writing here also makes
@@ -788,7 +799,7 @@ def _task_completion(
             )
             with measurement_exclusion():
                 if not arguments.predict_only:
-                    task_samples = await _apply_judges(
+                    task_samples = await apply_judges(
                         (task,),
                         task_samples,
                         arguments=arguments,
@@ -797,16 +808,16 @@ def _task_completion(
                     )
                 streamed.update(sample.sample_id for sample in task_samples)
                 if not arguments.quiet:
-                    _announce(f"interim results for {task.spec.name} (later tasks still running)")
+                    announce(f"interim results for {task.spec.name} (later tasks still running)")
                     print(
-                        _table(
+                        render_summary_table(
                             {
-                                "tasks": _task_rows(
+                                "tasks": build_task_rows(
                                     arguments,
                                     (task,),
                                     task_samples,
                                     batch_sizes,
-                                    _task_performance(
+                                    task_performance(
                                         telemetry, (task,), task_samples, arguments.arms
                                     ),
                                     memory_config=memory_config,
@@ -821,7 +832,7 @@ def _task_completion(
 
 async def _run_all(
     tasks: Sequence[LoadedTask],
-    arguments: _Arguments,
+    arguments: Arguments,
     *,
     batch_sizes: Mapping[str, int],
     memory_factory: MemoryFactory,
@@ -834,11 +845,11 @@ async def _run_all(
     run_state: IngestRunState | None = None,
 ) -> tuple[SampleResult, ...]:
     run_state = run_state or IngestRunState()
-    generated_arms = _generator_arms(arguments.arms, tuple(task.spec.name for task in tasks))
+    generated_arms = generator_arms(arguments.arms, tuple(task.spec.name for task in tasks))
     generator = (
         None
         if config is None or not generated_arms
-        else _BaselineGenerator(
+        else BaselineGenerator(
             config,
             seed=arguments.seed,
             gen_kwargs=arguments.gen_kwargs,
@@ -847,7 +858,7 @@ async def _run_all(
         )
     )
     arms = tuple(
-        _Arm(
+        Arm(
             name,
             generator=generator if name in generated_arms else None,
             seed=arguments.seed,
@@ -878,9 +889,9 @@ async def _run_all(
 
 async def _run_arms(
     tasks: Sequence[LoadedTask],
-    arguments: _Arguments,
+    arguments: Arguments,
     *,
-    arms: Sequence[_Arm],
+    arms: Sequence[Arm],
     batch_sizes: Mapping[str, int],
     memory_factory: MemoryFactory,
     response_cache: ResponseCache | None,
@@ -895,13 +906,13 @@ async def _run_arms(
         max_chars=arguments.compile_max_chars,
     )
     results: list[SampleResult] = []
-    deferred_searches: list[_SearchReplay] = []
+    deferred_searches: list[SearchReplay] = []
     for task in tasks:
         sample_count = sum(len(unit.questions) for unit in task.units) * len(arms)
         if not arguments.quiet:
-            _announce(f"running {task.spec.name} ({len(task.units)} units, {sample_count} samples)")
+            announce(f"running {task.spec.name} ({len(task.units)} units, {sample_count} samples)")
         with (
-            _progress(
+            progress_reporter(
                 f"running {task.spec.name}",
                 "sample",
                 total=sample_count,
@@ -912,7 +923,7 @@ async def _run_arms(
             # hour is progress. Its total is fixed for the task and known only to the runner,
             # which is why the bar is deferred until the runner reports it; a second total would
             # be rejected rather than resize the bar.
-            _deferred_progress(
+            deferred_progress(
                 f"ingesting {task.spec.name}", "item", enabled=not arguments.quiet
             ) as ingest_progress,
             traced_span(
@@ -954,7 +965,7 @@ async def _run_arms(
                 ),
                 response_cache=response_cache,
                 arms=arms,
-                ingest_digest=_ingest_digest(task, arguments, memory_config),
+                ingest_digest=ingest_digest(task, arguments, memory_config),
                 tracer=tracer,
                 on_progress=progress,
                 on_ingest_progress=ingest_progress,
@@ -997,7 +1008,7 @@ def _evaluation_devices(
     return tuple(devices[identity] for identity in sorted(devices))
 
 
-def _cache_only_memory(_path: Path) -> _MemoryContext:
+def _cache_only_memory(_path: Path) -> MemoryContext:
     raise RuntimeError("response cache was incomplete after the cache-only preflight")
 
 

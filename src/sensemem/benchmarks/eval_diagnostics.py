@@ -3,19 +3,57 @@
 from __future__ import annotations
 
 import statistics
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, cast
+from collections.abc import Mapping, Sequence
+from typing import Protocol, cast
 
 from sensemem.benchmarks.eval_evidence import EvidenceInterval
 from sensemem.benchmarks.official_scorers import GOLD_SOURCE_KEYS, gold_source_groups
 
-if TYPE_CHECKING:
-    from sensemem.benchmarks.eval_results import SampleResult
-
 LAYERS = ("input", "retrieval", "organization", "reader_input", "answer")
 
 
-def quality_diagnostics(sample: SampleResult) -> dict[str, object]:
+class DiagnosticSample(Protocol):
+    """Fields of a sample result needed to compute per-layer quality diagnostics."""
+
+    @property
+    def metadata(self) -> Mapping[str, object]: ...
+    @property
+    def generation_evidence(self) -> tuple[EvidenceInterval, ...] | None: ...
+    @property
+    def input_source_ids(self) -> tuple[str, ...] | None: ...
+    @property
+    def ranked_source_ids(self) -> tuple[str, ...]: ...
+    @property
+    def ranked_source_ids_complete(self) -> bool: ...
+    @property
+    def candidate_count(self) -> int: ...
+    @property
+    def ingest_failure_count(self) -> int: ...
+    @property
+    def excerpt_evidence(self) -> tuple[EvidenceInterval, ...]: ...
+    @property
+    def projection_evidence(self) -> tuple[EvidenceInterval, ...]: ...
+    @property
+    def grounding_request(self) -> Mapping[str, object] | None: ...
+    @property
+    def prediction(self) -> str: ...
+    @property
+    def score(self) -> float | None: ...
+    @property
+    def abstained(self) -> bool: ...
+    @property
+    def error_code(self) -> str | None: ...
+    @property
+    def scorer_error(self) -> str | None: ...
+    @property
+    def trace_id(self) -> str | None: ...
+    @property
+    def answer_span_id(self) -> str | None: ...
+    @property
+    def cached(self) -> bool: ...
+
+
+def quality_diagnostics(sample: DiagnosticSample) -> dict[str, object]:
     """Join observed boundaries without inferring missing spans or assigning causal blame."""
     key = next((key for key in GOLD_SOURCE_KEYS if gold_source_groups(sample.metadata, key)), None)
     groups = () if key is None else gold_source_groups(sample.metadata, key)
@@ -110,9 +148,14 @@ def quality_diagnostics(sample: SampleResult) -> dict[str, object]:
 
 
 def _sources(evidence: Sequence[EvidenceInterval] | None) -> tuple[str, ...] | None:
-    if evidence is None or any(item.source_id is None for item in evidence):
+    if evidence is None:
         return None
-    return tuple(cast(str, item.source_id) for item in evidence)
+    sources: list[str] = []
+    for item in evidence:
+        if item.source_id is None:
+            return None
+        sources.append(item.source_id)
+    return tuple(sources)
 
 
 def _ids(value: object) -> list[str] | None:
@@ -121,7 +164,7 @@ def _ids(value: object) -> list[str] | None:
     return list(value)
 
 
-def summarize_diagnostics(samples: Sequence[SampleResult]) -> dict[str, object]:
+def summarize_diagnostics(samples: Sequence[DiagnosticSample]) -> dict[str, object]:
     """Report separate observation, label and score denominators for every boundary."""
     diagnostics = [quality_diagnostics(sample) for sample in samples]
     layers: dict[str, object] = {}

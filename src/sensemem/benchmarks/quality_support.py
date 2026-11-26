@@ -36,7 +36,7 @@ class QualityReport:
         return bool(self.cases) and all(case.passed for case in self.cases)
 
 
-class _FixtureEmbedder:
+class FixtureEmbedder:
     """Make the sole fixture memory relevant without an external embedding model."""
 
     embedding_capabilities = frozenset({Modality.TEXT})
@@ -49,7 +49,6 @@ class _FixtureEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         return tuple((1.0, 0.0, 0.0, 0.0) for _ in inputs)
 
     def close(self) -> None:

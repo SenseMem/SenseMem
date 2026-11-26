@@ -144,7 +144,7 @@ def load_mem_gallery_topic(topic_path: Path) -> MemGalleryTopic:
 
 
 def load_mem_gallery(dialog_directory: Path) -> tuple[MemGalleryTopic, ...]:
-    """Load every topic file in `data/dialog`, in sorted filename order."""
+    """Load every topic file in data/dialog, in sorted filename order."""
     paths = sorted(dialog_directory.glob("*.json"))
     if not paths:
         raise ValueError(f"no Mem-Gallery topic files under {dialog_directory}")
@@ -157,7 +157,7 @@ def _require_known_references(
 ) -> None:
     """Refuse a question whose clue or session reference names a round the topic never defined.
 
-    Split out of `load_mem_gallery_topic` to keep that function's cyclomatic complexity under
+    Split out of load_mem_gallery_topic to keep that function's cyclomatic complexity under
     the repository's mccabe ceiling; the two set comprehensions below and the two-branch loop
     would otherwise push a single function over it.
     """
@@ -199,7 +199,7 @@ def _round(raw: _RawRound) -> MemGalleryRound:
     identifiers = tuple(raw.image_id)
     captions = tuple(raw.image_caption)
     if len(images) > 1 or len(identifiers) > 1 or len(captions) > 1:
-        # The caption belongs in this check with the other two. Taking `captions[0]` while
+        # The caption belongs in this check with the other two. Taking captions[0] while
         # refusing a second image id would guess at exactly the ambiguity the ids are refused
         # for, and the guess is invisible: a later release revision adding a second caption to a
         # round would have it dropped without a word. The pinned release has none.

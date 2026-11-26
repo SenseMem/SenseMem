@@ -223,7 +223,7 @@ def _cluster_bootstrap(
 def percentile(
     values: Sequence[float], probability: float, *, presorted: bool = False
 ) -> float | None:
-    """Return the linearly interpolated quantile, or ``None`` for no observations."""
+    """Return the linearly interpolated quantile, or None for no observations."""
     if not values:
         return None
     ordered = values if presorted else sorted(values)

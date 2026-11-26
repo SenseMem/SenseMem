@@ -26,12 +26,12 @@ from sensemem.benchmarks.eval_adapters import (
 )
 from sensemem.benchmarks.eval_arms import (
     PRODUCT_ARM,
-    _Arm,
+    Arm,
 )
 from sensemem.benchmarks.eval_cache import ResponseCache
 from sensemem.benchmarks.eval_config import (
-    _Arguments,
-    _memory_config_payload,
+    Arguments,
+    memory_config_payload,
 )
 from sensemem.benchmarks.eval_results import (
     DEFAULT_ARM,
@@ -44,7 +44,7 @@ from sensemem.benchmarks.model_config import (
 from sensemem.benchmarks.prompts import task_answer_policy, task_answer_surface
 
 
-def _has_question_cutoffs(tasks: Sequence[LoadedTask]) -> bool:
+def has_question_cutoffs(tasks: Sequence[LoadedTask]) -> bool:
     return any(
         question.cutoff_seconds is not None
         for task in tasks
@@ -53,12 +53,12 @@ def _has_question_cutoffs(tasks: Sequence[LoadedTask]) -> bool:
     )
 
 
-def _full_context(items: Sequence[MemoryItem], budget_chars: int) -> str:
+def full_context(items: Sequence[MemoryItem], budget_chars: int) -> str:
     """Stuff the corpus a retrieval arm would have searched, oldest first, under one budget.
 
     Media atoms have no text to stuff, so a media corpus reduces this arm to its prompt, and a
     corpus whose items all exceed the budget reduces it to the same thing. Both are lower bounds,
-    recorded as such in `_arm_provenance`; neither is distinguishable from `blind` in the score.
+    recorded as such in _arm_provenance; neither is distinguishable from blind in the score.
     """
     parts: list[str] = []
     used = 0
@@ -68,7 +68,7 @@ def _full_context(items: Sequence[MemoryItem], budget_chars: int) -> str:
             continue
         size = len(text) + (2 if parts else 0)
         if used + size > budget_chars:
-            # Skipped, not `break`: breaking on the first item that does not fit discarded every
+            # Skipped, not break: breaking on the first item that does not fit discarded every
             # later memory, and when that item was the first one the arm answered from an empty
             # context under the full-context prompt -- a blind arm wearing the wrong label.
             continue
@@ -77,14 +77,14 @@ def _full_context(items: Sequence[MemoryItem], budget_chars: int) -> str:
     return "\n\n".join(parts)
 
 
-def _content(parts: tuple[str | Path, ...]) -> str | Path | tuple[str | Path, ...]:
+def normalize_content(parts: tuple[str | Path, ...]) -> str | Path | tuple[str | Path, ...]:
     return parts[0] if len(parts) == 1 else parts
 
 
-def _memory_content(item: MemoryItem) -> str | tuple[str | Path, ...]:
+def memory_content(item: MemoryItem) -> str | tuple[str | Path, ...]:
     first, *rest = item.content
     if not isinstance(first, str):
-        # A media item's source id is already metadata, which is where `_evidence` reads it. As
+        # A media item's source id is already metadata, which is where _evidence reads it. As
         # content it was a third retrieval key and made the aggregate key differ from the clip's
         # own key even for a clip with no speech, so every clip went to the embedder twice; a
         # clip with a transcript still does, because its aggregate key carries the transcript.
@@ -93,7 +93,7 @@ def _memory_content(item: MemoryItem) -> str | tuple[str | Path, ...]:
     return labelled if not rest else (labelled, *rest)
 
 
-def _memory_metadata(item: MemoryItem) -> dict[str, object]:
+def memory_metadata(item: MemoryItem) -> dict[str, object]:
     values: dict[str, object] = {
         "source_id": item.source_id,
         "start_seconds": item.start_seconds,
@@ -103,11 +103,11 @@ def _memory_metadata(item: MemoryItem) -> dict[str, object]:
     return values
 
 
-def _memory_end(item: MemoryItem) -> float:
+def memory_end(item: MemoryItem) -> float:
     return math.inf if item.end_seconds is None else item.end_seconds
 
 
-def _planned_ingest_count(unit: EvalUnit) -> int:
+def planned_ingest_count(unit: EvalUnit) -> int:
     """Count the memories a unit will write, so an ingest bar has a total before it starts.
 
     The causal cursor stops at the latest cutoff any question asks for, so a unit whose questions
@@ -118,21 +118,21 @@ def _planned_ingest_count(unit: EvalUnit) -> int:
     for question in unit.questions:
         cutoff = math.inf if question.cutoff_seconds is None else question.cutoff_seconds
         boundary = max(boundary, cutoff)
-    return sum(1 for item in unit.memories if _memory_end(item) <= boundary)
+    return sum(1 for item in unit.memories if memory_end(item) <= boundary)
 
 
-def _prefix_end(memories: Sequence[MemoryItem], cutoff: float | None, start: int = 0) -> int:
-    """Return how many ordered memories a question at ``cutoff`` is allowed to have seen."""
+def prefix_end(memories: Sequence[MemoryItem], cutoff: float | None, start: int = 0) -> int:
+    """Return how many ordered memories a question at cutoff is allowed to have seen."""
     boundary = math.inf if cutoff is None else cutoff
     end = start
-    while end < len(memories) and _memory_end(memories[end]) <= boundary:
+    while end < len(memories) and memory_end(memories[end]) <= boundary:
         end += 1
     return end
 
 
-def _ingest_digest(
+def ingest_digest(
     task: LoadedTask,
-    arguments: _Arguments,
+    arguments: Arguments,
     memory_config: MemorySpec | None,
 ) -> str:
     """Identify everything that decides what one unit's store ends up holding.
@@ -143,11 +143,11 @@ def _ingest_digest(
     """
     payload: dict[str, object] = {
         "runner": EVAL_RUNNER_VERSION,
-        "task": _cache_task(task),
+        "task": cache_task(task),
         "device": arguments.device or "auto",
         "ingest": arguments.ingest,
         "ingest_concurrency": arguments.ingest_concurrency,
-        # `--deliberate` applies consolidation operations to the store between chunks, so a store
+        # --deliberate applies consolidation operations to the store between chunks, so a store
         # built with it holds different memories than one built without it.
         "deliberate": arguments.deliberate,
         # Every unoverridden dataset and media path is resolved under this root, and two roots
@@ -159,7 +159,7 @@ def _ingest_digest(
         "media_root": str(arguments.media_overrides.get(task.spec.name, "")),
     }
     if memory_config is not None:
-        payload["memory_config"] = _memory_config_payload(
+        payload["memory_config"] = memory_config_payload(
             memory_config, exclude=_ANSWER_ONLY_SECTIONS
         )
     return hashlib.sha256(encode_json_bytes(payload)).hexdigest()
@@ -168,8 +168,8 @@ def _ingest_digest(
 _ANSWER_ONLY_SECTIONS = frozenset({"generation"})
 
 
-def _cache_namespace(
-    arguments: _Arguments,
+def cache_namespace(
+    arguments: Arguments,
     config: ModelConfig,
     batch_sizes: Mapping[str, int],
     *,
@@ -186,16 +186,16 @@ def _cache_namespace(
         "generation_min_video_seconds": config.generation_min_video_seconds,
         "recall_limit": arguments.recall_limit,
         # The override and the resolved per-task policy, because either one changes what the
-        # request asked for. Without them a `best_effort` arm replayed a cached `strict` refusal
-        # and labelled it `best_effort`, and widening `BEST_EFFORT_TASKS` replayed a task's older
+        # request asked for. Without them a best_effort arm replayed a cached strict refusal
+        # and labelled it best_effort, and widening BEST_EFFORT_TASKS replayed a task's older
         # strict answers under its new default.
         "answer_policy_override": arguments.answer_policy,
         "answer_policy": {
             task: task_answer_policy(task, arguments.answer_policy)
             for task in sorted(arguments.tasks)
         },
-        # The surface for the same reason: widening `COMPILE_SURFACE_TASKS` must not replay a
-        # task's cached `ask` answers as answers from the compiled bundle.
+        # The surface for the same reason: widening COMPILE_SURFACE_TASKS must not replay a
+        # task's cached ask answers as answers from the compiled bundle.
         "answer_surface": {task: task_answer_surface(task) for task in sorted(arguments.tasks)},
         "compile_surface_prompt": COMPILE_SURFACE_PROMPT_VERSION,
         "blind_prompt": BLIND_PROMPT_VERSION,
@@ -215,22 +215,22 @@ def _cache_namespace(
     if fallback_reference_at is not None:
         payload["fallback_reference_at"] = fallback_reference_at.isoformat()
     if memory_config is not None:
-        payload["memory_config"] = _memory_config_payload(memory_config)
+        payload["memory_config"] = memory_config_payload(memory_config)
     return hashlib.sha256(encode_json_bytes(payload)).hexdigest()
 
 
-def _cache_task(task: LoadedTask, arm: _Arm = PRODUCT_ARM) -> str:
+def cache_task(task: LoadedTask, arm: Arm = PRODUCT_ARM) -> str:
     identity = f"{task.spec.name}:{task.spec.adapter_version}:{task.evaluation_sha256}"
     return identity if arm.name == DEFAULT_ARM else f"{arm.name}:{identity}"
 
 
-def _all_cached(
+def are_all_cached(
     cache: ResponseCache,
     tasks: Sequence[LoadedTask],
-    arms: Sequence[_Arm] = (PRODUCT_ARM,),
+    arms: Sequence[Arm] = (PRODUCT_ARM,),
 ) -> bool:
     return all(
-        cache.get(_cache_task(task, arm), unit.unit_id, question.question_id) is not None
+        cache.get(cache_task(task, arm), unit.unit_id, question.question_id) is not None
         for task in tasks
         for arm in arms
         for unit in task.units

@@ -7,7 +7,14 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
+
+try:
+    from openai import AsyncOpenAI
+    from openai.types.chat import ChatCompletion
+except ImportError:
+    AsyncOpenAI = None  # type: ignore[assignment,misc]
+    ChatCompletion = None  # type: ignore[assignment,misc]
 
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
@@ -21,9 +28,9 @@ from sensemem._telemetry import (
 )
 from sensemem.benchmarks.baseline_prompts import baseline_system_prompt
 from sensemem.benchmarks.eval_config import (
-    _MODALITY_BY_SUFFIX,
     BASELINE_ARMS,
-    _generation_temperature,
+    MODALITY_BY_SUFFIX,
+    resolve_generation_temperature,
 )
 from sensemem.benchmarks.eval_results import DEFAULT_ARM
 from sensemem.benchmarks.model_config import ModelConfig
@@ -42,16 +49,13 @@ from sensemem.models._openai_telemetry import (
 from sensemem.models.base import ModelInput
 from sensemem.models.openai_completion import OpenAICompletion
 
-if TYPE_CHECKING:
-    from openai.types.chat import ChatCompletion
-
 
 @dataclass(frozen=True, slots=True)
-class _Arm:
+class Arm:
     """One evaluation arm: what it may read, and what generates its answer."""
 
     name: str
-    generator: _BaselineGenerator | None = None
+    generator: BaselineGenerator | None = None
     seed: int = 0
     allow_partial_sources: bool = False
 
@@ -69,13 +73,13 @@ class _Arm:
         return self.retrieves or self.name == "compile"
 
 
-PRODUCT_ARM = _Arm(DEFAULT_ARM)
+PRODUCT_ARM = Arm(DEFAULT_ARM)
 
 
-class _BaselineGenerator:
+class BaselineGenerator:
     """Call the configured generation model directly for the no-retrieval baseline arms.
 
-    Deliberately outside the product path: `Memory.ask` abstains before it reaches the model
+    Deliberately outside the product path: Memory.ask abstains before it reaches the model
     when no hit survives grounding, so neither baseline could exist through it.
     """
 
@@ -88,10 +92,8 @@ class _BaselineGenerator:
         generation: MemorySpec | None = None,
         tracer: Tracer | None = None,
     ) -> None:
-        try:
-            from openai import AsyncOpenAI
-        except ImportError:
-            raise RuntimeError("baseline arms require sensemem[openai]") from None
+        if AsyncOpenAI is None:
+            raise RuntimeError("baseline arms require sensemem[openai]")
         self._tracer = trace.get_tracer("sensemem.benchmarks.eval") if tracer is None else tracer
         options = dict(item.split("=", 1) for item in gen_kwargs.split(",") if "=" in item)
         self._model = config.generation_model
@@ -105,10 +107,10 @@ class _BaselineGenerator:
             if thinking is None
             else {"chat_template_kwargs": {"enable_thinking": thinking == "true"}}
         )
-        # The declarative `generation` stanza reaches the product answerer, so a baseline that
-        # ignored it would not be the same request. `extra_body` is the one that decides whether
-        # a thinking model answers at all: without the deployment's `reasoning_effort` the model
-        # spends its budget on reasoning tokens and every reply ends `finish_reason=length`, which
+        # The declarative generation stanza reaches the product answerer, so a baseline that
+        # ignored it would not be the same request. extra_body is the one that decides whether
+        # a thinking model answers at all: without the deployment's reasoning_effort the model
+        # spends its budget on reasoning tokens and every reply ends finish_reason=length, which
         # would score as "the baseline knows nothing" rather than "the baseline was misconfigured".
         # Sampling controls are sent only where the shared provider policy supports them.
         # Explicit controls in extra_body still reach the adapter's validation.
@@ -125,7 +127,7 @@ class _BaselineGenerator:
             if stanza.max_tokens is not None and self._max_tokens is None:
                 self._max_tokens = stanza.max_tokens
         self._extra_body = extra_body or None
-        self._temperature = _generation_temperature(self._model, options, self._extra_body)
+        self._temperature = resolve_generation_temperature(self._model, options, self._extra_body)
         self._client = AsyncOpenAI(
             api_key=config.generation_api_key,
             base_url=config.generation_base_url,
@@ -231,10 +233,10 @@ class _BaselineGenerator:
         cached = self._query_asset_cache.get(resolved)
         if cached is not None:
             return cached
-        modality = _MODALITY_BY_SUFFIX.get(resolved.suffix.casefold())
+        modality = MODALITY_BY_SUFFIX.get(resolved.suffix.casefold())
         if modality is None:
             raise ValueError(f"benchmark query media has unsupported suffix: {resolved}")
-        asset = _media_asset_ref(resolved, modality)
+        asset = media_asset_ref(resolved, modality)
         self._query_asset_cache[resolved] = asset
         return asset
 
@@ -392,7 +394,7 @@ class _BaselineGenerator:
         await self._client.close()
 
 
-def _media_asset_ref(path: Path, modality: Modality) -> AssetRef:
+def media_asset_ref(path: Path, modality: Modality) -> AssetRef:
     """Describe a local media file the way the store will, keyed by its content digest."""
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -426,8 +428,8 @@ _MEDIA_TYPE_BY_SUFFIX = {
 }
 
 
-def _answers_through_ask(arm: _Arm | str, task_name: str) -> bool:
-    """Report whether this arm reaches `Memory.ask` on this task.
+def answers_through_ask(arm: Arm | str, task_name: str) -> bool:
+    """Report whether this arm reaches Memory.ask on this task.
 
     Only that path exposes the in-answer ranked list; baseline generators request an answer
     policy too, while the product's compile surface follows its host-assistant prompt.
@@ -436,21 +438,21 @@ def _answers_through_ask(arm: _Arm | str, task_name: str) -> bool:
     return name == DEFAULT_ARM and task_answer_surface(task_name) == "ask"
 
 
-def _requests_answer_policy(arm: _Arm | str, task_name: str) -> bool:
+def requests_answer_policy(arm: Arm | str, task_name: str) -> bool:
     name = arm if isinstance(arm, str) else arm.name
-    return name in {"blind", "full-context", "compile"} or _answers_through_ask(name, task_name)
+    return name in {"blind", "full-context", "compile"} or answers_through_ask(name, task_name)
 
 
-def _generator_arms(arms: Sequence[str], task_names: Sequence[str]) -> frozenset[str]:
+def generator_arms(arms: Sequence[str], task_names: Sequence[str]) -> frozenset[str]:
     """Name the arms that answer through the harness generator.
 
     The generating baselines always do. The product arm does only when a selected task answers
-    through `Memory.compile`, whose bundle is handed to the same generator standing in for the
-    host assistant; on every other task it answers through `Memory.ask` and needs none.
+    through Memory.compile, whose bundle is handed to the same generator standing in for the
+    host assistant; on every other task it answers through Memory.ask and needs none.
     """
-    names = {name for name in arms if name in BASELINE_ARMS and _Arm(name).generates}
+    names = {name for name in arms if name in BASELINE_ARMS and Arm(name).generates}
     if DEFAULT_ARM in arms and not all(
-        _answers_through_ask(DEFAULT_ARM, name) for name in task_names
+        answers_through_ask(DEFAULT_ARM, name) for name in task_names
     ):
         names.add(DEFAULT_ARM)
     return frozenset(names)

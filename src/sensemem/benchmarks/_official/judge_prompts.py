@@ -6,14 +6,14 @@ The wording is unchanged from the harness protocols that use these components.
 
 # ruff: noqa: RUF001 -- preserve the pinned upstream typography.
 
-_M3_SYSTEM_PROMPT = "You are an expert in video understanding."
-_MM_LIFELONG_USER_PROMPT = (
+M3_SYSTEM_PROMPT = "You are an expert in video understanding."
+MM_LIFELONG_USER_PROMPT = (
     "Question: {question}\nGroundtruth answer: {reference}\n"
     "Candidate answer: {prediction}\nYour response: "
 )
 
 # mem-eval-suite/LoCoMo_refined@887091190789e8d6760e70b9edd696539923dc4f
-_LOCOMO_PROMPT = """Your task is to label an answer as ’CORRECT’ or ’WRONG’ given:
+LOCOMO_PROMPT = """Your task is to label an answer as ’CORRECT’ or ’WRONG’ given:
 (1) a question,
 (2) a gold (ground truth) answer,
 (3) a generated answer.
@@ -56,7 +56,7 @@ Just return the label CORRECT or WRONG in a json format with the key as "label":
 """
 
 # ByteDance-Seed/m3-agent@0e3e41939bd8a0b66d756e7b7eb8d5fe9992da5c
-_M3_PROMPT = """You are provided with a question, a ground truth answer, and an answer from an agent model. Your task is to determine whether the ground truth answer can be logically inferred from the agent's answer, in the context of the question.
+M3_PROMPT = """You are provided with a question, a ground truth answer, and an answer from an agent model. Your task is to determine whether the ground truth answer can be logically inferred from the agent's answer, in the context of the question.
 
 Do not directly compare the surface forms of the agent answer and the ground truth answer. Instead, assess whether the meaning expressed by the agent answer supports or implies the ground truth answer. If the ground truth can be reasonably derived from the agent answer, return "Yes". If it cannot, return "No".
 
@@ -80,7 +80,7 @@ Input:
 Output ('Yes' or 'No'):"""
 
 # google-research-datasets/egotempo@7022ba77b4d89f51cf34e499767995ccd5c90c7a
-_EGOTEMPO_PROMPT = """role: "system",
+EGOTEMPO_PROMPT = """role: "system",
 content: "You are an intelligent chatbot designed for evaluating the correctness of AI assistant predictions for question-answer pairs.
 Your task is to compare the predicted answer with the ground-truth answer and determine if the predicted answer is correct or not. Here's how you can accomplish the task:
 -----##INSTRUCTIONS:
@@ -97,7 +97,7 @@ value of 'score' is in INTEGER, not STRING and value of 'reason' should provide 
 """
 
 # MM-Lifelong/MM-Lifelong@248aa82039a574e63a2e524746a7cd8f32330443/eval_acc.py
-_MM_LIFELONG_SYSTEM = """As an AI assistant, your task is to evaluate a candidate answer in comparison to a given correct answer.
+MM_LIFELONG_SYSTEM = """As an AI assistant, your task is to evaluate a candidate answer in comparison to a given correct answer.
 The question itself, the correct “groundtruth” answer, and the candidate answer will be provided to you.
 The following is a comparison table of some proper nouns; matching any one of them is considered correct.
 
@@ -148,7 +148,7 @@ Final Score:
 <an integer from 0 to 5>"""
 
 # JingbiaoMei/ATM-Bench@ef4e5dff1a47ec71213a06e359f02753defa8fb1
-_ATM_PROMPT = (
+ATM_PROMPT = (
     "You are an evaluator, and you are given a task to evaluate a model predictions "
     "with a given question. Let's follow the instructions step by step to make a "
     "judgement.  1. As the first step, you need to check whether the prediction was really "
@@ -179,7 +179,7 @@ _ATM_PROMPT = (
 
 
 # YuanchenBei/Mem-Gallery@a93959e1e978a6a7d77798ae92c2ffe41c538c62
-_GALLERY_PROMPT = """You are an impartial judge evaluating the memory capabilities of an AI assistant with the question-answering task.
+GALLERY_PROMPT = """You are an impartial judge evaluating the memory capabilities of an AI assistant with the question-answering task.
 Your task is to compare the Assistant's Answer against the Ground Truth and assign a score of 0, 0.25, 0.5, 0.75, or 1.
 
 ### Scoring Rubric

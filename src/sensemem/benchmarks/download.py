@@ -12,9 +12,11 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import httpx
+from huggingface_hub import snapshot_download
 
 from sensemem.benchmarks.task_catalog import TaskSpec
 
+GITHUB_DOWNLOAD_TIMEOUT_SECONDS = 600.0
 _GITHUB_REPOSITORIES = frozenset(
     {
         "mem-eval-suite/LoCoMo_refined",
@@ -120,10 +122,10 @@ def _extract_selected_tars(
     for pattern in patterns:
         if pattern.endswith(".tar"):
             for archive in sorted(destination.glob(pattern)):
-                _extract_tar(archive, announce=announce)
+                extract_tar(archive, announce=announce)
 
 
-def _extract_tar(
+def extract_tar(
     archive: Path,
     *,
     announce: Callable[[str], None] | None,
@@ -162,13 +164,6 @@ def _extract_tar(
 
 
 def _snapshot(repository: str, revision: str, patterns: Sequence[str], destination: Path) -> None:
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as error:
-        raise RuntimeError(
-            "benchmark downloads require `uv sync --extra benchmarks --extra local`"
-        ) from error
-
     def fetch() -> None:
         snapshot_download(
             repo_id=repository,
@@ -181,7 +176,7 @@ def _snapshot(repository: str, revision: str, patterns: Sequence[str], destinati
     try:
         fetch()
     except shutil.SameFileError:
-        # A release tree populated by `hf download --local-dir` holds hard links
+        # A release tree populated by hf download --local-dir holds hard links
         # into the shared hub cache instead of copies of its own. The hub serves
         # a present file by copying that cache entry over it, which is a copy
         # onto itself, and the aborted fetch then blocks every task queued
@@ -192,7 +187,7 @@ def _snapshot(repository: str, revision: str, patterns: Sequence[str], destinati
 
 
 def _unshare(destination: Path) -> None:
-    """Give every multiply-linked file under `destination` a copy of its own."""
+    """Give every multiply-linked file under destination a copy of its own."""
     for path in destination.rglob("*"):
         if path.is_symlink() or not path.is_file() or path.stat().st_nlink < 2:
             continue
@@ -259,7 +254,9 @@ def _github_file(spec: TaskSpec, name: str, destination: Path) -> None:
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
-        with httpx.stream("GET", url, follow_redirects=True, timeout=600.0) as response:
+        with httpx.stream(
+            "GET", url, follow_redirects=True, timeout=GITHUB_DOWNLOAD_TIMEOUT_SECONDS
+        ) as response:
             response.raise_for_status()
             with NamedTemporaryFile(
                 mode="wb", dir=destination.parent, prefix=f".{destination.name}.", delete=False

@@ -12,16 +12,27 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import Literal, TypedDict, cast
+
+try:
+    from httpx2 import TransportError
+    from openai import APIError, APIStatusError, AsyncOpenAI
+    from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+    from openai.types.responses import Response, ResponseTextConfigParam
+except ImportError:
+    TransportError = None  # type: ignore[assignment,misc]
+    APIError = None  # type: ignore[assignment,misc]
+    APIStatusError = None  # type: ignore[assignment,misc]
+    AsyncOpenAI = None  # type: ignore[assignment,misc]
+    ChatCompletion = None  # type: ignore[assignment,misc]
+    ChatCompletionMessageParam = None  # type: ignore[misc]
+    Response = None  # type: ignore[assignment,misc]
+    ResponseTextConfigParam = None  # type: ignore[assignment,misc]
 
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-if TYPE_CHECKING:
-    from openai import AsyncOpenAI
-    from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
-    from openai.types.responses import Response, ResponseTextConfigParam
 from sensemem import Modality
 from sensemem._telemetry import (
     MODEL_MODULE,
@@ -32,22 +43,22 @@ from sensemem._telemetry import (
 from sensemem.benchmarks._official.personamem_v3_tasks import CLUSTER_TASK_TYPES
 from sensemem.benchmarks.artifact_io import encode_json_bytes
 from sensemem.benchmarks.eval_adapters import LoadedTask
-from sensemem.benchmarks.eval_arms import _Arm
+from sensemem.benchmarks.eval_arms import Arm
 from sensemem.benchmarks.eval_cache import (
     CachedAnswer,
     ResponseCache,
 )
 from sensemem.benchmarks.eval_config import (
-    _Arguments,
-    _JudgeConfig,
+    Arguments,
+    JudgeConfig,
 )
 from sensemem.benchmarks.eval_console import (
-    _announce,
-    _progress,
+    announce,
+    progress_reporter,
 )
 from sensemem.benchmarks.eval_results import (
     SampleResult,
-    _retry_transient,
+    retry_transient,
 )
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ARM,
@@ -138,12 +149,12 @@ class _JudgeRequestError(Exception):
         self.error = error
 
 
-async def _apply_judges(  # noqa: C901 - shared-cluster planning retains per-sample failure handling
+async def apply_judges(  # noqa: C901 - shared-cluster planning retains per-sample failure handling
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
     *,
-    arguments: _Arguments,
-    config: _JudgeConfig,
+    arguments: Arguments,
+    config: JudgeConfig,
     tracer: Tracer | None = None,
     already_judged: Container[str] = (),
 ) -> tuple[SampleResult, ...]:
@@ -161,8 +172,8 @@ async def _apply_judges(  # noqa: C901 - shared-cluster planning retains per-sam
         if (
             sample.error_code not in (None, "JudgeError")
             or sample.ingest_failure_count
-            or not _Arm(sample.arm).generates
-            # `--stream-results` already judged this one when its task finished. Re-judging would
+            or not Arm(sample.arm).generates
+            # --stream-results already judged this one when its task finished. Re-judging would
             # spend the calls twice and let a non-deterministic judge overwrite a published score.
             or sample.sample_id in already_judged
         ):
@@ -188,11 +199,9 @@ async def _apply_judges(  # noqa: C901 - shared-cluster planning retains per-sam
     if not planned:
         return tuple(samples)
     if not arguments.quiet:
-        _announce(f"judging {len(planned)} answers with {config.model}")
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        raise RuntimeError("official LLM scorers require sensemem[openai]") from None
+        announce(f"judging {len(planned)} answers with {config.model}")
+    if AsyncOpenAI is None:
+        raise RuntimeError("official LLM scorers require sensemem[openai]")
     client = AsyncOpenAI(
         api_key=config.api_key,
         base_url=config.base_url,
@@ -229,7 +238,7 @@ async def _apply_judges(  # noqa: C901 - shared-cluster planning retains per-sam
         return result
 
     try:
-        with _progress(
+        with progress_reporter(
             f"judging with {config.model}",
             "answer",
             total=len(planned),
@@ -264,7 +273,7 @@ async def _judge_sample(
     client: AsyncOpenAI,
     cache: ResponseCache | None,
     semaphore: asyncio.Semaphore,
-    config: _JudgeConfig,
+    config: JudgeConfig,
     log_samples: bool,
     tracer: Tracer,
 ) -> SampleResult:
@@ -357,7 +366,7 @@ async def _traced_judge_call(
     call_index: int,
     cache: ResponseCache | None,
     semaphore: asyncio.Semaphore,
-    config: _JudgeConfig,
+    config: JudgeConfig,
     tracer: Tracer,
 ) -> tuple[Mapping[str, float], str, bool]:
     cached = _cached_judge_call(
@@ -401,12 +410,11 @@ async def _judge_call(  # noqa: C901 - retry and provider fallback belong in one
     call_index: int,
     cache: ResponseCache | None,
     semaphore: asyncio.Semaphore,
-    config: _JudgeConfig,
+    config: JudgeConfig,
     read_cache: bool = True,
 ) -> tuple[Mapping[str, float], str, bool]:
-    from httpx2 import TransportError
-    from openai import APIError
-
+    if APIError is None or TransportError is None:
+        raise RuntimeError("official LLM scorers require sensemem[openai]")
     request_errors = (APIError, TransportError)
     cache_task, key = _judge_cache_coordinates(
         messages,
@@ -441,15 +449,6 @@ async def _judge_call(  # noqa: C901 - retry and provider fallback belong in one
         else:
             request["max_tokens"] = plan.max_tokens
     extra_body = dict(plan.extra_body or {})
-    model_key = re.sub(r"[^a-z0-9]+", "", config.model.casefold())
-    if (
-        "qwen3" in model_key
-        and plan.parser != "ama_bench"
-        and not (
-            "enable_thinking" in extra_body and judge_model_is_official(sample.task, config.model)
-        )
-    ):
-        extra_body.setdefault("chat_template_kwargs", {"enable_thinking": False})
     if extra_body:
         request["extra_body"] = extra_body
     if sampling_supported(config.model, extra_body):
@@ -484,7 +483,7 @@ async def _judge_call(  # noqa: C901 - retry and provider fallback belong in one
     try:
         while True:
             try:
-                response = await _retry_transient(call)
+                response = await retry_transient(call)
                 break
             except _JudgeRequestError as failure:
                 # MOSAIC's no-thinking and temperature controls are binding protocol settings.
@@ -534,7 +533,7 @@ def _judge_cache_coordinates(
     *,
     plan: JudgePlan,
     call_index: int,
-    config: _JudgeConfig,
+    config: JudgeConfig,
 ) -> tuple[str, str]:
     key = hashlib.sha256(
         encode_json_bytes(
@@ -561,7 +560,7 @@ def _cached_judge_call(
     sample: SampleResult,
     plan: JudgePlan,
     call_index: int,
-    config: _JudgeConfig,
+    config: JudgeConfig,
 ) -> tuple[Mapping[str, float], str, bool] | None:
     if cache is None:
         return None
@@ -608,7 +607,9 @@ def _unsupported_extra_body(error: BaseException) -> bool:
 
 
 def _unsupported_temperature(error: BaseException) -> bool:
-    if getattr(error, "status_code", None) not in (400, 422):
+    if APIStatusError is None or not isinstance(error, APIStatusError):
+        return False
+    if error.status_code not in (400, 422):
         return False
     message = str(error).casefold()
     return bool(re.search(r"\btemperature\b", message)) and any(
@@ -617,7 +618,7 @@ def _unsupported_temperature(error: BaseException) -> bool:
     )
 
 
-def _judge_cache_namespace(config: _JudgeConfig) -> str:
+def _judge_cache_namespace(config: JudgeConfig) -> str:
     return hashlib.sha256(
         encode_json_bytes(
             {

@@ -1,4 +1,4 @@
-"""Pinned benchmark tasks accepted by ``sensemem-bench eval --tasks``."""
+"""Pinned benchmark tasks accepted by sensemem-bench eval --tasks."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class TaskSpec:
     media_source: MediaSource | None = None
     # Glob patterns, relative to the release root, that a directory dataset
     # downloads. Without them a directory input is fetched whole, which for
-    # PersonaMem-v3 means 465 MB of `persona.html` no loader opens. Empty means
+    # PersonaMem-v3 means 465 MB of persona.html no loader opens. Empty means
     # "fetch the whole directory", which is what every other task wants.
     dataset_patterns: tuple[str, ...] = ()
 
@@ -368,9 +368,9 @@ TASKS: dict[str, TaskSpec] = {
             "personamem_v3_official_v3",
             _PERSONAMEM_V3,
             digest="57d2c06fa5d7d65d2b2472ab8bbf0512eb6e4d4265c85ee5b980283e6b174443",
-            # `persona.html` is a 4.6 MB self-contained browsable rendering of
+            # persona.html is a 4.6 MB self-contained browsable rendering of
             # the JSON beside it -- 465 MB across the cohort that no loader
-            # opens. `profile.json` is excluded for a different reason: it is
+            # opens. profile.json is excluded for a different reason: it is
             # the scorer-side ground-truth persona the release states is never
             # shown to the evaluated agent, and leaving it out of the download
             # keeps it out of reach of the memory path by construction.
@@ -401,8 +401,8 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "longmemeval-v2": ("longmemeval-v2-small", "longmemeval-v2-medium"),
     "m3-bench": ("m3-bench-robot", "m3-bench-web"),
     "memlens": tuple(name for name in TASKS if name.startswith("memlens-")),
-    # The evaluation splits. `month_train` is the released training split and it is cut from the
-    # same 105 h of video as `month_val`, so including it ingested that video twice (about 10 h
+    # The evaluation splits. month_train is the released training split and it is cut from the
+    # same 105 h of video as month_val, so including it ingested that video twice (about 10 h
     # each on the 2026-09-11 baseline); it stays selectable by name.
     "mm-lifelong": tuple(
         name

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +45,7 @@ class MemLensSession(ContractModel):
 
     session_id: Identifier
     occurred_at: AwareDatetime
-    # The release labels the answer at session level (`answer_session_ids`), never at turn
+    # The release labels the answer at session level (answer_session_ids), never at turn
     # level, so this is the finest gold retrieval label MEMLENS publishes. Refusal questions
     # name no answer session at all.
     is_answer_session: bool = False
@@ -135,8 +136,6 @@ def load_memlens_agent_subset(index_path: Path) -> tuple[Identifier, ...]:
 
 
 def _load_raw_questions(path: Path) -> list[_RawQuestion]:
-    import json
-
     encoded = path.read_bytes()
     root = next((byte for byte in encoded if byte not in b" \t\r\n"), None)
     if root == ord("["):
@@ -163,7 +162,7 @@ def _question(raw: _RawQuestion) -> MemLensQuestion:
     if len({session.session_id for session in sessions}) != len(sessions):
         raise ValueError(f"MEMLENS question {raw.question_id} has duplicate session IDs")
     # Checked against the IDs the sessions actually carry, synthesised or published, so a file
-    # without `haystack_session_ids` keeps loading the way it did before the label was read.
+    # without haystack_session_ids keeps loading the way it did before the label was read.
     stray = set(raw.answer_session_ids) - {session.session_id for session in sessions}
     if stray:
         raise ValueError(

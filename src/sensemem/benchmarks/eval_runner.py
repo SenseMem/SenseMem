@@ -27,45 +27,45 @@ from sensemem.benchmarks.eval_adapters import (
     LoadedTask,
     MemoryItem,
 )
-from sensemem.benchmarks.eval_answers import _answer_many
+from sensemem.benchmarks.eval_answers import answer_many
 from sensemem.benchmarks.eval_arms import (
     PRODUCT_ARM,
-    _Arm,
+    Arm,
 )
 from sensemem.benchmarks.eval_cache import ResponseCache
 from sensemem.benchmarks.eval_console import (
-    _ignore_progress,
+    ignore_progress,
 )
 from sensemem.benchmarks.eval_ingest import (
+    IngestCheckpoint,
     IngestRunState,
-    _deliberate_after_ingest,
-    _ingest,
-    _ingest_observer,
-    _IngestCheckpoint,
+    deliberate_after_ingest,
+    ingest,
+    ingest_observer,
 )
 from sensemem.benchmarks.eval_inputs import (
-    _content,
-    _full_context,
-    _has_question_cutoffs,
-    _memory_end,
-    _planned_ingest_count,
-    _prefix_end,
+    full_context,
+    has_question_cutoffs,
+    memory_end,
+    normalize_content,
+    planned_ingest_count,
+    prefix_end,
 )
 from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import (
     DEFAULT_ARM,
+    AnswerOutcome,
     FailureDetail,
     SampleResult,
-    _AnswerOutcome,
-    _SystemicEmbeddingFailure,
+    SystemicEmbeddingFailure,
 )
 from sensemem.benchmarks.eval_runtime import (
-    _SDK_OPERATION_LIMIT,
+    SDK_OPERATION_LIMIT,
     MemoryFactory,
-    _model_operation,
-    _SearchReplay,
+    SearchReplay,
+    model_operation,
 )
-from sensemem.benchmarks.eval_samples import _cache_outcome, _cached_results, _sample
+from sensemem.benchmarks.eval_samples import build_sample_result, cache_outcome, cached_results
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ARM,
     BENCHMARK_DIAGNOSTIC_SPAN,
@@ -88,19 +88,19 @@ async def run_loaded_task(  # noqa: C901 - bounded workers also own one isolated
     memory_factory: MemoryFactory,
     options: EvaluationOptions,
     response_cache: ResponseCache | None = None,
-    arms: Sequence[_Arm] = (PRODUCT_ARM,),
+    arms: Sequence[Arm] = (PRODUCT_ARM,),
     ingest_digest: str | None = None,
     tracer: Tracer | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     on_ingest_progress: Callable[[int, int], None] | None = None,
     on_activity: Callable[[str], None] | None = None,
-    on_search_replay_ready: Callable[[_SearchReplay], None] | None = None,
+    on_search_replay_ready: Callable[[SearchReplay], None] | None = None,
     prefetch_speech: Callable[[Sequence[MemoryItem]], None] | None = None,
     run_state: IngestRunState | None = None,
 ) -> tuple[SampleResult, ...]:
     """Run normalized units with bounded workers while preserving release order."""
     run_state = run_state or IngestRunState()
-    if options.ingest_concurrency > 1 and _has_question_cutoffs((task,)):
+    if options.ingest_concurrency > 1 and has_question_cutoffs((task,)):
         raise ValueError("concurrent ingest requires static units without question cutoffs")
     slots: list[tuple[SampleResult, ...] | None] = [None] * len(task.units)
     unit_paths: list[Path | None] = [None] * len(task.units)
@@ -109,20 +109,18 @@ async def run_loaded_task(  # noqa: C901 - bounded workers also own one isolated
     worker_count = min(options.unit_concurrency, 16, len(task.units))
     request_semaphore = asyncio.Semaphore(options.request_concurrency)
     # Ingest and answers borrow the same process budget only while doing work.
-    model_semaphore = asyncio.Semaphore(_SDK_OPERATION_LIMIT)
+    model_semaphore = asyncio.Semaphore(SDK_OPERATION_LIMIT)
     completed = 0
     total = sum(len(unit.questions) for unit in task.units) * len(arms)
-    notify_progress = on_progress or _ignore_progress
-    notify_ingest = on_ingest_progress or _ignore_progress
+    notify_progress = on_progress or ignore_progress
+    notify_ingest = on_ingest_progress or ignore_progress
     notify_activity = on_activity or _ignore_activity
     unit_activities: list[str | None] = [None] * len(task.units)
     # One bar spans the task rather than one per unit: concurrent workers would otherwise fight
     # over the terminal, and what a reader wants is how much of the corpus is written, not which
     # worker wrote it. An arm that reads no memory ingests nothing and draws no bar.
     reads_memory = any(arm.reads_memory for arm in arms)
-    planned_ingest = tuple(
-        _planned_ingest_count(unit) if reads_memory else 0 for unit in task.units
-    )
+    planned_ingest = tuple(planned_ingest_count(unit) if reads_memory else 0 for unit in task.units)
     ingest_total = sum(planned_ingest)
     ingested_total = 0
     notify_ingest(0, ingest_total)
@@ -140,7 +138,7 @@ async def run_loaded_task(  # noqa: C901 - bounded workers also own one isolated
             checkpoint = (
                 None
                 if ingest_digest is None
-                else _IngestCheckpoint(run, unit.unit_id, ingest_digest)
+                else IngestCheckpoint(run, unit.unit_id, ingest_digest)
             )
             reported = 0
             reported_ingest = 0
@@ -148,7 +146,7 @@ async def run_loaded_task(  # noqa: C901 - bounded workers also own one isolated
             def ingest_advanced(count: int, planned: int = planned_ingest[index]) -> None:
                 # A checkpoint resumes mid-corpus and a cached unit skips the corpus outright,
                 # so the count arrives as an absolute position and may not arrive at all. The
-                # clamp is not load-bearing -- `_IngestCheckpoint.start` already drops a note that
+                # clamp is not load-bearing -- _IngestCheckpoint.start already drops a note that
                 # runs past the first pending cutoff -- it only keeps a display value honest.
                 nonlocal ingested_total, reported_ingest
                 bounded = min(count, planned)
@@ -223,7 +221,7 @@ async def run_loaded_task(  # noqa: C901 - bounded workers also own one isolated
             memory_factory=memory_factory,
             unit_concurrency=options.unit_concurrency,
             request_semaphore=asyncio.Semaphore(
-                min(options.request_concurrency, _SDK_OPERATION_LIMIT)
+                min(options.request_concurrency, SDK_OPERATION_LIMIT)
             ),
             recall_limit=options.recall_limit,
             arms=arms,
@@ -247,14 +245,14 @@ async def _measure_standalone_searches(  # noqa: C901 - setup failures need per-
     unit_concurrency: int,
     request_semaphore: asyncio.Semaphore,
     recall_limit: int,
-    arms: Sequence[_Arm],
+    arms: Sequence[Arm],
     tracer: Tracer | None,
 ) -> None:
     """Replay public searches only after every formal answer has finished.
 
     Store opening is setup, not caller latency. Each caller span starts immediately before the
     shared request semaphore so the measured latency includes benchmark admission, while the
-    nested ``sensemem.search`` span remains the public SDK boundary. The diagnostic purpose
+    nested sensemem.search span remains the public SDK boundary. The diagnostic purpose
     keeps replay embedding work out of product answer nodes and token totals.
     """
     if tracer is None or not any(arm.name == DEFAULT_ARM for arm in arms):
@@ -285,7 +283,7 @@ async def _measure_standalone_searches(  # noqa: C901 - setup failures need per-
             ):
                 async with instance_semaphore, request_semaphore:
                     await memory.search(
-                        _content(question.content),
+                        normalize_content(question.content),
                         limit=recall_limit,
                         reference_at=question.reference_at,
                     )
@@ -327,7 +325,7 @@ async def _measure_standalone_searches(  # noqa: C901 - setup failures need per-
                 ):
                     async with memory_factory(path) as memory:
                         opened = True
-                        instance_semaphore = asyncio.Semaphore(_SDK_OPERATION_LIMIT)
+                        instance_semaphore = asyncio.Semaphore(SDK_OPERATION_LIMIT)
                         await asyncio.gather(
                             *(
                                 measure_one(memory, question, sample, instance_semaphore)
@@ -360,8 +358,8 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
     options: EvaluationOptions,
     request_semaphore: asyncio.Semaphore,
     response_cache: ResponseCache | None,
-    arms: Sequence[_Arm] = (PRODUCT_ARM,),
-    checkpoint: _IngestCheckpoint | None = None,
+    arms: Sequence[Arm] = (PRODUCT_ARM,),
+    checkpoint: IngestCheckpoint | None = None,
     tracer: Tracer | None = None,
     on_sample_completed: Callable[[], None] | None = None,
     on_ingested: Callable[[int], None] | None = None,
@@ -372,7 +370,7 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
     run_state: IngestRunState | None = None,
 ) -> tuple[SampleResult, ...]:
     run_state = run_state or IngestRunState()
-    model_semaphore = model_semaphore or asyncio.Semaphore(_SDK_OPERATION_LIMIT)
+    model_semaphore = model_semaphore or asyncio.Semaphore(SDK_OPERATION_LIMIT)
     ordered = tuple((arm, question) for arm in arms for question in unit.questions)
     notify_store_ready = on_store_ready or _ignore_store_ready
     notify_ingested = on_ingested or _ignore_ingested
@@ -380,7 +378,7 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
     results: dict[tuple[str, str], SampleResult] = {}
     for arm in arms:
         results.update(
-            _cached_results(
+            cached_results(
                 response_cache,
                 task,
                 unit,
@@ -392,7 +390,7 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
         )
     _report_completions(on_sample_completed, len(results))
     cluster_answers = {
-        (sample.arm, str(sample.metadata["cluster_id"])): _AnswerOutcome(
+        (sample.arm, str(sample.metadata["cluster_id"])): AnswerOutcome(
             sample.prediction,
             0.0,
             sample.confidence,
@@ -420,7 +418,7 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
             # Python's sort is stable, so equal causal boundaries retain the adapter's
             # release order.  Source IDs identify evidence; they are not a chronology and
             # using them as a tie-breaker silently reordered dialogue turns and media parts.
-            key=_memory_end,
+            key=memory_end,
         )
     )
     stuffs_context = any(arm.name == "full-context" and pending_questions[arm.name] for arm in arms)
@@ -440,7 +438,7 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
     ingest_failure_details: list[FailureDetail] = []
     ingested = 0
     ingest_failures = 0
-    # `pending` is the causal cursor every arm reads from; `ingested` is how much of it a previous
+    # pending is the causal cursor every arm reads from; ingested is how much of it a previous
     # run already wrote. They differ only while a resumed store runs ahead of the current cutoff.
     pending = 0
     try:
@@ -456,10 +454,10 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
             notify_ingested(ingested)
         async with memory_factory(data_dir) as memory:
             for cutoff in cutoffs:
-                end = _prefix_end(memories, cutoff, pending)
+                end = prefix_end(memories, cutoff, pending)
                 if reads_memory and end > ingested:
                     notify_activity("ingesting")
-                    ingest_failures += await _ingest(
+                    ingest_failures += await ingest(
                         memory,
                         memories[ingested:end],
                         batch_size=options.batch_size,
@@ -468,7 +466,7 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
                         tracer=tracer,
                         mode=options.ingest_mode,
                         arm=memory_arm,
-                        on_chunk=_ingest_observer(
+                        on_chunk=ingest_observer(
                             checkpoint, ingested, ingest_failure_details, notify_ingested
                         ),
                         prefetch=prefetch_speech,
@@ -478,12 +476,12 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
                     ingested = end
                     if options.deliberate:
                         notify_activity("deliberating")
-                        run_state.operations_applied += await _model_operation(
-                            model_semaphore, lambda: _deliberate_after_ingest(memory)
+                        run_state.operations_applied += await model_operation(
+                            model_semaphore, lambda: deliberate_after_ingest(memory)
                         )
                 pending = end
                 context = (
-                    _full_context(memories[:pending], options.full_context_chars)
+                    full_context(memories[:pending], options.full_context_chars)
                     if stuffs_context
                     else ""
                 )
@@ -512,18 +510,18 @@ async def _run_unit(  # noqa: C901 - causal ingest and store-readiness share one
                     sample.error_code == "_SystemicEmbeddingFailure"
                     for sample in cutoff_results.values()
                 ):
-                    raise _SystemicEmbeddingFailure(
+                    raise SystemicEmbeddingFailure(
                         "systemic query embedding failure; remaining questions aborted"
                     )
     except BaseException as error:
         if not isinstance(error, Exception):
             raise
-        if len(results) == len(ordered) and not isinstance(error, _SystemicEmbeddingFailure):
+        if len(results) == len(ordered) and not isinstance(error, SystemicEmbeddingFailure):
             raise
         for arm, question in ordered:
             identity = (arm.name, question.question_id)
             if identity not in results:
-                results[identity] = _sample(
+                results[identity] = build_sample_result(
                     task,
                     unit,
                     question,
@@ -546,7 +544,7 @@ async def _answer_arms(
     task: LoadedTask,
     unit: EvalUnit,
     *,
-    arms: Sequence[_Arm],
+    arms: Sequence[Arm],
     questions_by_arm: Mapping[str, Sequence[EvalQuestion]],
     context: str,
     ingest_failures: int,
@@ -557,7 +555,7 @@ async def _answer_arms(
     tracer: Tracer | None = None,
     on_sample_completed: Callable[[], None] | None = None,
     model_semaphore: asyncio.Semaphore | None = None,
-    cluster_answers: dict[tuple[str, str], _AnswerOutcome] | None = None,
+    cluster_answers: dict[tuple[str, str], AnswerOutcome] | None = None,
 ) -> dict[tuple[str, str], SampleResult]:
     """Answer one cutoff's pending questions once per arm, against one ingested store."""
     results: dict[tuple[str, str], SampleResult] = {}
@@ -566,14 +564,14 @@ async def _answer_arms(
         if not questions:
             continue
 
-        answered = await _answer_many(
+        answered = await answer_many(
             memory,
             questions,
             options=options,
             request_semaphore=request_semaphore,
             model_semaphore=model_semaphore,
             on_answer=partial(
-                _cache_outcome,
+                cache_outcome,
                 response_cache,
                 task,
                 unit,
@@ -589,7 +587,7 @@ async def _answer_arms(
             cluster_answers=cluster_answers,
         )
         for question, outcome in zip(questions, answered, strict=True):
-            results[(arm.name, question.question_id)] = _sample(
+            results[(arm.name, question.question_id)] = build_sample_result(
                 task,
                 unit,
                 question,

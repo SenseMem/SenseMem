@@ -1,13 +1,13 @@
 """Thin, deterministic adapter for the official LoCoMo-Refined JSON release.
 
-Reads `data/raw/locomo_refined.json` from `mem-eval-suite/LoCoMo_refined`, which
-keeps the original LoCoMo record layout (`sample_id`, a `session_N` /
-`session_N_date_time` conversation, and a `qa` list) but recalibrates what is in
-it: 337 of the 1,382 questions were revised, every `answer` is a list of
+Reads data/raw/locomo_refined.json from mem-eval-suite/LoCoMo_refined, which
+keeps the original LoCoMo record layout (sample_id, a session_N /
+session_N_date_time conversation, and a qa list) but recalibrates what is in
+it: 337 of the 1,382 questions were revised, every answer is a list of
 complete gold candidates, and the adversarial category 5 is gone entirely.
 
-`question_id` is the release's own `qa_id` (`{sample_id}#q{index:04d}`, the same
-value `data/public/questions.jsonl` publishes), because that is the key the
+question_id is the release's own qa_id ({sample_id}#q{index:04d}, the same
+value data/public/questions.jsonl publishes), because that is the key the
 official evaluator joins predictions on.
 """
 
@@ -86,7 +86,7 @@ class _RawQuestion(BaseModel):
 
     question: str
     # Always a list in this release; the six numeric golds ("2022", "3") are published as
-    # strings in `questions.jsonl`, so they are stringified here to match.
+    # strings in questions.jsonl, so they are stringified here to match.
     answer: list[str | int | float] = Field(min_length=1)
     evidence: list[str] = Field(default_factory=list)
     category: int
@@ -106,7 +106,7 @@ def load_locomo_refined(
     *,
     source_timezone: tzinfo = timezone.utc,
 ) -> tuple[LoCoMoRefinedConversation, ...]:
-    """Load the official `locomo_refined.json` without copying its evaluation logic."""
+    """Load the official locomo_refined.json without copying its evaluation logic."""
     records = TypeAdapter(list[_RawConversationRecord]).validate_json(dataset_path.read_bytes())
     return tuple(_adapt_record(record, source_timezone=source_timezone) for record in records)
 
@@ -174,7 +174,7 @@ def _question(sample_id: str, index: int, question: _RawQuestion) -> LoCoMoRefin
 
 
 def official_qa_id(sample_id: str, index: int) -> str:
-    """Build the release's own `qa_id`, which its evaluator joins predictions on."""
+    """Build the release's own qa_id, which its evaluator joins predictions on."""
     return f"{sample_id}#q{index:04d}"
 
 

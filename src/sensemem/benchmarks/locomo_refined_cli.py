@@ -12,12 +12,12 @@ from importlib import metadata
 from pathlib import Path
 
 from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
-from sensemem.benchmarks.eval_backends import _BackendPool
+from sensemem.benchmarks.eval_backends import BackendPool
 from sensemem.benchmarks.eval_config import (
-    _evaluation_memory_config,
-    _load_memory_config,
-    _model_config,
-    _positive_int,
+    evaluation_memory_config,
+    load_memory_config,
+    model_config,
+    positive_int,
 )
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.locomo_refined import (
@@ -76,12 +76,12 @@ async def _run_conversations(
 ) -> tuple[tuple[LoCoMoRefinedPrediction, ...], tuple[Path, ...]]:
     unit_dirs = tuple(run.unit_dir(conversation.sample_id) for conversation in conversations)
     semaphore = asyncio.Semaphore(arguments.unit_concurrency)
-    memory_config, _overrides = _load_memory_config(arguments.config)
-    model = _model_config("", memory_config=memory_config)
-    memory_config = _evaluation_memory_config(
+    memory_config, _overrides = load_memory_config(arguments.config)
+    model = model_config("", memory_config=memory_config)
+    memory_config = evaluation_memory_config(
         memory_config, model, gen_kwargs="", seed=0, device=None
     )
-    pool = _BackendPool(model, memory_config=memory_config)
+    pool = BackendPool(model, memory_config=memory_config)
 
     async def run_one(
         conversation: LoCoMoRefinedConversation,
@@ -125,10 +125,10 @@ def _write_artifacts(
     _require_writable(arguments.output, overwrite=arguments.overwrite)
 
     rows = encode_jsonl_bytes(prediction.model_dump(mode="json") for prediction in predictions)
-    memory_config, _overrides = _load_memory_config(arguments.config)
+    memory_config, _overrides = load_memory_config(arguments.config)
     assert memory_config is not None
     embedding = memory_config.embedding.model_dump(mode="json")
-    config = _model_config("", memory_config=memory_config)
+    config = model_config("", memory_config=memory_config)
     manifest = {
         "adapter_version": LOCOMO_REFINED_ADAPTER_VERSION,
         "benchmark": "locomo-refined",
@@ -177,10 +177,10 @@ def _parse_arguments(argv: Sequence[str] | None, prog: str | None) -> _Arguments
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--limit", type=_positive_int)
-    parser.add_argument("--unit-concurrency", type=_positive_int, default=4)
-    parser.add_argument("--request-concurrency", type=_positive_int, default=4)
-    parser.add_argument("--recall-limit", type=_positive_int, default=20)
+    parser.add_argument("--limit", type=positive_int)
+    parser.add_argument("--unit-concurrency", type=positive_int, default=4)
+    parser.add_argument("--request-concurrency", type=positive_int, default=4)
+    parser.add_argument("--recall-limit", type=positive_int, default=20)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parsed = parser.parse_args(argv)

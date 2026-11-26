@@ -37,34 +37,34 @@ from sensemem._telemetry import (
 from sensemem.benchmarks._official import personamem_v3_prompts as pm3_prompts
 from sensemem.benchmarks._official import personamem_v3_tasks as pm3_tasks
 from sensemem.benchmarks.baseline_prompts import (
-    _COMPILE_SURFACE_SYSTEM_PROMPT,
+    COMPILE_SURFACE_SYSTEM_PROMPT,
 )
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
 )
 from sensemem.benchmarks.eval_arms import (
     PRODUCT_ARM,
-    _answers_through_ask,
-    _Arm,
+    Arm,
+    answers_through_ask,
 )
 from sensemem.benchmarks.eval_config import (
     RETRIEVAL_CANDIDATE_LIMIT,
 )
-from sensemem.benchmarks.eval_evidence import EvidenceInterval, _evidence, _limited_source_evidence
-from sensemem.benchmarks.eval_inputs import _content
+from sensemem.benchmarks.eval_evidence import EvidenceInterval, evidence, limited_source_evidence
+from sensemem.benchmarks.eval_inputs import normalize_content
 from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import (
     DEFAULT_ARM,
-    _AnswerOutcome,
-    _Retried,
-    _retry_transient,
-    _systemic_embedding_stage_failure,
-    _SystemicEmbeddingFailure,
+    AnswerOutcome,
+    Retried,
+    SystemicEmbeddingFailure,
+    retry_transient,
+    systemic_embedding_stage_failure,
 )
 from sensemem.benchmarks.eval_runtime import (
-    _SDK_OPERATION_LIMIT,
-    _SDK_STREAM_LIMIT,
-    _model_operation,
+    SDK_OPERATION_LIMIT,
+    SDK_STREAM_LIMIT,
+    model_operation,
 )
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ANSWER_SPAN,
@@ -95,7 +95,7 @@ def _declined(answer: str, question: EvalQuestion) -> bool:
 
 def _require_active_embedding_service(systemic_stop: asyncio.Event) -> None:
     if systemic_stop.is_set():
-        raise _SystemicEmbeddingFailure("systemic query embedding failure; queued question aborted")
+        raise SystemicEmbeddingFailure("systemic query embedding failure; queued question aborted")
 
 
 async def _guarded_answer(
@@ -106,22 +106,22 @@ async def _guarded_answer(
     instance_semaphore: asyncio.Semaphore,
     model_semaphore: asyncio.Semaphore,
     systemic_stop: asyncio.Event,
-    arm: _Arm,
+    arm: Arm,
     task_name: str,
     unit_id: str,
     options: EvaluationOptions,
     context: str,
     tracer: Tracer | None,
-    on_answer: Callable[[EvalQuestion, _AnswerOutcome], None] | None,
+    on_answer: Callable[[EvalQuestion, AnswerOutcome], None] | None,
     on_complete: Callable[[], None] | None,
-) -> _AnswerOutcome:
+) -> AnswerOutcome:
     identity = f"{task_name}/{unit_id}/{question.question_id}"
     sample_id = identity if arm.name == DEFAULT_ARM else f"{arm.name}:{identity}"
 
-    async def answer() -> _AnswerOutcome:
+    async def answer() -> AnswerOutcome:
         _require_active_embedding_service(systemic_stop)
 
-        async def request(current: EvalQuestion) -> _AnswerOutcome:
+        async def request(current: EvalQuestion) -> AnswerOutcome:
             return await _arm_answer(
                 memory,
                 current,
@@ -164,7 +164,7 @@ async def _guarded_answer(
         if arm.generates and on_answer is not None:
             on_answer(question, outcome)
         return outcome
-    except _SystemicEmbeddingFailure:
+    except SystemicEmbeddingFailure:
         systemic_stop.set()
         raise
     finally:
@@ -172,41 +172,41 @@ async def _guarded_answer(
             on_complete()
 
 
-async def _answer_many(  # noqa: C901 - shared sequences and admission use one request lifetime
+async def answer_many(  # noqa: C901 - shared sequences and admission use one request lifetime
     memory: AsyncMemory,
     questions: Sequence[EvalQuestion],
     *,
     options: EvaluationOptions,
     request_semaphore: asyncio.Semaphore | None = None,
-    on_answer: Callable[[EvalQuestion, _AnswerOutcome], None] | None = None,
+    on_answer: Callable[[EvalQuestion, AnswerOutcome], None] | None = None,
     on_complete: Callable[[], None] | None = None,
-    arm: _Arm = PRODUCT_ARM,
+    arm: Arm = PRODUCT_ARM,
     task_name: str = "",
     unit_id: str = "",
     context: str = "",
     tracer: Tracer | None = None,
     model_semaphore: asyncio.Semaphore | None = None,
-    cluster_answers: dict[tuple[str, str], _AnswerOutcome] | None = None,
-) -> tuple[_AnswerOutcome | BaseException, ...]:
+    cluster_answers: dict[tuple[str, str], AnswerOutcome] | None = None,
+) -> tuple[AnswerOutcome | BaseException, ...]:
     semaphore = request_semaphore or asyncio.Semaphore(options.request_concurrency)
-    model_semaphore = model_semaphore or asyncio.Semaphore(_SDK_OPERATION_LIMIT)
+    model_semaphore = model_semaphore or asyncio.Semaphore(SDK_OPERATION_LIMIT)
     # The SDK's documented limits are per physical instance, while the request semaphore is
     # shared across units. Queue excess callers here before they can occupy global slots or
     # become immediate admission errors. Each unit owns its store and runs its arms in order.
-    instance_limit = _SDK_OPERATION_LIMIT if arm.reads_memory else options.request_concurrency
-    if options.stream_answers and _answers_through_ask(arm, task_name):
-        instance_limit = _SDK_STREAM_LIMIT
+    instance_limit = SDK_OPERATION_LIMIT if arm.reads_memory else options.request_concurrency
+    if options.stream_answers and answers_through_ask(arm, task_name):
+        instance_limit = SDK_STREAM_LIMIT
     instance_semaphore = asyncio.Semaphore(min(options.request_concurrency, instance_limit))
     systemic_stop = asyncio.Event()
     cluster_answers = {} if cluster_answers is None else cluster_answers
-    pending_clusters: dict[tuple[str, str], asyncio.Task[_AnswerOutcome]] = {}
+    pending_clusters: dict[tuple[str, str], asyncio.Task[AnswerOutcome]] = {}
 
-    async def answer(question: EvalQuestion) -> _AnswerOutcome:
+    async def answer(question: EvalQuestion) -> AnswerOutcome:
         cluster_id = question.metadata.get("cluster_id") if task_name == "personamem-v3" else None
         key = (arm.name, str(cluster_id))
         clustered = bool(cluster_id)
 
-        async def guarded() -> _AnswerOutcome:
+        async def guarded() -> AnswerOutcome:
             return await _guarded_answer(
                 memory,
                 question,
@@ -258,26 +258,26 @@ async def _answer_many(  # noqa: C901 - shared sequences and admission use one r
                 "the ranked retrieval list from the product answer was not observed"
             ),
         )
-        if isinstance(outcome, _AnswerOutcome)
-        # `Memory.compile` exposes no ranked list, so a product answer on a compile task has
-        # none to observe; only the `ask` and `random` paths owe one.
-        and (arm.name == "random" or _answers_through_ask(arm, task_name))
-        and retrieval_gold_ids(task_name, question.metadata)
+        if isinstance(outcome, AnswerOutcome)
+        # Memory.compile exposes no ranked list, so a product answer on a compile task has
+        # none to observe; only the ask and random paths owe one.
+        and (arm.name == "random" or answers_through_ask(arm, task_name))
+        and retrieval_gold_ids(question.metadata)
         and not outcome.ranked_source_ids_complete
         else outcome
         for question, outcome in zip(questions, answered, strict=True)
     )
     if not arm.generates and on_answer is not None:
         for question, outcome in zip(questions, diagnosed, strict=True):
-            if isinstance(outcome, _AnswerOutcome):
+            if isinstance(outcome, AnswerOutcome):
                 on_answer(question, outcome)
     return diagnosed
 
 
 async def _answer_personamem_cluster(
     question: EvalQuestion,
-    request: Callable[[EvalQuestion], Awaitable[_AnswerOutcome]],
-) -> _AnswerOutcome:
+    request: Callable[[EvalQuestion], Awaitable[AnswerOutcome]],
+) -> AnswerOutcome:
     """Thread all released turns once; labels and fatigue thresholds stay outside prompts."""
     turns = cast(tuple[pm3_prompts.ClusterTurn, ...], question.metadata["cluster_queries"])
     responses: list[pm3_prompts.ClusterResponse] = []
@@ -315,9 +315,9 @@ async def _answer_personamem_cluster(
 
 @contextmanager
 def _compile_span(tracer: Tracer | None, bundle: ContextBundle) -> Iterator[None]:
-    """Tag one compiled bundle's size so `eval_telemetry` can report it next to its latency.
+    """Tag one compiled bundle's size so eval_telemetry can report it next to its latency.
 
-    `compile()` itself carries no size attribute -- it is a benchmark-only measurement, so the
+    compile() itself carries no size attribute -- it is a benchmark-only measurement, so the
     harness tags it on a harness-owned span rather than asking product code to carry it.
     """
     if tracer is None:
@@ -336,7 +336,7 @@ def _compile_span(tracer: Tracer | None, bundle: ContextBundle) -> Iterator[None
                 + len(bundle.supplements)
             ),
             # Grounded parts, not memories carrying them, because that is the quantity
-            # `ContextBudget.max_media_items` bounds: an omni memory with a still and a clip is
+            # ContextBudget.max_media_items bounds: an omni memory with a still and a clip is
             # two parts against the budget and has to be two here, or a multi-asset bundle
             # reports as thrifty as a single-asset one.
             BENCHMARK_COMPILE_MEDIA_ITEMS: sum(len(hit.assets) for hit in bundle.hits),
@@ -399,7 +399,7 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
     memory: AsyncMemory,
     question: EvalQuestion,
     *,
-    arm: _Arm,
+    arm: Arm,
     task_name: str,
     options: EvaluationOptions,
     context: str,
@@ -409,9 +409,9 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
     tracer: Tracer | None = None,
     model_semaphore: asyncio.Semaphore | None = None,
     systemic_stop: asyncio.Event | None = None,
-) -> _AnswerOutcome:
+) -> AnswerOutcome:
     latency_started = time.perf_counter()
-    content = _content(question.content)
+    content = normalize_content(question.content)
     ranked: tuple[SearchHit, ...] = ()
     ranked_complete = False
     generation_evidence: tuple[EvidenceInterval, ...] | None = None
@@ -419,10 +419,10 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
     projection_evidence: tuple[EvidenceInterval, ...] = ()
     requested_policy = task_answer_policy(task_name, options.answer_policy)
 
-    async def attempt(operation: Callable[[], Awaitable[_Retried]]) -> _Retried:
+    async def attempt(operation: Callable[[], Awaitable[Retried]]) -> Retried:
         # Only the attempt that answered is timed: a retry's backoff is outage time, not latency.
-        async def timed() -> _Retried:
-            async def admitted() -> _Retried:
+        async def timed() -> Retried:
+            async def admitted() -> Retried:
                 nonlocal \
                     latency_started, \
                     ranked, \
@@ -438,9 +438,9 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
                 projection_evidence = ()
                 return await operation()
 
-            return await _model_operation(model_semaphore, admitted)
+            return await model_operation(model_semaphore, admitted)
 
-        return await _retry_transient(timed)
+        return await retry_transient(timed)
 
     def observe_retrieval(value: object) -> None:
         nonlocal ranked, ranked_complete
@@ -451,7 +451,7 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
     def observe_generation(value: object) -> None:
         nonlocal generation_evidence
         if isinstance(value, tuple) and all(isinstance(hit, SearchHit) for hit in value):
-            generation_evidence = tuple(_evidence(hit) for hit in value)
+            generation_evidence = tuple(evidence(hit) for hit in value)
 
     try:
         if arm.name == "random":
@@ -461,7 +461,7 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
                         content,
                         limit=(
                             RETRIEVAL_CANDIDATE_LIMIT
-                            if retrieval_gold_ids(task_name, question.metadata)
+                            if retrieval_gold_ids(question.metadata)
                             else options.recall_limit
                         ),
                         reference_at=question.reference_at,
@@ -470,20 +470,20 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
             ).hits
             order = list(ranked)
             random.Random(f"{arm.seed}:{sample_id}").shuffle(order)
-            return _AnswerOutcome(
+            return AnswerOutcome(
                 "",
                 (time.perf_counter() - latency_started) * 1_000,
                 0.0,
                 tuple(hit.id for hit in order),
-                tuple(_evidence(hit) for hit in order),
+                tuple(evidence(hit) for hit in order),
                 ranked_source_ids=_source_ids(order),
                 ranked_source_ids_complete=True,
             )
-        # The product arm answers through the surface the task calls for: `Memory.ask` for a
-        # question with an answer in memory, `Memory.compile` plus the host generator for a task
-        # that wants an assistant's response. `task_answer_surface` owns the mapping and its
+        # The product arm answers through the surface the task calls for: Memory.ask for a
+        # question with an answer in memory, Memory.compile plus the host generator for a task
+        # that wants an assistant's response. task_answer_surface owns the mapping and its
         # measurements.
-        compile_surface = arm.name == DEFAULT_ARM and not _answers_through_ask(arm, task_name)
+        compile_surface = arm.name == DEFAULT_ARM and not answers_through_ask(arm, task_name)
         if arm.name == "compile" or compile_surface:
             bundle = await attempt(
                 lambda: memory.compile(
@@ -504,10 +504,10 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
 
             async def answer_compiled() -> str:
                 nonlocal generation_evidence, excerpt_evidence, projection_evidence
-                generation_evidence = tuple(_evidence(hit) for hit in bundle.hits)
-                excerpt_evidence = tuple(_limited_source_evidence(item) for item in bundle.excerpts)
+                generation_evidence = tuple(evidence(hit) for hit in bundle.hits)
+                excerpt_evidence = tuple(limited_source_evidence(item) for item in bundle.excerpts)
                 projection_evidence = tuple(
-                    _limited_source_evidence(item) for item in bundle.projections
+                    limited_source_evidence(item) for item in bundle.projections
                 )
                 return await compile_generator.answer(
                     _question_text(question),
@@ -516,7 +516,7 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
                         atom for atom in question.content if isinstance(atom, Path)
                     ),
                     evidence_hits=bundle.hits,
-                    system_prompt=_COMPILE_SURFACE_SYSTEM_PROMPT if compile_surface else None,
+                    system_prompt=COMPILE_SURFACE_SYSTEM_PROMPT if compile_surface else None,
                     answer_policy=requested_policy,
                 )
 
@@ -528,12 +528,12 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
             )
             prediction = generated.answer
             declined_here = generated.abstained or _declined(prediction, question)
-            return _AnswerOutcome(
+            return AnswerOutcome(
                 prediction,
                 (time.perf_counter() - latency_started) * 1_000,
                 0.0,
                 tuple(hit.id for hit in bundle.hits),
-                tuple(_evidence(hit) for hit in bundle.hits),
+                tuple(evidence(hit) for hit in bundle.hits),
                 abstained=declined_here,
                 abstention_reason=(
                     generated.abstention_reason.value
@@ -551,12 +551,12 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
                     + len(bundle.supplements)
                 ),
                 excerpt_source_ids=tuple(excerpt.source_memory_id for excerpt in bundle.excerpts),
-                excerpt_evidence=tuple(_limited_source_evidence(item) for item in bundle.excerpts),
+                excerpt_evidence=tuple(limited_source_evidence(item) for item in bundle.excerpts),
                 projection_source_ids=tuple(item.source_memory_id for item in bundle.projections),
                 projection_evidence=tuple(
-                    _limited_source_evidence(item) for item in bundle.projections
+                    limited_source_evidence(item) for item in bundle.projections
                 ),
-                generation_evidence=tuple(_evidence(hit) for hit in bundle.hits),
+                generation_evidence=tuple(evidence(hit) for hit in bundle.hits),
             )
         generator = arm.generator
         if generator is not None and arm.name != DEFAULT_ARM:
@@ -572,7 +572,7 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
             )
             generated = _answer_result(prediction, (), answer_policy=requested_policy)
             declined_here = generated.abstained or _declined(generated.answer, question)
-            return _AnswerOutcome(
+            return AnswerOutcome(
                 generated.answer,
                 (time.perf_counter() - latency_started) * 1_000,
                 0.0,
@@ -589,8 +589,8 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
             )
 
         # Protocol alignment, not a scorer change: one task's official evaluation gives no credit
-        # for "unknown", so the request asks for a committed answer there. `task_answer_policy`
-        # owns the mapping -- `{m3-bench-robot}` -- and its rationale.
+        # for "unknown", so the request asks for a committed answer there. task_answer_policy
+        # owns the mapping -- {m3-bench-robot} -- and its rationale.
         async def answered() -> AnswerResult:
             if not options.stream_answers:
                 return await memory.ask(
@@ -626,16 +626,16 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
         ):
             result = await attempt(answered)
     except Exception as error:
-        if _systemic_embedding_stage_failure(error):
-            raise _SystemicEmbeddingFailure(
+        if systemic_embedding_stage_failure(error):
+            raise SystemicEmbeddingFailure(
                 "systemic query embedding provider failure; answer matrix aborted"
             ) from error
-        return _AnswerOutcome(
+        return AnswerOutcome(
             "",
             (time.perf_counter() - latency_started) * 1_000,
             max((hit.score for hit in ranked), default=0.0),
             tuple(hit.id for hit in ranked),
-            tuple(_evidence(hit) for hit in ranked),
+            tuple(evidence(hit) for hit in ranked),
             error=error,
             ranked_source_ids=_source_ids(ranked),
             ranked_source_ids_complete=ranked_complete,
@@ -647,12 +647,12 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
         )
     # Count task-worded refusals on every generating arm, alongside the reader's own signal.
     declined = _declined(result.answer, question)
-    return _AnswerOutcome(
+    return AnswerOutcome(
         result.answer,
         (time.perf_counter() - latency_started) * 1_000,
         max((hit.score for hit in result.hits), default=0.0),
         tuple(hit.id for hit in result.hits),
-        tuple(_evidence(hit) for hit in result.hits),
+        tuple(evidence(hit) for hit in result.hits),
         abstained=result.abstained or declined,
         abstention_reason=(
             result.abstention_reason.value
@@ -666,7 +666,7 @@ async def _arm_answer(  # noqa: C901 - baseline and streamed product paths share
 
 
 def _source_ids(hits: Sequence[SearchHit]) -> tuple[str, ...]:
-    return tuple(_evidence(hit).source_id or "" for hit in hits)
+    return tuple(evidence(hit).source_id or "" for hit in hits)
 
 
 def _question_text(question: EvalQuestion) -> str:

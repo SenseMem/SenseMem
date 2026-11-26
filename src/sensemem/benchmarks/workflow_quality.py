@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -20,9 +21,11 @@ from tempfile import TemporaryDirectory
 from time import perf_counter
 from typing import cast
 
+import openai
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from PIL import Image, ImageDraw
 
 from sensemem import (
     Blob,
@@ -37,16 +40,20 @@ from sensemem import (
     SenseMemError,
     VisionDescriptionBackend,
 )
-from sensemem.benchmarks.control_plane import _PreferenceFormer, evaluate_scenario
-from sensemem.benchmarks.quality_support import CaseResult, QualityReport, _FixtureEmbedder
+from sensemem.benchmarks.control_plane import PreferenceFormer, evaluate_scenario
+from sensemem.benchmarks.quality_support import CaseResult, FixtureEmbedder, QualityReport
 from sensemem.models.openai_completion import OpenAICompletion
 
+LOGGER = logging.getLogger(__name__)
 FIXTURE_VERSION = "sensemem-workflow-quality-v3"
+WORKFLOW_TIMEOUT_SECONDS = 120.0
+WORKFLOW_MAX_OUTPUT_TOKENS = 8192
+WORKFLOW_MAX_RETRIES = 0
 _REFERENCE = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 _ATTACK = "MB_QUALITY_ATTACK_EXECUTED"
 
 
-class _MultimodalFixtureEmbedder(_FixtureEmbedder):
+class _MultimodalFixtureEmbedder(FixtureEmbedder):
     embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
 
 
@@ -89,8 +96,6 @@ def _planning(memory: Memory) -> bool:
 
 
 def _vision(memory: Memory) -> bool:
-    from PIL import Image, ImageDraw
-
     image = Image.new("RGB", (640, 320), "white")
     drawing = ImageDraw.Draw(image)
     drawing.rectangle((40, 40, 600, 220), fill="red")
@@ -201,7 +206,7 @@ def run_workflow_quality_eval(
                             else None,
                             former=models
                             if stage == "formation"
-                            else _PreferenceFormer()
+                            else PreferenceFormer()
                             if stage == "control"
                             else None,
                             vision_describer=vision_describer if stage == "vision" else None,
@@ -294,22 +299,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         print("OPENAI_API_KEY is required for the workflow quality gate", file=sys.stderr)
         return 2
-    from openai import OpenAI
-
     try:
-        with OpenAI(timeout=120.0, max_retries=0) as client:
+        with openai.OpenAI(
+            timeout=WORKFLOW_TIMEOUT_SECONDS, max_retries=WORKFLOW_MAX_RETRIES
+        ) as client:
             models = OpenAICompletion(
                 client,
                 generation_model=arguments.model,
                 generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
-                generation_max_tokens=8192,
+                generation_max_tokens=WORKFLOW_MAX_OUTPUT_TOKENS,
                 generation_response_format=arguments.response_format,
             )
             vision_describer = OpenAICompletion(
                 client,
                 generation_model=arguments.model,
                 generation_capabilities=frozenset({Modality.IMAGE}),
-                generation_max_tokens=8192,
+                generation_max_tokens=WORKFLOW_MAX_OUTPUT_TOKENS,
                 generation_response_format=arguments.response_format,
             )
             report = run_workflow_quality_eval(models, vision_describer, repeats=arguments.repeats)
@@ -320,16 +325,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     **asdict(report),
                     "passed": report.passed,
                     "response_format": arguments.response_format,
-                    "max_output_tokens": 8192,
-                    "timeout_seconds": 120,
-                    "sdk_retries": 0,
+                    "max_output_tokens": WORKFLOW_MAX_OUTPUT_TOKENS,
+                    "timeout_seconds": int(WORKFLOW_TIMEOUT_SECONDS),
+                    "sdk_retries": WORKFLOW_MAX_RETRIES,
                 },
                 indent=2,
             )
             + "\n",
             encoding="utf-8",
         )
-    except Exception:
+    except (OSError, SenseMemError, openai.OpenAIError) as error:
+        LOGGER.error(f"Workflow quality evaluation failed with {type(error).__name__}")
         print(
             "Workflow quality evaluation failed before a complete report was written",
             file=sys.stderr,

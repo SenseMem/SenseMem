@@ -1,7 +1,7 @@
 """Thin adapter for the official ATM-Bench release.
 
 One archive, two QA splits, and two representations of the same media. The release carries
-two clocks: an image's `timestamp` is local wall clock and agrees with its filename stem,
+two clocks: an image's timestamp is local wall clock and agrees with its filename stem,
 while a video's is true UTC and sits an hour off the stem for half the year. This adapter
 takes the stem as capture time for every modality so one archive has one timeline.
 """
@@ -23,11 +23,11 @@ ATM_BENCH_ADAPTER_VERSION = "atm_bench_official_v4"
 AtmQuestionType = Literal["number", "list_recall", "open_end"]
 AtmEvidenceKind = Literal["email", "media"]
 
-# `fullmatch`-ed against a bare evidence ID, which is always exactly this shape in the
-# release. `match`-ed (prefix only) against a media filename stem in `atm_capture_time`,
+# fullmatch-ed against a bare evidence ID, which is always exactly this shape in the
+# release. match-ed (prefix only) against a media filename stem in atm_capture_time,
 # because 28 of the 4,292 image and video filenames carry a disambiguating suffix that the
-# release's export tooling appended to a duplicate capture — e.g. `20221212_115316_001` or
-# `20220627_155122(0)`. The leading 15 characters are still the camera's local wall clock
+# release's export tooling appended to a duplicate capture — e.g. 20221212_115316_001 or
+# 20220627_155122(0). The leading 15 characters are still the camera's local wall clock
 # either way, and no gold evidence ID ever names one of these 28.
 _TIMESTAMP_PATTERN = re.compile(r"(\d{8})_(\d{6})")
 _EMAIL_PREFIX = "email"
@@ -65,8 +65,8 @@ class AtmEmail(ContractModel):
 class AtmSgmRecord(ContractModel):
     """One official schema-guided memory record for an image or a video.
 
-    `raw_timestamp` keeps the record's own timestamp string verbatim so `atm_sgm_block` can
-    reproduce the official Oracle baseline's serialization exactly, even though `occurred_at`
+    raw_timestamp keeps the record's own timestamp string verbatim so atm_sgm_block can
+    reproduce the official Oracle baseline's serialization exactly, even though occurred_at
     deliberately reads capture time from the filename stem instead — see the module docstring
     on the two clocks.
     """
@@ -115,13 +115,13 @@ class _RawEmail(BaseModel):
 
 class _RawSgmRecord(BaseModel):
     # The media path itself is read straight off the source dict under whichever of
-    # `image_path`/`video_path` is present (see `_sgm_record`), not through this model, so
-    # `extra="ignore"` is safe here exactly like every other raw model in this file. It is
-    # also what silently drops the release's `entities` field: the official Oracle
-    # serialization's field set is `type, timestamp, location, short_caption, caption, ocr,
-    # tags` — `entities` is not part of the SGM text at all — and all 168,881 image-side
-    # entity items are double-encoded garbage (`{'entity': '{"entity"', 'type': '"airplane",
-    # "type": "other"}'}`) while only the 970 video-side items are clean. Dropping it is
+    # image_path/video_path is present (see _sgm_record), not through this model, so
+    # extra="ignore" is safe here exactly like every other raw model in this file. It is
+    # also what silently drops the release's entities field: the official Oracle
+    # serialization's field set is type, timestamp, location, short_caption, caption, ocr,
+    # tags — entities is not part of the SGM text at all — and all 168,881 image-side
+    # entity items are double-encoded garbage ({'entity': '{"entity"', 'type': '"airplane",
+    # "type": "other"}'}) while only the 970 video-side items are clean. Dropping it is
     # fidelity, not a workaround.
     model_config = ConfigDict(extra="ignore")
 
@@ -146,12 +146,12 @@ def atm_evidence_kind(evidence_id: str) -> AtmEvidenceKind:
 
 
 def atm_capture_time(media_name: str) -> datetime:
-    """Read capture time out of a `YYYYMMDD_HHMMSS` stem, as UTC.
+    """Read capture time out of a YYYYMMDD_HHMMSS stem, as UTC.
 
     The stem is the camera's local wall clock at the place of capture. Reading it as UTC
     keeps images, videos, and email on one timeline; see the design note on the two clocks.
     Only the leading 15 characters are read, so a trailing disambiguator on a duplicate
-    capture (e.g. `..._001`, `...(0)`) does not stop the timestamp from being read.
+    capture (e.g. ..._001, ...(0)) does not stop the timestamp from being read.
     """
     stem = Path(media_name).stem
     matched = _TIMESTAMP_PATTERN.match(stem)
@@ -163,7 +163,7 @@ def atm_capture_time(media_name: str) -> datetime:
 
 
 def load_atm_bench(dataset_path: Path) -> tuple[AtmBenchQuestion, ...]:
-    """Load `atm-bench.json` or `atm-bench-hard.json`."""
+    """Load atm-bench.json or atm-bench-hard.json."""
     return _questions(dataset_path)
 
 
@@ -179,7 +179,7 @@ def load_atm_emails(emails_path: Path) -> tuple[AtmEmail, ...]:
 
 
 def load_atm_sgm(batch_results_path: Path) -> tuple[AtmSgmRecord, ...]:
-    """Load one official `batch_results.json`, keyed by media stem."""
+    """Load one official batch_results.json, keyed by media stem."""
     raw = json.loads(batch_results_path.read_text(encoding="utf-8"))
     if isinstance(raw, dict):
         raw = raw.get("results", raw)

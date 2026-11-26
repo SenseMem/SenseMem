@@ -1,10 +1,10 @@
 """PersonaMem-v3 proactive-action protocol at its official GitHub revision.
 
-Source: ``bowen-upenn/PersonaMem-v3@ad80a3b1b322129fb0585ead33b129a87bb4e387``:
-``evaluation/prompts_agentic.py::proactive_action_prompt``,
-``evaluation/prompts.py::judge_proactive_action_prompt``,
-``evaluation/judges.py::judge_proactive_action`` and
-``evaluation/tasks/proactive_actions.py::run_proactive_task``.
+Source: bowen-upenn/PersonaMem-v3@ad80a3b1b322129fb0585ead33b129a87bb4e387:
+evaluation/prompts_agentic.py::proactive_action_prompt,
+evaluation/prompts.py::judge_proactive_action_prompt,
+evaluation/judges.py::judge_proactive_action and
+evaluation/tasks/proactive_actions.py::run_proactive_task.
 
 The harness supplies causal memory separately. The optional upstream profile
 summary is omitted because the released profile is scorer-only. Responses are

@@ -8,15 +8,15 @@ import json
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sensemem.benchmarks._contracts import ContractModel, Identifier
 from sensemem.benchmarks._official.ama_scoring import SCORER_VERSION, extract_answer
-
-if TYPE_CHECKING:
-    from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
+from sensemem.benchmarks.eval_results import SampleResult
+from sensemem.benchmarks.official_scorers import judge_model_is_official
 
 AMA_ADAPTER_VERSION = "ama_bench_official_v1"
 AMA_DATA_REVISION = "a5777378066f53229a94557a7b192435cd027909"
@@ -230,8 +230,6 @@ class _ExportSample(BaseModel):
 
 def export_submission(dataset: Path, samples: Path, output: Path) -> None:
     """Write the current Space schema, requiring complete, genuinely judged output."""
-    from sensemem.benchmarks.official_scorers import judge_model_is_official
-
     if output.suffix != ".jsonl":
         raise ValueError("AMA-Bench submissions must use the .jsonl extension")
     if hashlib.sha256(dataset.read_bytes()).hexdigest() != AMA_DATA_SHA256:
@@ -282,8 +280,6 @@ def export_submission(dataset: Path, samples: Path, output: Path) -> None:
         }
         for ep in episodes
     ]
-    from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
-
     output.parent.mkdir(parents=True, exist_ok=True)
     replace_artifact_files(((output, encode_jsonl_bytes(rows)),))
 

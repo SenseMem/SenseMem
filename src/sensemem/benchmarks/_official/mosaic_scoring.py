@@ -12,6 +12,12 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 
+from json_repair import loads as repair_json_loads
+from nltk.translate.bleu_score import (  # type: ignore[import-untyped]
+    SmoothingFunction,
+    sentence_bleu,
+)
+
 SCORE_BANDS = """Score bands (how well does the predicted answer match the expected answer):
 
 1.0 — PERFECT. Semantically identical to the expected answer or an alias.
@@ -113,8 +119,6 @@ def answer_query_prompt(question_type: str, question: str) -> str:
 
 def parse_judge_score(response: str) -> tuple[float, bool]:
     """Return the official parsed score and whether parsing/coercion succeeded."""
-    from json_repair import loads
-
     text = response.strip()
     match = re.match(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
@@ -123,7 +127,7 @@ def parse_judge_score(response: str) -> tuple[float, bool]:
         try:
             value: object = json.loads(text)
         except ValueError:
-            value = loads(text)
+            value = repair_json_loads(text)
         if not isinstance(value, dict):
             return 0.0, False
         score = float(value.get("score", 0))
@@ -143,11 +147,6 @@ def _normalize(text: str) -> str:
 
 def text_metrics(prediction: str, references: Sequence[str]) -> dict[str, float]:
     """Official best-reference EM, count-weighted F1 and smoothed BLEU-1."""
-    from nltk.translate.bleu_score import (  # type: ignore[import-untyped]
-        SmoothingFunction,
-        sentence_bleu,
-    )
-
     predicted = _normalize(prediction)
     tokens = predicted.split()
     best_f1 = best_bleu = 0.0
