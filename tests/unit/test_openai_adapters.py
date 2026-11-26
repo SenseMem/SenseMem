@@ -5082,9 +5082,9 @@ def test_formation_value_constructors_reject_invalid_time_and_orientation(
 def test_formation_prompt_states_every_field_the_validator_demands(
     kind: str, extra: tuple[str, ...]
 ) -> None:
-    # Measured against qwen3.8-flash, a prompt that omitted entity's subject, did not say
-    # content is required for every kind, and did not say values are strings produced proposals
-    # the validator rejected 79% of the time. Naming exactly what is enforced took that to 0%.
+    # A prompt that omits entity's subject, does not say content is required for every kind,
+    # or does not say values are strings produces proposals the validator rejects; the prompt
+    # must state every enforced requirement explicitly.
     payload: dict[str, object] = {"kind": kind, "content": "a formed memory", "confidence": 0.9}
     for field in extra:
         payload[field] = "text" if field == "cue_modality" else "a value"

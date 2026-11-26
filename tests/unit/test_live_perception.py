@@ -443,7 +443,7 @@ async def test_configured_native_adapter_receives_original_jpegs_without_embeddi
     with httpx2.Client(transport=httpx2.MockTransport(transport)) as http:
         model = OpenAICompletion(
             OpenAI(api_key="fixture", http_client=http),
-            generation_model="qwen3.8-omni-flash",
+            generation_model="fixture-vision-model",
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_extra_body={"reasoning_effort": "none"},
         )
@@ -464,7 +464,7 @@ async def test_configured_native_adapter_receives_original_jpegs_without_embeddi
             model.close()
     assert len(requests) == 1
     assert paths == ["/v1/chat/completions"]
-    assert requests[0]["model"] == "qwen3.8-omni-flash"
+    assert requests[0]["model"] == "fixture-vision-model"
     messages = cast(list[dict[str, object]], requests[0]["messages"])
     content = cast(list[dict[str, object]], messages[-1]["content"])
     images = [

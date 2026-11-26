@@ -61,7 +61,7 @@ class TrackingEmbedder(TinyEmbedder):
 class RecordingOmni(OpenAICompletion):
     def __init__(self) -> None:
         super().__init__(
-            generation_model="qwen3.8-omni-flash",
+            generation_model="fixture-omni-model",
             generation_capabilities=NATIVE_MODALITIES,
             generation_extra_body={"reasoning_effort": "none"},
         )
