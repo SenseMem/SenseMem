@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Literal
 
 from opentelemetry import trace
 
@@ -26,7 +26,7 @@ from sensemem.content import AssetRef
 from sensemem.records import SearchHit
 from sensemem.types import Modality
 
-_EvidenceOperationRejection = Literal[
+EvidenceOperationRejection = Literal[
     "protocol_finish",
     "protocol_type",
     "protocol_count",
@@ -79,10 +79,10 @@ def _record_openai_provenance(response: object) -> None:
         response_model=model if isinstance(model, str) else None,
         system_fingerprint=fingerprint if isinstance(fingerprint, str) else None,
     )
-    _record_provider_request_id(response)
+    record_provider_request_id(response)
 
 
-def _record_provider_request_id(value: object) -> None:
+def record_provider_request_id(value: object) -> None:
     request_id = getattr(value, "_request_id", None) or getattr(value, "request_id", None)
     if not request_id:
         headers = getattr(getattr(value, "response", None), "headers", None)
@@ -102,38 +102,42 @@ def _record_usage_batch(
     reported = tuple(usage for usage in token_usages if usage.total_tokens is not None)
     missing = request_count - len(available)
     expected = len(token_usages) + missing
-    input_tokens = _sum_reported(token_usages, "input_tokens")
-    output_tokens = _sum_reported(token_usages, "output_tokens")
-    total_tokens = _sum_reported(reported, "total_tokens")
-    cached_input_tokens = _sum_reported(token_usages, "cached_input_tokens")
-    reasoning_output_tokens = _sum_reported(token_usages, "reasoning_output_tokens")
-    input_by_modality = _sum_modalities(token_usages, "input_by_modality")
-    output_by_modality = _sum_modalities(token_usages, "output_by_modality")
-    audio_seconds = (
-        sum(cast(float, usage.audio_seconds) for usage in available)
-        if len(available) == request_count
-        and all(usage.audio_seconds is not None for usage in available)
-        else None
+    input_values = tuple(
+        usage.input_tokens for usage in token_usages if usage.input_tokens is not None
     )
+    output_values = tuple(
+        usage.output_tokens for usage in token_usages if usage.output_tokens is not None
+    )
+    total_values = tuple(usage.total_tokens for usage in reported if usage.total_tokens is not None)
+    cached_values = tuple(
+        usage.cached_input_tokens for usage in token_usages if usage.cached_input_tokens is not None
+    )
+    reasoning_values = tuple(
+        usage.reasoning_output_tokens
+        for usage in token_usages
+        if usage.reasoning_output_tokens is not None
+    )
+    audio_values = tuple(
+        usage.audio_seconds for usage in available if usage.audio_seconds is not None
+    )
+    audio_seconds = sum(audio_values) if len(audio_values) == request_count else None
     record_model_usage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-        cached_input_tokens=cached_input_tokens,
-        reasoning_output_tokens=reasoning_output_tokens,
-        input_by_modality=input_by_modality,
-        output_by_modality=output_by_modality,
+        input_tokens=sum(input_values) if input_values else None,
+        output_tokens=sum(output_values) if output_values else None,
+        total_tokens=sum(total_values) if total_values else None,
+        cached_input_tokens=sum(cached_values) if cached_values else None,
+        reasoning_output_tokens=sum(reasoning_values) if reasoning_values else None,
+        input_by_modality=_sum_modalities(tuple(usage.input_by_modality for usage in token_usages)),
+        output_by_modality=_sum_modalities(
+            tuple(usage.output_by_modality for usage in token_usages)
+        ),
         request_count=request_count,
         expected_requests=expected,
         reported_requests=len(reported),
-        input_tokens_complete=_component_complete(token_usages, "input_tokens", expected),
-        output_tokens_complete=_component_complete(token_usages, "output_tokens", expected),
-        cached_input_tokens_complete=_component_complete(
-            token_usages, "cached_input_tokens", expected
-        ),
-        reasoning_output_tokens_complete=_component_complete(
-            token_usages, "reasoning_output_tokens", expected
-        ),
+        input_tokens_complete=bool(expected and len(input_values) == expected),
+        output_tokens_complete=bool(expected and len(output_values) == expected),
+        cached_input_tokens_complete=bool(expected and len(cached_values) == expected),
+        reasoning_output_tokens_complete=bool(expected and len(reasoning_values) == expected),
         audio_seconds=audio_seconds or None,
     )
 
@@ -222,26 +226,12 @@ def _modality_tokens(
     return exact
 
 
-def _sum_reported(usages: Sequence[_ModelUsage], name: str) -> int | None:
-    values = tuple(value for usage in usages if (value := getattr(usage, name)) is not None)
-    return sum(cast(tuple[int, ...], values)) if values else None
-
-
-def _component_complete(usages: Sequence[_ModelUsage], name: str, expected: int) -> bool:
-    return bool(
-        expected
-        and len(usages) == expected
-        and all(getattr(usage, name) is not None for usage in usages)
-    )
-
-
 def _sum_modalities(
-    usages: Sequence[_ModelUsage],
-    name: str,
+    tables: Sequence[Mapping[str, int]],
 ) -> Mapping[str, int]:
     totals: dict[str, int] = {}
-    for usage in usages:
-        for modality, count in cast(Mapping[str, int], getattr(usage, name)).items():
+    for table in tables:
+        for modality, count in table.items():
             totals[modality] = totals.get(modality, 0) + count
     return totals
 
@@ -275,19 +265,19 @@ def _number(value: object, *names: str) -> float | None:
     return float(candidate)
 
 
-def _record_video_sampling(count: int) -> None:
+def record_video_sampling(count: int) -> None:
     """Publish how many inputs reached the model as stills instead of video."""
     span = trace.get_current_span()
     if span.is_recording():
         span.set_attribute(EMBEDDING_VIDEO_SAMPLED, count)
 
 
-def _evidence_operation_event(
+def evidence_operation_event(
     status: Literal[
         "submitted", "executed", "needs_evidence", "rejected", "response_invalid", "recovery"
     ],
     *,
-    rejection: _EvidenceOperationRejection | None = None,
+    rejection: EvidenceOperationRejection | None = None,
 ) -> None:
     # Reuse the caller's tracer provider. These stages make no model request, and carry no
     # proposal, source, answer or provider body; names alone suffice for aggregate counts.
@@ -300,7 +290,7 @@ def _evidence_operation_event(
             pass
 
 
-def _record_grounding_request(
+def record_grounding_request(
     grounded: Sequence[SearchHit], assets: Sequence[AssetRef], text_parts: Sequence[str]
 ) -> None:
     span = trace.get_current_span()
@@ -315,7 +305,7 @@ def _record_grounding_request(
         )
 
 
-def _record_grounding_fit(
+def record_grounding_fit(
     retrieved: Sequence[SearchHit],
     grounded: Sequence[SearchHit],
 ) -> None:

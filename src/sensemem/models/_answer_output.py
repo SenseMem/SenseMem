@@ -1,6 +1,6 @@
 """Pure, evidence-bound rendering of an explicitly structured answer.
 
-The wire envelope is ``{"draft": <variant>}``. Every listed field is required:
+The wire envelope is {"draft": <variant>}. Every listed field is required:
 
 * text: kind, answer, evidence_labels, abstained.
 * source_ids: kind, evidence_labels.

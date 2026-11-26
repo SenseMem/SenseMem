@@ -96,6 +96,7 @@ class OpenAICompletion(OpenAIClient):
         vision_video_frames: int = 4,
         image_max_pixels: int | None = None,
         generation_request_max_bytes: int | None = None,
+        generation_audio_data_url: bool = False,
     ) -> None:
         super().__init__(client, owns_client=owns_client)
         if generation_request_max_bytes is not None and (
@@ -211,6 +212,8 @@ class OpenAICompletion(OpenAIClient):
             raise ValidationError("generation_stream must be a boolean")
         if not isinstance(generation_store, bool):
             raise ValidationError("generation_store must be a boolean")
+        if not isinstance(generation_audio_data_url, bool):
+            raise ValidationError("generation_audio_data_url must be a boolean")
         validate_sampling(
             generation_model,
             temperature=generation_temperature,
@@ -223,6 +226,7 @@ class OpenAICompletion(OpenAIClient):
         self._generation_seed = generation_seed
         self._generation_stream = generation_stream
         self._generation_store = generation_store
+        self._generation_audio_data_url = generation_audio_data_url
         self._generation_temperature = generation_temperature
         self._generation_max_tokens = generation_max_tokens
         self._generation_media_max_tokens = generation_media_max_tokens
@@ -233,7 +237,7 @@ class OpenAICompletion(OpenAIClient):
         self._generation_extra_body = (
             None if generation_extra_body is None else dict(generation_extra_body)
         )
-        self._formation_space = protocol._default_formation_space(
+        self._formation_space = protocol.default_formation_space(
             generation_model,
             capabilities=self._generation_capabilities,
             seed=generation_seed,
@@ -242,13 +246,13 @@ class OpenAICompletion(OpenAIClient):
             extra_body=self._generation_extra_body,
             image_max_pixels=image_max_pixels,
         )
-        self._vision_space = protocol._default_vision_space(
+        self._vision_space = protocol.default_vision_space(
             generation_model,
             capabilities=self._generation_capabilities,
             seed=(
                 generation_seed
                 if generation_seed is not None or reasoning_model(generation_model)
-                else protocol._VISION_SEED
+                else protocol.VISION_SEED
             ),
             temperature=(
                 generation_temperature
@@ -262,7 +266,7 @@ class OpenAICompletion(OpenAIClient):
             video_frames=vision_video_frames,
             image_max_pixels=image_max_pixels,
         )
-        self._consolidation_recipe = protocol._default_reasoning_recipe(
+        self._consolidation_recipe = protocol.default_reasoning_recipe(
             generation_model,
             prompt=prompts._CONSOLIDATION_SYSTEM_PROMPT,
             label="consolidation",
@@ -275,7 +279,7 @@ class OpenAICompletion(OpenAIClient):
             # participates in operation keys and derived record identities.
             version="v5",
         )
-        self._event_recipe = protocol._default_reasoning_recipe(
+        self._event_recipe = protocol.default_reasoning_recipe(
             generation_model,
             prompt=prompts._EVENT_SEGMENTATION_SYSTEM_PROMPT,
             label="event-segmentation",
@@ -287,16 +291,16 @@ class OpenAICompletion(OpenAIClient):
             version="v3",
         )
         self._event_recipe += (
-            protocol._schema_recipe("event_segmentation")
+            protocol.schema_recipe("event_segmentation")
             if generation_response_format == "json_schema"
             else ":json-object-v1"
         )
         if image_max_pixels is not None:
-            self._event_recipe += media._image_transport_recipe(image_max_pixels)
+            self._event_recipe += media.image_transport_recipe(image_max_pixels)
         if generation_response_format == "json_schema":
-            self._formation_space += protocol._schema_recipe("formation")
-            self._vision_space += protocol._schema_recipe("vision")
-            self._consolidation_recipe += protocol._schema_recipe("consolidation")
+            self._formation_space += protocol.schema_recipe("formation")
+            self._vision_space += protocol.schema_recipe("vision")
+            self._consolidation_recipe += protocol.schema_recipe("consolidation")
         self._formation_space += ":source-parts-v2"
         self._consolidation_recipe += ":source-parts-v2"
         self._requests = requests.OpenAIRequestBuilder(
@@ -316,6 +320,7 @@ class OpenAICompletion(OpenAIClient):
             answer_format=self._generation_answer_format,
             evidence_operation_tool=self._generation_evidence_operation_tool,
             source_metadata_key=self._generation_source_metadata_key,
+            audio_data_url=self._generation_audio_data_url,
         )
 
     @property
@@ -349,7 +354,7 @@ class OpenAICompletion(OpenAIClient):
     @property
     def vision_capabilities(self) -> frozenset[Modality]:
         # Description is a chat completion, so the visual modalities the endpoint accepts are the
-        # generation ones, exactly as formation reads them. `Memory` narrows this further: a
+        # generation ones, exactly as formation reads them. Memory narrows this further: a
         # describer declaring anything but image or video is rejected at construction.
         return self._generation_capabilities
 
@@ -387,14 +392,14 @@ class OpenAICompletion(OpenAIClient):
         if not batch:
             return ()
         modalities = frozenset(modality for value in batch for modality in value.content.modalities)
-        protocol._require_capabilities(
+        protocol.require_capabilities(
             "event segmentation", modalities, self._generation_capabilities
         )
-        parts = requests._event_content(
+        parts = requests.event_content(
             batch,
             end_of_stream=end_of_stream,
             image_max_pixels=self._image_max_pixels,
-            audio_data_url=self._generation_model.rsplit("/", 1)[-1] == "qwen3.8-omni-flash",
+            audio_data_url=self._generation_audio_data_url,
         )
         request = self._requests.json_request(
             prompts._EVENT_SEGMENTATION_SYSTEM_PROMPT, parts, schema="event_segmentation"
@@ -404,7 +409,7 @@ class OpenAICompletion(OpenAIClient):
             subject="event segmentation",
             stage="segment_events",
             input_modalities=modalities,
-            parse=lambda content: output._event_segments(content, len(batch)),
+            parse=lambda content: output.event_segments(content, len(batch)),
         )
 
     def form(
@@ -421,21 +426,21 @@ class OpenAICompletion(OpenAIClient):
         if not batch:
             return ()
         modalities = frozenset(modality for value in batch for modality in value.content.modalities)
-        protocol._require_capabilities("formation", modalities, self.formation_capabilities)
+        protocol.require_capabilities("formation", modalities, self.formation_capabilities)
         assets = tuple(asset for value in batch for asset in value.content.assets)
-        media._require_consistent_assets(assets)
+        media.require_consistent_assets(assets)
         verified_assets = media._require_asset_integrity(assets)
         image_parts = media._image_transport_parts(assets, self._image_max_pixels)
-        media._require_verified_inline_size(
+        media.require_verified_inline_size(
             tuple(verified for verified in verified_assets if verified[0].id not in image_parts)
         )
         content = requests._formation_content(
             batch,
             image_parts=image_parts,
-            audio_data_url=self._generation_model.rsplit("/", 1)[-1] == "qwen3.8-omni-flash",
+            audio_data_url=self._generation_audio_data_url,
         )
         if not isinstance(content, str):
-            media._require_inline_media_parts(content)
+            media.require_inline_media_parts(content)
         request = self._requests.json_request(
             prompts._FORMATION_SYSTEM_PROMPT,
             content,
@@ -450,7 +455,7 @@ class OpenAICompletion(OpenAIClient):
             parse=lambda content: output._formation_results(
                 content, batch, source_aliases=requests._formation_aliases(batch)
             ),
-            retry_instruction=lambda _content: prompts._FORMATION_RETRY_INSTRUCTION,
+            retry_instruction=lambda _content: prompts.FORMATION_RETRY_INSTRUCTION,
         )
 
     def describe(self, inputs: Sequence[ModelInput]) -> tuple[str, ...]:
@@ -458,7 +463,7 @@ class OpenAICompletion(OpenAIClient):
 
         The write path calls this so that an image-only memory has a full-text document at all.
         What travels is pixels, an ordinal, safe native capture metadata, and the input's
-        `text` -- in practice the clip's diarised transcript: no memory ID, file name, or path,
+        text -- in practice the clip's diarised transcript: no memory ID, file name, or path,
         because the caption is stored beside the caller's own text and anything else in the
         prompt becomes provenance leaked into a searchable document. A video is sent as the
         configured number of ordered stills, never as the file; one caption preserves the
@@ -468,14 +473,14 @@ class OpenAICompletion(OpenAIClient):
         never a blank line: the write path splits it into the memory's description and facts
         sections, and a blank line inside it would end the section it belongs to.
 
-        The request asks for `temperature` 0 and a fixed `seed` unless the composition set its
-        own, which removes the sampler as a cause of drift. It does **not** make captions
+        The request asks for temperature 0 and a fixed seed unless the composition set its
+        own, which removes the sampler as a cause of drift. It does not make captions
         reproducible: a measured endpoint returned four distinct completions for four identical
         requests at temperature 0 and seed 0, so a caller that needs two ingests of one corpus
         to build the same documents must cache descriptions by asset, not rely on these values.
 
         One malformed reply is retried once. An HTTP 200 carrying invalid JSON is outside what
-        the SDK's `max_retries` covers and is transient in practice; a truncation or any other
+        the SDK's max_retries covers and is transient in practice; a truncation or any other
         failure is not retried, because an identical second request cannot clear it.
         """
         mark_model_requests(0, token_usage_expected=0)
@@ -488,16 +493,16 @@ class OpenAICompletion(OpenAIClient):
             return ()
         modalities = frozenset(modality for value in batch for modality in value.modalities)
         # Only the media are a routing question. A visual's derived context travels as this
-        # input's `text`, which every chat completion takes, while `vision_capabilities` is
+        # input's text, which every chat completion takes, while vision_capabilities is
         # narrowed to the visual modalities -- so requiring text of it would refuse a request
-        # the endpoint accepts. `modalities` still carries it, because it is billed input.
-        protocol._require_capabilities(
+        # the endpoint accepts. modalities still carries it, because it is billed input.
+        protocol.require_capabilities(
             "vision",
             modalities - {Modality.TEXT},
             self.vision_capabilities,
         )
         assets = tuple(asset for value in batch for asset in value.assets)
-        media._require_consistent_assets(assets)
+        media.require_consistent_assets(assets)
         # Video files are never uploaded by this operation. Verify the source descriptors first,
         # reject oversized source images before reading them, then enforce provider limits against
         # the image data URLs the request actually carries.
@@ -506,33 +511,33 @@ class OpenAICompletion(OpenAIClient):
         image_parts = media._image_transport_parts(
             assets, self._image_max_pixels, capture_metadata=capture_metadata
         )
-        media._require_verified_inline_size(
+        media.require_verified_inline_size(
             tuple(
                 verified
                 for verified in verified_assets
                 if verified[0].modality is not Modality.VIDEO and verified[0].id not in image_parts
             )
         )
-        content = requests._vision_content(
+        content = requests.vision_content(
             batch,
             video_frames=self._vision_video_frames,
             image_parts=image_parts,
             capture_metadata=capture_metadata,
         )
-        media._require_inline_media_parts(content)
+        media.require_inline_media_parts(content)
         request = self._requests.json_request(
             prompts._VISION_SYSTEM_PROMPT, content, schema="vision"
         )
         if sampling_supported(self._generation_model, self._generation_extra_body):
             request.setdefault("temperature", 0.0)
         if not reasoning_model(self._generation_model):
-            request.setdefault("seed", protocol._VISION_SEED)
+            request.setdefault("seed", protocol.VISION_SEED)
         return self._json_completion(
             request,
             subject="vision description",
             stage="describe",
             input_modalities=modalities,
-            parse=lambda content: output._vision_captions(content, len(batch)),
+            parse=lambda content: output.vision_captions(content, len(batch)),
             retry_instruction=lambda content: prompts._vision_retry_instruction(
                 content, len(batch)
             ),
@@ -553,11 +558,11 @@ class OpenAICompletion(OpenAIClient):
     ) -> _JsonResult:
         """Send one JSON chat completion and parse it, retrying a malformed reply once.
 
-        An HTTP 200 carrying invalid JSON is outside what the SDK's `max_retries` covers and is
+        An HTTP 200 carrying invalid JSON is outside what the SDK's max_retries covers and is
         transient in practice. A caller may add a shape-only correction to its second request;
         other callers repeat the original request. A truncation or any other failure is not
         retried. Both attempts are metered, even when the second one also fails: the first request
-        was billed whether or not its reply parsed, so the usage is summed in `finally` rather
+        was billed whether or not its reply parsed, so the usage is summed in finally rather
         than recorded per attempt, which would report only the last.
         """
         create_completion = cast(
@@ -622,7 +627,7 @@ class OpenAICompletion(OpenAIClient):
                 return attempt()
             except output._InvalidStructuredResponse:
                 if retry_instruction is not None and invalid_content is not None:
-                    request = requests._json_retry_request(
+                    request = requests.json_retry_request(
                         request, retry_instruction(invalid_content)
                     )
             return attempt()
@@ -640,14 +645,14 @@ class OpenAICompletion(OpenAIClient):
 
         The model cites evidence and targets by their integer position in the numbered evidence
         list, so a hallucinated memory identifier is structurally impossible. An index outside
-        the list fails the whole response as `response_invalid` rather than being dropped: a
+        the list fails the whole response as response_invalid rather than being dropped: a
         proposal that miscounts its own evidence is not one the kernel should partially apply.
         The kernel still checks every resolved ID against the set it showed.
 
-        Evidence media travels natively, the same way `form` and `answer` send it: an asset whose
+        Evidence media travels natively, the same way form and answer send it: an asset whose
         modality the generation model declares is attached as its own content part after the JSON
         for the record that owns it. Without that, a native image or audio memory with no derived
-        description reached the slow plane as an empty `content` string and could only ever be
+        description reached the slow plane as an empty content string and could only ever be
         forgotten, never reasoned about. An asset in a modality the model does not declare stays
         out of the request rather than failing the pass.
         """
@@ -661,12 +666,12 @@ class OpenAICompletion(OpenAIClient):
             raise ValidationError("trigger must be a MemoryTrigger")
         if not batch:
             return ()
-        content = requests._consolidation_content(
+        content = requests.consolidation_content(
             batch,
             trigger=trigger,
             query_failure=query_failure,
             capabilities=self._generation_capabilities,
-            audio_data_url=self._generation_model.rsplit("/", 1)[-1] == "qwen3.8-omni-flash",
+            audio_data_url=self._generation_audio_data_url,
         )
         request = self._requests.json_request(
             prompts._CONSOLIDATION_SYSTEM_PROMPT, content, schema="consolidation"
@@ -675,7 +680,7 @@ class OpenAICompletion(OpenAIClient):
             request,
             subject="consolidation",
             stage="consolidate",
-            input_modalities=media._generation_modalities(content),
+            input_modalities=media.generation_modalities(content),
             parse=lambda text: output._consolidation_results(text, batch),
         )
 
@@ -712,7 +717,7 @@ class OpenAICompletion(OpenAIClient):
             }
         )
         budget = recall_prompts.semantic_query_budget(corpus_digest)
-        system = prompts._recall_system_prompt(
+        system = prompts.recall_system_prompt(
             semantic=SEMANTIC_QUERY_CAPABILITY in corpus_digest.splitlines(),
             additional_queries=budget,
         )
@@ -776,7 +781,7 @@ class OpenAICompletion(OpenAIClient):
             output_modalities=frozenset({Modality.TEXT}),
             request_count=request_count,
         )
-        answer = output._answer_text(response)
+        answer = output.answer_text(response)
         return output._finish_answer(
             answer,
             question.evidence_sources or hits,
@@ -796,7 +801,7 @@ class OpenAICompletion(OpenAIClient):
     ) -> Generator[str, None, AnswerResult]:
         """Yield grounded text deltas while recording first-token and final usage data.
 
-        The deltas are the provider's own, marker included, so a `best_effort` stream shows the
+        The deltas are the provider's own, marker included, so a best_effort stream shows the
         low-confidence line before the answer. The completion carries the cleaned answer, which
         is what a buffering caller reports.
         """
@@ -893,11 +898,11 @@ class OpenAICompletion(OpenAIClient):
                     emitted = True
                     if self._generation_answer_format == "text":
                         yield content
-            output._record_finish_reason(finish_reason)
+            output.record_finish_reason(finish_reason)
             if refused or finish_reason == "content_filter":
-                raise output._model_refused("generation", "generate")
+                raise output.model_refused("generation", "generate")
             if finish_reason == "length":
-                raise ModelOutputTruncatedError(output._TRUNCATED_ANSWER_ERROR, stage="generate")
+                raise ModelOutputTruncatedError(output.TRUNCATED_ANSWER_ERROR, stage="generate")
             streamed = (snapshot.choices[0].message.content or "") if snapshot is not None else ""
             if finish_reason != "stop" or not streamed.strip():
                 raise ModelError(
@@ -964,7 +969,7 @@ class OpenAICompletion(OpenAIClient):
         recovery_prepared = prepared
         may_recover = False
         submitted = False
-        rejection: telemetry._EvidenceOperationRejection | None = None
+        rejection: telemetry.EvidenceOperationRejection | None = None
 
         def attempt() -> None:
             nonlocal attempted
@@ -1058,13 +1063,13 @@ class OpenAICompletion(OpenAIClient):
                         source_metadata_key=self._generation_source_metadata_key,
                     )
                 submitted = True
-                telemetry._evidence_operation_event("submitted")
+                telemetry.evidence_operation_event("submitted")
                 if rejection is not None:
                     raise InvalidEvidenceOperation("native evidence operation protocol was invalid")
                 outcome = execute_evidence_operation(
                     cast(str, arguments), operation[1], question=question.text
                 )
-                telemetry._evidence_operation_event(outcome.status)
+                telemetry.evidence_operation_event(outcome.status)
                 if outcome.status == "executed":
                     return AnswerResult(answer=cast(str, outcome.answer), hits=outcome.hits)
                 return AnswerResult(
@@ -1076,24 +1081,24 @@ class OpenAICompletion(OpenAIClient):
                     abstention_reason=outcome.reason or AbstentionReason.INSUFFICIENT_EVIDENCE,
                 )
             except InvalidEvidenceOperation as error:
-                telemetry._evidence_operation_event(
+                telemetry.evidence_operation_event(
                     "rejected", rejection=rejection or error.category
                 )
             except ModelError as error:
                 if not may_recover or error.reason != "response_invalid":
                     raise
                 if submitted:
-                    telemetry._evidence_operation_event("rejected", rejection="response_invalid")
+                    telemetry.evidence_operation_event("rejected", rejection="response_invalid")
                 else:
-                    telemetry._evidence_operation_event("response_invalid")
-            final = requests._evidence_operation_recovery(recovery_prepared[0])
+                    telemetry.evidence_operation_event("response_invalid")
+            final = requests.evidence_operation_recovery(recovery_prepared[0])
             if not self._requests.evidence_operation_fits(final, stream=stream):
                 raise ModelError(
                     "generation response was invalid", reason="response_invalid", stage="generate"
                 )
-            telemetry._evidence_operation_event("recovery")
+            telemetry.evidence_operation_event("recovery")
             response, grounded, _request = read((final, recovery_prepared[1], recovery_prepared[2]))
-            answer = output._evidence_operation_recovery_answer(response)
+            answer = output.evidence_operation_recovery_answer(response)
             return output._finish_answer(
                 answer,
                 question.evidence_sources or hits,
@@ -1179,7 +1184,7 @@ class OpenAICompletion(OpenAIClient):
         exhaustive: bool = False,
         stream: bool = False,
     ) -> tuple[dict[str, object], tuple[SearchHit, ...], frozenset[Modality]] | None:
-        rejected = protocol._rejected_media_modality(error)
+        rejected = protocol.rejected_media_modality(error)
         if rejected is None:
             return None
         # ponytail: the provider does not identify the rejected clip; keep every hit's text and
@@ -1208,7 +1213,7 @@ class OpenAICompletion(OpenAIClient):
         )
         if isinstance(fallback, AbstentionReason):
             return None
-        telemetry._record_grounding_fit(tuple(retrieved), fallback[1])
+        telemetry.record_grounding_fit(tuple(retrieved), fallback[1])
         span = trace.get_current_span()
         if span.is_recording():
             span.set_attribute(GROUNDING_MEDIA_FALLBACK, True)

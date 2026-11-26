@@ -22,8 +22,8 @@ def _object_schema(properties: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _array_schema(items: dict[str, object]) -> dict[str, object]:
-    return {"type": "array", "items": items}
+def _array_schema(item_schema: dict[str, object]) -> dict[str, object]:
+    return {"type": "array", "items": item_schema}
 
 
 def _nullable_schema(schema: dict[str, object]) -> dict[str, object]:
@@ -102,7 +102,7 @@ def _formation_proposal_schema(*, witnessed: bool) -> dict[str, object]:
             )
         if kind != "affect":
             for key in ("cue_modality", "valence", "arousal"):
-                del properties[key]
+                properties.pop(key)
         else:
             properties["cue_modality"] = {
                 "type": "string",

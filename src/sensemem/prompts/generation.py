@@ -15,7 +15,7 @@ from sensemem.evidence import answer_constraint_payloads
 from sensemem.records import SearchHit
 from sensemem.types import AbstentionReason, AnswerPolicy
 
-_STRICT_JSON_INSTRUCTION = (
+STRICT_JSON_INSTRUCTION = (
     "\n\n# JSON response\n"
     "Return exactly one JSON object matching the supplied response schema. Include every "
     "required field and no extra fields. Use null only for a nullable field with no supported "
@@ -174,7 +174,7 @@ _GROUNDED_SYSTEM_PROMPT = (
     "Do not guess, select an unsupported option, or replace this marker with an explanation. "
     + _GROUNDED_EPILOGUE
 )
-# `best_effort` moves the abstention from the answer to a marker line above it: the caller still
+# best_effort moves the abstention from the answer to a marker line above it: the caller still
 # learns the evidence was thin, but gets a usable answer instead of a refusal. Declining and
 # guessing are both wrong for someone -- the caller owns which.
 _BEST_EFFORT_SYSTEM_PROMPT = (
@@ -795,7 +795,7 @@ One correction:
 ```"""
 
 
-_FORMATION_RETRY_INSTRUCTION = (
+FORMATION_RETRY_INSTRUCTION = (
     "Repair only the JSON envelope and required fields using the original observations and "
     "the same formation rules. "
     "Return only the required JSON envelope with one item per observation_N, never history_N. "
@@ -806,12 +806,12 @@ _FORMATION_RETRY_INSTRUCTION = (
 )
 
 
-def _json_system_prompt(prompt: str, *, strict_schema: bool) -> str:
+def json_system_prompt(prompt: str, *, strict_schema: bool) -> str:
     """Apply the configured JSON output contract to an already selected task prompt."""
-    return prompt + _STRICT_JSON_INSTRUCTION if strict_schema else prompt
+    return prompt + STRICT_JSON_INSTRUCTION if strict_schema else prompt
 
 
-def _recall_system_prompt(*, semantic: bool, additional_queries: str | None = None) -> str:
+def recall_system_prompt(*, semantic: bool, additional_queries: str | None = None) -> str:
     """Select the recall operation contract and apply its validated query budget."""
     system = _RECALL_SEMANTIC_SYSTEM_PROMPT if semantic else _RECALL_PLAN_SYSTEM_PROMPT
     if additional_queries is not None and additional_queries != "two":

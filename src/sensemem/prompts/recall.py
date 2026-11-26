@@ -10,10 +10,8 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from sensemem.recall import RecallResult, RecallStep, RecallStepResult
+from sensemem.recall import RecallResult, RecallStep, RecallStepResult
 
 # This capability is host-generated, never extracted from retrieved evidence.
 SEMANTIC_QUERY_CAPABILITY = "Semantic query expansion: enabled"

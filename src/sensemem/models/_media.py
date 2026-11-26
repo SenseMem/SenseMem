@@ -5,17 +5,18 @@ from __future__ import annotations
 import base64
 import math
 from collections.abc import Callable
+from contextlib import suppress
 from fractions import Fraction
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
+
+import numpy as np
+from numpy.typing import NDArray
 
 from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.types import Modality
-
-if TYPE_CHECKING:
-    import numpy as np
-    from numpy.typing import NDArray
 
 
 def fetch_videos(
@@ -36,7 +37,6 @@ def fetch_videos(
 def load_mono_audio(path: Path, *, sampling_rate: int) -> NDArray[np.float32]:
     """Decode local audio without librosa's deprecated audioread fallback."""
     import av
-    import numpy as np
 
     chunks: list[NDArray[np.float32]] = []
     try:
@@ -69,26 +69,41 @@ class _Stream(Protocol):
     time_base: Fraction | None
 
 
+class _SoundFileInfo(Protocol):
+    duration: float
+
+
+class _SoundFileModule(Protocol):
+    def info(self, file: str) -> _SoundFileInfo: ...
+
+
 def media_duration_seconds(path: Path, *, stream_kind: Literal["audio", "video"]) -> float | None:
     """Return a positive stream/container duration when an installed decoder can read it."""
     try:
         import av
-
-        with av.open(str(path)) as container:
+    except ImportError:
+        av_module = None
+    else:
+        av_module = av
+    if av_module is not None:
+        with (
+            suppress(av_module.FFmpegError, OSError, ValueError),
+            av_module.open(str(path)) as container,
+        ):
             streams = container.streams.audio if stream_kind == "audio" else container.streams.video
             duration = container_duration_seconds(container, streams[0]) if streams else None
             if duration is not None:
                 return duration
-    except Exception:
-        pass
     if stream_kind == "audio":
         try:
-            import soundfile  # type: ignore[import-untyped]
-
+            soundfile = cast(_SoundFileModule, import_module("soundfile"))
+        except ImportError:
+            return None
+        try:
             duration = float(soundfile.info(str(path)).duration)
-            return duration if math.isfinite(duration) and duration > 0 else None
-        except Exception:
-            pass
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return duration if math.isfinite(duration) and duration > 0 else None
     return None
 
 
@@ -147,6 +162,11 @@ def asset_data(asset: AssetRef) -> str:
 
 
 def resolved_asset(asset: AssetRef) -> tuple[Modality, str, Path]:
-    if not asset.is_resolved:
+    if (
+        not asset.is_resolved
+        or asset.modality is None
+        or asset.media_type is None
+        or asset.path is None
+    ):
         raise ValidationError("asset reference must be resolved before model use")
-    return cast(Modality, asset.modality), cast(str, asset.media_type), cast(Path, asset.path)
+    return asset.modality, asset.media_type, asset.path

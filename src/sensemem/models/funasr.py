@@ -173,7 +173,7 @@ class FunASRTranscriber:
                 or asset.modality not in self.transcription_capabilities
             ):
                 raise ValidationError("assets must contain resolved audio or video AssetRef values")
-        # Each `_pipeline_output` increments immediately before model I/O, including fallbacks.
+        # Each _pipeline_output increments immediately before model I/O, including fallbacks.
         mark_model_requests(0, token_usage_expected=0)
         if not batch:
             return ()
@@ -484,17 +484,17 @@ def _turns(value: object) -> tuple[SpeechTurn, ...]:
     return tuple(turns)
 
 
-def _turn(item: object) -> SpeechTurn | None:
-    if not isinstance(item, Mapping):
+def _turn(turn_entry: object) -> SpeechTurn | None:
+    if not isinstance(turn_entry, Mapping):
         raise ModelError("FunASR returned an invalid speaker turn")
-    start, end = item.get("start"), item.get("end")
-    raw_text = item.get("text")
+    start, end = turn_entry.get("start"), turn_entry.get("end")
+    raw_text = turn_entry.get("text")
     if raw_text is None:
-        raw_text = item.get("sentence")
+        raw_text = turn_entry.get("sentence")
     if isinstance(raw_text, str) and not _SPECIAL_TOKEN.sub("", raw_text).strip():
         return None
     text = _sentence_text(raw_text)
-    speaker = item.get("spk")
+    speaker = turn_entry.get("spk")
     if (
         not isinstance(start, int | float)
         or isinstance(start, bool)

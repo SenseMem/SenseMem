@@ -12,7 +12,7 @@ from sensemem.agents import AgentStep, AgentTurn
 from sensemem.exceptions import ModelError, ModelOutputTruncatedError, ValidationError
 from sensemem.models import _openai_media as media
 from sensemem.models import _openai_telemetry as telemetry
-from sensemem.models._openai_protocol import _provider_reason, _require_capabilities
+from sensemem.models._openai_protocol import _provider_reason, require_capabilities
 from sensemem.models.base import ModelInput, _modalities
 from sensemem.prompts.agent import DEFAULT_AGENT_INSTRUCTIONS
 from sensemem.tools import ToolCall, ToolDefinition
@@ -67,7 +67,7 @@ class OpenAIAgent:
         tools: Sequence[ToolDefinition],
         history: Sequence[AgentTurn],
     ) -> AgentStep:
-        _require_capabilities("agent", input.modalities, self._capabilities)
+        require_capabilities("agent", input.modalities, self._capabilities)
         media._require_inline_size(input.assets)
         cache: dict[str, str] = {}
         content = [
@@ -184,7 +184,9 @@ class OpenAIAgent:
             if choice.finish_reason == "stop" and not message.tool_calls:
                 return AgentStep(content=message.content)
         except (ValueError, RecursionError):
-            pass
+            raise ModelError(
+                "agent response was invalid", reason="response_invalid", stage="agent"
+            ) from None
         raise ModelError("agent response was invalid", reason="response_invalid", stage="agent")
 
     def close(self) -> None:

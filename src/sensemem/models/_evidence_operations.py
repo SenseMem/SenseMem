@@ -341,13 +341,6 @@ def _source_id(hit: SearchHit, catalogue: EvidenceCatalogue) -> str:
     return source
 
 
-def _decimal_text(value: Decimal) -> str:
-    text = format(value, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return "0" if Decimal(text) == 0 else text
-
-
 def execute_evidence_operation(
     arguments: str, catalogue: EvidenceCatalogue, *, question: str
 ) -> EvidenceOperationOutcome:
@@ -437,6 +430,7 @@ def _execute(  # noqa: C901 - evaluate the requested operation's dependency foot
         hit for label, hit in bound.visible.items() if label in proposal.scope.evidence_labels
     )
     if missing:
+        partial_label = "matching sources" if proposal.operation == "select_sources" else "result"
         return EvidenceOperationOutcome(
             "needs_evidence",
             None
@@ -444,7 +438,8 @@ def _execute(  # noqa: C901 - evaluate the requested operation's dependency foot
             or answer is None
             or set(missing)
             & {"identity_unknown", "conflicting_values", "unit_conflict", "target_ambiguous"}
-            else _partial_answer(proposal, answer),
+            else f"Supported {partial_label} in the supplied evidence: {answer}. "
+            "The requested full answer is unresolved.",
             hits,
             AbstentionReason.NO_EVIDENCE
             if not catalogue.hits
@@ -754,7 +749,11 @@ def _numeric_answer(  # noqa: C901 - operation-dependent numeric dependency eval
             value = totals[chosen[0]] - totals[chosen[1]]
         else:
             value = sum(totals.values(), Decimal(0))
-    text = _decimal_text(value)
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if Decimal(text) == 0:
+        text = "0"
     if proposal.format == "with_unit":
         unit = next(iter(units))
         if unit in {"£", "$", "€"}:
@@ -762,8 +761,3 @@ def _numeric_answer(  # noqa: C901 - operation-dependent numeric dependency eval
         else:
             text += " " + unit
     return text, list(dict.fromkeys(missing)), totals
-
-
-def _partial_answer(proposal: EvidenceOperation, answer: str) -> str:
-    label = "matching sources" if proposal.operation == "select_sources" else "result"
-    return f"Supported {label} in the supplied evidence: {answer}. The requested full answer is unresolved."
