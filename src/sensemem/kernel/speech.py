@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import cast
 
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import mark_model_requests
 from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, SenseMemError
-from sensemem.infrastructure.local.store import StoredAsset
+from sensemem.infrastructure.local.store.rows import StoredAsset
 from sensemem.kernel.content import PreparedContent
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.derived import (
@@ -273,7 +272,7 @@ class Speech(Traced):
                         "transcription",
                         model=transcriber.transcription_model,
                         batch_size=len(refs),
-                        modalities=(cast(Modality, asset.modality) for asset in refs),
+                        modalities=(asset.modality for asset in refs if asset.modality is not None),
                     ):
                         mark_model_requests(1)
                         generated = transcriber.transcribe(refs)
@@ -347,7 +346,7 @@ class Speech(Traced):
             "transcription",
             model=self._backends.transcriber.transcription_model,
             batch_size=len(assets),
-            modalities=(cast(Modality, asset.modality) for asset in assets),
+            modalities=(asset.modality for asset in assets if asset.modality is not None),
         ):
             mark_model_requests(1)
             try:

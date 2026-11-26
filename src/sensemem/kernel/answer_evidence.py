@@ -7,6 +7,7 @@ from datetime import datetime
 from sensemem._resources import unique_resources
 from sensemem.evidence import answer_evidence_payloads, retain_source_complete_hits
 from sensemem.exceptions import ModelError, ValidationError
+from sensemem.kernel.contracts import generation_model_name
 from sensemem.models.base import (
     GenerationBackend,
     GenerationMediaBackend,
@@ -39,7 +40,7 @@ class EvidenceGeneration:
         ):
             raise ValidationError("media_max_items must be an integer between 1 and 8")
         self.generation_capabilities = backend.generation_capabilities
-        self.generation_model = getattr(backend, "generation_model", None)
+        self.generation_model = generation_model_name(backend)
         self.generation_routes = (
             backend.generation_routes
             if isinstance(backend, GenerationRoutingBackend)

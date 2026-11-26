@@ -31,14 +31,13 @@ from sensemem.control_values import (
 )
 from sensemem.exceptions import MemoryNotFoundError, ModelError, SenseMemError, ValidationError
 from sensemem.identity import IdentityChange
-from sensemem.infrastructure.local.store import (
-    NamingPreparationRequired,
+from sensemem.infrastructure.local.store._naming_projection import NamingPreparationRequired
+from sensemem.infrastructure.local.store.errors import (
     ProtectedMemoryError,
+    ReplacementNotVisibleError,
     StaleOperationError,
-    StoredMemory,
-    StoredOperation,
 )
-from sensemem.infrastructure.local.store.errors import ReplacementNotVisibleError
+from sensemem.infrastructure.local.store.rows import StoredMemory, StoredOperation
 from sensemem.kernel.affect import affect_witness_refusal, resolve_affect_proposal
 from sensemem.kernel.content import prepare_memory
 from sensemem.kernel.contracts import Backends
@@ -137,11 +136,10 @@ class ControlPlane(Traced):
         self._formation = formation
         self._identities = identities
 
-    # -- Agentic memory control plane ----------------------------------------------------------
-    # One bounded memory-management loop (gate 3 of docs/context-os.md). The backend sees a
+    # One bounded memory-management loop (see docs/architecture.md). The backend sees a
     # bounded evidence set and only proposes; every field is validated here, each accepted
-    # operation commits with its own append-only log row, and `rollback()` reverses it. Physical
-    # deletion is not an intent: it stays on `delete()` under host authority. None of these
+    # operation commits with its own append-only log row, and rollback() reverses it. Physical
+    # deletion is not an intent: it stays on delete() under host authority. None of these
     # methods is exposed on REST or MCP.
 
     def consolidation_candidates(
@@ -192,7 +190,7 @@ class ControlPlane(Traced):
         A failed query has no evidence of its own -- that is what failing means -- so the
         candidate names the nearest active records to it. Those are what a backend can act on:
         the memory that should have matched and did not, or the gap it should record. Resolved
-        through the ordinary retrieval kernel, and bounded by `limit`.
+        through the ordinary retrieval kernel, and bounded by limit.
         """
         reference = datetime.now(timezone.utc)
         with translate_storage_errors("list repeated query failures"):
@@ -331,9 +329,9 @@ class ControlPlane(Traced):
             # reachable form of the staleness the kernel is required to reject.
             consumed: set[str] = set()
             retired: set[str] = set()
-            # Deliberately outside `_formation_lock`: the backend round trip is the slow part of
+            # Deliberately outside _formation_lock: the backend round trip is the slow part of
             # this call, and holding the formation lock across it makes a consolidation over
-            # media evidence stall every concurrent `add()`. Scheduling between latency-sensitive
+            # media evidence stall every concurrent add(). Scheduling between latency-sensitive
             # work and slow reasoning is the point of the plane, so the lock covers the apply
             # transactions only. Correctness does not rest on the lock: every proposal is
             # re-checked inside its own apply transaction: targets must remain eligible and
@@ -460,12 +458,12 @@ class ControlPlane(Traced):
                         model_id=self._backends.consolidation_model,
                         recipe=self._backends.consolidation_recipe,
                         shown=shown,
-                        # The host names these IDs, the way it does for `forget()`, so the
+                        # The host names these IDs, the way it does for forget(), so the
                         # not-shown rule that bounds a backend to the window the kernel gathered
                         # does not apply. Every other rejection does.
                         window=None,
                         assets=assets,
-                        # The host's own path, so a `RESPONSE_POLICY` proposal is authorized
+                        # The host's own path, so a RESPONSE_POLICY proposal is authorized
                         # here and nowhere else.
                         host_authored=True,
                     )
@@ -559,7 +557,7 @@ class ControlPlane(Traced):
                 return self._rollback_identity(row, operation, operation.identity, assets=assets)
             # A naming assertion is retracted, not deleted: the version it superseded has to
             # come back, and the record itself stays in the log so the audit trail shows both
-            # names. That reversal rides the general `superseded` mechanism below. A consent
+            # names. That reversal rides the general superseded mechanism below. A consent
             # statement retracts the same way and for the same reason -- both are assertions a
             # host made about a person, and the history of what was asserted is the audit
             # trail -- but only naming feeds a projection that has to be repainted afterwards.
@@ -576,7 +574,7 @@ class ControlPlane(Traced):
                     delete_memory_ids=(
                         row.created_ids if operation.intent is MemoryIntent.CONSOLIDATE else ()
                     ),
-                    # `linked` is the evidence this operation actually inserted, so a link that
+                    # linked is the evidence this operation actually inserted, so a link that
                     # predated it survives the reversal. Records deleted above take their own.
                     retire_evidence=(() if row.clause_changes else row.linked),
                     reverse_clause_changes=row.clause_changes,
@@ -589,7 +587,7 @@ class ControlPlane(Traced):
                         else row.superseded
                     ),
                     # An identity assertion is retracted rather than deleted: its own version
-                    # is retired here and `restore_versions` brings back the one it displaced.
+                    # is retired here and restore_versions brings back the one it displaced.
                     retire_versions=(
                         *row.activated_ids,
                         *(row.created_ids if assertion else ()),
@@ -604,7 +602,7 @@ class ControlPlane(Traced):
                     ),
                     # Recorded per operation, so cognitive forgetting and the consolidation
                     # forgetting a CONSOLIDATE carried both reverse through one field. A FORGET
-                    # row logged before that field existed carries the same IDs in `changed_ids`,
+                    # row logged before that field existed carries the same IDs in changed_ids,
                     # and must still un-forget rather than silently do nothing.
                     clear_forgotten=row.forgotten_ids,
                     projection_identity_ids=(operation.claim.identity_id,)
@@ -791,8 +789,8 @@ class ControlPlane(Traced):
         shown: Mapping[str, MemoryRecord] | None,
         window: frozenset[str] | None,
         assets: OperationAssets,
-        # True only on `apply()`: the host authored this operation itself. A model-proposed
-        # kind the kernel refuses on provenance -- a `RESPONSE_POLICY` -- turns on this flag.
+        # True only on apply(): the host authored this operation itself. A model-proposed
+        # kind the kernel refuses on provenance -- a RESPONSE_POLICY -- turns on this flag.
         host_authored: bool = False,
     ) -> MemoryOperationRecord:
         if operation.intent is MemoryIntent.MERGE:
@@ -806,24 +804,24 @@ class ControlPlane(Traced):
         if operation.intent is MemoryIntent.CONSENT:
             # The mirror of the rule above, for the same reason and by the same route: consent
             # is a statement its subject makes, so a model that could propose one could
-            # manufacture permission to process a person. `record_consent()` is the only path.
+            # manufacture permission to process a person. record_consent() is the only path.
             raise RejectedOperation("unauthorized")
         key = operation_key(operation, recipe=recipe)
         with translate_storage_errors("check a memory operation"):
-            # Raise the rejection outside this block: `RejectedOperation` is not a
-            # `SenseMemError`, so the translator would turn it into a StorageError.
+            # Raise the rejection outside this block: RejectedOperation is not a
+            # SenseMemError, so the translator would turn it into a StorageError.
             duplicate = bool(self._store.control.read_operations(operation_key=key))
         if duplicate:
             raise RejectedOperation("duplicate")
         # A name is not an inference to be corrected, reinforced, or quietly forgotten: the
-        # registry and the indexed speech text both project it, and only `rollback()` of the
+        # registry and the indexed speech text both project it, and only rollback() of the
         # operation that asserted it recomputes those. Retiring the assertion behind their back
-        # leaves `identity()` and the stored transcripts answering to a name nothing asserts.
+        # leaves identity() and the stored transcripts answering to a name nothing asserts.
         # Checked for every intent here rather than per intent, because consolidation forgetting
         # names targets of its own and would otherwise walk straight past this.
         # A consent statement is somebody's own word about how they may be processed. Letting
         # the control plane retire, forget, or reinforce one would let a model change what a
-        # person permitted; only `record_consent()` supersedes it and only `rollback()` retracts.
+        # person permitted; only record_consent() supersedes it and only rollback() retracts.
         # Checked here for the same reason as the rule above.
         targets = self._control_records(operation.target_ids)
         refusal = _operation_refusal(
@@ -904,9 +902,9 @@ class ControlPlane(Traced):
         if set(targets) != set(operation.target_ids):
             raise RejectedOperation("unknown_target")
         # A backend may only act inside the window the kernel gathered for it. Consolidation
-        # already gets this through `target_ids <= evidence_ids <= shown`; the three direct
+        # already gets this through target_ids <= evidence_ids <= shown; the three direct
         # intents need it stated, or a backend shown record A could retire or correct an
-        # unrelated record B it never saw. `window` is None only for the host's own `forget()`,
+        # unrelated record B it never saw. window is None only for the host's own forget(),
         # where the host names the IDs and is the authority.
         if window is not None and not set(operation.target_ids) <= window:
             raise RejectedOperation("target_not_shown")
@@ -951,7 +949,7 @@ class ControlPlane(Traced):
                     forget_ids=forget_ids,
                     # Re-checked inside the apply transaction, because everything above was read
                     # before it opened. A REINFORCE target must additionally still stand: a
-                    # CORRECT between validation and here makes the proposal stale. `forget()`
+                    # CORRECT between validation and here makes the proposal stale. forget()
                     # deliberately gets no such check -- forgetting a corrected record is legal.
                     require_active=(
                         *(
@@ -1015,7 +1013,7 @@ class ControlPlane(Traced):
         record = targets[target]
         # A retired claim is not a standing derived claim: reinforcing one would attach fresh
         # independent support to a version a CORRECT already withdrew, in this pass or an
-        # earlier one. `_control_records` reads the current version, so both cases land here.
+        # earlier one. _control_records reads the current version, so both cases land here.
         if not is_derived(targets, target) or (
             record.context is not None and record.context.retired_at is not None
         ):
@@ -1147,7 +1145,7 @@ class ControlPlane(Traced):
             recipe=self._backends.consolidation_recipe,
             operation=pending,
             forget_ids=operation.target_ids,
-            # `shown` was read before this transaction opened; re-check inside it that every
+            # shown was read before this transaction opened; re-check inside it that every
             # cited source still exists and is un-forgotten, visible and unretired. Withdrawal
             # can hide a claim without retiring it, and neither state may seed a new assertion.
             require_visible=operation.evidence_ids,
@@ -1175,7 +1173,7 @@ class ControlPlane(Traced):
         """Validate one agent-proposed naming and commit it as a bound ENTITY assertion.
 
         The kernel builds the proposal from the claim, so a backend only names the identity and
-        cites its evidence. `MODEL_INFERENCE` basis keeps the assertion, and with it the
+        cites its evidence. MODEL_INFERENCE basis keeps the assertion, and with it the
         projected name, hidden until two independent evidence groups support it, exactly as an
         inferred trait is. Committing it recomputes the projection, so the registry and the
         indexed speech text never disagree with what is currently asserted.
@@ -1183,7 +1181,7 @@ class ControlPlane(Traced):
         claim = operation.claim
         assert claim is not None
         # The same window vocabulary the three direct intents use: a backend may only act on
-        # what the kernel gathered for it, and citing outside that window is `target_not_shown`.
+        # what the kernel gathered for it, and citing outside that window is target_not_shown.
         if shown is None or not set(operation.evidence_ids) <= set(shown):
             raise RejectedOperation("target_not_shown")
         with translate_storage_errors("read identity memories"):
@@ -1232,7 +1230,7 @@ class ControlPlane(Traced):
                 occurred_end=None,
                 # A name is not observed anywhere: who somebody is stays true in the next room,
                 # so the assertion inherits neither the place nor the tags of the clips they were
-                # recognized in, exactly as `register_identity` asserts it from no evidence.
+                # recognized in, exactly as register_identity asserts it from no evidence.
                 metadata=None,
                 memory_type=formation_memory_type(proposal.kind),
             ),
@@ -1245,7 +1243,7 @@ class ControlPlane(Traced):
             context=context,
         )
 
-        # Hold the lock while `_commit_formation` prepares the assertion and projection vectors
+        # Hold the lock while _commit_formation prepares the assertion and projection vectors
         # and commits both, so no concurrent naming write can invalidate the preview.
         with self._write_lock:
             logged = self._formation.commit(
@@ -1257,7 +1255,7 @@ class ControlPlane(Traced):
                 operation=pending,
                 # Re-checked inside the apply transaction, because everything above was read
                 # before it opened: forgotten, hidden or retired evidence makes the naming
-                # stale, and the dispatch turns that into a `stale` rejection.
+                # stale, and the dispatch turns that into a stale rejection.
                 require_visible=operation.evidence_ids,
                 preserve_response_policies=not host_authored,
                 projection_identity_id=identity_id,

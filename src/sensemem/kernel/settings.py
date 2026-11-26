@@ -19,6 +19,9 @@ from sensemem.recall import RECALL_MAX_ROWS
 from sensemem.settings import MemorySettings
 from sensemem.types import IndexQuantization, RetrievalMode
 
+MAX_FORMATION_HISTORY_ROWS = 128
+MAX_RECALL_QUERIES = 32
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedSettings:
@@ -64,7 +67,7 @@ def _expansion_max_rows(value: object) -> int:
 
 
 def resolve_settings(config: MemorySettings | None) -> ResolvedSettings:
-    """Validate every `MemorySettings` field once, at wiring, and fail before storage opens."""
+    """Validate every MemorySettings field once, at wiring, and fail before storage opens."""
     if config is None:
         config = MemorySettings()
     elif not isinstance(config, MemorySettings):
@@ -113,12 +116,18 @@ def resolve_settings(config: MemorySettings | None) -> ResolvedSettings:
     )
     if not isinstance(settings.retention, RetentionPolicy):
         raise ValidationError("retention must be a RetentionPolicy value")
-    if settings.recall_max_queries > 32:
-        raise ValidationError("recall_max_queries must be at most 32")
+    if settings.recall_max_queries > MAX_RECALL_QUERIES:
+        raise ValidationError(f"recall_max_queries must be at most {MAX_RECALL_QUERIES}")
     return settings
 
 
 def _history_max_rows(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 128:
-        raise ValidationError("formation_history_max_rows must be between 0 and 128")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= MAX_FORMATION_HISTORY_ROWS
+    ):
+        raise ValidationError(
+            f"formation_history_max_rows must be between 0 and {MAX_FORMATION_HISTORY_ROWS}"
+        )
     return value

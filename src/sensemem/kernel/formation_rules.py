@@ -14,10 +14,8 @@ from datetime import datetime
 from sensemem.control import CONSENT_PREDICATE, affect_link_payload
 from sensemem.control_values import MemoryIntent, MemoryOperation
 from sensemem.identity import ConsentClaim
-from sensemem.infrastructure.local.store import (
-    StoredMemory,
-    datetime_text,
-)
+from sensemem.infrastructure.local.store._codec import datetime_text
+from sensemem.infrastructure.local.store.rows import StoredMemory
 from sensemem.kernel.content import encode_metadata, observation_from_record
 from sensemem.kernel.predicates import claim_lineage_id, normalize_label, resolve_predicate
 from sensemem.models.base import FormationInput, ModelInput
@@ -35,7 +33,7 @@ def formation_evidence_active(record: MemoryRecord) -> bool:
 
 
 # Naming a person is a claim the host asserts, so its recipe names the kernel rule that produced
-# it rather than a model space. That is what lets `register_identity` work with no former and no
+# it rather than a model space. That is what lets register_identity work with no former and no
 # consolidator configured.
 NAMING_RECIPE = "sensemem-identity-naming-v1"
 
@@ -59,7 +57,7 @@ def formation_refusal(
     *,
     host_authored: bool = False,
 ) -> str | None:
-    """Say why the kernel refuses to ground this proposal in this source, or `None` to keep it.
+    """Say why the kernel refuses to ground this proposal in this source, or None to keep it.
 
     A refusal costs the proposal and nothing else, on both paths that ask: formation drops it,
     and consolidation moves on to the next cited source.
@@ -68,8 +66,8 @@ def formation_refusal(
         # How the system should behave toward somebody is a grant, not an inference: one
         # observed cue must not become standing guidance. Keyed on where the proposal came
         # from, never on the basis it claims -- a formation or consolidation backend builds
-        # its own `FormationProposal` and could name any basis -- so the only path that
-        # authorizes one is the host's own `apply()`.
+        # its own FormationProposal and could name any basis -- so the only path that
+        # authorizes one is the host's own apply().
         return "response_policy formation requires explicit host authorization"
     if not host_authored and proposal.basis is not EvidenceBasis.MODEL_INFERENCE:
         # Source provenance does not authorize the model's interpretation of a subclaim.
@@ -168,7 +166,7 @@ def consolidation_primary(
     *,
     host_authored: bool = False,
 ) -> MemoryRecord | None:
-    """Return the newest cited source the proposal is grounded in, or `None`.
+    """Return the newest cited source the proposal is grounded in, or None.
 
     Formation binds one proposal to one source. A consolidation cites several, so the kernel
     requires the AFFECT cue modality and the spatial frame to match at least one of them and
@@ -203,8 +201,8 @@ def consolidation_primary(
 def retiring_targets(operation: MemoryOperation) -> set[str]:
     """IDs this operation would take out of ordinary recall or retire the current version of.
 
-    A `REINFORCE` target is strengthened rather than retired, so it is not one of these; a
-    `CONSOLIDATE` target is consolidation forgetting and is.
+    A REINFORCE target is strengthened rather than retired, so it is not one of these; a
+    CONSOLIDATE target is consolidation forgetting and is.
     """
     if operation.intent is MemoryIntent.REINFORCE:
         return set()
@@ -238,7 +236,7 @@ def formation_context(
     """Build the typed context for one proposal, optionally derived from a source memory.
 
     A naming assertion has no source memory and no model behind it: the household owner said
-    so. It passes `source=None` and carries the identity binding instead.
+    so. It passes source=None and carries the identity binding instead.
     """
     source_context = None if source is None else observation_from_record(source)
     valid_from = proposal.valid_from
@@ -253,11 +251,11 @@ def formation_context(
     return RecordSemantics(
         kind=proposal.kind,
         # How the system should behave toward somebody is a grant: the kernel refuses every
-        # model-proposed `RESPONSE_POLICY`, so one that reaches persistence was authorized by
-        # the host calling `apply()` itself, and the stored record names that authorization
+        # model-proposed RESPONSE_POLICY, so one that reaches persistence was authorized by
+        # the host calling apply() itself, and the stored record names that authorization
         # rather than the default the proposal carried. Stamped here, on the persisted context
         # alone, and never on the proposal: the log keeps the proposal it was handed and
-        # `formation_memory_id` keys on that basis, so replaying a logged row mints the same
+        # formation_memory_id keys on that basis, so replaying a logged row mints the same
         # ID and is recognised as the duplicate it is.
         basis=(
             EvidenceBasis.RESPONSE_FEEDBACK
@@ -295,7 +293,7 @@ def _formation_lineage_id(
     if proposal.affect_link is not None:
         payload = affect_link_payload(proposal.affect_link)
         assert payload is not None
-        del payload["polarity"]
+        payload.pop("polarity")
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(f"sensemem-affect-lineage-v1:{encoded}".encode()).hexdigest()
     return claim_lineage_id(

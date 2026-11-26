@@ -21,9 +21,9 @@ from sensemem.control import dump_query_failure, query_failure_key
 from sensemem.control_values import QueryFailure
 from sensemem.exceptions import ModelError, SenseMemError
 from sensemem.infrastructure.local.scoring import max_cosine_part_scores, max_cosine_scores
-from sensemem.infrastructure.local.store import IndexCandidate, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store.rows import IndexCandidate, StoredEmbedding, StoredMemory
 from sensemem.kernel.candidates import Candidates
-from sensemem.kernel.content import PreparedContent
+from sensemem.kernel.content import PreparedContent, text_content
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.embedding import DOCUMENT_TASK, MAX_RETRIEVAL_KEYS, Embedding
 from sensemem.kernel.evidence_windows import query_evidence_windows
@@ -87,16 +87,16 @@ _QUERY_NOISE = re.compile(r"[^\w\s]+", re.UNICODE)
 _QUERY_SPACE = re.compile(r"\s+")
 
 
-# Depth of every index route, deliberately not a function of the requested `limit`. Each route
+# Depth of every index route, deliberately not a function of the requested limit. Each route
 # is truncated to it and a memory's dense relevance is the maximum over the routes that reached
-# it, so a `limit`-derived depth made the score -- and the lexical term weights computed over the
+# it, so a limit-derived depth made the score -- and the lexical term weights computed over the
 # candidate pool -- properties of the request: at limit 20 against limit 100, 27-39 % of the
 # candidates present in both runs reported a different dense relevance and 78-100 % a different
 # lexical bonus, over adjacent-rank cosine gaps whose median is 0.0026-0.0077. Every public
-# `limit` is capped at 100. Unquantized routes keep that fixed pool; quantized routes retain
+# limit is capped at 100. Unquantized routes keep that fixed pool; quantized routes retain
 # twice as many parents before authoritative FP32 scoring, without repeating that expansion
 # in native grouping. The depth remains independent of the requested result count. Earlier
-# widening to `limit * 3` cost 2.3x p50 on a common limit-8 query; the loop below widens further
+# widening to limit * 3 cost 2.3x p50 on a common limit-8 query; the loop below widens further
 # only when authoritative scope checks leave too few survivors.
 _ROUTE_CANDIDATES = RERANK_CANDIDATES
 _QUANTIZED_ROUTE_CANDIDATES = RERANK_CANDIDATES * 2
@@ -450,8 +450,13 @@ class Retrieval(Traced):
                     margin=self._settings.ambiguity_margin,
                     temporal_range=temporal_range,
                 )
-                if not ambiguous:
-                    ranked = self._rerank_candidates(focused_text, prepared, ranked, ranked_traces)
+                ranked, reranking_scores_by_id = self._rerank_candidates(
+                    focused_text, prepared, ranked, ranked_traces
+                )
+                if ambiguous:
+                    first, second = (row[0].memory_id for row in ranked[:2])
+                    if first in reranking_scores_by_id and second in reranking_scores_by_id:
+                        ambiguous = reranking_scores_by_id[first] <= reranking_scores_by_id[second]
                 extend_ranked_traces(
                     trace_candidates,
                     ranked_traces,
@@ -544,19 +549,16 @@ class Retrieval(Traced):
         focused_inputs: tuple[ModelInput, ...] = ()
         aggregate: ModelInput | None = None
         if self._query_mode is not RetrievalMode.LEXICAL:
-            focused = replace(
-                prepared,
-                text=focused_text,
-                canonical_parts=(("text", focused_text),) if focused_text else (),
-            )
             complete = self._embedding.build_retrieval_inputs(
                 prepared, maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS
             )
             aggregate = self._embedding.route_input(prepared)
-            focused_inputs = self._embedding.build_retrieval_inputs(
-                focused,
-                maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS,
-            )
+            if len(text_parts) > 1:
+                focused_inputs = self._embedding.build_retrieval_inputs(
+                    text_content(focused_text), maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS
+                )
+            else:
+                focused_inputs = complete
         encoded = self._querying.encode(
             QueryRequest(
                 content=self._hydrator.model_input(prepared),
@@ -609,7 +611,7 @@ class Retrieval(Traced):
         scope_place_id = None if scope is None else scope.place_id
         scope_identity_id = self._pushed_identity(scope)
         with self._write_lock:
-            # A read asks for the current truth, so it closes an `add_stream` group that is still
+            # A read asks for the current truth, so it closes an add_stream group that is still
             # open on this thread instead of skipping the drain with it: the consumer that searches
             # between two yields must see the item it was just handed.
             self._projection.drain(force=True)
@@ -675,7 +677,7 @@ class Retrieval(Traced):
             with translate_storage_errors("apply search scope"):
                 # Only the number of survivors decides whether to widen, so count them under
                 # the same predicates instead of hydrating content, media assets and typed
-                # context rows and calling `len()` on the records.
+                # context rows and calling len() on the records.
                 active_count = self._store.records.count_memories(
                     candidate_parent_ids,
                     valid_at=None if scope is None else scope.valid_at,
@@ -698,18 +700,18 @@ class Retrieval(Traced):
         prepared: PreparedContent,
         ranked: list[tuple[StoredMemory, float, float, bool]],
         traces: dict[str, partial[RetrievalCandidateTrace]] | None,
-    ) -> list[tuple[StoredMemory, float, float, bool]]:
-        """Score authoritative candidates in supported modalities without changing gates."""
+    ) -> tuple[list[tuple[StoredMemory, float, float, bool]], dict[str, float]]:
+        """Order authoritative candidates and return comparable scores for supported inputs."""
         reranker = self._backends.reranker
         if reranker is None:
-            return ranked
+            return ranked, {}
         capabilities = self._backends.reranking_capabilities
         query_text = query if Modality.TEXT in capabilities else ""
         query_assets = tuple(
             asset for asset in prepared.assets if Modality(asset.modality) in capabilities
         )
         if not query_text.strip() and not query_assets:
-            return ranked
+            return ranked, {}
         candidates = [
             (index, row)
             for index, row in enumerate(ranked)
@@ -717,7 +719,7 @@ class Retrieval(Traced):
             or any(Modality(asset.modality) in capabilities for asset in row[0].assets)
         ]
         if not candidates:
-            return ranked
+            return ranked, {}
         assets = tuple(
             asset
             for _index, row in candidates
@@ -775,7 +777,7 @@ class Retrieval(Traced):
         if traces is not None:
             for memory_id, score in by_id.items():
                 traces[memory_id] = partial(traces[memory_id], reranking_score=score)
-        return result
+        return result, by_id
 
     def _image_matches(
         self,
@@ -828,7 +830,7 @@ class Retrieval(Traced):
         return tuple(result)
 
     def _pushed_identity(self, scope: RetrievalScope | None) -> str | None:
-        """Resolve a scoped identity to the ID the index projection stores, or `None`.
+        """Resolve a scoped identity to the ID the index projection stores, or None.
 
         A merge re-points every projected row onto the survivor, so a request naming a merged
         alias has to be resolved before it can be pushed down. An unknown identity is pushed

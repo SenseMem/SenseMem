@@ -8,16 +8,19 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from contextlib import closing
 from datetime import date
 from functools import lru_cache
 from importlib.metadata import version
 from pathlib import Path
-from typing import cast
+from typing import Protocol
 
 from sensemem.exceptions import StorageError, ValidationError
 
+DEFAULT_GAZETTEER_RADIUS_M = 500
+DEFAULT_GAZETTEER_LIMIT = 8
+DEFAULT_GAZETTEER_BUDGET_CHARS = 16_000
 _INDEX_RECIPE = "offline-osm-named-geometries-v1-aeqd-wgs84-step0005"
 _MULTI_INDEX_RECIPE = "offline-osm-named-geometries-v2-aeqd-wgs84-step0005"
 _ATTRIBUTION = "© OpenStreetMap contributors; ODbL 1.0"
@@ -26,6 +29,10 @@ _MAX_PREFILTER_ROWS = 10_000
 _MAX_GEOMETRY_BYTES = 32 * 1024 * 1024
 _NAME_KEYS = ("name:en", "name", "official_name", "alt_name")
 _GeometryRow = tuple[str, int, str, str, bytes] | tuple[str, int, str, str, bytes, int]
+
+
+class _GazetteerLookup(Protocol):
+    def __call__(self, latitude: float, longitude: float) -> dict[str, object]: ...
 
 
 def _number(value: object, name: str, low: float, high: float) -> float:
@@ -40,9 +47,14 @@ def _number(value: object, name: str, low: float, high: float) -> float:
 
 
 def _mapping(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+    if not isinstance(value, dict):
         raise ValueError("invalid mapping")
-    return cast(dict[str, object], value)
+    result: dict[str, object] = {}
+    for key, entry in value.items():
+        if not isinstance(key, str):
+            raise ValueError("invalid mapping")
+        result[key] = entry
+    return result
 
 
 def _validate_source(value: object) -> None:
@@ -137,15 +149,21 @@ class OfflineGazetteer:
         index_path: str | Path,
         *,
         index_sha256: str,
-        radius_m: float = 500,
-        limit: int = 8,
-        budget_chars: int = 16_000,
+        radius_m: float = DEFAULT_GAZETTEER_RADIUS_M,
+        limit: int = DEFAULT_GAZETTEER_LIMIT,
+        budget_chars: int = DEFAULT_GAZETTEER_BUDGET_CHARS,
     ) -> None:
-        radius = _number(radius_m, "radius_m", 0, 500)
+        radius = _number(radius_m, "radius_m", 0, DEFAULT_GAZETTEER_RADIUS_M)
         if radius == 0:
             raise ValidationError("gazetteer radius_m must be positive")
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 8:
-            raise ValidationError("gazetteer limit must be an integer between 1 and 8")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= DEFAULT_GAZETTEER_LIMIT
+        ):
+            raise ValidationError(
+                f"gazetteer limit must be an integer between 1 and {DEFAULT_GAZETTEER_LIMIT}"
+            )
         if isinstance(budget_chars, bool) or not isinstance(budget_chars, int) or budget_chars <= 0:
             raise ValidationError("gazetteer budget_chars must be a positive integer")
         if not isinstance(index_sha256, str) or re.fullmatch("[0-9a-f]{64}", index_sha256) is None:
@@ -154,7 +172,7 @@ class OfflineGazetteer:
             raise ValidationError("gazetteer index_path must be a non-empty path")
         try:
             import pyproj  # noqa: F401 - verify this optional capability before accepting it
-            import shapely  # noqa: F401
+            import shapely  # noqa: F401 - verify this optional capability before accepting it
         except ImportError:
             raise ValidationError("offline gazetteer requires the 'gazetteer' extra") from None
         self._path = Path(index_path).resolve()
@@ -183,9 +201,7 @@ class OfflineGazetteer:
             raise ValidationError(
                 "gazetteer index integrity, schema or provenance is invalid"
             ) from None
-        self._lookup: Callable[[float, float], dict[str, object]] = lru_cache(maxsize=512)(
-            self._query
-        )
+        self._lookup: _GazetteerLookup = lru_cache(maxsize=512)(self._query)
 
     @property
     def index_sha256(self) -> str:
@@ -251,14 +267,20 @@ class OfflineGazetteer:
             "global_complete": False,
             "photo_identity_confidence": "unknown",
         }
-        sources = (
+        raw_sources = self._metadata.get("sources")
+        sources: list[object] = (
             [self._metadata["source"]]
             if "source" in self._metadata
-            else cast(list[object], self._metadata["sources"])
+            else raw_sources
+            if isinstance(raw_sources, list)
+            else []
         )
         allowed = []
         for index, value in enumerate(sources):
-            west, south, east, north = cast(list[float], _mapping(value)["extract_bbox_lonlat"])
+            bounds = _mapping(value)["extract_bbox_lonlat"]
+            if not isinstance(bounds, list) or len(bounds) != 4:
+                continue
+            west, south, east, north = (float(bound) for bound in bounds)
             if west <= longitude <= east and south <= latitude <= north:
                 allowed.append(index)
         if not allowed:
@@ -308,7 +330,7 @@ class OfflineGazetteer:
             else ""
         )
         for low, high in intervals:
-            for identifier, *values in connection.execute(
+            for row in connection.execute(
                 "SELECT f.id,f.osm_type,f.osm_id,f.kind,f.tags_json,f.geometry_wkb"
                 + source_column
                 + " "
@@ -317,11 +339,29 @@ class OfflineGazetteer:
                 + source_filter,
                 (high, low, latitude + delta_lat, latitude - delta_lat, *(source_indices or ())),
             ):
+                identifier = int(row[0])
                 if identifier not in found:
-                    used += len(values[4])
+                    geometry_wkb = bytes(row[5])
+                    used += len(geometry_wkb)
                     if len(found) >= _MAX_PREFILTER_ROWS or used > _MAX_GEOMETRY_BYTES:
                         return None
-                    found[identifier] = cast(_GeometryRow, tuple(values))
+                    if source_indices is not None:
+                        found[identifier] = (
+                            str(row[1]),
+                            int(row[2]),
+                            str(row[3]),
+                            str(row[4]),
+                            geometry_wkb,
+                            int(row[6]),
+                        )
+                    else:
+                        found[identifier] = (
+                            str(row[1]),
+                            int(row[2]),
+                            str(row[3]),
+                            str(row[4]),
+                            geometry_wkb,
+                        )
         return list(found.values())
 
 
@@ -344,7 +384,7 @@ def _nearby_geometries(
         return projection.transform(list(x), list(y))
 
     point, source_point = Point(0, 0), Point(longitude, latitude)
-    candidates = []
+    ranked: list[tuple[float, str, int, dict[str, object]]] = []
     for row in rows:
         osm_type, osm_id, kind, tags_json, raw = row[0], row[1], row[2], row[3], row[4]
         try:
@@ -399,19 +439,10 @@ def _nearby_geometries(
                 "covers_coordinate": covers,
                 "coordinate_on_boundary": boundary,
                 "spatial_relation": relation,
-                "_distance": distance,
                 **({"source_index": row[5]} if len(row) == 6 else {}),
             }
-            candidates.append(candidate)
+            ranked.append((distance, osm_type, osm_id, candidate))
         except (ValueError, KeyError, TypeError, GEOSException, pyproj.exceptions.ProjError):
             continue
-    candidates.sort(
-        key=lambda item: (
-            cast(float, item["_distance"]),
-            cast(str, item["osm_type"]),
-            cast(int, item["osm_id"]),
-        )
-    )
-    for item in candidates:
-        del item["_distance"]
-    return candidates
+    ranked.sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+    return [entry[3] for entry in ranked]

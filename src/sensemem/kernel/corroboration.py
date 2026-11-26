@@ -133,24 +133,24 @@ def _graph(
     return clauses, parents
 
 
-def _retain(proofs: _ProofCache, key: _ProofKey, confidence: float, budget: _Budget) -> bool:
-    if confidence <= proofs.entries.get(key, 0.0):
+def _retain(proofs: _ProofCache, proof_key: _ProofKey, confidence: float, budget: _Budget) -> bool:
+    if confidence <= proofs.entries.get(proof_key, 0.0):
         return False
-    sources = key[0]
-    if key not in proofs.entries and len(proofs.entries) >= budget.max_proofs:
+    sources = proof_key[0]
+    if proof_key not in proofs.entries and len(proofs.entries) >= budget.max_proofs:
         budget.truncated = True
         if sources in proofs.clauses or not proofs.redundant:
             return False
         redundant = next(iter(proofs.redundant))
         group = proofs.clauses[redundant]
         victim = next(reversed(group))
-        del proofs.entries[victim]
-        del group[victim]
+        proofs.entries.pop(victim)
+        group.pop(victim)
         if len(group) == 1:
-            del proofs.redundant[redundant]
-    proofs.entries[key] = confidence
+            proofs.redundant.pop(redundant)
+    proofs.entries[proof_key] = confidence
     group = proofs.clauses.setdefault(sources, {})
-    group[key] = None
+    group[proof_key] = None
     if len(group) > 1:
         proofs.redundant[sources] = None
     return True
@@ -249,10 +249,10 @@ def independent_support(
     empty clauses, cycles, and zero confidence cannot manufacture support.
 
     Input graph preparation visits the supplied reachable graph and sorts clauses and IDs. Thereafter
-    at most ``max_steps`` clause visits, proof joins, and pair comparisons occur;
-    each node and intermediate join retains at most ``max_proofs`` proofs. Constant-time
+    at most max_steps clause visits, proof joins, and pair comparisons occur;
+    each node and intermediate join retains at most max_proofs proofs. Constant-time
     cache indexes admit a new top clause by replacing a redundant alternative when possible;
-    this still sets ``truncated`` and does not guarantee complete support or best confidence.
+    this still sets truncated and does not guarantee complete support or best confidence.
     Each join manipulates footprints bounded by the reachable graph size. The
     caller must separately bound graph loading. Deterministic worklist order and
     clause normalization make input permutations and duplicates equivalent.

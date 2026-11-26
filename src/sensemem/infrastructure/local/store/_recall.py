@@ -23,14 +23,14 @@ from sensemem.infrastructure.local.store.rows import (
 )
 from sensemem.recall import RECALL_MAX_ROWS, RECALL_MAX_TERM_CHARS
 
-# The event time the recall primitives order and window by. A record with no stated `occurred_at`
+# The event time the recall primitives order and window by. A record with no stated occurred_at
 # is placed at the time it was stored, which is the same substitution the answer prompt tells the
 # reader about, so one timeline covers a corpus that dates some records and not others.
 RECALL_EVENT_TIME = "COALESCE(occurred_at, created_at)"
 
 
 # NFKC casefold as a SQL function, so a substring predicate folds both sides the same way.
-# SQLite's own `lower()` is ASCII-only, and a term that differs from the content only by an
+# SQLite's own lower() is ASCII-only, and a term that differs from the content only by an
 # accent or a full-width digit would silently match nothing.
 RECALL_FOLD_FUNCTION = "sensemem_fold"
 
@@ -91,9 +91,9 @@ def recall_time_clause(
 ) -> tuple[str, tuple[object, ...]]:
     """Bound the effective event interval, start inclusive and end exclusive.
 
-    Ranked index retrieval excludes rows without `occurred_at` from its preferred time route
+    Ranked index retrieval excludes rows without occurred_at from its preferred time route
     and retains a global fallback. These primitives are the answer themselves, so a record
-    with no stated event time is placed at its `created_at` rather than left out of every window.
+    with no stated event time is placed at its created_at rather than left out of every window.
     """
     clauses: list[str] = []
     parameters: list[object] = []
@@ -172,7 +172,7 @@ RELATED_EDGES: tuple[str, ...] = ("capture", "identity", "place", "lineage", "ev
 
 
 # Anchor rows to the keys one edge groups by, and those keys back to the memories that carry
-# them. `identity` and `evidence` are not key lookups and are handled in `related_memory_ids`.
+# them. identity and evidence are not key lookups and are handled in related_memory_ids.
 _EDGE_KEYS: dict[str, str] = {
     "capture": (
         "SELECT DISTINCT source_id AS edge_key FROM memory_semantics "
@@ -188,10 +188,10 @@ _EDGE_KEYS: dict[str, str] = {
 }
 
 
-# ponytail: `memory_semantics.source_id` carries no index, so the capture edge is a scan of the
+# ponytail: memory_semantics.source_id carries no index, so the capture edge is a scan of the
 # semantic table -- fine at the sizes a companion store reaches, wrong for a million-record one.
-# `CREATE INDEX memory_semantics_source_idx ON memory_semantics (source_id, memory_id) WHERE
-# source_id IS NOT NULL` is the upgrade, and it needs a schema version.
+# CREATE INDEX memory_semantics_source_idx ON memory_semantics (source_id, memory_id) WHERE
+# source_id IS NOT NULL is the upgrade, and it needs a schema version.
 _EDGE_MEMBERS: dict[str, str] = {
     "capture": "SELECT memory_id FROM memory_semantics WHERE source_id IN ({keys})",
     "lineage": "SELECT memory_id FROM memory_semantics WHERE lineage_id IN ({keys})",
@@ -218,7 +218,7 @@ def related_memory_ids(
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     """Return the memories each edge links the anchors to, and the edges that matched too much.
 
-    An edge is dropped whole when it links to more than `ceiling` records, and it is reported
+    An edge is dropped whole when it links to more than ceiling records, and it is reported
     rather than trimmed. This is the per-edge form of the bound recall programs already apply to
     a predicate: on a two-speaker transcript every record is about both speakers, so the identity
     edge selects the corpus and says nothing about the question -- while the capture edge beside
@@ -260,7 +260,9 @@ def related_memory_ids(
             )
             members = tuple(
                 row_text(row, "memory_id")
-                for row in _rows_for_ids(connection, _EDGE_MEMBERS[edge], keys, key="keys")
+                for row in _rows_for_ids(
+                    connection, _EDGE_MEMBERS[edge], keys, placeholder_name="keys"
+                )
             )
         linked = tuple(dict.fromkeys(members))
         if ceiling is not None and len(linked) > ceiling:
@@ -275,14 +277,16 @@ def _rows_for_ids(
     statement: str,
     identifiers: Sequence[str],
     *,
-    key: str = "ids",
+    placeholder_name: str = "ids",
 ) -> tuple[sqlite3.Row, ...]:
-    """Run one `IN (...)` statement over an identifier set too large for a single bind."""
+    """Run one IN (...) statement over an identifier set too large for a single bind."""
     rows: list[sqlite3.Row] = []
     for offset in range(0, len(identifiers), SQLITE_PARAMETER_BATCH):
         batch = identifiers[offset : offset + SQLITE_PARAMETER_BATCH]
         if not batch:
             continue
         placeholders = ", ".join("?" for _identifier in batch)
-        rows.extend(connection.execute(statement.format(**{key: placeholders}), tuple(batch)))
+        rows.extend(
+            connection.execute(statement.format(**{placeholder_name: placeholders}), tuple(batch))
+        )
     return tuple(rows)

@@ -135,7 +135,7 @@ class Semantics:
     ) -> RecallRead:
         """Read every eligible polarity for exact affect episodes in one scoped snapshot.
 
-        ``selected`` counts the eligible rows before the bound, so callers can withhold an
+        selected counts the eligible rows before the bound, so callers can withhold an
         explanation whose competing assertions could not all be read. Ordering is structural,
         never relevance-ranked; a denial competes on the same terms as an affirmation.
         """
@@ -266,28 +266,28 @@ class Semantics:
     ) -> bool:
         """Commit derived records, evidence, and source completion in one transaction.
 
-        `operation` logs the control-plane operation that produced these records in the same
-        transaction. Consolidation passes no `source_memory_ids`, so no `formation_runs` marker
+        operation logs the control-plane operation that produced these records in the same
+        transaction. Consolidation passes no source_memory_ids, so no formation_runs marker
         is written and the derived record stays open to further independent evidence.
-        `forget_ids` is consolidation forgetting: sources the derived record replaces in ordinary
+        forget_ids is consolidation forgetting: sources the derived record replaces in ordinary
         recall, retired in this same commit and cleared again by rolling the operation back.
-        `narrowed` is `(memory_id, place_id, metadata_json)` for records already written whose
+        narrowed is (memory_id, place_id, metadata_json) for records already written whose
         inherited columns no longer hold for all their evidence. Only those two columns change,
         and neither reaches the search index, so nothing is queued for re-indexing.
-        `require_active` names memories that must still exist and still be un-forgotten inside
+        require_active names memories that must still exist and still be un-forgotten inside
         this transaction; if any moved since the caller validated it, nothing is written and
-        `StaleOperationError` is raised. `require_unretired` names memories whose current version
+        StaleOperationError is raised. require_unretired names memories whose current version
         must additionally still stand, without excluding hidden reinforcement targets.
-        `require_active` deliberately does not check version retirement.
-        `require_visible` is stricter formation evidence: the record must still exist,
+        require_active deliberately does not check version retirement.
+        require_visible is stricter formation evidence: the record must still exist,
         be un-forgotten, and have a visible, unretired latest recorded version, if typed.
         Unlike reinforcement targets, inferred premises cannot remain hidden at commit.
 
-        The lineage rule supersedes overlapping `STATE` versions only when the new assertion
-        has sufficient authority and confidence; a user-stated `TRAIT` supersedes every
+        The lineage rule supersedes overlapping STATE versions only when the new assertion
+        has sufficient authority and confidence; a user-stated TRAIT supersedes every
         overlapping version. Both include records nobody showed the backend. Those
-        `(memory_id, version)` pairs are recorded on the operation row as `superseded` so
-        `rollback_operation` can restore exactly them.
+        (memory_id, version) pairs are recorded on the operation row as superseded so
+        rollback_operation can restore exactly them.
         """
         supplied_memories, supplied_embeddings, supplied_by_memory = prepare_write_batch(
             memories,
@@ -306,7 +306,7 @@ class Semantics:
             if not members or len(set(members)) != len(members):
                 raise ValueError("evidence clause members must be non-empty and unique")
         with self._connections.transaction() as connection:
-            # Same in-transaction idempotency check `apply_control_operation` makes: a duplicate
+            # Same in-transaction idempotency check apply_control_operation makes: a duplicate
             # that arrives after the caller's pre-check must be refused, not surface as a
             # unique-index violation.
             if (
@@ -369,7 +369,7 @@ class Semantics:
                 return False
             # What this operation has to roll back is measured before anything is written: a
             # restated record the store already holds attaches its own cited evidence on the way
-            # through `write_memory`, so the link's absence beforehand, not who inserted it,
+            # through write_memory, so the link's absence beforehand, not who inserted it,
             # says whether this operation created it.
             already_linked = {
                 (memory_id, source_memory_id)
@@ -567,7 +567,7 @@ class Semantics:
         """Read bounded current representatives for functional claim lineages.
 
         This is a completion read for context compilation, not a second retrieval route.  It starts
-        from the lineage index, then uses ``read_memories`` for authoritative bitemporal, place,
+        from the lineage index, then uses read_memories for authoritative bitemporal, place,
         identity, and metric-scope filtering before it retains the rows for each distinct value.
         The compiler chooses one deliverable representative only after confidence, support, and
         consent checks, so an ineligible copy cannot hide an eligible copy of the same assertion.

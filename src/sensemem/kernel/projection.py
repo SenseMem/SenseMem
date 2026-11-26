@@ -10,7 +10,7 @@ from threading import local
 from opentelemetry.trace import Tracer
 
 from sensemem.exceptions import StorageError
-from sensemem.infrastructure.local.store import IndexDocument, IndexOperation
+from sensemem.infrastructure.local.store.rows import IndexDocument, IndexOperation
 from sensemem.kernel.derived import retrieval_document
 from sensemem.kernel.lifecycle import Lifecycle
 from sensemem.kernel.runtime import (
@@ -32,6 +32,10 @@ INDEX_FLUSH_OPERATIONS = 256
 
 
 _REINDEX_PAGE_SIZE = 256
+
+
+class _DeferralState(local):
+    active: bool = False
 
 
 class Projection(Traced):
@@ -56,15 +60,15 @@ class Projection(Traced):
         # files on disk at open, so it reports the previous owner's debt as if this session had
         # incurred it, and a session that only searched would merge on the strength of it.
         self._flushed = False
-        # Whether *this* thread is inside an `add_stream` item write, so a concurrent `add` on
+        # Whether *this* thread is inside an add_stream item write, so a concurrent add on
         # another thread keeps flushing before it returns. Thread-local rather than one shared
         # slot: two threads streaming at once saved and restored each other's value, so the second
         # to finish handed the first thread's id back and pinned deferral on a thread that had left
         # the stream -- every later drain on it silently returned without flushing the index.
-        self._deferral = local()
+        self._deferral = _DeferralState()
 
     def flush_pending(self) -> None:
-        """Flush applied rows and merge what a writing session leaves; `close()` calls this last."""
+        """Flush applied rows and merge what a writing session leaves; close() calls this last."""
         if self._unflushed_operations:
             with self._trace("sensemem.index.sync", kind="stage"):
                 self.flush()
@@ -85,7 +89,7 @@ class Projection(Traced):
     def drain(self, *, force: bool = False) -> None:
         """Apply current SQLite truth to Zvec; flush and acknowledge once enough has been applied.
 
-        Skipped inside an `add_stream` group, whose own bounds force it. Skipping only leaves
+        Skipped inside an add_stream group, whose own bounds force it. Skipping only leaves
         rows pending: they are still durable in SQLite and the next drain applies them.
         """
         if not force and self._deferring:
@@ -190,7 +194,7 @@ class Projection(Traced):
         # A failed flush above keeps the set, so the next drain retries without re-applying. Cleared
         # here, before optimize and acknowledge: if either fails the rows are re-applied (idempotent
         # upsert or delete) and acknowledged by the next drain, and a compaction inside
-        # `optimize_if_needed` never runs over unflushed documents.
+        # optimize_if_needed never runs over unflushed documents.
         self._unflushed_operations.clear()
         with (
             self._trace(
@@ -242,10 +246,10 @@ class Projection(Traced):
 
     @contextmanager
     def deferred(self, *, defer: bool) -> Iterator[None]:
-        """Defer the calling thread's index commits for the block when `defer`.
+        """Defer the calling thread's index commits for the block when defer.
 
-        Scoped to the item write rather than the whole stream because `add_stream` is a
-        generator: its body runs on whichever thread calls `next`, so a consumer that hands the
+        Scoped to the item write rather than the whole stream because add_stream is a
+        generator: its body runs on whichever thread calls next, so a consumer that hands the
         iterator between workers opened the group on one thread and left it on another. Entering
         and leaving on the same thread within one resumption keeps every thread the stream ran on
         clear of a deferral nothing would ever lift, and a consumer's own writes between two
@@ -263,8 +267,8 @@ class Projection(Traced):
 
     @property
     def _deferring(self) -> bool:
-        """Whether the calling thread is inside a deferred `add_stream` item write."""
-        return bool(getattr(self._deferral, "active", False))
+        """Whether the calling thread is inside a deferred add_stream item write."""
+        return self._deferral.active
 
     def reindex(self) -> int:
         with (
@@ -295,7 +299,7 @@ class Projection(Traced):
             self.drain()
             self.flush()
             # That replay writes the whole checkpoint a second time, one durable segment per
-            # flush-sized page, over the merged collection `rebuild` just wrote -- measured on a
+            # flush-sized page, over the merged collection rebuild just wrote -- measured on a
             # 578 MB store as Zvec +143 % and search p50 7.8x. Merge them, or the repair the
             # operations guide recommends leaves the index worse than doing nothing.
             self._merge_segments()

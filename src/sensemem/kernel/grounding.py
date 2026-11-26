@@ -38,7 +38,7 @@ class EvidenceExpansion:
 def expansion_ceiling(limit: int, active_records: int) -> int:
     """The per-edge bound, which is the bound recall programs already apply to a predicate.
 
-    Reused rather than restated: an edge that links to a fifth of the corpus and a `match` that
+    Reused rather than restated: an edge that links to a fifth of the corpus and a match that
     selects a fifth of it fail the same way, by describing the store instead of the question.
     """
     return max(
@@ -65,7 +65,7 @@ def pack_grounding(
     selected = list(required)
     taken = {hit.id for hit in selected}
     spent = sum(evidence_cost(hit) for hit in selected)
-    # Without a budget the window is `limit` hits and there is no tail: walking the ranking here
+    # Without a budget the window is limit hits and there is no tail: walking the ranking here
     # would hand the reader the whole rerank pool, which is not what either path ever grounded.
     tail = ranked if budget_chars is not None else ()
     # Attribute only new admissions to expansion, not linked rows already bought by the ranking.
@@ -165,7 +165,7 @@ def budget_recall(
     """Union the program's set with the window the ranking earned, inside one budget.
 
     Matched rows remain chronological; similarity rows retain rank, with ID deduplication.
-    The unplanned path's `required` window survives every bound. Character, media, and row caps
+    The unplanned path's required window survives every bound. Character, media, and row caps
     constrain only supplemental evidence. The returned shortfall counts omitted matched rows;
     ranking omissions cannot make an otherwise complete predicate read incomplete.
     """
@@ -276,7 +276,7 @@ def grounding_hits(
             )
             if spare is None:
                 break
-            del selected[spare]
+            selected.pop(spare)
         selected.append(hit)
     if budget_chars is None:
         return tuple(selected)

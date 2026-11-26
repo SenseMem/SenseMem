@@ -90,10 +90,10 @@ def merge_identity_rows(
     )
     contributed = sole_identity_modality(connection, source)
     now = datetime_text(datetime.now(timezone.utc))
-    # Read before the source's `identities` row is deleted below, so the alias row can carry
+    # Read before the source's identities row is deleted below, so the alias row can carry
     # forward the absorbed identity's own creation time rather than the merge time. Rollback
-    # (`split_identity_rows`) restores the identity from this value; storing `now` here instead
-    # would make every merge-then-rollback cycle overwrite the original `created_at`.
+    # (split_identity_rows) restores the identity from this value; storing now here instead
+    # would make every merge-then-rollback cycle overwrite the original created_at.
     source_created_at = row_text(
         connection.execute(
             "SELECT created_at FROM identities WHERE identity_id = ?",
@@ -102,7 +102,7 @@ def merge_identity_rows(
         "created_at",
     )
     # Before the re-pointing below, while the rows the index projection reads still say
-    # `source`: every memory it names is about `target` afterwards, and only the outbox can
+    # source: every memory it names is about target afterwards, and only the outbox can
     # tell the index that.
     queue_identity_projection(connection, source)
     connection.execute(
@@ -130,7 +130,7 @@ def merge_identity_rows(
         ).fetchall()
     )
     # The source's naming assertions move to the survivor before the source row goes,
-    # or `ON DELETE SET NULL` would strand the name that was asserted about this person
+    # or ON DELETE SET NULL would strand the name that was asserted about this person
     # and the projection would go on reporting a name nothing supports. The name is a
     # projection here too: recomputed from the assertions, never assigned.
     connection.execute(
@@ -187,8 +187,8 @@ def split_identity_rows(connection: sqlite3.Connection, alias_id: str) -> str | 
     }
     if modalities != {"face", "voice"}:
         return None
-    # Same reason as the merge: the rows below move from `target` to `alias_id`, so the
-    # index projection of every memory naming `target` has to be rebuilt.
+    # Same reason as the merge: the rows below move from target to alias_id, so the
+    # index projection of every memory naming target has to be rebuilt.
     queue_identity_projection(connection, target)
     connection.execute(
         """
@@ -504,8 +504,8 @@ class IdentityRegistry:
     ) -> tuple[str | None, str | None]:
         """Return the name and relationship the current visible naming assertion projects.
 
-        Both are `None` for an unknown or as yet unnamed identity, which is exactly what the
-        projection should then write. `excluding` ignores assertions the caller is about to
+        Both are None for an unknown or as yet unnamed identity, which is exactly what the
+        projection should then write. excluding ignores assertions the caller is about to
         delete, so it can rebuild indexed text for the projection the deletion will leave.
         """
         require_identifier(identity_id, "identity_id")
@@ -590,10 +590,10 @@ class IdentityRegistry:
         """Return, per memory, the NAMED identities its identity edge resolves to.
 
         A memory carries an identity edge two ways: its own semantic assertion may be bound to
-        an identity (`memory_semantics.identity_id`, the field `RecordSemantics.identity_id`
+        an identity (memory_semantics.identity_id, the field RecordSemantics.identity_id
         projects), or its media asset may have recognized one -- the same asset-keyed join
-        `provisional_identities` reads for the unnamed case. Each entry is `(identity_id,
-        name, naming_memory_id)`. The naming assertion's own memory is never reported for
+        provisional_identities reads for the unnamed case. Each entry is (identity_id,
+        name, naming_memory_id). The naming assertion's own memory is never reported for
         itself, because it already renders as its own actors hit. Empty entries are dropped,
         so a caller can treat a missing key as "nobody named here".
         """
@@ -626,12 +626,12 @@ class IdentityRegistry:
         """Return, per memory, the active event records formed from the same observations.
 
         The edge is shared evidence: an event is reported for a memory exactly when both cite
-        one `memory_evidence.source_memory_id`. That is co-occurrence inside one capture and
+        one memory_evidence.source_memory_id. That is co-occurrence inside one capture and
         not a cause, and the memory itself is never its own co-derived event. The candidates are
-        then read through `read_memories(active_only=True)` under every scope axis a search
+        then read through read_memories(active_only=True) under every scope axis a search
         hydration applies, so a retired version, a hidden assertion, a forgotten record, and
         anything outside the asked-for validity, pose, or place are all left out. That second
-        read is its own transaction: a `known_at` pins what both see, and without one a write
+        read is its own transaction: a known_at pins what both see, and without one a write
         landing between them can only remove an event from the hop, never add one the join did
         not already hold. Empty entries are dropped, so a missing key means no event shares this
         memory's observations.
@@ -644,7 +644,7 @@ class IdentityRegistry:
         if not ids:
             return {}
         # Both evidence sides are read as of the same transaction time the versions are, so a
-        # link retired after `known_at` still joins the pair it joined then.
+        # link retired after known_at still joins the pair it joined then.
         current = "{alias}.retired_at IS NULL"
         as_of = (
             "{alias}.recorded_at <= ? AND ({alias}.retired_at IS NULL OR {alias}.retired_at > ?)"
@@ -705,7 +705,7 @@ class IdentityRegistry:
         A merged identity resolves through its alias, like every other identity read, and the
         returned profile carries the canonical ID so a caller never has to resolve it twice.
 
-        `confirmed` is true only for a visible host naming statement. Inferred names retain
+        confirmed is true only for a visible host naming statement. Inferred names retain
         their evidence and may be visible without being host-confirmed.
         """
         require_identifier(identity_id, "identity_id")
@@ -737,7 +737,7 @@ class IdentityRegistry:
     def identity_consent(self, identity_id: str) -> ConsentState | None:
         """Return the consent state one identity's standing assertion projects, or None.
 
-        `None` is "nobody has recorded a statement", which is not consent and not a refusal.
+        None is "nobody has recorded a statement", which is not consent and not a refusal.
         A merged alias resolves to its canonical identity, like every other identity read.
         """
         require_identifier(identity_id, "identity_id")
@@ -757,7 +757,7 @@ class IdentityRegistry:
         """Return every record bound to one identity, standing or superseded.
 
         Includes assertions whose subject is the person and typed affect links targeting their
-        stable identity or an alias. `identity_memory_ids` covers media occurrences separately.
+        stable identity or an alias. identity_memory_ids covers media occurrences separately.
         """
         require_identifier(identity_id, "identity_id")
         with self._connections.connection() as connection:
@@ -838,10 +838,10 @@ class IdentityRegistry:
 
         Pass allow_shared_modality to commit a plan obtained with the same intent.
 
-        `operation` logs the control-plane operation that committed this merge in the same
+        operation logs the control-plane operation that committed this merge in the same
         transaction, so a cross-modal bind is visible in the operation log and reversible
         through it. The log row carries the naming assertions the merge moved onto the survivor
-        as `changed_ids`. Returns None, changing nothing, when that operation key is already
+        as changed_ids. Returns None, changing nothing, when that operation key is already
         applied and not rolled back.
         """
         require_identifier(first_id, "first identity_id")
@@ -886,7 +886,7 @@ class IdentityRegistry:
     def identity_alias_modality(self, alias_id: str) -> Literal["face", "voice"] | None:
         """Return the modality one merged alias contributed, or None when none is recorded.
 
-        A caller that must rebuild derived text before `unlink_identity` has to know which
+        A caller that must rebuild derived text before unlink_identity has to know which
         modality is about to move back, and the alias row is the only record of it.
         """
         require_identifier(alias_id, "alias_id")
@@ -925,8 +925,8 @@ class IdentityRegistry:
         evidence. Reprocessing old observations cannot override that correction; a host must
         explicitly confirm the pair again or roll back this split.
 
-        Pass `memories` and `embeddings` to atomically replace indexed documents that named
-        the merged person, exactly as `register_identity` does. They are applied only when the
+        Pass memories and embeddings to atomically replace indexed documents that named
+        the merged person, exactly as register_identity does. They are applied only when the
         unlink actually commits, so a refused unlink leaves the projection untouched.
 
         Claims derived while the two were one identity are re-evaluated in the same
@@ -934,7 +934,7 @@ class IdentityRegistry:
         restored identity, one resting on both people's media is unbound, and one that never
         involved the restored modality keeps its binding.
 
-        `operation` logs the control-plane operation that split this merge, in the same
+        operation logs the control-plane operation that split this merge, in the same
         transaction, so a split is visible in the operation log and reversible through it. It is
         written only when the split actually commits.
         """
@@ -960,7 +960,7 @@ class IdentityRegistry:
         """Return every ID that names one identity: the canonical ID first, then its aliases.
 
         Accepts a canonical ID or any merged alias, and returns None when none of them is
-        known. Note what this is *not* useful for: `link_identities` re-points every speech
+        known. Note what this is *not* useful for: link_identities re-points every speech
         segment, face observation and exemplar onto the canonical ID, so expanding a read
         across the returned class retrieves exactly what the canonical ID alone retrieves.
         The class is the erasure and audit surface -- which IDs still admit a forgotten
@@ -983,15 +983,15 @@ class IdentityRegistry:
         Accepts a canonical ID or any merged alias and removes the whole cluster: the profile,
         every face and voice exemplar, every alias, and the accumulated cross-modal link
         evidence. Returns the erasure and the assets no remaining memory references, the way
-        `delete_memory_with_assets` does, or None, changing nothing, when no such identity
+        delete_memory_with_assets does, or None, changing nothing, when no such identity
         exists.
 
         Memories, their content and their media assets survive -- deleting a person must not
         delete the family's memory of the events. Their identity annotations do not: speech
-        segments keep their transcript with `speaker_id` scrubbed to NULL, and face
+        segments keep their transcript with speaker_id scrubbed to NULL, and face
         observations are removed outright, because a face row's entire payload is a box plus
         the identity claim and stripping the claim leaves only a biometric locator. The
-        cached `face_analyses`/`speech_analyses` rows deliberately stay, so re-analysing
+        cached face_analyses/speech_analyses rows deliberately stay, so re-analysing
         already stored media cannot re-mint the person from the same clip.
 
         No tombstone is recorded, and this deliberately does not stop a future encounter from
@@ -1000,18 +1000,18 @@ class IdentityRegistry:
         wants "never recognise this person again" needs a retained blocklist, which is not a
         deletion and must not be spelled like one.
 
-        Pass `memories` and `embeddings` to atomically replace indexed documents that named the
-        person, exactly as `register_identity` does -- the erasure commits in SQLite before the
+        Pass memories and embeddings to atomically replace indexed documents that named the
+        person, exactly as register_identity does -- the erasure commits in SQLite before the
         outbox tells the projection.
 
-        `operation` logs, in the same transaction, that this erasure happened. The row is audit
+        operation logs, in the same transaction, that this erasure happened. The row is audit
         history and nothing more: it names the identity and its aliases, and the naming
-        assertions the erasure deleted, so `operations()` can show that a person was erased
+        assertions the erasure deleted, so operations() can show that a person was erased
         without holding anything a rollback could restore.
 
-        Recoverability, stated plainly: freed cells are zero-filled (`PRAGMA secure_delete`) and
+        Recoverability, stated plainly: freed cells are zero-filled (PRAGMA secure_delete) and
         the write-ahead log is checkpointed and truncated afterwards, so the exemplar bytes are
-        no longer present in `state.sqlite3` or its `-wal`. This store runs no `VACUUM`, and
+        no longer present in state.sqlite3 or its -wal. This store runs no VACUUM, and
         nothing here reaches filesystem snapshots, backups, or blocks an SSD retains through
         wear levelling; full-disk encryption remains the only defence against those.
         """
@@ -1051,7 +1051,7 @@ class IdentityRegistry:
                 "DELETE FROM face_observations WHERE identity_id = ?",
                 (resolved_id,),
             ).rowcount
-            # The naming assertions go with the person. `ON DELETE SET NULL` below would keep
+            # The naming assertions go with the person. ON DELETE SET NULL below would keep
             # them as unattributed records still carrying the erased name in their content and
             # their vectors, which is exactly what erasure promises to remove. This goes through
             # the ordinary delete, so whatever cited the assertion is reconciled and reprojected
@@ -1103,7 +1103,7 @@ class IdentityRegistry:
         identity_id: str,
         memory_ids: Sequence[str],
     ) -> tuple[str, ...]:
-        """Return which of `memory_ids` carry a face or voice occurrence of one identity.
+        """Return which of memory_ids carry a face or voice occurrence of one identity.
 
         The control plane asks this before it lets a proposal name a person: a name may only be
         pinned on somebody the cited evidence actually contains. Unknown identities and unknown

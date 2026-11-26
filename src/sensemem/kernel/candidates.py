@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime
 from functools import partial
+from typing import Protocol
 
 from opentelemetry.trace import Tracer
 
@@ -20,13 +20,17 @@ from sensemem.candidate_sources import (
     merge_candidate_hits,
 )
 from sensemem.exceptions import ModelError, SenseMemError, ValidationError
-from sensemem.infrastructure.local.store import LocalStore
+from sensemem.infrastructure.local.store.local_store import LocalStore
 from sensemem.infrastructure.local.zvec_index import IndexHit
 from sensemem.kernel.execution import Execution
 from sensemem.kernel.ranking import IndexCandidates
 from sensemem.kernel.runtime import Index, translate_index_errors, translate_storage_errors
 from sensemem.kernel.tracing import Traced
 from sensemem.types import MemoryCategory
+
+
+class _IndexRouteCall(Protocol):
+    def __call__(self) -> tuple[IndexHit, ...]: ...
 
 
 class NativeCandidateReader:
@@ -64,7 +68,7 @@ class NativeCandidateReader:
         if self.route_count + len(queries) > self._request.max_routes:
             raise ValidationError("candidate source exceeded the native route budget")
         self.route_count += len(queries)
-        calls: list[Callable[[], tuple[IndexHit, ...]]] = []
+        calls: list[_IndexRouteCall] = []
         for query in queries:
             if query.memory_type is not None and not isinstance(query.memory_type, MemoryCategory):
                 raise ValidationError("candidate memory type must be a MemoryCategory")

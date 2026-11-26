@@ -11,11 +11,11 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Literal, cast
+from typing import Literal
 
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.identity import FaceObservation, SpeakerSegment
-from sensemem.infrastructure.local.store import IndexDocument, StoredAsset, StoredMemory
+from sensemem.infrastructure.local.store.rows import IndexDocument, StoredAsset, StoredMemory
 from sensemem.kernel.content import PreparedContent, PreparedMemory
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS, validated_text
 from sensemem.models.base import ModelInput
@@ -23,7 +23,7 @@ from sensemem.perception import VisualDescription
 from sensemem.types import MemoryCategory, Modality
 
 # A describer is shown this write's own transcript as context, under the same labels the index
-# prints (`speaker_prose`), so a fact naming a speaker resolves to the same person. Uncapped,
+# prints (speaker_prose), so a fact naming a speaker resolves to the same person. Uncapped,
 # one long clip's words would dominate the token budget every visual in it pays; cut at a line
 # boundary so a turn is never split mid-sentence.
 MAX_DESCRIBE_CONTEXT_CHARACTERS = 12_000
@@ -171,9 +171,9 @@ def description_sections(
     A caption whose visible half is empty still contributes its facts, and one with no facts is
     exactly the single section this produced before facts existed.
 
-    `names` projects the facts half through whatever `speaker_N` -> name binding this write
-    already knows, the same way transcript prose is projected (`speech_retrieval_text`) -- see
-    `project_fact_labels` for why this projection runs once, here, and never again.
+    names projects the facts half through whatever speaker_N -> name binding this write
+    already knows, the same way transcript prose is projected (speech_retrieval_text) -- see
+    project_fact_labels for why this projection runs once, here, and never again.
     """
     visible, facts = description.text, "\n".join(description.facts)
     if facts and names:
@@ -187,11 +187,11 @@ def description_sections(
 def project_fact_labels(facts: str, names: Mapping[str, str]) -> str:
     """Replace a speaker label with the name already known for it, at write time only.
 
-    Unlike `[speech identities:]`, which `_retrieval_text` re-projects from the current name on
-    every index rebuild, `[facts:]` is rendered once, when the memory is written, from whatever
+    Unlike [speech identities:], which _retrieval_text re-projects from the current name on
+    every index rebuild, [facts:] is rendered once, when the memory is written, from whatever
     names this write already knows -- its own newly staged ones and any identity already named
     before it. A name a *later* clip asserts does not retroactively rewrite an earlier one's
-    stored facts; only the identity's own projected name (`identities()`, `[speech identities:]`)
+    stored facts; only the identity's own projected name (identities(), [speech identities:])
     stays current for a person the store keeps renaming.
     """
     for label, name in names.items():
@@ -214,11 +214,11 @@ def transcript_sections(text: str, assets: Sequence[StoredAsset]) -> tuple[str, 
         if not transcript or asset.asset_id in seen:
             continue
         seen.add(asset.asset_id)
-        # Modality-neutral on purpose. This text becomes `memory_records.content`, which is the
+        # Modality-neutral on purpose. This text becomes memory_records.content, which is the
         # BM25 document, so every word in the marker is a term any query matches for free -- and a
-        # lexical match alone clears `minimum_relevance`. Naming the modality here labelled video
+        # lexical match alone clears minimum_relevance. Naming the modality here labelled video
         # speech "audio" and handed every video memory a free match on that word; deriving it from
-        # `asset.modality` would only move the free match to the commoner word. The modality is
+        # asset.modality would only move the free match to the commoner word. The modality is
         # already published on the record's assets, so nothing is lost by leaving it out.
         marker = f"[transcript:{asset.asset_id}]"
         identity_marker = f"[speech identities:{asset.asset_id}]\n"
@@ -267,7 +267,7 @@ def speech_evidence(asset_id: str, segments: Sequence[SpeakerSegment]) -> dict[s
 def truncated_describe_context(text: str) -> str:
     """Cap what a describer is shown of a clip's own words at a bounded character budget.
 
-    Cut at a line boundary -- each line is one speaker's turn (see `speaker_prose`) -- so a
+    Cut at a line boundary -- each line is one speaker's turn (see speaker_prose) -- so a
     truncated context still ends on a whole turn rather than a sentence sliced in half.
     """
     if len(text) <= MAX_DESCRIBE_CONTEXT_CHARACTERS:
@@ -279,9 +279,9 @@ def truncated_describe_context(text: str) -> str:
 def speaker_prose(asset_id: str, segments: Sequence[SpeakerSegment]) -> str | None:
     """Render one asset's turns as the prose the index carries, or None when nothing was said.
 
-    Routed through the stored evidence shape and `speech_retrieval_text` rather than formatted
+    Routed through the stored evidence shape and speech_retrieval_text rather than formatted
     here, so the labels a describer is shown are byte-for-byte the labels the searchable document
-    prints. Anything else and a fact naming `speaker_2` would name a different person than the
+    prints. Anything else and a fact naming speaker_2 would name a different person than the
     transcript the reader sees.
     """
     if not segments:
@@ -292,10 +292,10 @@ def speaker_prose(asset_id: str, segments: Sequence[SpeakerSegment]) -> str | No
 
 
 def speaker_labels(segments: Sequence[SpeakerSegment]) -> dict[str, str]:
-    """Map each per-run identity ID to the stable `speaker_N` label the projection prints.
+    """Map each per-run identity ID to the stable speaker_N label the projection prints.
 
-    Mirrors the aliasing rule inside `speech_retrieval_text`, which is what writes those labels
-    into the document; a distilled fact naming `speaker_2` can only be resolved back to a person
+    Mirrors the aliasing rule inside speech_retrieval_text, which is what writes those labels
+    into the document; a distilled fact naming speaker_2 can only be resolved back to a person
     by the same rule, so a test pins the two against each other.
     """
     labels: dict[str, str] = {}
@@ -407,13 +407,13 @@ def speech_retrieval_text(payload: str, asset_id: str) -> str | None:
     """Project stored speech evidence into the prose the derived index and embedding should carry.
 
     Stored content keeps the JSON, because the answering model reads it as structured evidence and
-    needs the timings and scores. The derived projections do not: as JSON, `start_ms`, `end_ms`,
-    `speaker_id` and `identity_score` all became BM25 tokens surrounding the words someone
+    needs the timings and scores. The derived projections do not: as JSON, start_ms, end_ms,
+    speaker_id and identity_score all became BM25 tokens surrounding the words someone
     actually said, and the embedder encoded the schema along with the speech. Index content is the
     only lever that moves the R@20 ceiling, so the projection carries the utterance and who said
     it and nothing else.
 
-    An unstable per-run `identity_*` id is still replaced by a stable `speaker_N` alias, which is
+    An unstable per-run identity_* id is still replaced by a stable speaker_N alias, which is
     what this function existed for: without it a recognizer that re-minted a person rewrote every
     document that mentioned them. A named speaker is projected under their name, which is also the
     token a caller would search for.
@@ -456,11 +456,14 @@ def validated_descriptions(
 ) -> tuple[VisualDescription, ...]:
     if not isinstance(descriptions, (tuple, list)) or len(descriptions) != len(inputs):
         raise ModelError("vision model returned invalid output", reason="response_invalid")
-    if any(not isinstance(description, VisualDescription) for description in descriptions):
-        raise ModelError("vision model returned invalid output", reason="response_invalid")
-    values = tuple(cast(VisualDescription, value) for value in descriptions)
-    if any(len(description.content) > MAX_TEXT_CHARACTERS for description in values):
+    values: list[VisualDescription] = []
+    for value in descriptions:
+        if not isinstance(value, VisualDescription):
+            raise ModelError("vision model returned invalid output", reason="response_invalid")
+        values.append(value)
+    result = tuple(values)
+    if any(len(description.content) > MAX_TEXT_CHARACTERS for description in result):
         raise ModelError(
             "vision description exceeded the supported text length", reason="payload_too_large"
         )
-    return values
+    return result

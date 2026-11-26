@@ -31,7 +31,7 @@ from sensemem.infrastructure.local.store._lineage import (
 from sensemem.infrastructure.local.store.rows import validated_identity_modality
 from sensemem.types import EvidenceBasis, RecordKind
 
-# The one basis a consent statement can carry, hardcoded by `_consent_proposal`. Both consent
+# The one basis a consent statement can carry, hardcoded by _consent_proposal. Both consent
 # reads below filter on it as well as on the predicate, so a row reaching this table by any
 # other route -- a future writer, a hand-edited database -- cannot be read as a person's own
 # statement. Defence in depth: the kernel's claim identity guard reserves the predicate, so no
@@ -41,7 +41,7 @@ _CONSENT_BASIS = EvidenceBasis.USER_STATEMENT.value
 
 # Consent states under which the kernel stops enrolling new biometric exemplars for a person.
 # Recognition against exemplars already held is unaffected: erasing what is held is
-# `forget_identity`, and answering a question about a photo is not new processing of a person.
+# forget_identity, and answering a question about a photo is not new processing of a person.
 _RESTRAINING_CONSENT = frozenset({ConsentState.WITHHELD.value, ConsentState.WITHDRAWN.value})
 
 
@@ -58,12 +58,12 @@ def delete_unobserved_identities(
     """Drop the anonymous identities the deleted media just left with no observation at all.
 
     An exemplar is a biometric template derived from stored media, so it is content: leaving one
-    behind after its last face observation and speech segment are gone would make `delete()`
+    behind after its last face observation and speech segment are gone would make delete()
     incomplete. A named or merged identity is a person the caller asserted, not a by-product of
-    one recording; it survives, and `forget_identity()` is what erases a person.
+    one recording; it survives, and forget_identity() is what erases a person.
 
     Only identities this asset observed are candidates. A sweep of every unobserved identity
-    would also destroy one `unlink_identity()` deliberately left anonymous with its exemplars and
+    would also destroy one unlink_identity() deliberately left anonymous with its exemplars and
     no observations. New ingestion may recognize those templates independently.
     """
     if not identity_ids:
@@ -98,7 +98,7 @@ def displaced_naming_versions(
     """Return what this record's in-force naming assertion displaced, if it is one.
 
     Deleting the assertion that renamed somebody has to leave the previous name standing, the
-    same reversal `rollback_operation` applies -- a bound `ENTITY` row supersedes a lineage
+    same reversal rollback_operation applies -- a bound ENTITY row supersedes a lineage
     rather than accumulating beside it, so nothing else brings the predecessor back. A record
     whose version is already retired displaced nothing that deleting it can restore, and a
     first assertion supersedes nothing, so a retracted name never returns on its own.
@@ -125,9 +125,9 @@ def current_naming_assertion(
     *,
     excluding: Sequence[str] = (),
 ) -> sqlite3.Row | None:
-    """Return the naming assertion `identities.name` currently projects, newest first.
+    """Return the naming assertion identities.name currently projects, newest first.
 
-    `excluding` drops records a caller is about to delete, which is how it can rebuild indexed
+    excluding drops records a caller is about to delete, which is how it can rebuild indexed
     text for the projection a deletion is going to leave behind rather than the current one.
     """
     dropped = tuple(dict.fromkeys(excluding))
@@ -153,7 +153,7 @@ def current_consent_state(connection: sqlite3.Connection, identity_id: str) -> s
     """Return the consent state one identity's standing assertion projects, or None.
 
     Consent is a bound STATE assertion rather than a bound ENTITY one, which is what keeps it
-    out of `current_naming_assertion` above: the two live in separate lineages, so recording
+    out of current_naming_assertion above: the two live in separate lineages, so recording
     consent never displaces a name and renaming somebody never disturbs their consent.
     """
     row: sqlite3.Row | None = connection.execute(
@@ -180,7 +180,7 @@ def restrained_identities(connection: sqlite3.Connection) -> frozenset[str]:
     consent has to take effect on the next observation, not on the next process start.
     """
     # Ordered oldest-first per identity so the newest standing assertion is the one that
-    # survives the dict build, which is the same rule `current_naming_assertion` applies.
+    # survives the dict build, which is the same rule current_naming_assertion applies.
     standing: dict[str, str | None] = {
         row_text(row, "identity_id"): optional_row_text(row, "value")
         for row in connection.execute(
@@ -210,7 +210,7 @@ def visible_naming_assertions(
 ) -> tuple[sqlite3.Row, ...]:
     """Return the identity, subject, and memory id of every currently visible naming assertion.
 
-    `identity_ids` narrows the scan to the people the caller already has in hand, which is what
+    identity_ids narrows the scan to the people the caller already has in hand, which is what
     a read path asking "is this handful of observed people named" wants; None means everybody.
     """
     query = """
@@ -255,10 +255,10 @@ def visible_named_identities(
     valid_at: datetime | None = None,
     known_at: datetime | None = None,
 ) -> dict[str, tuple[str, str]]:
-    """Return, per identity, the `(name, naming_memory_id)` its visible naming assertion gives.
+    """Return, per identity, the (name, naming_memory_id) its visible naming assertion gives.
 
     An identity with no visible assertion, or one whose subject is somehow unset, is simply
-    absent -- `named_actors` treats a missing key as "not currently named".
+    absent -- named_actors treats a missing key as "not currently named".
     """
     named: dict[str, tuple[str, str]] = {}
     for row in visible_naming_assertions(connection, valid_at=valid_at, known_at=known_at):
@@ -274,11 +274,11 @@ def merge_named_identity_links(
     named: Mapping[str, tuple[str, str]],
     links: dict[str, list[tuple[str, str, str]]],
 ) -> None:
-    """Resolve one batch of memories' identity edges and add the named ones to `links`.
+    """Resolve one batch of memories' identity edges and add the named ones to links.
 
     The identity edge is read two ways in one query: the asset-keyed speech speaker or face
-    observation `provisional_identities` reads for the unnamed case, and the memory's own
-    bound semantic assertion (`memory_semantics.identity_id`). A memory naming itself -- the
+    observation provisional_identities reads for the unnamed case, and the memory's own
+    bound semantic assertion (memory_semantics.identity_id). A memory naming itself -- the
     naming assertion's own row -- is skipped, because it already renders as its own actors hit.
     """
     placeholders = ", ".join("?" for _memory_id in batch)
@@ -318,7 +318,7 @@ def has_naming_assertion(connection: sqlite3.Connection, identity_id: str) -> bo
     """Return whether any naming assertion, visible or not, is bound to this identity.
 
     A merge only recomputes a projection when there is an assertion to project. An identity
-    named through the store's own `register_identity`, with no assertion behind it, keeps the
+    named through the store's own register_identity, with no assertion behind it, keeps the
     name the merge plan chose -- which is always the surviving identity's own name.
     """
     return (
@@ -359,18 +359,18 @@ def reproject_identities(
     connection: sqlite3.Connection,
     identity_ids: Sequence[str],
 ) -> tuple[str, ...]:
-    """Recompute `identities.name` from each identity's current visible naming assertion.
+    """Recompute identities.name from each identity's current visible naming assertion.
 
     This is the one rule behind the projection: whenever a bound naming assertion is written,
     retired, hidden, re-pointed or deleted, the registry is recomputed in the same transaction,
-    so `identities.name` is never a name no visible assertion supports. Returns the identities
+    so identities.name is never a name no visible assertion supports. Returns the identities
     whose projection actually moved, which is what a caller has to repaint indexed text for.
 
-    `identities.updated_at` is transaction time and is taken here rather than from the caller.
+    identities.updated_at is transaction time and is taken here rather than from the caller.
     Every path that moves the projection carries a semantic time of its own -- a record's
-    `recorded_at`, an operation's `applied_at`, a `forgotten_at` a host may deliberately backdate
-    -- and none of them says when this row changed. Stamping one of those could put `updated_at`
-    before the row's own `created_at`, which the schema refuses.
+    recorded_at, an operation's applied_at, a forgotten_at a host may deliberately backdate
+    -- and none of them says when this row changed. Stamping one of those could put updated_at
+    before the row's own created_at, which the schema refuses.
     """
     now = datetime_text(datetime.now(timezone.utc))
     changed: list[str] = []
@@ -572,12 +572,12 @@ class _ExemplarBank:
     """Every stored exemplar of one modality, space and dimension, scored as one matrix.
 
     Recognition scores one observation against the whole bank, so the bank is the unit of work:
-    one `frombuffer` over the fetched BLOBs and one matrix product per label, instead of
+    one frombuffer over the fetched BLOBs and one matrix product per label, instead of
     unpacking and re-normalising every row into Python tuples on every call. Measured on a
     46,360-exemplar store that per-row path cost 1.3 s per speaker label and grew with every
     clip ingested; the matrix costs tens of milliseconds. Rows arrive ordered by identity then
     position, so each identity is one contiguous slice. Exemplars written during the call are
-    kept as the exact tuples the write path returned, and `stored()` re-derives a stored row the
+    kept as the exact tuples the write path returned, and stored() re-derives a stored row the
     way the write path does, so a re-observation of the same centroid still compares equal to
     what is stored; the matrix is for scoring only.
     """
@@ -714,7 +714,7 @@ def match_identities(
     ).fetchall()
     # ponytail: the bank is rebuilt from a full-table read on every recognised asset (about
     # 60 ms at 46k rows); cache it per (modality, space, dimension) and invalidate at every
-    # `identity_exemplars` writer -- including the `identities` cascades -- if that matters.
+    # identity_exemplars writer -- including the identities cascades -- if that matters.
     bank = _ExemplarBank(rows, dimension=dimension, modality=modality)
     preferred_identity = (
         None if preferred_identity is None else resolve_identity_id(connection, preferred_identity)
@@ -736,7 +736,7 @@ def match_identities(
     if preferred_exists and preferred_identity is not None:
         known_identities.add(preferred_identity)
     # Consent restrains enrolment, not recognition. A person who withheld or withdrew it
-    # still matches the exemplars already held -- destroying those is `forget_identity` --
+    # still matches the exemplars already held -- destroying those is forget_identity --
     # but this observation adds nothing to their template, so the bank stops growing from
     # the moment they said so.
     restrained = restrained_identities(connection)
@@ -765,7 +765,7 @@ def match_identities(
             identity_id = (new_identities or {}).get(label) or f"identity_{uuid.uuid4().hex}"
             score = None
         if identity_id in restrained:
-            # Recognized, reported, and nothing written: no exemplar, no `identities` row
+            # Recognized, reported, and nothing written: no exemplar, no identities row
             # update, and so nothing for a rollback to undo either.
             matches[label] = (
                 identity_id,

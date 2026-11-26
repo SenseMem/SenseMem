@@ -1,6 +1,6 @@
 """The compile plane: closed, budgeted context with optional goal-directed recall.
 
-Selection and structuring are pure and live in `sensemem.context`; this module owns the
+Selection and structuring are pure and live in sensemem.context; this module owns the
 store-backed reads that close evidence over lineage, consent, and actors before that pure step
 runs.
 """
@@ -61,9 +61,9 @@ from sensemem.records import SearchHit
 from sensemem.spatial import RetrievalScope
 from sensemem.types import Modality, RecordKind
 
-# How much deeper `compile()` ranks when the budget carries a bound only the compiler can
-# apply -- `min_confidence` or `freshness`. Those remove candidates after retrieval, so the
-# window has to hold what they will remove for `candidates_exhausted` to mean the store ran
+# How much deeper compile() ranks when the budget carries a bound only the compiler can
+# apply -- min_confidence or freshness. Those remove candidates after retrieval, so the
+# window has to hold what they will remove for candidates_exhausted to mean the store ran
 # out rather than the window did.
 _POST_FILTER_WINDOW = 3
 
@@ -222,7 +222,7 @@ class Compilation(Traced):
             self._trace("sensemem.compile", kind="operation"),
             self._lifecycle.operation(model_work=True) as assets,
         ):
-            # Taken before anything else, so `budget.max_latency_ms` bounds the compilation a
+            # Taken before anything else, so budget.max_latency_ms bounds the compilation a
             # caller waits for rather than the selection pass alone.
             started_at = perf_counter()
             budget = ContextBudget() if budget is None else budget
@@ -245,9 +245,9 @@ class Compilation(Traced):
                 explicit_reference or datetime.now(timezone.utc),
                 infer_reference=explicit_reference is None,
             )
-            # `validate_limit` bounds what a caller may ask a public search to return, not how deep the
-            # kernel ranks, so `_search_prepared` has no ceiling of its own and a bundle may rank
-            # past one hundred. Three candidates per slot is the same headroom `ask()` gives its
+            # validate_limit bounds what a caller may ask a public search to return, not how deep the
+            # kernel ranks, so _search_prepared has no ceiling of its own and a bundle may rank
+            # past one hundred. Three candidates per slot is the same headroom ask() gives its
             # modality round robin -- widened when the budget carries a bound the index cannot
             # answer, because those are applied to the window after it comes back and a window
             # sized for the bundle alone would report exhaustion the store does not have.
@@ -260,7 +260,7 @@ class Compilation(Traced):
                 prepared,
                 limit=candidate_limit,
                 operation=assets,
-                # `memory_types` is index-pushable one type at a time, so the kernel opens one
+                # memory_types is index-pushable one type at a time, so the kernel opens one
                 # route per type. Without that a request for a rare type competes for the same
                 # window as every common one and comes back empty while the store holds records.
                 memory_types=pushed_memory_types(budget.memory_types),
@@ -272,8 +272,8 @@ class Compilation(Traced):
                 require_unambiguous=False,
                 capture_trace=False,
             )
-            # The same transcript cache `search()` writes for a spoken query. It is a cache of
-            # the query's own audio, not a memory: `compile()` stores nothing it retrieved.
+            # The same transcript cache search() writes for a spoken query. It is a cache of
+            # the query's own audio, not a memory: compile() stores nothing it retrieved.
             self._speech.persist_transcripts(assets)
             ranked, recall_unknowns = self._recall.for_context(
                 prepared,
@@ -903,12 +903,12 @@ class Compilation(Traced):
 
         Only the naming assertion is dropped, not the person's memories: consent governs being
         treated as a recognized person, not whether the evening happened. The bundle then says
-        a person is missing from `actors` rather than silently compiling a scene with a hole in
+        a person is missing from actors rather than silently compiling a scene with a hole in
         it, which is what makes the omission auditable instead of a retrieval mystery.
 
         Both routes to an actor are filtered, because both publish the same person. A bound
-        `ENTITY` hit renders as its own line, and a resolved identity edge on any other memory
-        -- the face in a photo, the speaker in a clip -- becomes a `NamedActor` whether or not
+        ENTITY hit renders as its own line, and a resolved identity edge on any other memory
+        -- the face in a photo, the speaker in a clip -- becomes a NamedActor whether or not
         the assertion that names them ranked at all.
         """
         bound = {
@@ -918,7 +918,7 @@ class Compilation(Traced):
             and hit.context.identity_id is not None
             and hit.context.kind is RecordKind.ENTITY
         }
-        # Every identity the enrichment could name, not only the ones a retrieved `ENTITY` hit
+        # Every identity the enrichment could name, not only the ones a retrieved ENTITY hit
         # carried: a bundle that reached a person's clip but not their naming assertion used to
         # find nothing bound here, consult no consent at all, and then name them from the clip.
         bound.update(link[0] for links in named.values() for link in links)
@@ -981,7 +981,7 @@ class Compilation(Traced):
     ) -> dict[str, tuple[NamedActorLink, ...]]:
         """Resolve which people the candidate evidence's identity edge already names.
 
-        Deterministic kernel policy, the positive counterpart of `_provisional_identities`: a
+        Deterministic kernel policy, the positive counterpart of _provisional_identities: a
         person is named exactly while a visible naming assertion names them, whether or not
         that assertion itself ranked into the bundle.
         """

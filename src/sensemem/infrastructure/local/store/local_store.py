@@ -1,6 +1,6 @@
 """SQLite source of truth for the local SenseMem runtime.
 
-`LocalStore` owns one data directory and exposes its storage surface by table family. The
+LocalStore owns one data directory and exposes its storage surface by table family. The
 families share one connection pool and one directory lock. Each family is the writer of its own
 tables; a transaction that spans families -- a formation commit that writes records, evidence,
 embeddings, and outbox rows together -- lives in the family that owns the primary write and

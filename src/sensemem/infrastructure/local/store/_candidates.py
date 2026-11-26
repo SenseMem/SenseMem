@@ -64,7 +64,7 @@ def consumed_at_by_memory(connection: sqlite3.Connection) -> dict[str, datetime]
     """Return, per memory, when a still-standing operation last consumed or produced it.
 
     The log stores IDs inside its two JSON documents rather than in columns, so this reads them
-    back with `json_tree`. A rolled-back operation consumed nothing that still stands.
+    back with json_tree. A rolled-back operation consumed nothing that still stands.
     """
     # One full scan of the standing operation log per call, JSON-parsed row by row. Historical
     # aggregation is a separate cost from candidate selection: any future optimization must
@@ -119,9 +119,9 @@ def evidence_candidates(
         return []
     placeholders = ", ".join("?" for _memory_id in due)
     fresh: dict[str, list[str]] = {memory_id: [] for memory_id in due}
-    # A forgotten source is dropped here, not later: `consolidate()` reads the shown records with
-    # `active_only=True`, so naming one would inflate `evidence_count` with an ID the deliberation
-    # never sees. A candidate left with no remaining sources falls out of the `if sources` guard.
+    # A forgotten source is dropped here, not later: consolidate() reads the shown records with
+    # active_only=True, so naming one would inflate evidence_count with an ID the deliberation
+    # never sees. A candidate left with no remaining sources falls out of the if sources guard.
     for row in connection.execute(
         f"""
         SELECT e.memory_id AS memory_id, e.source_memory_id AS source_memory_id,
@@ -156,7 +156,7 @@ def contradiction_candidates(
 ) -> list[StoredCandidate]:
     """Lineages whose current visible claims disagree, the way the compiler reports them.
 
-    Retiring one side through `CORRECT` is what clears a contradiction, but a deliberation the
+    Retiring one side through CORRECT is what clears a contradiction, but a deliberation the
     model could not resolve clears nothing -- so the lineage is dropped while nothing about it
     has changed since it was last weighed, and returns as soon as a further claim is recorded in
     it. The signal is the newest transaction time among the disagreeing claims.
@@ -381,8 +381,8 @@ def feedback_candidates(
 ) -> list[StoredCandidate]:
     """Records whose recall was confirmed since a standing operation last saw them.
 
-    `reinforce_memories` is one writer of `last_accessed_at`; with opt-in
-    `reinforce_on_answer`, an `ask()` answer citing a record is the other.
+    reinforce_memories is one writer of last_accessed_at; with opt-in
+    reinforce_on_answer, an ask() answer citing a record is the other.
     """
     rows = connection.execute(
         """

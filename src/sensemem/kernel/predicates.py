@@ -122,7 +122,7 @@ def claim_lineage_id(
     version = "v1"
     if resolution.value_type is not None:
         version = "v2"
-        del payload["predicate"]
+        payload.pop("predicate")
         payload.update(
             predicate_id=resolution.key,
             # TRAIT's existing contract lets a host assertion override accumulating model

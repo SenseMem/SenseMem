@@ -15,7 +15,7 @@ from sensemem.models.base import EmbedTask, ModelInput
 from sensemem.query_policy import QueryPolicy, QueryRepresentationPlan, QueryRequest
 from sensemem.types import Modality, RetrievalMode
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +76,7 @@ class Querying(Traced):
                     plan.optional_embedding_inputs, task=EmbedTask.QUERY
                 )
             except ModelError as error:
-                _LOGGER.warning("optional query embedding failed: %s", error.reason)
+                LOGGER.warning(f"optional query embedding failed: {error.reason}")
             else:
                 encoded.extend(zip(plan.optional_embedding_inputs, vectors, strict=True))
         return QueryEncoding(

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 import struct
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import islice
 from operator import mul
 from sys import float_info
-from typing import cast
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -22,14 +22,16 @@ class InvalidVectorError(ValueError):
     """A vector's dimension or numeric representation cannot be scored."""
 
 
+class _DotProduct(Protocol):
+    def __call__(self, left: Sequence[float], right: Sequence[float], /) -> float: ...
+
+
 def _fallback_dot_product(left: Sequence[float], right: Sequence[float]) -> float:
-    return cast(float, sum(map(mul, left, right)))
+    return float(sum(map(mul, left, right)))
 
 
 # Python 3.11 lacks the standard-library native dot product.
-_dot_product: Callable[[Sequence[float], Sequence[float]], float] = getattr(
-    math, "sumprod", _fallback_dot_product
-)
+_dot_product: _DotProduct = getattr(math, "sumprod", _fallback_dot_product)
 
 
 def max_cosine_scores(
@@ -66,10 +68,11 @@ def max_cosine_part_scores(
     measured = _max_cosines(
         query_vectors, document_parts, preferred_embeddings=preferred_embeddings
     )
-    return {
-        memory_id: (cast(str, embedding_id), max(0.0, similarity), (1.0 + similarity) / 2.0)
-        for memory_id, (embedding_id, similarity) in measured.items()
-    }
+    result: dict[str, tuple[str, float, float]] = {}
+    for memory_id, (embedding_id, similarity) in measured.items():
+        assert embedding_id is not None
+        result[memory_id] = (embedding_id, max(0.0, similarity), (1.0 + similarity) / 2.0)
+    return result
 
 
 def _max_cosines(

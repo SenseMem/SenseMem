@@ -5,24 +5,31 @@ from __future__ import annotations
 import asyncio
 import math
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Condition, Thread
+from typing import Protocol
 
 from sensemem._capacity import Capacity
 from sensemem.exceptions import ModelError, StorageError, ValidationError
 from sensemem.identity import FaceObservation, SpeakerSegment
 from sensemem.infrastructure.local.assets import AssetStoreError
-from sensemem.infrastructure.local.store import SpeechPlan, StoredAsset
+from sensemem.infrastructure.local.store.rows import SpeechPlan, StoredAsset
 from sensemem.kernel.runtime import Storage, translate_storage_errors
 from sensemem.perception import SpeechAnalysis, VisualDescription
 from sensemem.processing import StageResult
 
 _PROCESS_OPERATIONS = Capacity(128)
 _PROCESS_MODELS = Capacity(28)
+
+
+class _CloseCallback(Protocol):
+    def __call__(self) -> None: ...
+
+
 _PROCESS_PAYLOAD = Capacity(512 * 1024 * 1024)
 
 
@@ -47,7 +54,7 @@ class OperationAssets:
     payload_bytes: int = 0
     # A naming fact that named nobody: a label no recognizer in this clip produced, an identity
     # that no longer exists by binding time, or a name that failed validation. Counted rather
-    # than only logged, alongside the refusals `_bind_speaker_names` already counts for a name
+    # than only logged, alongside the refusals _bind_speaker_names already counts for a name
     # that conflicts with one a person already carries.
     speaker_names_refused: int = 0
 
@@ -84,7 +91,7 @@ class Lifecycle:
             self._closing = False
             self._lifecycle.notify_all()
 
-    def _close_job(self, finish: Callable[[], None], timeout_seconds: float) -> Future[None] | None:
+    def _close_job(self, finish: _CloseCallback, timeout_seconds: float) -> Future[None] | None:
         self.require_owner_process()
         if (
             isinstance(timeout_seconds, bool)
@@ -127,7 +134,7 @@ class Lifecycle:
             stage="close",
         )
 
-    def close(self, finish: Callable[[], None], *, timeout_seconds: float) -> None:
+    def close(self, finish: _CloseCallback, *, timeout_seconds: float) -> None:
         """Bound the caller's wait while retaining ownership until cleanup actually finishes."""
         future = self._close_job(finish, timeout_seconds)
         if future is None:
@@ -144,7 +151,7 @@ class Lifecycle:
             with self._lifecycle:
                 self._close_reported = True
 
-    async def close_async(self, finish: Callable[[], None], *, timeout_seconds: float) -> None:
+    async def close_async(self, finish: _CloseCallback, *, timeout_seconds: float) -> None:
         future = self._close_job(finish, timeout_seconds)
         if future is None:
             return
@@ -164,7 +171,7 @@ class Lifecycle:
             with self._lifecycle:
                 self._close_reported = True
 
-    def _finish_close(self, finish: Callable[[], None], future: Future[None]) -> None:
+    def _finish_close(self, finish: _CloseCallback, future: Future[None]) -> None:
         with self._lifecycle:
             while self._active_operations:
                 self._lifecycle.wait()

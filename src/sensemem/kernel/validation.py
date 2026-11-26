@@ -12,7 +12,7 @@ from typing import get_args
 
 from sensemem._validation import encode_page_cursor
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.store import StoredMemory
+from sensemem.infrastructure.local.store.rows import StoredMemory
 from sensemem.prompts import context as context_prompts
 from sensemem.spatial import RetrievalScope
 from sensemem.types import AnswerPolicy, MemoryCategory, Modality, RetrievalMode
@@ -45,7 +45,7 @@ def modality_names(modalities: Iterable[Modality]) -> str:
 
 
 def scope_description(scope: RetrievalScope | None) -> str | None:
-    """Describe a requested scope that matched nothing, or `None` when none was requested."""
+    """Describe a requested scope that matched nothing, or None when none was requested."""
     if scope is None:
         return None
     bounds: list[tuple[str, str, float | None]] = []
@@ -89,7 +89,7 @@ def optional_memory_type(value: object) -> MemoryCategory | None:
 def pushed_memory_types(
     requested: MemoryCategory | frozenset[MemoryCategory] | None,
 ) -> frozenset[MemoryCategory] | None:
-    """Return the type filter to push into the index, or `None` when it would filter nothing.
+    """Return the type filter to push into the index, or None when it would filter nothing.
 
     A request naming every type is the unfiltered request written out, and pushing it would buy
     one index route per type for a filter that removes nothing.
@@ -130,7 +130,7 @@ def strict_bool(value: object, name: str) -> bool:
 
 
 def memory_id_filter(memory_ids: Sequence[str] | None) -> tuple[str, ...] | None:
-    """Normalize an optional `memory_ids` filter the way `forget()` normalizes its argument."""
+    """Normalize an optional memory_ids filter the way forget() normalizes its argument."""
     if memory_ids is None:
         return None
     if isinstance(memory_ids, (str, bytes)):
@@ -142,7 +142,7 @@ def memory_id_filter(memory_ids: Sequence[str] | None) -> tuple[str, ...] | None
 
 
 def validated_identity_name(value: object, label: str = "identity name") -> str:
-    """Validate an identity's name or, with `label="identity relationship"`, its relationship."""
+    """Validate an identity's name or, with label="identity relationship", its relationship."""
     name = validated_text(value, label)
     if len(name) > 255 or not name.isprintable():
         raise ValidationError(f"{label} must be at most 255 printable characters")

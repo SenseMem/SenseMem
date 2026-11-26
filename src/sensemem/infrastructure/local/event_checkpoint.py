@@ -184,13 +184,13 @@ class EventCheckpoint:
             raise StorageError("could not prune event checkpoint media") from error
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _atomic_write(path: Path, payload: bytes) -> None:
     """Publish bytes only after flush; a crash leaves the previous complete manifest readable."""
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
             temporary = Path(output.name)
-            output.write(data)
+            output.write(payload)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)

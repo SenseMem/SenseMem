@@ -1,13 +1,14 @@
 """Backend contracts and capability routing.
 
 A backend declares atomic modalities and a space; this module validates the declaration once at
-wiring time, folds it into an immutable `Backends` value, and answers the routing questions the
+wiring time, folds it into an immutable Backends value, and answers the routing questions the
 planes ask against declared capability rather than provider names.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
 
 from sensemem._resources import Closable, present_resources, unique_resources
 from sensemem._validation import nonempty_text, positive_int
@@ -34,6 +35,19 @@ _NO_TRANSCRIPTION_SPACE = "none:asr-v1"
 
 
 _NO_FACE_SPACE = "none:face-v1"
+
+
+@runtime_checkable
+class _NamedGenerationBackend(Protocol):
+    @property
+    def generation_model(self) -> str | None: ...
+
+
+def generation_model_name(backend: object) -> str | None:
+    """Return a backend's declared generation model name when its protocol exposes one."""
+    if isinstance(backend, _NamedGenerationBackend) and isinstance(backend.generation_model, str):
+        return backend.generation_model
+    return None
 
 
 def fallback_unsupported(
@@ -256,7 +270,7 @@ class Backends:
                 formation=self.formation_capabilities,
                 reranking=self.reranking_capabilities,
                 reranking_model=None if self.reranker is None else self.reranker.reranking_model,
-                generation_model=getattr(self.answerer, "generation_model", None),
+                generation_model=generation_model_name(self.answerer),
                 transcription_space=None if self.transcriber is None else self.transcription_space,
                 vision_model=None if self.vision_describer is None else self.vision_model,
                 face_model=None if self.face_analyzer is None else self.face_model,

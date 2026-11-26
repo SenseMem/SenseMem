@@ -1,6 +1,6 @@
 """SQLite source of truth for the local SenseMem runtime.
 
-`LocalStore` is the one entry point; the row values and errors here are what its families
+LocalStore is the one entry point; the row values and errors here are what its families
 accept and return. The family modules are classes over the connection-level functions in the
 private modules, and product code outside this package imports none of them directly.
 """

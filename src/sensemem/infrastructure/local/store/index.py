@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Generator, Sequence
 from contextlib import closing
 from datetime import datetime, timezone
+from typing import Literal
 
 from sensemem.infrastructure.local.store._cache import ReadCache
 from sensemem.infrastructure.local.store._codec import (
@@ -114,9 +115,17 @@ class IndexOutbox:
         pieces: dict[tuple[str, int], list[StoredTextSpanPiece]] = {}
         for row in piece_rows:
             key = (row_text(row, "embedding_id"), int(row["selector_position"]))
+            raw_role = row_text(row, "role")
+            role: Literal["context", "body"]
+            if raw_role == "context":
+                role = "context"
+            elif raw_role == "body":
+                role = "body"
+            else:
+                raise StoredDataError("embedding text span piece role is invalid")
             pieces.setdefault(key, []).append(
                 StoredTextSpanPiece(
-                    role=row_text(row, "role"),  # type: ignore[arg-type]
+                    role=role,
                     start_codepoint=int(row["start_codepoint"]),
                     end_codepoint=int(row["end_codepoint"]),
                     piece_sha256=row_text(row, "piece_sha256"),
@@ -333,10 +342,10 @@ class IndexOutbox:
     def pending_index_operations(
         self, *, limit: int = 100, after: int = 0
     ) -> tuple[IndexOperation, ...]:
-        """Read queued mutations with an operation id above `after`, without acknowledging them.
+        """Read queued mutations with an operation id above after, without acknowledging them.
 
         Operation ids are AUTOINCREMENT and rows only ever leave through acknowledgement, so the
-        cursor is exact: a caller that has applied every row up to `after` reads exactly the rest.
+        cursor is exact: a caller that has applied every row up to after reads exactly the rest.
         """
         if not 1 <= limit <= 10_000:
             raise ValueError("limit must be between 1 and 10000")

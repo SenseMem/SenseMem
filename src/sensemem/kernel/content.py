@@ -1,7 +1,7 @@
 """What the caller gave: content preparation, identity, and bounded text keys.
 
 The memory ID is a digest of canonical ordered content, so everything that contributes to it
-lives here and nowhere else. Derived text a model produced is the neighbouring `derived`
+lives here and nowhere else. Derived text a model produced is the neighbouring derived
 module; this one never depends on it.
 """
 
@@ -13,17 +13,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from sensemem.content import Blob, ContentAtom, ContentPart
 from sensemem.context_values import ContextExcerpt, TextSpanPiece, TextSpanSelector
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.store import (
+from sensemem.infrastructure.local.store._codec import datetime_text, optional_datetime_text
+from sensemem.infrastructure.local.store.rows import (
     StoredAsset,
     StoredTextSelector,
     StoredTextSpanPiece,
-    datetime_text,
-    optional_datetime_text,
 )
 from sensemem.kernel.temporal import validated_occurred_at, validated_occurred_end
 from sensemem.models.base import ModelInput
@@ -78,6 +77,22 @@ _MEDIA_TYPES = {
 }
 
 
+def _content_part_kind(
+    kind: str,
+) -> Literal["text", "asset", "audio_transcript", "visual_description", "model_interpretation"]:
+    if kind == "text":
+        return "text"
+    if kind == "asset":
+        return "asset"
+    if kind == "audio_transcript":
+        return "audio_transcript"
+    if kind == "visual_description":
+        return "visual_description"
+    if kind == "model_interpretation":
+        return "model_interpretation"
+    raise ValidationError(f"unsupported content part kind: {kind}")
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedContent:
     text: str
@@ -90,19 +105,7 @@ class PreparedContent:
     @property
     def parts(self) -> tuple[ContentPart, ...]:
         return tuple(
-            ContentPart(
-                kind=cast(
-                    Literal[
-                        "text",
-                        "asset",
-                        "audio_transcript",
-                        "visual_description",
-                        "model_interpretation",
-                    ],
-                    kind,
-                ),
-                value=value,
-            )
+            ContentPart(kind=_content_part_kind(kind), value=value)
             for kind, value in self.canonical_parts
             if value
         )
@@ -117,8 +120,8 @@ class PreparedMemory:
     occurred_end: datetime | None
     memory_type: MemoryCategory
     context: ObservationContext | RecordSemantics | None = None
-    # The record column, carried separately from `context` because both write paths need it and
-    # only an `ObservationContext` has one: a formed record's `RecordSemantics` deliberately has no
+    # The record column, carried separately from context because both write paths need it and
+    # only an ObservationContext has one: a formed record's RecordSemantics deliberately has no
     # place, so formation sets this from the observation it was formed from.
     place_id: str | None = None
 
@@ -305,7 +308,7 @@ _TEXT_SELECTOR_RECIPE = "sensemem-contextual-text-key-v1"
 
 
 def _stripped_span(text: str, start: int, end: int) -> tuple[int, int] | None:
-    """Return the exact source interval retained by `text[start:end].strip()`."""
+    """Return the exact source interval retained by text[start:end].strip()."""
     source = text[start:end]
     stripped_left = source.lstrip()
     if not stripped_left:
@@ -366,7 +369,7 @@ def text_selector_map(
     grouped: dict[ModelInput, list[StoredTextSelector]] = {}
     for descriptor in contextual_text_key_descriptors(content.text):
         model_input = ModelInput(text=descriptor.key)
-        # `_embedding_inputs` removes atomic keys equal to its aggregate. Preserve that exact
+        # _embedding_inputs removes atomic keys equal to its aggregate. Preserve that exact
         # behavior and never attach a selector to the unsliced aggregate route.
         if model_input == aggregate_input:
             continue
@@ -511,7 +514,9 @@ def encode_metadata(metadata: Mapping[str, object] | None) -> str:
 
 
 def decode_metadata(value: str) -> Mapping[str, object]:
-    return cast(dict[str, object], json.loads(value))
+    decoded = json.loads(value)
+    assert isinstance(decoded, dict)
+    return {str(key): entry for key, entry in decoded.items()}
 
 
 def embedding_row_id(memory_id: str, object_part: int) -> str:
