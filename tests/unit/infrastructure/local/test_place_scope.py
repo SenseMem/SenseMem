@@ -80,7 +80,7 @@ def test_place_id_round_trips_and_stays_optional(tmp_path: Path) -> None:
 
 
 def test_a_place_label_must_be_real_text(tmp_path: Path) -> None:
-    """`None` means "unknown"; an empty or untrimmed label would be a second, silent spelling."""
+    """None means "unknown"; an empty or untrimmed label would be a second, silent spelling."""
     with pytest.raises(ValueError, match="place_id"):
         _memory("blank", "text", place_id="")
     with pytest.raises(ValueError, match="place_id"):
@@ -102,7 +102,7 @@ def test_a_place_label_must_be_real_text(tmp_path: Path) -> None:
 
 
 def test_hydrating_a_candidate_slate_scopes_it_by_place(tmp_path: Path) -> None:
-    """`read_memories(place_id=...)` is where the search path's other scope axes already plug in.
+    """read_memories(place_id=...) is where the search path's other scope axes already plug in.
 
     The filter is SQL rather than Python so a scoped hydration reads only the rows it returns, and
     it composes with the bitemporal and metric arguments instead of shadowing them.
@@ -142,12 +142,12 @@ def test_the_query_a_scoped_hydration_actually_runs_uses_the_place_index(
 ) -> None:
     """The plan claim has to be made about the statement the store issues, not one a test wrote.
 
-    A trace callback captures the real SQL `read_memories(place_id=...)` runs, and that captured
-    text is what gets planned. `(place_id, memory_id)` in that column order lets SQLite probe the
+    A trace callback captures the real SQL read_memories(place_id=...) runs, and that captured
+    text is what gets planned. (place_id, memory_id) in that column order lets SQLite probe the
     composite on both terms at once, so a candidate that is not at the place costs one index probe
-    and no table read -- and it picks that plan without `ANALYZE`, which no store has ever run.
+    and no table read -- and it picks that plan without ANALYZE, which no store has ever run.
 
-    The callback is armed on `_open_connection` rather than on `sqlite3.connect`, and before the
+    The callback is armed on _open_connection rather than on sqlite3.connect, and before the
     store exists rather than around the one call: the store pools its connections, so the read
     under test runs on a connection opened much earlier and a callback installed just beforehand
     would observe nothing.
@@ -193,7 +193,7 @@ def test_the_query_a_scoped_hydration_actually_runs_uses_the_place_index(
 
 
 def test_changing_a_place_label_requeues_the_search_index(tmp_path: Path) -> None:
-    """Zvec carries `place_id` as a filter field, so relabelling a room reprojects the memory."""
+    """Zvec carries place_id as a filter field, so relabelling a room reprojects the memory."""
     with LocalStore(tmp_path) as store:
         store.records.write_memory(_memory("relabelled", "the kettle is on", place_id="kitchen"))
         store.index.write_embedding(_embedding("relabelled"))

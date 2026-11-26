@@ -212,6 +212,7 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+pythonpath = [".", "tests/unit"]
 addopts = ["--strict-config", "--strict-markers", "-ra"]
 # Dump every thread and terminate if one test exceeds five minutes.
 faulthandler_timeout = 300

@@ -254,8 +254,55 @@ def test_invalid_reranking_output_is_explicit_instead_of_silent_fallback(
         assert raised.value.stage == "reranking"
 
 
-def test_reranker_failure_is_sanitized_and_existing_ambiguity_policy_still_applies(
-    tmp_path: Path,
+@pytest.mark.parametrize("tie", [False, True])
+def test_reranker_resolves_a_top_one_tie_only_with_a_strict_preference(
+    tmp_path: Path, tie: bool
+) -> None:
+    class TieReranker(Reranker):
+        def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
+            self.calls.append((query, tuple(documents)))
+            return tuple(8.0 if tie or "refunded" in row.text else -3.0 for row in documents)
+
+    reranker = TieReranker()
+    with Memory(
+        tmp_path,
+        embedder=Embedder(),
+        reranker=reranker,
+        settings=MemorySettings(retrieval_mode=RetrievalMode.DENSE, ambiguity_margin=0.1),
+    ) as memory:
+        memory.add("reservation held")
+        target = memory.add("reservation refunded")
+        result = memory.search("Which reservation was refunded?", limit=1, explain=True)
+
+    assert result.trace is not None
+    assert result.trace.ambiguous is tie
+    assert [hit.id for hit in result.hits] == ([] if tie else [target.id])
+    assert len(reranker.calls[0][1]) == 2
+    assert {row.reranking_score for row in result.trace.candidates} == (
+        {8.0} if tie else {-3.0, 8.0}
+    )
+
+
+def test_top_one_stays_ambiguous_when_one_leader_is_unscored(tmp_path: Path) -> None:
+    reranker = Reranker()
+    with Memory(
+        tmp_path,
+        embedder=Embedder(),
+        reranker=reranker,
+        settings=MemorySettings(retrieval_mode=RetrievalMode.DENSE, ambiguity_margin=0.1),
+    ) as memory:
+        memory.add(Blob(b"original", "image/png"))
+        memory.add("reservation refunded")
+        result = memory.search("reservation", limit=1, explain=True)
+
+    assert result.hits == ()
+    assert result.trace is not None and result.trace.ambiguous
+    assert len(reranker.calls[0][1]) == 1
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_reranker_failure_is_sanitized_even_when_base_candidates_tie(
+    tmp_path: Path, limit: int
 ) -> None:
     reranker = Reranker(fail=True)
     with Memory(
@@ -266,10 +313,8 @@ def test_reranker_failure_is_sanitized_and_existing_ambiguity_policy_still_appli
     ) as memory:
         memory.add("first")
         memory.add("second")
-        assert memory.search("query", limit=1).hits == ()
-        assert reranker.calls == []
         with pytest.raises(ModelError) as raised:
-            memory.search("query", limit=2)
+            memory.search("query", limit=limit)
         assert str(raised.value) == "reranking model failed"
         assert raised.value.reason == "model_failed"
         assert raised.value.stage == "reranking"

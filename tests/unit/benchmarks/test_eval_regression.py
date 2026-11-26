@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import pytest
 
@@ -11,7 +11,7 @@ from sensemem.benchmarks.eval_regression import load_result, performance_compari
 from sensemem.benchmarks.eval_results import EVAL_SCHEMA_VERSION
 
 
-def _result() -> dict[str, Any]:
+def _result() -> dict[str, object]:
     return {
         "schema_version": EVAL_SCHEMA_VERSION,
         "runner_version": "sensemem_eval_official_v18",
@@ -29,13 +29,13 @@ def _result() -> dict[str, Any]:
         "measurement_protocol": {"state": "cold", "repeat_index": 0},
         "model": {
             "adapter": "sensemem",
-            "embedding_model": "tencent/WeMM-Embedding-9B",
+            "embedding_model": "fixture-embedding-model",
             "embedding_revision": None,
             "embedding_dimension": 4096,
             "embedding_warmup": {"count": 1, "task": "query"},
             "device": "remote,cuda",
-            "generation_model": "Qwen3.8-27B",
-            "generation_base_url": "http://xyrobot-vl.xyrobot.com/v1",
+            "generation_model": "fixture-generation-model",
+            "generation_base_url": "http://models.example.test/v1",
             "generation_modalities": ["text"],
             "generation_seed": 0,
             "generation_temperature": 0.0,
@@ -59,10 +59,10 @@ def _result() -> dict[str, Any]:
                 "gpus": [
                     {
                         "index": 0,
-                        "name": "NVIDIA GeForce RTX 5090",
+                        "name": "Fixture GPU",
                         "uuid": "GPU-fixture",
                         "memory_total_mib": 32607,
-                        "driver_version": "580.178.04",
+                        "driver_version": "500.00.00",
                         "power_limit_watts": 575.0,
                     }
                 ],
@@ -106,16 +106,32 @@ def _result() -> dict[str, Any]:
     }
 
 
+def _dict(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return cast(dict[str, object], value)
+
+
+def _tasks(document: dict[str, object]) -> list[object]:
+    tasks = document["tasks"]
+    assert isinstance(tasks, list)
+    return tasks
+
+
+def _performance(document: dict[str, object]) -> dict[str, object]:
+    return _dict(_dict(_tasks(document)[0])["performance"])
+
+
 def test_performance_comparison_gates_latency_tokens_and_throughput() -> None:
     baseline = _result()
     candidate = deepcopy(baseline)
-    performance = candidate["tasks"][0]["performance"]
-    performance["answer"]["end_to_end_time_to_first_token_ms"]["p95"] = 120.0
-    performance["answer"]["latency_ms"]["p95"] = 540.0
-    performance["answer"]["throughput_per_active_second"] = 1.7
-    performance["ask_retrieval_core"]["latency_ms"]["p95"] = 400.0
-    performance["search_e2e"]["latency_ms"]["p95"] = 42.0
-    performance["token_usage"]["product"]["average_tokens_per_request"] = 300.0
+    performance = _performance(candidate)
+    answer = _dict(performance["answer"])
+    _dict(answer["end_to_end_time_to_first_token_ms"])["p95"] = 120.0
+    _dict(answer["latency_ms"])["p95"] = 540.0
+    answer["throughput_per_active_second"] = 1.7
+    _dict(_dict(performance["ask_retrieval_core"])["latency_ms"])["p95"] = 400.0
+    _dict(_dict(performance["search_e2e"])["latency_ms"])["p95"] = 42.0
+    _dict(_dict(performance["token_usage"])["product"])["average_tokens_per_request"] = 300.0
 
     rows = performance_comparisons(
         candidate,
@@ -150,7 +166,7 @@ def test_performance_comparison_rejects_different_concurrency() -> None:
 def test_performance_comparison_rejects_different_ingest_modes() -> None:
     candidate = _result()
     baseline = _result()
-    candidate["arms"]["ingest"] = "capture"
+    _dict(candidate["arms"])["ingest"] = "capture"
 
     with pytest.raises(ValueError, match=r"arms\.ingest differs"):
         performance_comparisons(candidate, baseline, {"answer_e2e_latency_p95": 0.1})
@@ -159,9 +175,9 @@ def test_performance_comparison_rejects_different_ingest_modes() -> None:
 def test_performance_comparison_rejects_a_candidate_that_dropped_a_baseline_task() -> None:
     """A budget cannot pass by omission: the dropped task is named instead of ignored."""
     baseline = _result()
-    second = deepcopy(baseline["tasks"][0])
+    second = deepcopy(_dict(_tasks(baseline)[0]))
     second["task"] = "second"
-    baseline["tasks"].append(second)
+    _tasks(baseline).append(second)
     candidate = _result()
 
     with pytest.raises(ValueError, match="candidate omits performance baseline product row"):
@@ -178,7 +194,7 @@ def test_performance_comparison_rejects_malformed_task_rows_before_filtering(
 ) -> None:
     candidate, baseline = _result(), _result()
     document = candidate if side == "candidate" else baseline
-    document["tasks"].append(row)
+    _tasks(document).append(row)
 
     with pytest.raises(ValueError, match="benchmark result task"):
         performance_comparisons(candidate, baseline, {"answer_e2e_latency_p95": 0.1})
@@ -187,9 +203,9 @@ def test_performance_comparison_rejects_malformed_task_rows_before_filtering(
 def test_performance_comparison_rejects_incomplete_token_usage() -> None:
     candidate = _result()
     baseline = _result()
-    candidate["tasks"][0]["performance"]["token_usage"]["product"]["average_tokens_per_request"] = (
-        None
-    )
+    _dict(_dict(_performance(candidate)["token_usage"])["product"])[
+        "average_tokens_per_request"
+    ] = None
 
     with pytest.raises(ValueError, match="no complete tokens_per_call"):
         performance_comparisons(candidate, baseline, {"tokens_per_call": 0.1})
@@ -198,7 +214,7 @@ def test_performance_comparison_rejects_incomplete_token_usage() -> None:
 def test_performance_comparison_rejects_incomplete_ttft_distribution() -> None:
     candidate = _result()
     baseline = _result()
-    candidate["tasks"][0]["performance"]["answer"]["end_to_end_time_to_first_token_ms"][
+    _dict(_dict(_performance(candidate)["answer"])["end_to_end_time_to_first_token_ms"])[
         "complete"
     ] = False
 
@@ -209,7 +225,7 @@ def test_performance_comparison_rejects_incomplete_ttft_distribution() -> None:
 def test_performance_comparison_rejects_incomplete_answer_latency_distribution() -> None:
     candidate = _result()
     baseline = _result()
-    candidate["tasks"][0]["performance"]["answer"]["latency_ms"]["complete"] = False
+    _dict(_dict(_performance(candidate)["answer"])["latency_ms"])["complete"] = False
 
     with pytest.raises(ValueError, match="no complete answer_e2e_latency_p95"):
         performance_comparisons(candidate, baseline, {"answer_e2e_latency_p95": 0.1})
@@ -218,7 +234,7 @@ def test_performance_comparison_rejects_incomplete_answer_latency_distribution()
 def test_performance_comparison_rejects_incomplete_search_replay() -> None:
     candidate = _result()
     baseline = _result()
-    candidate["tasks"][0]["performance"]["search_e2e"]["complete"] = False
+    _dict(_performance(candidate)["search_e2e"])["complete"] = False
 
     with pytest.raises(ValueError, match="no complete retrieval_e2e_latency_p95"):
         performance_comparisons(candidate, baseline, {"retrieval_e2e_latency_p95": 0.1})
@@ -227,7 +243,7 @@ def test_performance_comparison_rejects_incomplete_search_replay() -> None:
 def test_performance_comparison_rejects_incomplete_search_latency_distribution() -> None:
     candidate = _result()
     baseline = _result()
-    candidate["tasks"][0]["performance"]["search_e2e"]["latency_ms"]["complete"] = False
+    _dict(_dict(_performance(candidate)["search_e2e"])["latency_ms"])["complete"] = False
 
     with pytest.raises(ValueError, match="no complete retrieval_e2e_latency_p95"):
         performance_comparisons(candidate, baseline, {"retrieval_e2e_latency_p95": 0.1})
@@ -267,8 +283,8 @@ def test_performance_comparison_requires_recorded_conditions(path: tuple[str, ..
     for document in (candidate, baseline):
         parent = document
         for name in path[:-1]:
-            parent = parent[name]
-        del parent[path[-1]]
+            parent = _dict(parent[name])
+        parent.pop(path[-1])
 
     with pytest.raises(ValueError, match="benchmark result is missing"):
         performance_comparisons(candidate, baseline, {"answer_e2e_latency_p95": 0.1})

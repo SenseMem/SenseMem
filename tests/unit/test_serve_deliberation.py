@@ -1,20 +1,21 @@
 """The slow loop running inside the process that serves REST or MCP.
 
-`consolidation_candidates()` is the only reader of the `QUERY_FAILURE` rows the search, answer,
-and context surfaces write, and one physical `data_dir` has one live owner -- so a deployment
+consolidation_candidates() is the only reader of the QUERY_FAILURE rows the search, answer,
+and context surfaces write, and one physical data_dir has one live owner -- so a deployment
 that only speaks REST or MCP collects that signal and drops it unless the serving process runs
-the loop itself. Everything here drives the public surfaces: `create_app` with its `/v1` routes,
-and `build_mcp_server` with its tools.
+the loop itself. Everything here drives the public surfaces: create_app with its /v1 routes,
+and build_mcp_server with its tools.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 from _feature_support import CueConsolidator, TinyEmbedder
@@ -92,7 +93,7 @@ def test_a_serving_process_consumes_the_query_failures_its_routes_recorded(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """P4: the signal REST writes is only readable by the owner, so the owner weighs it."""
+    """The signal REST writes is only readable by the owner, so the owner weighs it."""
     consolidator = _RecordingConsolidator()
     with _memory(tmp_path, consolidator) as memory:
         app = create_app(memory=memory, deliberate_every=0.01)
@@ -124,10 +125,11 @@ def test_a_serving_process_consumes_the_query_failures_its_routes_recorded(
 
 
 class _SlowConsolidator(CueConsolidator):
-    """Long enough that shutdown is guaranteed to land inside a round."""
+    """Pauses long enough after signalling entry that shutdown interrupts the active round."""
 
     def __init__(self) -> None:
-        self.started = False
+        self.started = threading.Event()
+        self.release = threading.Event()
         self.finished = False
 
     def consolidate(
@@ -137,8 +139,8 @@ class _SlowConsolidator(CueConsolidator):
         trigger: MemoryTrigger,
         query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
-        self.started = True
-        time.sleep(0.5)
+        self.started.set()
+        self.release.wait(timeout=0.2)
         operations = super().consolidate(evidence, trigger=trigger)
         self.finished = True
         return operations
@@ -151,7 +153,7 @@ def test_shutdown_lets_the_round_it_interrupts_finish_and_report(
     """Cancelling the loop task abandoned a pass that had already changed the store.
 
     A round runs in a worker thread, which is not cancellable, so it applied its operations
-    either way -- but the task raised out of the `await` before the line that reports what it
+    either way -- but the task raised out of the await before the line that reports what it
     applied, leaving the only account of the pass unwritten. Shutdown asks the loop to stop.
     """
     consolidator = _SlowConsolidator()
@@ -166,10 +168,9 @@ def test_shutdown_lets_the_round_it_interrupts_finish_and_report(
                 assert found.status_code == 200
                 assert found.json()["hits"] == []
 
-            deadline = time.monotonic() + 30.0
-            while not consolidator.started and time.monotonic() < deadline:
-                time.sleep(0.01)
-            interrupted = consolidator.started and not consolidator.finished
+            assert consolidator.started.wait(timeout=30.0)
+            interrupted = consolidator.started.is_set() and not consolidator.finished
+            threading.Timer(0.02, consolidator.release.set).start()
 
         assert interrupted, "the round had already finished, so shutdown interrupted nothing"
         assert consolidator.finished
@@ -198,7 +199,7 @@ async def test_a_failed_round_names_its_failure_without_quoting_the_model(
 
     stop = asyncio.Event()
     with caplog.at_level(logging.DEBUG, logger=_LOOP_LOGGER):
-        task = asyncio.create_task(_deliberate_periodically(cast(Any, _Failing()), 0.001, stop))
+        task = asyncio.create_task(_deliberate_periodically(cast(Memory, _Failing()), 0.001, stop))
         for _poll in range(600):
             if any(record.levelno == logging.WARNING for record in caplog.records):
                 break
@@ -237,7 +238,7 @@ async def test_a_serving_mcp_process_consumes_the_query_failures_its_tools_recor
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The same P4 obligation on the other surface: stdio blocks forever, so it must weigh too."""
+    """MCP stdio runs continuously, so its background loop must weigh recorded query failures."""
     consolidator = _RecordingConsolidator()
     with _memory(tmp_path, consolidator) as memory:
         server = build_mcp_server(memory, deliberate_every=0.01)
@@ -251,7 +252,7 @@ async def test_a_serving_mcp_process_consumes_the_query_failures_its_tools_recor
                     assert found.structured_content == {"hits": [], "trace": None}
 
                 # Counted rather than timed only because ASYNC110 refuses an awaited sleep in a
-                # `while`; 600 * 0.05s is the same 30s deadline the REST test waits.
+                # while; 600 * 0.05s is the same 30s deadline the REST test waits.
                 for _poll in range(600):
                     if memory.operations() and _weighed(caplog):
                         break

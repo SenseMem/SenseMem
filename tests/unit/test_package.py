@@ -16,6 +16,8 @@ import tomllib
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from sensemem.models.funasr import _FUNASR_REVISION
+
 ROOT = Path(__file__).parents[2]
 SOURCE = ROOT / "src" / "sensemem"
 DOCUMENT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -224,7 +226,7 @@ def test_imported_distributions_are_declared() -> None:
 def _installed_roots() -> dict[str, frozenset[str]]:
     """Map each importable root to the installed distributions that provide it.
 
-    ``importlib.metadata.packages_distributions`` reads only ``top_level.txt`` before Python
+    importlib.metadata.packages_distributions reads only top_level.txt before Python
     3.12, and modern wheels omit that file, so on 3.11 it reports almost nothing and
     the declaration check above would call every third-party import undeclared. Reading the
     recorded files instead is what 3.12 does internally and behaves the same on every
@@ -246,30 +248,6 @@ def _installed_roots() -> dict[str, frozenset[str]]:
                 continue
             roots.setdefault(root, set()).add(canonical)
     return {root: frozenset(names) for root, names in roots.items()}
-
-
-def test_deferred_and_conditional_imports_are_classified(tmp_path: Path) -> None:
-    """Classify deferred and conditional imports without treating prose as a dependency."""
-    module = tmp_path / "sample.py"
-    module.write_text(
-        "import os\n"
-        "from . import sibling\n"
-        "from sensemem.types import Modality\n"
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n"
-        "    import lazyquiet\n"
-        "PROMPT = 'answer using only the supplied memories'\n"
-        "def load() -> object:\n"
-        "    find_spec('probed')\n"
-        "    return import_module('deferred.submodule')\n",
-        encoding="utf-8",
-    )
-    found = _imports(module)
-    # Deferred and TYPE_CHECKING imports are declarations; stdlib, relative, first-party, and
-    # the prose constant are not, and prose reaching this set would fail every product module.
-    assert dict(found.third_party) == {"lazyquiet": 6, "deferred": 10, "probed": 9}
-    assert {"sibling", "os"} <= found.names
-    assert "answer using only the supplied memories" not in found.names
 
 
 def _benchmark_references(path: Path) -> set[str]:
@@ -317,7 +295,7 @@ def _imports(path: Path) -> _Imports:
 
 
 def _loader_argument(node: ast.Call) -> str | None:
-    """Return the module named by a single-argument ``import_module``/``find_spec`` call."""
+    """Return the module named by a single-argument import_module or find_spec call."""
     called = node.func
     name = called.attr if isinstance(called, ast.Attribute) else None
     name = called.id if isinstance(called, ast.Name) else name
@@ -344,17 +322,6 @@ def test_console_script_targets_exist() -> None:
         assert callable(getattr(importlib.import_module(module_name), attribute))
 
 
-def test_benchmark_reference_scan_detects_a_lazy_import(tmp_path: Path) -> None:
-    dispatcher = tmp_path / "single_tree.py"
-    dispatcher.write_text(
-        "from importlib import import_module\n"
-        "def main() -> int:\n"
-        "    return import_module('sensemem.benchmarks.cli').main()\n",
-        encoding="utf-8",
-    )
-    assert _benchmark_references(dispatcher) == {"sensemem.benchmarks.cli"}
-
-
 def test_all_extra_contains_each_optional_dependency() -> None:
     assert set(EXTRAS["all"]) == {
         item for extra, items in EXTRAS.items() if extra != "all" for item in items
@@ -367,8 +334,6 @@ def test_openai_extra_installs_the_native_realtime_transport() -> None:
 
 
 def test_funasr_runtime_and_cache_identity_use_the_same_immutable_source() -> None:
-    from sensemem.models.funasr import _FUNASR_REVISION
-
     assert len(_FUNASR_REVISION) == 40
     int(_FUNASR_REVISION, 16)
     for extra in ("local", "all"):

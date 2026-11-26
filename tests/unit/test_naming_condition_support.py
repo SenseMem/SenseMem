@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 from _feature_support import TinyEmbedder
-from test_formation_identity_support import Faces, _register
+from fixtures.formation import Faces
+from fixtures.formation import register_identity_fixture as _register
 
 from sensemem import (
     Blob,
@@ -534,7 +535,7 @@ def test_one_capture_stays_one_observation_even_with_host_naming(ancestry: bool)
 def test_naming_conditions_do_not_bypass_complete_proof_requirements(failure: str) -> None:
     nodes = _graph(ancestry=True)
     if failure == "missing_ancestor":
-        del nodes["c"]
+        nodes.pop("c")
     else:
         nodes["name"] = EvidenceNode(
             None,

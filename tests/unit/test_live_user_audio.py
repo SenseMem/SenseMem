@@ -12,15 +12,12 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
+from examples.live import user_audio
+from examples.live.user_audio import UserAudioCapture
 from sensemem import AsyncMemory, Memory, StreamCommit
 
 NOW = datetime(2026, 11, 17, tzinfo=timezone.utc)
 SOURCE = "live:user-audio-fixture"
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 def _event(kind: str, **values: object) -> str:
@@ -29,7 +26,6 @@ def _event(kind: str, **values: object) -> str:
 
 def _finalize(capture: object) -> None:
     # The helper stays local to tests; production consumes the native protocol events.
-    from examples.live.user_audio import UserAudioCapture
 
     assert isinstance(capture, UserAudioCapture)
     capture.observe_event(_event("input_audio_buffer.speech_started", audio_start_ms=50))
@@ -43,7 +39,6 @@ def _finalize(capture: object) -> None:
 async def test_stopped_final_asr_captures_exact_original_24k_audio_and_becomes_searchable(
     tmp_path: Path,
 ) -> None:
-    from examples.live.user_audio import UserAudioCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -81,7 +76,6 @@ async def test_stopped_final_asr_captures_exact_original_24k_audio_and_becomes_s
 async def test_finality_before_pcm_waits_for_actual_samples_and_deduplicates_item(
     tmp_path: Path,
 ) -> None:
-    from examples.live.user_audio import UserAudioCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -111,7 +105,6 @@ async def test_finality_before_pcm_waits_for_actual_samples_and_deduplicates_ite
 async def test_partial_agent_output_and_unfinished_vad_never_commit_on_disconnect(
     tmp_path: Path,
 ) -> None:
-    from examples.live.user_audio import UserAudioCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -136,7 +129,6 @@ async def test_partial_agent_output_and_unfinished_vad_never_commit_on_disconnec
 async def test_empty_final_or_final_without_complete_vad_cannot_invent_an_interval(
     tmp_path: Path,
 ) -> None:
-    from examples.live.user_audio import UserAudioCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -187,7 +179,6 @@ async def test_empty_final_or_final_without_complete_vad_cannot_invent_an_interv
 async def test_evicted_original_samples_report_failure_instead_of_padding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live import user_audio
 
     monkeypatch.setattr(user_audio, "MAX_AUDIO_BYTES", 32)
     commits: list[StreamCommit] = []

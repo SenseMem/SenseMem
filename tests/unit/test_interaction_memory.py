@@ -95,7 +95,6 @@ class CueReinforcer:
         trigger: MemoryTrigger,
         query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
-        del trigger
         return (
             MemoryOperation(
                 intent=MemoryIntent.REINFORCE,
@@ -421,7 +420,7 @@ def test_cues_from_two_observations_of_one_capture_are_one_independent_source(
         derived = _trait_over_separate_operations(memory, (first[0], second[0]))
 
         # Independence is counted per capture, not per observation: both captures declared the
-        # same `source_id`, so two observations and every cue under them are one group.
+        # same source_id, so two observations and every cue under them are one group.
         assert _visible(memory, derived.id) is False
 
         third = _observe_cues(memory, "I am well", "session-2")

@@ -1,9 +1,9 @@
-"""A `RESPONSE_POLICY` is authorized by the host, never inferred by a model.
+"""A RESPONSE_POLICY is authorized by the host, never inferred by a model.
 
-How the system should behave toward somebody is a grant. `docs/affective-memory.md` states the
+How the system should behave toward somebody is a grant. docs/affective-memory.md states the
 rule; these tests are the executable half of it: the kernel refuses a model-proposed policy on
-both derivation paths, and the host's own `apply()` writes one that carries
-`RESPONSE_FEEDBACK`.
+both derivation paths, and the host's own apply() writes one that carries
+RESPONSE_FEEDBACK.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
-from test_memory_control_plane import OnePersonFace, OnePersonSpeech
+from fixtures.control import OnePersonFace, OnePersonSpeech
 
 from sensemem import (
     Blob,
@@ -87,7 +87,6 @@ class PolicyConsolidator:
         trigger: MemoryTrigger,
         query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
-        del trigger
         return (
             MemoryOperation(
                 intent=MemoryIntent.CONSOLIDATE,
@@ -613,7 +612,7 @@ def test_a_host_authored_response_policy_is_stored_as_response_feedback(tmp_path
         derived = memory.get(record.created_ids[0])
         assert derived.context is not None
         assert derived.context.kind is RecordKind.RESPONSE_POLICY
-        # The authorization the record names, not the `MODEL_INFERENCE` default it was built with.
+        # The authorization the record names, not the MODEL_INFERENCE default it was built with.
         assert derived.context.basis is EvidenceBasis.RESPONSE_FEEDBACK
         assert derived.context.visible is True
         assert derived.memory_type is MemoryCategory.PROCEDURAL
@@ -631,7 +630,7 @@ def test_a_logged_response_policy_replays_as_the_duplicate_it_is(tmp_path: Path)
 
     Pinning the basis on the proposal itself re-keyed it: the derived ID is computed from the
     proposal's basis, so a logged row -- and any row written before the rule existed, carrying
-    `model_inference` in its JSON -- minted a second ID on replay instead of being recognised
+    model_inference in its JSON -- minted a second ID on replay instead of being recognised
     as already applied.
     """
     with Memory(

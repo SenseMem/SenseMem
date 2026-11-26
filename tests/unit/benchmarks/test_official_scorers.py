@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
+from openai import APIError, AsyncOpenAI
 
 from sensemem.benchmarks import eval_config as eval_config_module
 from sensemem.benchmarks import eval_judge as eval_judge_module
+from sensemem.benchmarks._official.atm_score import list_jaccard_score
+from sensemem.benchmarks._official.personamem_v3_scoring import (
+    APPLICABILITY,
+    OWN_JUDGE_TASK_TYPES,
+    RUBRIC_HEADLINE_TASK_TYPES,
+)
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask
-from sensemem.benchmarks.eval_cache import CachedAnswer
+from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
 from sensemem.benchmarks.eval_judge import _apply_judges
 from sensemem.benchmarks.eval_metrics import _metrics
 from sensemem.benchmarks.eval_results import SampleResult
@@ -154,7 +162,6 @@ def test_atm_id_lists_use_only_the_pinned_official_score(separator: str) -> None
         reference,
         {"qtype": "list_recall"},
     )
-    from sensemem.benchmarks._official.atm_score import list_jaccard_score
 
     assert scores == {
         "accuracy": list_jaccard_score(
@@ -192,14 +199,12 @@ def test_atm_list_score_keeps_non_id_items() -> None:
 def test_atm_judge_verdicts_match_upstream_before_summary_coercion(
     value: object, expected: float
 ) -> None:
-    import json
 
     plan = JudgePlan("p", "atm", ((JudgeMessage("user", "prompt"),),))
     assert parse_judge_response(plan, json.dumps({"accuracy": value})) == {"accuracy": expected}
 
 
 def test_atm_judge_prompt_matches_the_pinned_upstream_bytes() -> None:
-    import hashlib
 
     plan = judge_plan(
         "atm-bench-main",
@@ -257,7 +262,7 @@ def test_memlens_and_locomo_plans_preserve_official_protocol_details() -> None:
     assert memlens.details == {"task_key": "KU_KnowledgeUpdate"}
     assert "<Old (Outdated) Answer>: Old" in memlens.calls[0][0].content
     assert judge_model_is_official("locomo-refined", "Qwen/Qwen3-14B")
-    assert not judge_model_is_official("locomo-refined", "qwen3.8-27b")
+    assert not judge_model_is_official("locomo-refined", "fixture-judge-model")
 
     assert _scores(
         "locomo-refined",
@@ -318,7 +323,7 @@ async def test_atm_official_judge_uses_minimal_reasoning() -> None:
     )
 
     scores, _, _ = await eval_judge_module._judge_call(
-        cast(Any, SimpleNamespace(responses=Responses())),
+        cast(AsyncOpenAI, SimpleNamespace(responses=Responses())),
         plan.calls[0],
         sample=sample,
         plan=plan,
@@ -378,12 +383,12 @@ async def test_judge_cache_hit_does_not_create_a_model_node() -> None:
     telemetry = EvaluationTelemetry()
     try:
         scores, _, cached = await eval_judge_module._traced_judge_call(
-            cast(Any, SimpleNamespace()),
+            cast(AsyncOpenAI, SimpleNamespace()),
             plan.calls[0],
             sample=sample,
             plan=plan,
             call_index=0,
-            cache=cast(Any, Cache()),
+            cache=cast(ResponseCache, Cache()),
             semaphore=asyncio.Semaphore(1),
             config=eval_config_module._JudgeConfig(
                 model="gpt-5-mini",
@@ -413,8 +418,6 @@ def test_locomo_uses_all_metrics_from_the_llm_selected_reference() -> None:
         {"llm_judge": 1.0},
         {"llm_judge": 0.0},
     )
-
-    from sensemem.benchmarks.official_scorers import combine_judge_scores
 
     assert combine_judge_scores(plan, scores) == {
         "llm_judge": 1.0,
@@ -462,7 +465,7 @@ def test_results_mark_proxy_judge_metrics_nonofficial(tmp_path: Path) -> None:
         metadata={},
         metrics={"llm_judge": 1.0, "token_f1": 1.0},
         scorer_protocol="locomo_refined_judge_887091190789",
-        judge_model="qwen3.8-27b",
+        judge_model="fixture-judge-model",
     )
     arguments = cast(
         eval_config_module._Arguments,
@@ -485,7 +488,6 @@ async def test_unified_eval_applies_and_records_the_official_judge(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from openai import APIError
 
     calls: list[dict[str, object]] = []
 
@@ -760,7 +762,7 @@ def test_personamem_ranking_is_deterministic_and_reads_both_answer_shapes() -> N
     assert miss["negative_in_top1"] == 0.0
     # The headline is upstream's graded nDCG@5, not top-1: burying the gold at
     # rank 3 costs a position discount rather than the whole score, which is
-    # exactly what separates graded `ndcg_at_5` from `recall_at_1` here.
+    # exactly what separates graded ndcg_at_5 from recall_at_1 here.
     assert miss["ndcg_at_5"] == pytest.approx(0.6657)
     assert miss["personamem_score"] == pytest.approx(0.6657)
 
@@ -839,11 +841,6 @@ def test_personamem_ranking_matches_current_official_graded_formula() -> None:
 
 def test_personamem_scores_exactly_the_reproducible_task_types() -> None:
     """The judged set is EVAL.md's headline table, not the applicability map."""
-    from sensemem.benchmarks._official.personamem_v3_scoring import (
-        APPLICABILITY,
-        OWN_JUDGE_TASK_TYPES,
-        RUBRIC_HEADLINE_TASK_TYPES,
-    )
 
     assert RUBRIC_HEADLINE_TASK_TYPES.issubset(APPLICABILITY)
     assert set(APPLICABILITY) - RUBRIC_HEADLINE_TASK_TYPES
@@ -874,8 +871,8 @@ def test_personamem_scores_exactly_the_reproducible_task_types() -> None:
         ("mm-lifelong", "ref_at_300", True),
         ("personamem-v3", "ndcg_at_5", True),
         ("personamem-v3", "pr_combined_personalization_score", True),
-        # Invented here. `_official/atm_score.py` has only `deterministic_accuracy` and
-        # `list_jaccard_score`; its retrieval and joint metrics are harness diagnostics.
+        # Invented here. _official/atm_score.py has only deterministic_accuracy and
+        # list_jaccard_score; its retrieval and joint metrics are harness diagnostics.
         ("atm-bench-hard", "retrieval_recall@10", False),
         ("atm-bench-hard", "retrieval_recall@gt", False),
         ("atm-bench-hard", "joint_partial@10", False),

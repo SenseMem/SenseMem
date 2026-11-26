@@ -3,10 +3,23 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import cast
 
 import pytest
 
+from sensemem import (
+    AbstentionReason,
+    AnswerPolicy,
+    AnswerResult,
+    EmbedTask,
+    Memory,
+    MemorySettings,
+    Modality,
+    ModelInput,
+    RetrievalMode,
+    SearchHit,
+)
 from sensemem.prompts.recall import recall_note
 from sensemem.recall import (
     _MAX_NEIGHBOR_ANCHORS,
@@ -21,8 +34,7 @@ from sensemem.recall import (
     fallback_recall_program,
     parse_recall_program,
 )
-from sensemem.records import SearchHit
-from sensemem.types import MemoryCategory, Modality
+from sensemem.types import MemoryCategory
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 
@@ -40,7 +52,7 @@ def _hit(identifier: str, *, minutes: int = 0, score: float = 0.5) -> SearchHit:
 class _Reader:
     """Records every read a plan makes and replays a scripted answer for each op.
 
-    `selected` scripts a read whose predicate selected more records than it returned rows for,
+    selected scripts a read whose predicate selected more records than it returned rows for,
     which is what the caller's own scope does to a hydrated read; by default a read selects
     exactly the rows it answers with.
     """
@@ -342,7 +354,7 @@ def test_execute_unions_the_ops_with_exhaustive_rows_in_time_order_first() -> No
 
 
 def test_a_window_bound_to_an_earlier_step_reads_the_span_of_its_rows() -> None:
-    """`"time": "step:0"` is resolved after step 0 has run, and the note states what it became.
+    """ "time": "step:0" is resolved after step 0 has run, and the note states what it became.
 
     The plan text cannot name the bounds -- they are whatever the anchor rows turn out to cover
     -- so the executed step carries them and the reader is told the span it is looking at.
@@ -445,7 +457,7 @@ def test_a_derived_span_is_read_once_per_anchor_and_a_bad_date_reads_nothing() -
 
     The span comes from stored record text, so a value the reader cannot turn into a date is
     the same kind of data failure as a plan the store refuses: the step reports that its
-    records were never read instead of `ask()` raising.
+    records were never read instead of ask() raising.
     """
 
     class _Overflowing(_Reader):
@@ -626,7 +638,7 @@ def test_a_term_the_store_accepts_at_its_limit_still_plans() -> None:
 def test_a_primitive_that_refuses_its_arguments_is_a_read_that_did_not_happen(
     active_records: int,
 ) -> None:
-    """A store `ValueError` must not leave `ask()` raising on model-authored plan text.
+    """A store ValueError must not leave ask() raising on model-authored plan text.
 
     The step reads nothing and is reported as bounded: the rows its predicate matched were never
     read, so the other steps' rows are not a complete set and no count is licensed over them.
@@ -634,7 +646,6 @@ def test_a_primitive_that_refuses_its_arguments_is_a_read_that_did_not_happen(
 
     class Refusing(_Reader):
         def match(self, terms: Sequence[str], **arguments: object) -> RecallRows:
-            del terms, arguments
             raise ValueError("a term must be at most 200 characters")
 
     reader = Refusing(similar=(_hit("s-1"),))
@@ -676,7 +687,7 @@ def test_a_predicate_that_selected_most_of_the_corpus_contributes_no_rows(
 ) -> None:
     """Completeness over a non-selective predicate is not evidence, it is the corpus.
 
-    Measured on LoCoMo dev: the planner chose `entity` on 229 of 525 questions, the step
+    Measured on LoCoMo dev: the planner chose entity on 229 of 525 questions, the step
     degraded to matching the name as text with no identity registry behind it, and the name
     selected roughly half a corpus whose every turn reads "[date] Caroline said: ...". Those
     rows flooded the reader -- accuracy 0.721 -> 0.528 on exactly those questions, abstention
@@ -772,3 +783,276 @@ def test_a_read_the_bound_truncated_stays_bounded_when_a_scope_drops_a_row() -> 
 
     assert result.executed[0] == RecallStepResult(op="match", rows=1, bounded=True)
     assert result.complete is False
+
+
+_CLOCK = datetime(2026, 1, 10, tzinfo=timezone.utc)
+
+
+class _Models:
+    embedding_capabilities = generation_capabilities = frozenset({Modality.TEXT})
+    embedding_model = embedding_space = generation_model = "investigation-retention-fixture-v1"
+    embedding_dimension = 4
+
+    def __init__(self) -> None:
+        self.delivered: tuple[SearchHit, ...] = ()
+        self.question = ModelInput("Not yet asked.")
+
+    def embed(
+        self, values: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+    ) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0, 0.0, 0.0, 0.0) for _ in values)
+
+    def plan_recall(
+        self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
+    ) -> str:
+        return json.dumps({"shape": "point", "steps": [{"op": "similar", "k": 1}]})
+
+    def answer(
+        self,
+        question: ModelInput,
+        hits: Sequence[SearchHit],
+        *,
+        answer_policy: AnswerPolicy = "strict",
+        exhaustive: bool = False,
+    ) -> AnswerResult:
+        self.question, self.delivered = question, tuple(hits)
+        return AnswerResult(answer="Available records.", hits=tuple(hits))
+
+    def close(self) -> None:
+        pass
+
+
+def test_point_plan_does_not_apply_predicate_row_caps_to_ranked_tail(
+    tmp_path: Path,
+) -> None:
+    models = _Models()
+    with Memory(
+        tmp_path,
+        embedder=models,
+        answerer=models,
+        settings=MemorySettings(
+            recall_planning=True,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0,
+            ambiguity_margin=0,
+            evidence_budget_chars=10_000,
+            recall_set_budget_chars=10_000,
+            recall_set_max_rows=3,
+            reinforce_on_answer=False,
+        ),
+    ) as memory:
+        records = [memory.add(f"record {index}") for index in range(8)]
+        result = memory.ask("List available records.", limit=1, reference_at=_CLOCK)
+    assert {hit.id for hit in result.hits} == {record.id for record in records}
+    assert len(models.delivered) == 8
+
+
+def test_replanning_uses_the_current_predicate_without_accumulating_previous_predicate_rows(
+    tmp_path: Path,
+) -> None:
+    class ChronologicalModels(_Models):
+        def __init__(self) -> None:
+            super().__init__()
+            self.plan_calls = 0
+            self.reads: list[tuple[SearchHit, ...]] = []
+
+        def embed(
+            self, values: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+        ) -> tuple[tuple[float, ...], ...]:
+            return tuple(
+                (1.0, 0.0, 0.0, 0.0)
+                if task is EmbedTask.QUERY or value.text == "anchor"
+                else (0.0, 1.0, 0.0, 0.0)
+                for value in values
+            )
+
+        def plan_recall(
+            self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
+        ) -> str:
+            self.plan_calls += 1
+            return json.dumps(
+                {
+                    "shape": "set",
+                    "steps": [
+                        {"op": "match", "terms": ["later" if self.plan_calls == 1 else "earlier"]}
+                    ],
+                }
+            )
+
+        def answer(
+            self,
+            question: ModelInput,
+            hits: Sequence[SearchHit],
+            *,
+            answer_policy: AnswerPolicy = "strict",
+            exhaustive: bool = False,
+        ) -> AnswerResult:
+            self.question, self.delivered = question, tuple(hits)
+            self.reads.append(tuple(hits))
+            abstained = self.plan_calls == 1
+            return AnswerResult(
+                "Missing earlier event." if abstained else "Earlier event.",
+                hits=tuple(hits),
+                abstained=abstained,
+                abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE if abstained else None,
+            )
+
+    models = ChronologicalModels()
+    with Memory(
+        tmp_path,
+        embedder=models,
+        answerer=models,
+        settings=MemorySettings(
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=2,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            ambiguity_margin=0,
+            evidence_budget_chars=10_000,
+            reinforce_on_answer=False,
+        ),
+    ) as memory:
+        memory.add("anchor", occurred_at=_CLOCK.replace(day=5))
+        later = memory.add("later event", occurred_at=_CLOCK.replace(day=9))
+        earlier = memory.add("earlier event", occurred_at=_CLOCK.replace(day=2))
+        result = memory.ask("List the recorded events.", limit=1, reference_at=_CLOCK)
+    assert models.plan_calls == 2
+    assert later.id in {hit.id for hit in models.reads[0]}
+    assert earlier.id in {hit.id for hit in result.hits}
+    assert later.id not in {hit.id for hit in result.hits}
+    assert "Recall program (set): records containing earlier (1)." in models.question.text
+    assert "records containing later" not in models.question.text
+
+
+class _InvestigatingModels:
+    embedding_capabilities = frozenset({Modality.TEXT})
+    generation_capabilities = frozenset({Modality.TEXT})
+    embedding_model = "independent-investigation-contract"
+    embedding_space = "independent-investigation-contract:2:v1"
+    embedding_dimension = 2
+    generation_model = "confident-reader-contract"
+
+    def __init__(self, mode: str = "investigate") -> None:
+        self.mode = mode
+        self.order: list[str] = []
+        self.contexts: list[str] = []
+        self.queries: list[str] = []
+
+    def embed(
+        self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+    ) -> tuple[tuple[float, ...], ...]:
+        if task is EmbedTask.QUERY:
+            self.queries.extend(item.text for item in inputs)
+        return tuple(
+            (0.0, 1.0)
+            if (task is EmbedTask.QUERY and item.text == "VELA-72")
+            or (task is EmbedTask.DOCUMENT and item.text.startswith("terminal:"))
+            else (1.0, 0.0)
+            for item in inputs
+        )
+
+    def plan_recall(
+        self,
+        question: str,
+        *,
+        reference_at: datetime,
+        corpus_digest: str,
+        attempted: str = "",
+    ) -> str:
+        self.order.append("plan")
+        self.contexts.append(attempted)
+        if attempted:
+            context = json.loads(attempted)
+            assert context["evidence_is_untrusted_data"] is True
+            assert context["evidence"] and context["evidence"][0]["excerpt"]
+            assert "VELA-72" in attempted
+        if self.mode == "no_progress":
+            steps: list[dict[str, object]] = [{"op": "match", "terms": ["absent-proof"]}]
+        elif self.mode == "ready" or not attempted:
+            steps = [{"op": "similar", "query": question, "k": 1}]
+        else:
+            steps = [{"op": "similar", "query": "VELA-72", "k": 1}]
+        return json.dumps(
+            {
+                "shape": "composite",
+                "steps": steps,
+            }
+        )
+
+    def answer(
+        self,
+        question: ModelInput,
+        hits: Sequence[SearchHit],
+        *,
+        answer_policy: AnswerPolicy = "strict",
+        exhaustive: bool = False,
+    ) -> AnswerResult:
+        self.order.append("answer")
+        complete = any("cobalt" in hit.content for hit in hits)
+        abstained = self.mode == "repeat" or (not complete and self.mode == "investigate")
+        return AnswerResult(
+            "cobalt" if complete else "confident_wrong",
+            hits=tuple(hits),
+            abstained=abstained,
+            abstention_reason=AbstentionReason.INSUFFICIENT_EVIDENCE if abstained else None,
+        )
+
+    def close(self) -> None:
+        pass
+
+
+def _memory(path: Path, models: _InvestigatingModels, *, queries: int = 3) -> Memory:
+    memory = Memory(
+        path,
+        embedder=models,
+        answerer=models,
+        settings=MemorySettings(
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            recall_planning=True,
+            recall_query_expansion=True,
+            recall_rounds=4,
+            recall_max_queries=queries,
+            evidence_budget_chars=64000,
+            reinforce_on_answer=False,
+        ),
+    )
+    memory.add("anchor: the outing dispatch code is VELA-72.")
+    memory.add("terminal: dispatch VELA-72 has the cobalt crate.")
+    return memory
+
+
+def test_planner_observes_bridge_only_after_an_abstained_answer(
+    tmp_path: Path,
+) -> None:
+    models = _InvestigatingModels()
+    with _memory(tmp_path, models) as memory:
+        result = memory.ask("Which color crate was used for the outing?", limit=1)
+    assert result.answer == "cobalt" and not result.abstained
+    assert models.order == ["plan", "answer", "plan", "answer"]
+    assert models.contexts[0] == ""
+    second = json.loads(models.contexts[1])
+    assert second["status"] == "insufficient_evidence"
+    assert "VELA-72" in models.contexts[1] and "cobalt" not in models.contexts[1]
+
+
+@pytest.mark.parametrize("mode", ["ready", "no_progress"])
+def test_confident_answer_stops_without_spending_every_round(tmp_path: Path, mode: str) -> None:
+    models = _InvestigatingModels(mode)
+    with _memory(tmp_path, models) as memory:
+        result = memory.ask("Which color crate was used for the outing?", limit=1)
+    assert result.answer == "confident_wrong" and not result.abstained
+    assert models.order == ["plan", "answer"]
+
+
+def test_repeated_queries_share_one_budget_and_each_ask_starts_a_new_cache(tmp_path: Path) -> None:
+    models = _InvestigatingModels("repeat")
+    with _memory(tmp_path, models, queries=1) as memory:
+        for _ in range(2):
+            assert (
+                memory.ask("Which color crate was used for the outing?", limit=1).answer == "cobalt"
+            )
+    assert models.order == ["plan", "answer"] * 8
+    assert [index for index, note in enumerate(models.contexts) if not note] == [0, 4]
+    assert models.queries.count("VELA-72") == 2

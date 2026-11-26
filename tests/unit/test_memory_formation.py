@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 
+import httpx2 as httpx
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
+from openai import OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -25,11 +29,14 @@ from sensemem import (
     MemoryIntent,
     MemoryNotFoundError,
     MemoryOperation,
+    MemoryRecord,
     MemorySettings,
+    MemoryTrigger,
     Modality,
     ModelError,
     ModelInput,
     ObservationContext,
+    QueryFailure,
     RecordKind,
     RetrievalScope,
     SearchHit,
@@ -38,6 +45,7 @@ from sensemem import (
     ValidationError,
 )
 from sensemem._telemetry import FORMATION_PROPOSALS_REFUSED
+from sensemem.models.openai_completion import OpenAICompletion
 
 
 class PreferenceFormer:
@@ -331,7 +339,7 @@ def test_a_proposal_the_kernel_refuses_is_dropped_and_not_charged_to_the_write(
 ) -> None:
     """A per-proposal rule costs that proposal, never the observation it was derived from.
 
-    `add` commits the source before formation runs, so raising failed a write that had in fact
+    add commits the source before formation runs, so raising failed a write that had in fact
     succeeded -- and the record stayed durable with its formation stuck in the queue, so every
     retry re-ran the model and failed the same way. Text that merely mentions an image ("shared a
     photo described as ...") is enough to make a model call it an image cue, which made this the
@@ -421,7 +429,7 @@ def test_a_trait_formed_from_two_observations_in_one_batch_is_one_assessment(
 ) -> None:
     """Formation is an AND writer: one proposal citing two observations is one conjunction.
 
-    The two-independent-groups rule for `TRAIT` visibility counts assessments, not cited
+    The two-independent-groups rule for TRAIT visibility counts assessments, not cited
     observations. One model call that read both observations and inferred the trait once must not
     corroborate itself, so the trait stays hidden until a separate operation supports it, and
     withdrawing either cited observation withdraws the whole conjunction.
@@ -679,24 +687,32 @@ def test_formation_proposal_rejects_empty_or_duplicate_witnesses(
 
 
 @pytest.mark.parametrize("mode", ("foreign", "missing_primary"))
-def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, mode: str) -> None:
+def test_invalid_explicit_batch_witnesses_leave_valid_proposals_intact(
+    tmp_path: Path, mode: str
+) -> None:
     class InvalidWitnessFormer(PreferenceFormer):
         def form(
             self, inputs: Sequence[FormationInput]
         ) -> tuple[tuple[FormationProposal, ...], ...]:
             assert len(inputs) == 2
-            evidence_ids = (
-                ("foreign", inputs[0].memory_id) if mode == "foreign" else (inputs[1].memory_id,)
-            )
             return tuple(
                 (
                     FormationProposal(
                         kind=RecordKind.EVENT,
                         content="bad",
-                        evidence_ids=evidence_ids,
+                        evidence_ids=(
+                            ("foreign", source.memory_id)
+                            if mode == "foreign"
+                            else (inputs[1 - index].memory_id,)
+                        ),
+                    ),
+                    FormationProposal(
+                        kind=RecordKind.EVENT,
+                        content=f"Event from {source.content.text}",
+                        evidence_ids=(source.memory_id,),
                     ),
                 )
-                for _input in inputs
+                for index, source in enumerate(inputs)
             )
 
     with Memory(
@@ -705,13 +721,14 @@ def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, m
         former=InvalidWitnessFormer(),
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
-        with pytest.raises(ModelError) as failure:
-            memory.add_many(("first source", "second source"))
-        assert failure.value.reason == "response_invalid"
-        assert all(
-            hit.context is None or hit.context.kind is RecordKind.OBSERVATION
-            for hit in memory.list().items
-        )
+        sources = memory.add_many(("first source", "second source"))
+        events = {
+            item.content: item.context.evidence_ids
+            for item in memory.list().items
+            if item.context is not None and item.context.kind is RecordKind.EVENT
+        }
+        assert events == {f"Event from {record.content}": (record.id,) for record in sources}
+        assert memory.pending_captures() == ()
 
 
 def _formed(
@@ -731,9 +748,9 @@ def _entities(memory: Memory, *, scope: RetrievalScope | None = None) -> list[Se
 def test_formed_records_inherit_the_place_they_were_observed_in(tmp_path: Path) -> None:
     """ "What do we know about the kitchen?" must see the knowledge, not only the raw observation.
 
-    `place_id` is a hard filter on the record, so a formed record that does not carry the place of
-    the observation it was formed from is unreachable from every place-scoped `search`, `ask`, and
-    `compile` -- the household question the symbolic axis exists for.
+    place_id is a hard filter on the record, so a formed record that does not carry the place of
+    the observation it was formed from is unreachable from every place-scoped search, ask, and
+    compile -- the household question the symbolic axis exists for.
     """
     with Memory(
         tmp_path,
@@ -935,7 +952,7 @@ def test_two_contradictory_states_from_one_source_cost_only_the_later_one(
 
 
 def test_refused_proposals_are_totalled_over_the_whole_settle(tmp_path: Path) -> None:
-    """`settle` forms one record at a time, and the operation reports the whole batch.
+    """settle forms one record at a time, and the operation reports the whole batch.
 
     Publishing per pass let the last record settled overwrite the count, so a batch whose first
     record lost a proposal reported zero refusals -- the reading an operator would take as proof
@@ -1043,3 +1060,314 @@ def test_a_pose_in_another_frame_is_refused_on_the_formation_path(tmp_path: Path
         for span in exporter.get_finished_spans()
         if span.attributes is not None and FORMATION_PROPOSALS_REFUSED in span.attributes
     ] == [1]
+
+
+class ClaimBackend:
+    formation_capabilities = ATOMIC_MODALITIES
+    formation_model = consolidation_model = "authority-fixture"
+    formation_space = consolidation_recipe = "authority-fixture:v1"
+
+    def __init__(self, kind: RecordKind, basis: EvidenceBasis) -> None:
+        self.kind = kind
+        self.basis = basis
+        self.value = "patient"
+
+    def proposal(self) -> FormationProposal:
+        return FormationProposal(
+            kind=self.kind,
+            basis=self.basis,
+            content=f"Rava is {self.value}.",
+            subject="Rava",
+            predicate="disposition",
+            value=self.value,
+            confidence=0.9,
+        )
+
+    def form(self, inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]:
+        return tuple((self.proposal(),) for _source in inputs)
+
+    def consolidate(
+        self,
+        evidence: Sequence[MemoryRecord],
+        *,
+        trigger: MemoryTrigger,
+        query_failure: QueryFailure | None = None,
+    ) -> tuple[MemoryOperation, ...]:
+        return (
+            MemoryOperation(
+                intent=MemoryIntent.CONSOLIDATE,
+                evidence_ids=tuple(source.id for source in evidence),
+                proposal=self.proposal(),
+            ),
+        )
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("kind", (RecordKind.STATE, RecordKind.TRAIT))
+@pytest.mark.parametrize("basis", (EvidenceBasis.USER_STATEMENT, EvidenceBasis.RESPONSE_FEEDBACK))
+def test_custom_backend_cannot_grant_authority_to_automatic_subclaims(
+    tmp_path: Path, kind: RecordKind, basis: EvidenceBasis
+) -> None:
+    backend = ClaimBackend(kind, basis)
+    with Memory(
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=backend,
+        consolidator=backend,
+    ) as memory:
+        source = memory.add(
+            "Lea reports that Rava is not patient.",
+            context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
+        )
+        report = memory.consolidate(evidence_ids=(source.id,))
+        assert report.operations == ()
+        assert len(report.rejected) == 1
+        assert [row.id for row in memory.list().items] == [source.id]
+        assert source.context is not None
+        assert source.context.basis is EvidenceBasis.USER_STATEMENT
+
+
+@pytest.mark.parametrize("kind", (RecordKind.STATE, RecordKind.TRAIT))
+def test_host_confirms_typed_claim_without_delegating_authority_to_later_inference(
+    tmp_path: Path, kind: RecordKind
+) -> None:
+    backend = ClaimBackend(kind, EvidenceBasis.MODEL_INFERENCE)
+    with Memory(
+        tmp_path,
+        embedder=TinyEmbedder(),
+        former=backend,
+        settings=MemorySettings(minimum_relevance=0),
+    ) as memory:
+        source = memory.add(
+            "Rava has been patient for years.",
+            context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
+        )
+        (inferred,) = [
+            row for row in memory.list().items if row.context and row.context.kind is kind
+        ]
+        assert inferred.context is not None
+        assert inferred.context.basis is EvidenceBasis.MODEL_INFERENCE
+        assert inferred.context.visible is (kind is RecordKind.STATE)
+
+        confirmation = memory.apply(
+            MemoryOperation(
+                intent=MemoryIntent.CONSOLIDATE,
+                evidence_ids=(source.id,),
+                proposal=FormationProposal(
+                    kind=kind,
+                    basis=EvidenceBasis.USER_STATEMENT,
+                    content="Rava is patient.",
+                    subject="Rava",
+                    predicate="disposition",
+                    value="patient",
+                    confidence=0.9,
+                ),
+            )
+        )
+        (confirmed_id,) = confirmation.created_ids
+        confirmed = memory.get(confirmed_id)
+        assert confirmed.context is not None
+        assert confirmed.context.basis is EvidenceBasis.USER_STATEMENT
+        assert confirmed.context.visible
+
+        backend.value = "impatient"
+        memory.add("An observer reports that Rava is impatient.")
+        standing = memory.get(confirmed_id)
+        assert standing.context is not None
+        assert standing.context.visible and standing.context.retired_at is None
+        assert standing.context.valid_until is None
+
+        assert memory.rollback(confirmation.operation_id)
+        with pytest.raises(MemoryNotFoundError):
+            memory.get(confirmed_id)
+        assert confirmed_id not in {hit.id for hit in memory.search("Rava").hits}
+
+
+class RestatingFormer:
+    formation_capabilities = TinyEmbedder.embedding_capabilities
+    formation_model = "self-evidence-test"
+    formation_space = "self-evidence-test:v1"
+
+    def __init__(self, *, valid_restatement: bool) -> None:
+        self.valid_restatement = valid_restatement
+        self.calls = 0
+
+    def form(self, inputs: Sequence[FormationInput]) -> tuple[tuple[FormationProposal, ...], ...]:
+        assert len(inputs) == 1
+        source = inputs[0]
+        self.calls += 1
+        atlas = FormationProposal(
+            kind=RecordKind.RELATION,
+            content="Riley owns an atlas.",
+            subject="Riley",
+            predicate="owns",
+            value="atlas",
+            confidence=0.8,
+        )
+        if self.calls == 1:
+            return ((atlas,),)
+        previous = next(
+            record
+            for record in source.history
+            if record.context is not None and record.context.kind is RecordKind.RELATION
+        )
+        # This declaration is conjunctive; discarding only the self member would falsely
+        # authorize a different, independent assessment by the new raw source.
+        invalid = replace(atlas, evidence_ids=(source.memory_id, previous.id))
+        telescope = replace(atlas, content="Riley owns a telescope.", value="telescope")
+        return ((invalid, *((atlas,) if self.valid_restatement else ()), telescope),)
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("independent", [False, True])
+@pytest.mark.parametrize("valid_restatement", [False, True])
+def test_automatic_self_evidence_refuses_whole_proposal_without_losing_valid_facts(
+    tmp_path: Path, independent: bool, valid_restatement: bool
+) -> None:
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    former = RestatingFormer(valid_restatement=valid_restatement)
+    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    try:
+        with Memory(
+            tmp_path,
+            embedder=TinyEmbedder(),
+            former=former,
+            settings=MemorySettings(
+                formation_history_max_rows=12, independent_evidence=independent
+            ),
+            tracer=provider.get_tracer("self-evidence-test"),
+        ) as memory:
+            original = memory.add("Riley owns an atlas.", occurred_at=at)
+            atlas = next(
+                record
+                for record in memory.list().items
+                if record.context is not None and record.context.kind is RecordKind.RELATION
+            )
+            current = memory.add(
+                "Riley also owns a telescope and still has the atlas.",
+                occurred_at=at + timedelta(days=1),
+            )
+            assert memory.get(current.id).content == current.content
+            updated = memory.get(atlas.id)
+            assert updated.context is not None
+            expected_sources = {original.id, current.id} if valid_restatement else {original.id}
+            assert set(updated.context.evidence_ids) == expected_sources
+            telescope = next(
+                record
+                for record in memory.list().items
+                if record.context is not None and record.context.value == "telescope"
+            )
+            assert telescope.context is not None
+            assert telescope.context.evidence_ids == (current.id,)
+            with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection:
+                clauses = connection.execute(
+                    "SELECT c.member_count,m.source_memory_id FROM memory_evidence_clauses c "
+                    "JOIN memory_evidence_clause_members m USING(memory_id,clause_id) "
+                    "WHERE c.memory_id=? AND c.retired_at IS NULL",
+                    (atlas.id,),
+                ).fetchall()
+                assert set(clauses) == {(1, source) for source in expected_sources}
+                assert connection.execute(
+                    "SELECT COUNT(*) FROM memory_evidence WHERE memory_id=source_memory_id"
+                ).fetchone() == (0,)
+                assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+                assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert memory.delete(original.id)
+            if valid_restatement:
+                surviving = memory.get(atlas.id).context
+                assert surviving is not None and surviving.visible
+            else:
+                with pytest.raises(MemoryNotFoundError):
+                    memory.get(atlas.id)
+            surviving_telescope = memory.get(telescope.id).context
+            assert surviving_telescope is not None and surviving_telescope.visible
+            assert memory.get(current.id).content == current.content
+    finally:
+        provider.shutdown()
+    adds = [span for span in exporter.get_finished_spans() if span.name == "sensemem.add"]
+    assert [
+        (span.attributes or {}).get("sensemem.formation.refused_proposals") for span in adds
+    ] == [0, 1]
+
+
+def test_inferred_current_preference_is_immediate_and_a_change_preserves_history(
+    tmp_path: Path,
+) -> None:
+    clock = datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        source = json.loads(json.loads(request.content)["messages"][1]["content"])["observations"][
+            0
+        ]
+        statement = source["content"]
+        value = "coffee" if "coffee" in statement else "tea"
+        proposal = {
+            "kind": "state",
+            "content": statement,
+            "subject": "Ana",
+            "predicate": "current_preferred_drink"
+            if value == "coffee"
+            else "only_current_preferred_drink",
+            "value": value,
+            "confidence": 0.9,
+            "evidence_observation_ids": ["observation_0"],
+        }
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "items": [
+                                        {"observation_id": "observation_0", "proposals": [proposal]}
+                                    ]
+                                }
+                            )
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as transport,
+        OpenAI(api_key="test", http_client=transport, max_retries=0) as client,
+        Memory(
+            tmp_path,
+            embedder=TinyEmbedder(),
+            former=OpenAICompletion(client, generation_model="fixture-snapshot"),
+            settings=MemorySettings(minimum_relevance=0),
+        ) as memory,
+    ):
+        for value, when in (("tea", clock), ("coffee", clock + timedelta(days=1))):
+            memory.add(
+                f"Ana's current preferred drink is {value}.",
+                occurred_at=when,
+                context=ObservationContext(basis=EvidenceBasis.USER_STATEMENT),
+            )
+            traits = [
+                hit
+                for hit in memory.search("Ana's current preference").hits
+                if hit.context and hit.context.kind is RecordKind.STATE
+            ]
+            assert len(traits) == 1
+            assert traits[0].context is not None
+            assert traits[0].context.basis is EvidenceBasis.MODEL_INFERENCE
+            assert traits[0].context.value == value
+        historical = [
+            hit
+            for hit in memory.search("Ana's preference", scope=RetrievalScope(valid_at=clock)).hits
+            if hit.context and hit.context.kind is RecordKind.STATE
+        ]
+        assert len(historical) == 1
+        assert historical[0].context is not None and historical[0].context.value == "tea"

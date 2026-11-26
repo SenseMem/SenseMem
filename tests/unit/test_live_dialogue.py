@@ -20,6 +20,9 @@ import pytest
 from _feature_support import TinyEmbedder
 from fastapi.testclient import TestClient
 
+from examples.live.app import LiveRuntime, create_app
+from examples.live.perception import FrameEvidence, PerceptionContext, PerceptionResult
+from examples.live.vision import LiveVision
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -38,11 +41,6 @@ from sensemem import (
     SearchHit,
     StorageError,
 )
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 class Segmenter:
@@ -74,7 +72,6 @@ def _payload(source_id: str) -> dict[str, object]:
 
 
 def test_native_reply_is_saved_without_inventing_a_user_transcript(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     opened: list[Memory] = []
 
@@ -122,7 +119,6 @@ def test_native_reply_is_saved_without_inventing_a_user_transcript(tmp_path: Pat
 def test_native_rendered_pcm_is_attributed_preserved_and_replayable_after_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
-    from examples.live.app import LiveRuntime, create_app
 
     opened: list[Memory] = []
     runtimes: list[LiveRuntime] = []
@@ -191,7 +187,6 @@ def test_native_rendered_pcm_is_attributed_preserved_and_replayable_after_restar
 
 
 def test_native_interrupted_audio_without_a_generated_subtitle_is_saved(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     opened: list[Memory] = []
 
@@ -246,7 +241,6 @@ def test_native_interrupted_audio_without_a_generated_subtitle_is_saved(tmp_path
 def test_native_invalid_playback_is_rejected_without_capturing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changes: dict[str, object]
 ) -> None:
-    from examples.live.app import create_app
 
     async def unexpected_capture(*_args: object, **_kwargs: object) -> MemoryRecord:
         pytest.fail("invalid playback reached memory capture")
@@ -280,7 +274,6 @@ def test_native_invalid_playback_is_rejected_without_capturing(
 def test_native_empty_or_oversized_playback_does_not_reach_storage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live.app import create_app
 
     async def unexpected_capture(*_args: object, **_kwargs: object) -> MemoryRecord:
         pytest.fail("invalid playback reached memory capture")
@@ -323,7 +316,6 @@ def test_native_empty_or_oversized_playback_does_not_reach_storage(
 def test_native_reply_rejects_unattributed_trigger_evidence(
     tmp_path: Path, field: str, value: object
 ) -> None:
-    from examples.live.app import create_app
 
     def factory(config: MemorySpec) -> tuple[AsyncMemory, Segmenter]:
         return AsyncMemory(Memory(config.data_dir, embedder=TinyEmbedder())), Segmenter()
@@ -336,7 +328,6 @@ def test_native_reply_rejects_unattributed_trigger_evidence(
 
 
 def test_realtime_reply_retains_final_asr_as_client_reported_text(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     opened: list[Memory] = []
 
@@ -361,7 +352,6 @@ def test_realtime_reply_retains_final_asr_as_client_reported_text(tmp_path: Path
 
 
 def test_dialogue_acknowledges_before_embedding_and_survives_restart(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     entered, release = Event(), Event()
     opened: list[Memory] = []
@@ -486,7 +476,6 @@ def test_dialogue_acknowledges_before_embedding_and_survives_restart(tmp_path: P
 def test_dialogue_rejects_invalid_input_before_capture(
     tmp_path: Path, field: str, value: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live.app import create_app
 
     def factory(config: MemorySpec) -> tuple[AsyncMemory, Segmenter]:
         return AsyncMemory(Memory(config.data_dir, embedder=TinyEmbedder())), Segmenter()
@@ -510,7 +499,6 @@ def test_dialogue_rejects_invalid_input_before_capture(
 def test_dialogue_storage_failure_does_not_expose_provider_body(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live.app import create_app
 
     opened: list[AsyncMemory] = []
 
@@ -536,9 +524,6 @@ def test_dialogue_storage_failure_does_not_expose_provider_body(
 def visual_dialogue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[TestClient, Memory, dict[str, object]]]:
-    from examples.live.app import LiveRuntime, create_app
-    from examples.live.perception import FrameEvidence, PerceptionContext, PerceptionResult
-    from examples.live.vision import LiveVision
 
     class VisualSegmenter(Segmenter):
         generation_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})

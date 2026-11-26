@@ -407,7 +407,7 @@ def test_a_pending_capture_refuses_a_naive_clock_and_a_nonsense_attempt_count() 
             PendingCapture(memory_id="a", enqueued_at=enqueued_at)  # type: ignore[arg-type]
     with pytest.raises(ValidationError, match="attempts must not be negative"):
         PendingCapture(memory_id="a", enqueued_at=NOW, attempts=-1)
-    # `bool` is an `int`, so a flag passed where a count belongs is rejected rather than counted.
+    # bool is an int, so a flag passed where a count belongs is rejected rather than counted.
     for attempts in (True, 1.0):
         with pytest.raises(ValidationError, match="attempts must be an integer"):
             PendingCapture(memory_id="a", enqueued_at=NOW, attempts=attempts)  # type: ignore[arg-type]

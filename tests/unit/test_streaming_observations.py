@@ -12,11 +12,12 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 from _feature_support import TinyEmbedder
 
+import sensemem.kernel.ingestion as ingestion_module
 from sensemem import (
     AcousticBoundary,
     ASRPartial,
@@ -221,7 +222,7 @@ def test_stream_event_boundary_is_modality_agnostic_and_strict() -> None:
         StreamEvent(StreamPhase.CANCEL, "must be empty")
     for invalid in (b"bytes", "", ()):
         with pytest.raises(ValidationError):
-            StreamEvent(StreamPhase.FINAL, cast(Any, invalid))
+            StreamEvent(StreamPhase.FINAL, invalid)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -544,12 +545,12 @@ async def test_cancellation_after_final_commit_starts_waits_for_the_write(
     )
     started = threading.Event()
     release = threading.Event()
-    add = cast(Any, memory._memory._ingestion._add_one)
+    add = memory._memory._ingestion._add_one
 
     def block_add(*args: object, **kwargs: object) -> object:
         started.set()
         release.wait()
-        return add(*args, **kwargs)
+        return add(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(memory._memory._ingestion, "_add_one", block_add)
 
@@ -641,7 +642,7 @@ async def test_a_rejected_final_query_still_drains_its_speculative_search(
 
     # A Path is legal in StreamInput but rejected as a speculative snapshot, so finalize()
     # raises before it closes and drains the worker it started for the earlier UPDATE.
-    cast(Any, AsyncCaptureStream)._prefetch_for = record
+    AsyncCaptureStream._prefetch_for = record  # type: ignore[method-assign,assignment]
     try:
         await memory.add("the key is in the blue toolbox")
         commits = [
@@ -662,7 +663,7 @@ async def test_a_rejected_final_query_still_drains_its_speculative_search(
         assert [prefetch._closed for prefetch in prefetches] == [True]
         assert all(prefetch._worker is None or prefetch._worker.done() for prefetch in prefetches)
     finally:
-        cast(Any, AsyncCaptureStream)._prefetch_for = build
+        AsyncCaptureStream._prefetch_for = build  # type: ignore[method-assign]
         await memory.close()
 
 
@@ -672,8 +673,8 @@ async def test_streamed_observations_carry_the_pose_sampled_at_each_boundary(
 ) -> None:
     """A moving robot's pose belongs to the observation, not to the stream that outlives it.
 
-    Both adapters previously built `StreamInput` from timing and text alone, so every memory a
-    microphone or camera wrote had a null pose and the default `MemoryCategory` regardless of what
+    Both adapters previously built StreamInput from timing and text alone, so every memory a
+    microphone or camera wrote had a null pose and the default MemoryCategory regardless of what
     the caller asked for. The context is read once per closed observation, so the second scene
     is stamped with where the robot was when that scene ended, not where it started.
     """
@@ -754,7 +755,6 @@ def _stream_then_die(data_dir: str, sender: Connection) -> None:
     Both group bounds are pushed out of reach so the kill lands in the window the test is
     about: after SQLite committed and before the deferred Zvec flush.
     """
-    import sensemem.kernel.ingestion as ingestion_module
 
     ingestion_module.STREAM_GROUP_ITEMS = 1_000
     ingestion_module.STREAM_GROUP_SECONDS = 1e9
@@ -804,7 +804,7 @@ def test_a_stream_killed_before_its_flush_is_drained_by_the_next_open(tmp_path: 
         data_dir, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
     ) as memory:
         # The open replayed the rows into the index; they are acknowledged by the batched flush,
-        # which `close()` takes below.
+        # which close() takes below.
         assert len(memory._store.index.pending_index_operations()) == _KILLED_STREAM_ITEMS
         assert cast(ZvecIndex, memory._index).doc_count == _KILLED_STREAM_ITEMS
         found = memory.search("streamed clip", limit=10).hits
@@ -900,7 +900,6 @@ async def test_a_captured_audio_final_settles_into_the_record_add_would_have_wri
 
 def test_a_captured_stream_input_keys_its_folded_transcript_like_add(tmp_path: Path) -> None:
     """A folded transcript keys as its own part, not merged into the caller's text."""
-    from sensemem import Memory
 
     def commit_one(directory: Path, *, capture: bool) -> tuple[str, set[tuple[str, int]]]:
         with Memory(
@@ -996,7 +995,6 @@ async def test_captured_vision_keeps_original_frame_before_failed_description(
 
 
 def test_add_stream_can_capture_instead_of_adding(tmp_path: Path) -> None:
-    from sensemem import Memory
 
     with Memory(
         tmp_path, embedder=TinyEmbedder(), settings=MemorySettings(minimum_relevance=0)
@@ -1015,9 +1013,9 @@ def test_add_stream_can_capture_instead_of_adding(tmp_path: Path) -> None:
         assert memory.settle() == 2
         assert records[0].id in {hit.id for hit in memory.search("ladder").hits}
 
-        # `capture` is a mode, not a truthiness test, exactly as `AsyncCaptureStream` reads it.
+        # capture is a mode, not a truthiness test, exactly as AsyncCaptureStream reads it.
         with pytest.raises(ValidationError):
-            next(memory.add_stream(("a note",), capture=cast(Any, 1)))
+            next(memory.add_stream(("a note",), capture=1))  # type: ignore[arg-type]
 
 
 def test_a_finished_stream_never_leaves_another_thread_deferring(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 """The identity axis: "only memories about this person".
 
-The graph edge has always existed -- `memory_semantics.identity_id` for a bound assertion, and
-`face_observations` / `speech_segments` for everyone a clip shows or records -- and SQLite even
+The graph edge has always existed -- memory_semantics.identity_id for a bound assertion, and
+face_observations / speech_segments for everyone a clip shows or records -- and SQLite even
 indexes it. What was missing was any way for a caller to ask for it. These tests pin the
 membership rule, the fact that a merge follows the person rather than the ID a caller happens to
 hold, and that both network transports accept the axis.
@@ -57,7 +57,6 @@ class _Embedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         return tuple((1.0, 0.0) for _value in inputs)
 
     def close(self) -> None:
@@ -183,7 +182,7 @@ def test_identity_scope_follows_a_merge_to_the_surviving_person(tmp_path: Path) 
         scoped = memory.search("kettle", limit=10, scope=RetrievalScope(identity_id=survivor)).hits
         assert {hit.id for hit in scoped} == {first.id, second.id}
 
-        # A merged-away ID resolves to the person it became, exactly as `identity()` does: a
+        # A merged-away ID resolves to the person it became, exactly as identity() does: a
         # caller holding a pre-merge observation must still reach them.
         assert {
             hit.id

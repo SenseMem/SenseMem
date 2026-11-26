@@ -12,6 +12,7 @@ from threading import Event
 from typing import cast
 
 import pytest
+import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -331,7 +332,6 @@ def test_missing_index_rebuild_uses_stored_embeddings(
 def test_cli_loads_config_runs_server_and_closes_backends(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: dict[str, str]
 ) -> None:
-    import uvicorn
 
     configs: list[MemorySpec] = []
     closed: list[bool] = []
@@ -416,7 +416,6 @@ def test_cli_refuses_an_owned_root_before_loading_models(
 def test_cli_releases_root_after_startup_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
-    import uvicorn
 
     configuration = tmp_path / "config.yaml"
     configuration.write_text("embedding: {provider: openai}\n", encoding="utf-8")

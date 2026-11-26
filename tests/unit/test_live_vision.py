@@ -13,14 +13,23 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING, Self, cast
+from typing import Self, cast
 
 import pytest
 from _feature_support import TinyEmbedder
 from fastapi import WebSocket, WebSocketDisconnect
+from fixtures.live import Segmenter
+from fixtures.live import live_config as _config
 from PIL import Image
 from websockets.asyncio.client import ClientConnection
 
+from examples.live import vision
+from examples.live import vision as module
+from examples.live.app import LiveRuntime
+from examples.live.perception import PerceptionContext, PerceptionResult
+from examples.live.realtime import RealtimeRelay
+from examples.live.recall import LiveRecall
+from examples.live.vision import LiveVision
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -35,10 +44,6 @@ from sensemem import (
     PrefetchResult,
     SearchHit,
 )
-
-if TYPE_CHECKING:
-    from examples.live.recall import LiveRecall
-    from examples.live.vision import LiveVision
 
 
 class Socket:
@@ -185,15 +190,8 @@ class Fixture:
         }
 
 
-@pytest.fixture(autouse=True)
-def example_imports(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
-
-
 @pytest.fixture
 async def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Fixture]:
-    from examples.live import vision
-    from examples.live.recall import LiveRecall
 
     async with AsyncMemory(Memory(tmp_path / "memory", embedder=TinyEmbedder())) as memory:
         bundle = await memory.compile("fixture")
@@ -234,7 +232,6 @@ async def _start(fixture: Fixture) -> asyncio.Task[None]:
 async def test_slow_sensory_recall_preserves_source_time_without_reviving_expired_vision(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live import vision as module
 
     f = fixture
     clock = datetime.now(timezone.utc)
@@ -362,7 +359,6 @@ async def test_pcm_snapshots_use_exact_original_samples_and_bounded_native_audio
 
 
 async def test_audio_tap_forwards_original_protocol_before_observation(fixture: Fixture) -> None:
-    from examples.live.realtime import RealtimeRelay
 
     f = fixture
     f.vision.started_at = f.start
@@ -436,7 +432,6 @@ async def test_camera_reset_suppresses_both_inflight_outputs_without_erasing_iss
 async def test_memory_revision_and_expired_observations_cannot_issue_actions(
     fixture: Fixture,
 ) -> None:
-    from examples.live.perception import PerceptionContext, PerceptionResult
 
     f = fixture
     now = datetime.now(timezone.utc)
@@ -498,10 +493,6 @@ async def test_memory_revision_and_expired_observations_cannot_issue_actions(
 async def test_voice_disconnect_returns_while_native_visual_work_drains(
     fixture: Fixture, tmp_path: Path
 ) -> None:
-    from test_live_experience import Segmenter, _config
-
-    from examples.live.app import LiveRuntime
-    from examples.live.realtime import RealtimeRelay
 
     f = fixture
     runtime = LiveRuntime(

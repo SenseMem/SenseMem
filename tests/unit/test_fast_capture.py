@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
-import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import closing
 from pathlib import Path
@@ -13,6 +12,8 @@ from typing import cast
 
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
+from fixtures.events import CountingDescriber as _CountingDescriber
+from fixtures.events import RecordingVisionDescriber
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -33,13 +34,14 @@ from sensemem import (
     RetrievalScope,
     StreamInput,
     ValidationError,
+    cli,
 )
 from sensemem._telemetry import CAPTURE_FAILED, CAPTURE_SETTLED, CAPTURE_TIME_TO_SEARCHABLE
 from sensemem.memory import AsyncMemory
 
 
 class CountingEmbedder:
-    """`TinyEmbedder` that counts its calls and can refuse one poisoned input."""
+    """TinyEmbedder that counts its calls and can refuse one poisoned input."""
 
     embedding_model = TinyEmbedder.embedding_model
     embedding_space = TinyEmbedder.embedding_space
@@ -209,7 +211,7 @@ def test_adding_captured_content_settles_it_under_the_same_id(tmp_path: Path) ->
         assert former.calls == 1
         assert captured.id in {hit.id for hit in memory.search("blue toolbox").hits}
 
-        # `add_many` shares the same enrichment path.
+        # add_many shares the same enrichment path.
         queued = memory.capture("the yellow hammer hangs by the door")
         assert memory.add_many(("the yellow hammer hangs by the door",))[0].id == queued.id
         assert memory.pending_captures() == ()
@@ -335,7 +337,7 @@ def test_capture_refuses_media_no_configured_model_will_ever_embed(tmp_path: Pat
         assert _queue_rows(tmp_path) == []
         assert memory.list().items == ()
 
-    # An embedder that takes audio reaches `add()`'s second rejection instead of its first, so
+    # An embedder that takes audio reaches add()'s second rejection instead of its first, so
     # the capture guard has to be the same unconditional check rather than an audio-only mirror.
     with Memory(
         tmp_path,
@@ -488,7 +490,6 @@ async def test_async_stream_commits_lazily_and_preserves_capture_policy(
 
 
 def test_the_capture_operations_reach_the_command_line(tmp_path: Path) -> None:
-    from sensemem import cli
 
     assert {"capture", "settle", "pending-captures"} <= set(cli._LOCAL)
 
@@ -515,7 +516,6 @@ def test_the_capture_operations_reach_the_command_line(tmp_path: Path) -> None:
 
 
 def test_settle_names_records_on_the_command_line(tmp_path: Path) -> None:
-    from sensemem import cli
 
     parser = cli._parser()
     embedder = CountingEmbedder()
@@ -579,7 +579,6 @@ def test_a_formation_failure_keeps_the_capture_queued_until_it_forms(tmp_path: P
 
 
 def test_settling_describes_an_image_a_text_only_embedder_cannot_take(tmp_path: Path) -> None:
-    from test_streaming_observations import RecordingVisionDescriber
 
     describer = RecordingVisionDescriber()
     with Memory(
@@ -604,10 +603,9 @@ def test_a_caption_derived_while_settling_is_reused_by_a_later_add(tmp_path: Pat
     """Settlement must cache what it paid for, or the next write over the same bytes pays again.
 
     Captions are derived before the asset rows exist and staged on the operation, so the settle
-    path has to persist them the way the `add` path does. `_CountingDescriber` never repeats a
+    path has to persist them the way the add path does. _CountingDescriber never repeats a
     caption, which is what makes a reused one distinguishable from a second call.
     """
-    from test_memory_search_index import _CountingDescriber
 
     describer = _CountingDescriber()
     picture = Blob(b"one picture, two memories", "image/png")
@@ -622,7 +620,7 @@ def test_a_caption_derived_while_settling_is_reused_by_a_later_add(tmp_path: Pat
 
         assert memory.settle() == 1
         settled = memory.get(captured.id)
-        # A distinct memory over the same bytes: the text differs, so `add` dedup cannot be what
+        # A distinct memory over the same bytes: the text differs, so add dedup cannot be what
         # keeps the describer at one call.
         added = memory.add(("the same toolbox, photographed again", picture))
 
@@ -652,7 +650,7 @@ def test_settling_appends_derived_text_and_leaves_the_captured_evidence_intact(
         settled = memory.get(captured.id)
 
         # Settlement appends; it never rewrites the observation. The caller's text is still the
-        # byte-identical front of `content`, the transcript sits behind its own asset-keyed
+        # byte-identical front of content, the transcript sits behind its own asset-keyed
         # marker, and the raw media is the same content-addressed object.
         marker = f"[transcript:{assets[0].id}]"
         assert settled.content == f"{note}\n\n{marker}\nthe spare key is in the blue toolbox"
@@ -747,14 +745,20 @@ def test_naming_records_rejects_ids_the_store_would_only_reject_later(tmp_path: 
 
 
 class SlowEmbedder(CountingEmbedder):
-    """`CountingEmbedder` slow enough that a second thread reaches the queue mid-embedding."""
+    """CountingEmbedder that pauses deterministically until released by the test."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
 
     def embed(
         self,
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        time.sleep(0.2)
+        self.entered.set()
+        assert self.release.wait(timeout=5)
         return super().embed(inputs, task)
 
 
@@ -767,18 +771,26 @@ def test_two_concurrent_settles_never_run_the_models_over_one_record_twice(
     ) as memory:
         record = memory.capture("the spare key is in the blue toolbox")
 
-        started = threading.Barrier(2)
         settled: list[int] = []
+        second_started = threading.Event()
 
-        def worker() -> None:
-            started.wait()
+        def first_worker() -> None:
             settled.append(memory.settle())
 
-        threads = [threading.Thread(target=worker) for _index in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        def second_worker() -> None:
+            second_started.set()
+            settled.append(memory.settle())
+
+        first = threading.Thread(target=first_worker)
+        second = threading.Thread(target=second_worker)
+        first.start()
+        assert embedder.entered.wait(timeout=5)
+        second.start()
+        assert second_started.wait(timeout=5)
+        embedder.release.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+        assert not first.is_alive() and not second.is_alive()
 
         # One settlement at a time: the loser waits and then finds the queue already drained,
         # rather than paying for the same embedding and discovering the race at the commit.
@@ -789,9 +801,9 @@ def test_two_concurrent_settles_never_run_the_models_over_one_record_twice(
 
 
 def test_a_capture_keeps_the_place_it_was_captured_in(tmp_path: Path) -> None:
-    """`capture` acknowledges before any model work, but it must not drop a record column.
+    """capture acknowledges before any model work, but it must not drop a record column.
 
-    The place is supplied at capture time and never re-supplied: `settle` leaves the existing row
+    The place is supplied at capture time and never re-supplied: settle leaves the existing row
     alone, so a place lost on the capture write is lost for good and the record is unreachable
     from every place-scoped question about the room it was captured in.
     """
@@ -818,8 +830,31 @@ def test_settle_counts_only_the_rows_it_actually_settled(tmp_path: Path) -> None
     ) as memory:
         memory.capture("the spare key is in the blue toolbox")
         # What losing the race looks like from inside: the row is gone by the time this pass
-        # claims it, so `_enrich_row` returns None and nothing was embedded or completed.
+        # claims it, so _enrich_row returns None and nothing was embedded or completed.
         memory._store.captures.settle_capture = lambda *args, **kwargs: False  # type: ignore[method-assign]
 
         assert memory.settle() == 0
         assert len(memory.pending_captures()) == 1
+
+
+class _FailedEmbedder(TinyEmbedder):
+    def embed(
+        self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+    ) -> tuple[tuple[float, ...], ...]:
+        raise ModelError("fixture model failure", reason="model_failed")
+
+
+def test_backlog_pages_advance_past_failed_records_and_a_deleted_cursor(tmp_path: Path) -> None:
+    with Memory(tmp_path, embedder=_FailedEmbedder()) as memory:
+        originals = {memory.capture(f"observation {index}").id for index in range(105)}
+        with pytest.raises(ModelError):
+            memory.settle(limit=100, max_attempts=1)
+        first = memory.pending_captures()
+        assert len(first) == 100
+        assert all(record.attempts == 1 for record in first)
+        cursor = first[-1].cursor
+        memory.delete(first[-1].memory_id)
+        last = memory.pending_captures(cursor=cursor)
+        assert len(last) == 5
+        assert {record.memory_id for record in (*first, *last)} == originals
+        assert memory.pending_captures(cursor=last[-1].cursor) == ()

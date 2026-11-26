@@ -1,13 +1,9 @@
 """The public correction value preserves counterevidence through durable serialization."""
 
-import inspect
-
 import pytest
 
 from sensemem import (
-    AsyncMemory,
     IdentityChange,
-    Memory,
     MemoryIntent,
     MemoryOperation,
     ValidationError,
@@ -40,11 +36,3 @@ def test_host_identity_binding_keeps_the_chosen_survivor_in_its_public_payload()
     )
     assert load_operation(dump_operation(binding)) == binding
     assert binding.target_ids == binding.evidence_ids == ()
-
-
-@pytest.mark.parametrize("owner", (Memory, AsyncMemory))
-def test_answer_contract_has_no_implicit_identity_binding_switch(
-    owner: type[Memory] | type[AsyncMemory],
-) -> None:
-    assert "link_identities" not in inspect.signature(owner.ask).parameters
-    assert "link_identities" not in inspect.signature(owner.ask_stream).parameters

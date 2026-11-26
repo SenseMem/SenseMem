@@ -10,12 +10,14 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 
+import av
 import httpx2 as httpx
 import pytest
 from openai import OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from PIL import Image
 
 import sensemem.models._openai_media as openai_media
 import sensemem.models._openai_requests as openai_requests
@@ -65,7 +67,6 @@ def _hit(identifier: str, assets: tuple[AssetRef, ...] = ()) -> SearchHit:
 
 
 def _jpeg() -> bytes:
-    from PIL import Image
 
     output = BytesIO()
     Image.effect_noise((512, 512), 100).convert("RGB").save(output, format="JPEG", quality=95)
@@ -407,7 +408,6 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
     video = _asset(tmp_path, "clip.mp4", Modality.VIDEO, b"video" * 10_000)
     hit = _hit("clip", (video,))
     image = BytesIO()
-    from PIL import Image
 
     Image.new("RGB", (8, 8)).save(image, format="JPEG")
     url = "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode()
@@ -459,8 +459,6 @@ def test_video_is_sampled_only_when_native_video_cannot_fit_on_its_own(
 
 
 def test_sampled_video_frames_obey_the_explicit_frame_byte_limit() -> None:
-    import av
-    from PIL import Image
 
     from_image = cast(Callable[[Image.Image], av.VideoFrame], av.VideoFrame.from_image)
     frame = from_image(Image.effect_noise((512, 512), 100).convert("RGB"))
@@ -523,7 +521,6 @@ def test_fitting_request_keeps_exact_old_body_without_reading_previously_omitted
 def test_multiple_mandatory_images_fit_when_full_text_uses_most_of_the_budget(
     tmp_path: Path,
 ) -> None:
-    from PIL import Image
 
     output = BytesIO()
     Image.new("RGB", (1, 1)).save(output, format="JPEG")

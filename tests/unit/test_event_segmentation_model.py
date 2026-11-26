@@ -7,10 +7,11 @@ from typing import Literal, cast
 
 import httpx2 as httpx
 import pytest
+from fixtures.openai import make_asset as _asset
+from fixtures.openai import sdk_client as _sdk_client
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from test_openai_adapters import _asset, _sdk_client
 
 from sensemem._telemetry import model_span
 from sensemem.content import ContentPart

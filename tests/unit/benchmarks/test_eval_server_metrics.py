@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -67,16 +67,18 @@ def test_metrics_window_reports_counter_histogram_and_gauge_deltas(
     )
 
     result = metrics_window("https://models.example/metrics", before)
-    payload = cast(dict[str, Any], result)
+    counters = cast(dict[str, dict[str, object]], result["counters"])
+    histograms = cast(dict[str, dict[str, object]], result["histograms"])
+    gauges = cast(dict[str, dict[str, object]], result["gauges"])
 
-    assert payload["scope"] == "server_process_global"
-    assert payload["exclusive_attribution"] is False
-    assert payload["request_count_delta"] == 4.0
-    assert payload["counters"]["vllm:prompt_tokens_total"]["delta"] == 80.0
-    histogram = payload["histograms"]["vllm:e2e_request_latency_seconds"]
+    assert result["scope"] == "server_process_global"
+    assert result["exclusive_attribution"] is False
+    assert result["request_count_delta"] == 4.0
+    assert counters["vllm:prompt_tokens_total"]["delta"] == 80.0
+    histogram = histograms["vllm:e2e_request_latency_seconds"]
     assert histogram["count_delta"] == 4.0
     assert histogram["mean"] == 2.5
-    assert payload["gauges"]["vllm:num_requests_running"]["end_average"] == 2.0
+    assert gauges["vllm:num_requests_running"]["end_average"] == 2.0
 
 
 def test_metrics_window_marks_counter_resets_partial(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,19 +124,18 @@ def test_metrics_window_subtracts_interleaved_judge_counters(
         lambda *_args, **_kwargs: after,
     )
 
-    result = cast(
-        dict[str, Any],
-        metrics_window(
-            "https://models.example/metrics",
-            before,
-            excluded=((judge_start, judge_end),),
-        ),
+    result = metrics_window(
+        "https://models.example/metrics",
+        before,
+        excluded=((judge_start, judge_end),),
     )
 
+    counters = cast(dict[str, dict[str, object]], result["counters"])
+    histograms = cast(dict[str, dict[str, object]], result["histograms"])
     assert result["excluded_window_count"] == 1
     assert result["request_count_delta"] == 6.0
-    assert result["counters"]["vllm:prompt_tokens_total"]["delta"] == 100.0
-    histogram = result["histograms"]["vllm:e2e_request_latency_seconds"]
+    assert counters["vllm:prompt_tokens_total"]["delta"] == 100.0
+    histogram = histograms["vllm:e2e_request_latency_seconds"]
     assert histogram["count_delta"] == 6.0
     assert histogram["sum_delta"] == 12.0
 

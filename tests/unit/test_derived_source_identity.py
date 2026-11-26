@@ -149,7 +149,6 @@ class RewriteEmbedder(TinyEmbedder):
     def embed(
         self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         return tuple(
             (1.0, 0.0, 0.0)
             if "obsoleteviolet" in value.text

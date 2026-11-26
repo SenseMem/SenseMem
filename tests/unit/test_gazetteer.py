@@ -9,7 +9,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
-from typing import IO, Any, cast
+from typing import IO, cast
 
 import pytest
 from _gazetteer_support import index_fixture, multi_index_fixture
@@ -132,7 +132,7 @@ def test_grid_free_queries_do_not_change_global_network_policy_or_rehash_index(
         encoding: str | None = None,
         errors: str | None = None,
         newline: str | None = None,
-    ) -> IO[Any]:
+    ) -> IO[str] | IO[bytes]:
         assert value != path, "a lookup must not reread the entire pinned index"
         return original_open(value, mode, buffering, encoding, errors, newline)
 
@@ -188,9 +188,9 @@ def test_unknown_or_unpinned_index_is_not_migrated(tmp_path: Path, change: str) 
         {"budget_chars": True},
     ],
 )
-def test_bounded_options_reject_before_opening_any_index(options: dict[str, Any]) -> None:
+def test_bounded_options_reject_before_opening_any_index(options: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        OfflineGazetteer("not-opened", index_sha256="0" * 64, **options)
+        OfflineGazetteer("not-opened", index_sha256="0" * 64, **options)  # type: ignore[arg-type]
 
 
 def test_excessive_prefilter_reports_unknown_instead_of_a_false_nearest(
@@ -210,21 +210,23 @@ def test_multiple_sources_filter_real_extracts_and_sort_distances_together(tmp_p
     value = adapter.nearby(0.022, 0.049)
     assert "source" not in value
     assert isinstance(value["sources"], list) and len(value["sources"]) == 2
-    candidates = cast(list[dict[str, Any]], value["candidates"])
+    candidates = cast(list[dict[str, object]], value["candidates"])
     assert [(row["osm_id"], row["source_index"]) for row in candidates] == [(20, 1), (10, 0)]
-    assert candidates[0]["distance_m"] == 0 and candidates[1]["distance_m"] > 50
+    distance_first = candidates[0]["distance_m"]
+    distance_second = candidates[1]["distance_m"]
+    assert distance_first == 0 and isinstance(distance_second, int | float) and distance_second > 50
     assert (
         OfflineGazetteer(path, index_sha256=digest, limit=1).nearby(0.022, 0.049)["candidates"]
         == candidates[:1]
     )
     # Source 1 has a closer feature, but this coordinate is outside its true extract bbox.
-    west = cast(list[dict[str, Any]], adapter.nearby(0.022, 0.0399)["candidates"])
+    west = cast(list[dict[str, object]], adapter.nearby(0.022, 0.0399)["candidates"])
     assert [(row["osm_id"], row["source_index"]) for row in west] == [(11, 0)]
-    distant = cast(list[dict[str, Any]], adapter.nearby(10, 10)["candidates"])
+    distant = cast(list[dict[str, object]], adapter.nearby(10, 10)["candidates"])
     assert [(row["osm_id"], row["source_index"]) for row in distant] == [(22, 1)]
     assert adapter.nearby(50, 50)["reason"] == "outside_extract_bbox"
-    cast(list[dict[str, Any]], value["sources"])[0].clear()
-    assert cast(list[dict[str, Any]], adapter.provenance["sources"])[0]["url"]
+    cast(list[dict[str, object]], value["sources"])[0].clear()
+    assert cast(list[dict[str, object]], adapter.provenance["sources"])[0]["url"]
 
 
 @pytest.mark.parametrize("value", [None, -1, 2, 0.5, "invalid"])

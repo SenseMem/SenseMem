@@ -8,12 +8,12 @@ can reverse it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
@@ -55,14 +55,22 @@ from sensemem import (
     RecordKind,
     RetrievalScope,
     SearchHit,
+    SpatialAnchor,
+    SpatialContext,
     SpeakerEmbedding,
     SpeechAnalysis,
     SpeechTurn,
     ValidationError,
 )
-from sensemem.control import dump_operation, load_operation, operation_key
+from sensemem.control import (
+    _spatial_payload,
+    dump_operation,
+    load_operation,
+    operation_key,
+    proposal_payload,
+)
 from sensemem.infrastructure.local import LocalStore
-from sensemem.infrastructure.local.store import StoredOperation
+from sensemem.infrastructure.local.store import StoredOperation, _corroboration
 from sensemem.infrastructure.local.store.control import OperationLog
 from sensemem.infrastructure.local.store.semantics import Semantics
 
@@ -217,7 +225,6 @@ def _observations(
     )
 
 
-# ---------------------------------------------------------------------------------------------
 # Vocabulary
 
 
@@ -314,7 +321,6 @@ def test_an_empty_report_is_valid_and_rejections_keep_their_reason() -> None:
         ConsolidationReport(rejected=((operation, " "),))
 
 
-# ---------------------------------------------------------------------------------------------
 # Backend injection
 
 
@@ -349,7 +355,6 @@ def test_consolidate_without_a_backend_reports_the_missing_capability(tmp_path: 
         assert failure.value.reason == "backend_not_configured"
 
 
-# ---------------------------------------------------------------------------------------------
 # CONSOLIDATE
 
 
@@ -577,7 +582,6 @@ def test_rolling_back_a_consolidation_removes_the_derived_record(tmp_path: Path)
         assert memory.get(second.id).id == second.id
 
 
-# ---------------------------------------------------------------------------------------------
 # REINFORCE
 
 
@@ -896,7 +900,7 @@ def test_reinforcement_refuses_a_proposal_that_re_cites_an_existing_source(
                 ),
             )
         )
-        # `derived_id` is hidden, so it can only enter the target window by being named.
+        # derived_id is hidden, so it can only enter the target window by being named.
         report = memory.consolidate(evidence_ids=(first.id, second.id, derived_id))
 
         assert [reason for _operation, reason in report.rejected] == ["already_linked"]
@@ -905,7 +909,6 @@ def test_reinforcement_refuses_a_proposal_that_re_cites_an_existing_source(
         assert stable.context.evidence_ids == (first.id,)
 
 
-# ---------------------------------------------------------------------------------------------
 # CORRECT
 
 
@@ -943,7 +946,7 @@ def test_correction_retires_a_derived_inference_and_rollback_restores_it(tmp_pat
 
         assert record.changed_ids == (derived_id,)
         assert not [hit for hit in memory.search("patient", limit=10).hits if hit.id == derived_id]
-        # `get()` still exposes the retired version for audit.
+        # get() still exposes the retired version for audit.
         retired = memory.get(derived_id)
         assert retired.context is not None
         assert retired.context.retired_at is not None
@@ -970,7 +973,6 @@ def test_correction_refuses_a_raw_observation(tmp_path: Path) -> None:
         assert memory.get(source.id).context is not None
 
 
-# ---------------------------------------------------------------------------------------------
 # FORGET
 
 
@@ -999,7 +1001,7 @@ def test_forgetting_leaves_search_but_stays_in_get_and_list(tmp_path: Path) -> N
 
         assert memory.forget((first.id,)) is None
         assert memory.forget(()) is None
-        # The host names IDs directly, so an unknown one is an error like `get()` and `delete()`,
+        # The host names IDs directly, so an unknown one is an error like get() and delete(),
         # and a set containing an already-forgotten record applies nothing at all.
         with pytest.raises(MemoryNotFoundError):
             memory.forget(("unknown-id",))
@@ -1033,7 +1035,6 @@ def test_a_forgotten_record_is_never_shown_to_the_backend(tmp_path: Path) -> Non
         ]
 
 
-# ---------------------------------------------------------------------------------------------
 # Log
 
 
@@ -1131,7 +1132,6 @@ def test_an_empty_store_never_calls_the_backend(tmp_path: Path) -> None:
         assert consolidator.calls == []
 
 
-# ---------------------------------------------------------------------------------------------
 # Async parity
 
 
@@ -1184,7 +1184,6 @@ def test_async_memory_mirrors_the_control_plane(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-# ---------------------------------------------------------------------------------------------
 # Naming as a proposal
 
 
@@ -1342,8 +1341,6 @@ def test_zero_confidence_or_limited_capture_cannot_put_an_inferred_name_in_speec
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limited: bool
 ) -> None:
     if limited:
-        from sensemem.infrastructure.local.store import _corroboration
-
         monkeypatch.setattr(_corroboration, "_MAX_MEMBER_ROWS", 1)
     with Memory(
         tmp_path,
@@ -1601,8 +1598,8 @@ def test_a_historical_name_can_become_current_again_and_be_rolled_back(
 def test_control_operations_refuse_to_touch_a_bound_naming_assertion(tmp_path: Path) -> None:
     """A name is not an inference to reinforce, correct, or forget behind the projection.
 
-    Retiring the assertion through one of those intents left `identity()` and the indexed
-    speech text answering to a name nothing asserted any more. `rollback()` of the operation
+    Retiring the assertion through one of those intents left identity() and the indexed
+    speech text answering to a name nothing asserted any more. rollback() of the operation
     that named the person is the reversal that recomputes both.
     """
     consolidator = ScriptedConsolidator()
@@ -1627,13 +1624,13 @@ def test_control_operations_refuse_to_touch_a_bound_naming_assertion(tmp_path: P
         )
         for operation in scripted:
             consolidator._scripts.append((operation,))
-            # The assertion is named in `evidence_ids`, so it is inside the window the kernel
+            # The assertion is named in evidence_ids, so it is inside the window the kernel
             # gathered: the refusal below is the naming guard, not the window check that would
             # otherwise refuse a target the backend was never shown.
             rejected = memory.consolidate(evidence_ids=(record.id, assertion)).rejected
             assert [reason for _operation, reason in rejected] == ["naming_assertion"]
 
-        # `forget()` is the same kernel path under host authority, so it refuses too.
+        # forget() is the same kernel path under host authority, so it refuses too.
         assert memory.forget((assertion,)) is None
 
         # The invariant every accepted operation has to leave standing.
@@ -1642,7 +1639,6 @@ def test_control_operations_refuse_to_touch_a_bound_naming_assertion(tmp_path: P
         assert memory.operations()[0].operation.intent is MemoryIntent.IDENTIFY
 
 
-# ---------------------------------------------------------------------------------------------
 # Consolidation forgetting
 
 
@@ -1686,7 +1682,7 @@ def test_consolidation_can_retire_the_detail_its_derived_record_replaces(
         derived_id = record.created_ids[0]
 
         # One operation, not two: the log shows consolidation forgetting as a CONSOLIDATE row
-        # carrying `forgotten_ids`, distinct from a FORGET intent and from `delete()`.
+        # carrying forgotten_ids, distinct from a FORGET intent and from delete().
         assert record.operation.intent is MemoryIntent.CONSOLIDATE
         assert set(record.forgotten_ids) == {first.id, second.id}
         assert [row.operation.intent for row in memory.operations()] == [MemoryIntent.CONSOLIDATE]
@@ -1972,7 +1968,6 @@ def test_a_correction_and_its_replacement_fit_in_one_pass(tmp_path: Path) -> Non
         assert replacement.context is not None and replacement.context.value == "impatient"
 
 
-# ---------------------------------------------------------------------------------------------
 # Trust boundary
 
 
@@ -2091,7 +2086,7 @@ def test_a_target_forgotten_between_validation_and_apply_is_stale(
                     replace(operation, operation_key="interleaved-forget", intent="forget"),
                     forget_ids=(first.id,),
                 )
-            return cast("StoredOperation | None", cast(Any, original)(self, operation, **effects))
+            return original(self, operation, **effects)  # type: ignore[arg-type]
 
         monkeypatch.setattr(OperationLog, "apply_control_operation", forget_first)
         consolidator._scripts.append(
@@ -2133,7 +2128,7 @@ def test_evidence_forgotten_between_validation_and_apply_is_stale(
                     ),
                     forget_ids=(first.id,),
                 )
-            return cast(bool, cast(Any, original)(self, *args, **kwargs))
+            return original(self, *args, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(Semantics, "apply_formation", forget_first)
         consolidator._scripts.append(
@@ -2228,13 +2223,13 @@ def test_control_commit_rechecks_source_visibility_without_rejecting_hidden_targ
 
         def before_formation(self: Semantics, *args: object, **kwargs: object) -> bool:
             change_source()
-            return cast(bool, cast(Any, original_formation)(self, *args, **kwargs))
+            return original_formation(self, *args, **kwargs)  # type: ignore[arg-type]
 
         def before_control(
             self: OperationLog, *args: object, **kwargs: object
         ) -> StoredOperation | None:
             change_source()
-            return cast(StoredOperation | None, cast(Any, original_control)(self, *args, **kwargs))
+            return original_control(self, *args, **kwargs)  # type: ignore[arg-type]
 
         if intent is MemoryIntent.CONSOLIDATE:
             monkeypatch.setattr(Semantics, "apply_formation", before_formation)
@@ -2267,7 +2262,6 @@ def test_control_commit_rechecks_source_visibility_without_rejecting_hidden_targ
         assert change != "hidden" or not invalidated.visible
 
 
-# ---------------------------------------------------------------------------------------------
 # Durable triggers
 
 
@@ -2308,7 +2302,7 @@ def test_a_forgotten_source_stops_supporting_the_candidate_it_formed(tmp_path: P
 
         memory.forget([first.id])
 
-        # `consolidate()` reads the shown records with `active_only=True`, so a candidate naming a
+        # consolidate() reads the shown records with active_only=True, so a candidate naming a
         # forgotten source would ask the backend to weigh evidence it is never shown, and count it.
         assert [
             row
@@ -2868,17 +2862,16 @@ def test_a_concurrent_duplicate_is_refused_inside_the_transaction(tmp_path: Path
         assert len(store.control.read_operations()) == 1
 
 
-# ---------------------------------------------------------------------------------------------
 # Replay
 
 
 def test_a_logged_operation_sequence_replays_against_a_fresh_store(tmp_path: Path) -> None:
     """Gate 3's replay item: the log alone is enough to reproduce the derived state.
 
-    Replay is the public `apply()` surface, not a backend impersonating one: the fresh store is
+    Replay is the public apply() surface, not a backend impersonating one: the fresh store is
     configured with the same consolidation recipe -- a derived representation belongs to a
-    recipe -- but its backend is never called, and each logged `MemoryOperation` goes through the
-    same kernel validation a proposal does. `applied_at` is re-stamped at replay, so transaction
+    recipe -- but its backend is never called, and each logged MemoryOperation goes through the
+    same kernel validation a proposal does. applied_at is re-stamped at replay, so transaction
     times differ by construction. What the log is supposed to determine -- the operation keys,
     the derived IDs, and the evidence lineage -- does not depend on it.
     """
@@ -2975,9 +2968,9 @@ def test_apply_refuses_what_the_kernel_refuses_a_proposal(tmp_path: Path) -> Non
                 memory.apply(operation)
             assert refused.value.reason == reason
         with pytest.raises(ValidationError):
-            memory.apply(cast(Any, "forget everything"))
+            memory.apply("forget everything")  # type: ignore[arg-type]
 
-        # Cognitive forgetting through `apply` is the same operation `forget()` logs.
+        # Cognitive forgetting through apply is the same operation forget() logs.
         record = memory.apply(MemoryOperation(intent=MemoryIntent.FORGET, target_ids=(first.id,)))
         assert record.forgotten_ids == (first.id,)
         assert memory.get(first.id).forgotten_at is not None
@@ -2985,7 +2978,6 @@ def test_apply_refuses_what_the_kernel_refuses_a_proposal(tmp_path: Path) -> Non
         assert memory.get(first.id).forgotten_at is None
 
 
-# ---------------------------------------------------------------------------------------------
 # Lineage supersession
 
 
@@ -3024,7 +3016,7 @@ def test_lineage_supersession_is_logged_and_reversed(tmp_path: Path) -> None:
     """The kernel's own lineage rule reaches records the backend was never shown.
 
     That is deliberate -- it is a deterministic kernel effect, not a backend choice -- but it
-    used to be invisible in the log and irreversible, so `rollback()` left the lineage with the
+    used to be invisible in the log and irreversible, so rollback() left the lineage with the
     superseded claim still retired and nothing standing in its place.
     """
     consolidator = ScriptedConsolidator()
@@ -3036,7 +3028,7 @@ def test_lineage_supersession_is_logged_and_reversed(tmp_path: Path) -> None:
 
         garden = _consolidate_state(memory, consolidator, second, "garden")
 
-        # The second pass only ever saw `second`; the record it superseded was never shown.
+        # The second pass only ever saw second; the record it superseded was never shown.
         assert consolidator.calls[-1][0] == (second.id,)
         # The explicit support clause restamps the first assertion into version 2 before the
         # later lineage write supersedes it.
@@ -3179,7 +3171,7 @@ def test_a_reinforce_target_corrected_between_validation_and_apply_is_stale(
                     replace(operation, operation_key="interleaved-correct", intent="correct"),
                     correct_ids=(derived_id,),
                 )
-            return cast("StoredOperation | None", cast(Any, original)(self, operation, **effects))
+            return original(self, operation, **effects)  # type: ignore[arg-type]
 
         monkeypatch.setattr(OperationLog, "apply_control_operation", correct_first)
         consolidator._scripts.append(
@@ -3202,7 +3194,7 @@ def test_a_reinforce_target_corrected_between_validation_and_apply_is_stale(
         supported = memory.get(derived_id)
         assert supported.context is not None
         assert supported.context.evidence_ids == (first.id,)
-        # The host may still forget an already-corrected record: `require_active` stays loose.
+        # The host may still forget an already-corrected record: require_active stays loose.
         assert memory.forget((derived_id,)) is not None
 
 
@@ -3217,7 +3209,7 @@ def test_a_query_gathered_window_is_never_widened(tmp_path: Path) -> None:
         )
         report = memory.consolidate(query="Ana waited calmly", limit=1)
 
-        # A query gathers the shown set and nothing else: with no host `evidence_ids`, the window
+        # A query gathers the shown set and nothing else: with no host evidence_ids, the window
         # is exactly what the backend saw.
         assert [shown for shown, _trigger in consolidator.calls] == [(gathered,)]
         assert report.operations == ()
@@ -3266,7 +3258,7 @@ def test_a_consolidation_inherits_what_all_of_its_evidence_agrees_on(tmp_path: P
     Formation derives from one observation and inherits its place and metadata outright. A
     consolidation rests on several, so agreement is the condition: two sightings in the kitchen
     make kitchen knowledge, and a sighting in the kitchen plus one in the garage makes knowledge
-    that belongs to neither room. `place_id` is a hard retrieval filter, so guessing would file
+    that belongs to neither room. place_id is a hard retrieval filter, so guessing would file
     the knowledge somewhere it was never observed.
     """
     agreeing = ScriptedConsolidator()
@@ -3305,7 +3297,7 @@ def test_an_asserted_name_is_not_scoped_to_where_the_person_was_seen(tmp_path: P
 
     A naming assertion cites evidence but claims nothing about a place, so inheriting the place
     of the clips it was recognized in would hide the name from every question asked anywhere
-    else -- and `register_identity`, which asserts the same thing with no evidence at all, files
+    else -- and register_identity, which asserts the same thing with no evidence at all, files
     it nowhere.
     """
     consolidator = ScriptedConsolidator()
@@ -3342,7 +3334,6 @@ def test_an_asserted_name_is_not_scoped_to_where_the_person_was_seen(tmp_path: P
         assert asserted.id in {hit.id for hit in memory.search("recognized person", limit=10).hits}
 
 
-# ---------------------------------------------------------------------------------------------
 # The already-weighed marker
 
 
@@ -3573,7 +3564,6 @@ def test_an_idle_window_is_declared_by_the_operator(tmp_path: Path) -> None:
         )
 
 
-# ---------------------------------------------------------------------------------------------
 # The loop
 
 
@@ -3658,14 +3648,13 @@ def test_deliberate_needs_a_backend_and_validates_its_bounds(tmp_path: Path) -> 
     with _memory(tmp_path) as memory:
         _observations(memory, "one")
         # Nothing is due in a store nobody has reinforced or consolidated, so the loop is a
-        # no-op rather than a `ModelError`: `consolidate` is never reached.
+        # no-op rather than a ModelError: consolidate is never reached.
         assert memory.consolidate_pending() == ConsolidationReport()
         for keywords in ({"limit": 0}, {"max_rounds": 0}, {"idle": "yes"}):
             with pytest.raises(ValidationError):
-                memory.consolidate_pending(**cast(Any, keywords))
+                memory.consolidate_pending(**keywords)
 
 
-# ---------------------------------------------------------------------------------------------
 # Scheduling between latency-sensitive work and slow reasoning
 
 
@@ -3695,7 +3684,7 @@ class BlockingConsolidator:
 
 
 def test_a_thinking_backend_does_not_block_a_concurrent_add(tmp_path: Path) -> None:
-    """`consolidate` releases the formation lock across the model round trip.
+    """consolidate releases the formation lock across the model round trip.
 
     Slow reasoning must not stall the latency-sensitive path. Correctness does not rest on the
     lock either: every proposal is re-checked inside its own apply transaction.
@@ -3778,7 +3767,6 @@ def test_an_identity_merge_does_not_commit_while_a_consolidate_apply_pass_holds_
         )
 
 
-# ---------------------------------------------------------------------------------------------
 # Post-hoc outcome
 
 
@@ -3855,7 +3843,7 @@ class Abstainer:
 
 
 def test_an_abstention_and_a_thin_bundle_record_the_same_failure_signal(tmp_path: Path) -> None:
-    """The other two QUERY_FAILURE producers: `ask` abstaining and `compile` finding nothing."""
+    """The other two QUERY_FAILURE producers: ask abstaining and compile finding nothing."""
     with _memory(tmp_path, SilentConsolidator(), answerer=Abstainer()) as memory:
         _observations(memory, "the spare key is in the toolbox")
         for _attempt in range(2):
@@ -3936,10 +3924,6 @@ def test_consolidation_forgetting_refuses_a_bound_naming_assertion(tmp_path: Pat
 
 def test_every_operation_payload_field_is_derived_from_the_dataclass() -> None:
     """A new proposal field must reach the idempotency key, or two proposals hash alike."""
-    import dataclasses
-
-    from sensemem import SpatialAnchor, SpatialContext
-    from sensemem.control import _spatial_payload, proposal_payload
 
     spatial = SpatialContext(frame_id="home", anchor=SpatialAnchor.OBSERVER, x=1.0, y=2.0)
     proposal = replace(_trait("Li", "patient"), spatial=spatial)
@@ -3974,7 +3958,7 @@ def test_registering_a_name_again_after_rolling_it_back_names_the_person(tmp_pat
 
     The rollback leaves the record in place with its only version retired, and the log row
     marked rolled back. The repeat registration is therefore a fresh operation and has to
-    produce a fresh version, not log an `identify` row over an identity that stays unnamed.
+    produce a fresh version, not log an identify row over an identity that stays unnamed.
     """
     consolidator = ScriptedConsolidator()
     with _identity_memory(tmp_path / "re-register", consolidator) as memory:
@@ -4063,7 +4047,7 @@ def test_deleting_one_source_of_an_agent_asserted_name_takes_it_out_of_indexed_s
     """Un-projecting a name has to repaint the transcripts that quoted it, not just the registry.
 
     Deleting a memory an assertion cites is not deleting the assertion, so the delete path saw no
-    naming record and skipped the reindex: `identity()` reported nobody while the stored text and
+    naming record and skipped the reindex: identity() reported nobody while the stored text and
     its vectors still answered to the name.
     """
     consolidator = ScriptedConsolidator()

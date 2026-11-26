@@ -220,7 +220,6 @@ def test_instance_encode_isolated_from_class_level_remote_patch(
             normalize_embeddings: bool,
             truncate_dim: int | None,
         ) -> Matrix:
-            del convert_to_numpy, normalize_embeddings
             self.batch_sizes.append(batch_size)
             self.calls.append(("native", sentences, truncate_dim))
             return Matrix(self.values)

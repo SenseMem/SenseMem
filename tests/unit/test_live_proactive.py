@@ -11,6 +11,9 @@ from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from examples.live import app as demo
+from examples.live.app import LiveRuntime, ProactiveDecision
+from examples.live.updates import LiveEvent
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -30,11 +33,6 @@ from sensemem import (
     RecordKind,
     SearchHit,
 )
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 class Segmenter:
@@ -80,7 +78,6 @@ class Reviewer:
     ],
 )
 def test_inconsistent_or_non_structured_decisions_cannot_speak(value: str) -> None:
-    from examples.live.app import ProactiveDecision
 
     with pytest.raises(ValidationError):
         ProactiveDecision.model_validate_json(value)
@@ -90,8 +87,6 @@ def test_source_review_and_proactive_dialogue_preserve_origin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from examples.live import app as demo
-    from examples.live.updates import LiveEvent
 
     reviewer = Reviewer()
     runtimes: list[demo.LiveRuntime] = []
@@ -207,7 +202,6 @@ def test_source_review_and_proactive_dialogue_preserve_origin(
 
 
 async def test_unrelated_write_does_not_withdraw_intact_reviewed_evidence(tmp_path: Path) -> None:
-    from examples.live.app import LiveRuntime
 
     config = MemorySpec.model_validate(
         {
@@ -236,7 +230,6 @@ async def test_unrelated_write_does_not_withdraw_intact_reviewed_evidence(tmp_pa
 
 
 async def test_withdrawn_support_rejects_a_reviewed_hit_that_becomes_hidden(tmp_path: Path) -> None:
-    from examples.live.app import LiveRuntime
 
     config = MemorySpec.model_validate({"data_dir": tmp_path, "embedding": {"provider": "openai"}})
     runtime = LiveRuntime(

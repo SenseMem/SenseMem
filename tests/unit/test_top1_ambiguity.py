@@ -30,7 +30,6 @@ class _EqualEmbedder:
     def embed(
         self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         return tuple((1.0, 0.0) for _value in inputs)
 
     def close(self) -> None:

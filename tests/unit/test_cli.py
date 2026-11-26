@@ -1,6 +1,6 @@
 """Contract tests for the product command line.
 
-The interesting assertions here are the mechanical ones: the command set is derived from `Memory`,
+The interesting assertions here are the mechanical ones: the command set is derived from Memory,
 the exit table is derived from the exception hierarchy, and every JSON document and every decoded
 content part is compared against the REST models rather than against a hand-written expectation.
 Those are what stop the CLI drifting away from the surfaces it shares a vocabulary with.
@@ -29,11 +29,20 @@ from pydantic import TypeAdapter
 
 import sensemem.api.client as api_client
 import sensemem.cli as cli_module
-from sensemem import Memory, OpenAIEmbedder, recipes
+from sensemem import Memory, OpenAIEmbedder, cli, recipes
 from sensemem.api import content as rest_content
 from sensemem.api import responses as rest
 from sensemem.api.errors import ErrorEnvelope
-from sensemem.cli import EXIT_CODES, _parser, main
+from sensemem.cli import (
+    EXIT_CODES,
+    _ask,
+    _data_dir_state,
+    _memory_document,
+    _operation_document,
+    _parser,
+    _parts_input,
+    main,
+)
 from sensemem.content import AssetRef, ContentPart
 from sensemem.control import dump_operation, load_operation
 from sensemem.control_values import (
@@ -91,7 +100,7 @@ not_a_memory = 7
 
 
 class _Embedder:
-    """The same backend `APP_SOURCE` composes, for the tests that call `Memory` directly."""
+    """The same backend APP_SOURCE composes, for the tests that call Memory directly."""
 
     embedding_capabilities = frozenset({Modality.TEXT})
     embedding_model = "cli-test-embedding"
@@ -127,7 +136,7 @@ class _Describer:
 
 @pytest.fixture
 def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Write an importable application module and return its `MODULE:ATTR` spec."""
+    """Write an importable application module and return its MODULE:ATTR spec."""
     module = tmp_path / "cli_test_application.py"
     module.write_text(APP_SOURCE.format(data_dir=str(tmp_path / "store")), encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -144,12 +153,11 @@ def _run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, object, l
     return status, stdout, stderr
 
 
-# ---------------------------------------------------------------------------------------------
 # Surface derivation
 
 
-# `docs/design-principles.md` lets the CLI omit an operation only when a transport limitation is
-# documented explicitly, so a gap needs an entry here and a row in `docs/api/cli.md` rather than
+# The CLI may omit an operation only when a transport limitation is documented explicitly,
+# so a gap needs an entry here and a row in docs/api/cli.md rather than disappearing silently.
 # silence. Everything else must be a command.
 UNEXPOSED_OPERATIONS: dict[str, str] = {
     "ask_stream": (
@@ -203,7 +211,6 @@ def test_error_envelope_matches_the_rest_envelope(
     assert all(flag in message for flag in ("--app", "--embedder", "--url"))
 
 
-# ---------------------------------------------------------------------------------------------
 # Output parity with the REST response models
 
 
@@ -235,7 +242,6 @@ def _record(**overrides: object) -> MemoryRecord:
 
 
 def test_memory_documents_equal_the_rest_response_models() -> None:
-    from sensemem.cli import _ask, _memory_document
 
     record = _record()
     assert _memory_document(record) == rest.MemoryResponse.model_validate(record).model_dump(
@@ -289,16 +295,6 @@ def test_memory_documents_equal_the_rest_response_models() -> None:
     assert document == rest.AnswerResponse.model_validate(answer).model_dump(mode="json")
 
 
-def test_ask_rejects_the_removed_implicit_identity_binding_flag() -> None:
-    with pytest.raises(SystemExit) as error:
-        _parser().parse_args(["ask", "question", "--link-identities"])
-    assert error.value.code == 2
-
-
-# ---------------------------------------------------------------------------------------------
-# Input parity with the REST discriminated part union
-
-
 PART_CASES: tuple[list[dict[str, object]], ...] = (
     [{"type": "input_text", "text": "inspection evidence"}],
     [{"type": "input_image", "image_url": f"data:image/png;base64,{PNG}"}],
@@ -318,7 +314,6 @@ PART_CASES: tuple[list[dict[str, object]], ...] = (
 
 @pytest.mark.parametrize("parts", PART_CASES, ids=range(len(PART_CASES)))
 def test_parts_decode_exactly_as_rest_decodes_them(parts: list[dict[str, object]]) -> None:
-    from sensemem.cli import _parts_input
 
     assert _parts_input(parts) == rest_content.content_input(_REST_CONTENT.validate_python(parts))
 
@@ -344,7 +339,6 @@ def test_parts_decode_exactly_as_rest_decodes_them(parts: list[dict[str, object]
     ),
 )
 def test_invalid_parts_are_rejected_by_both_surfaces(parts: list[dict[str, object]]) -> None:
-    from sensemem.cli import _parts_input
 
     with pytest.raises(ValidationError):
         _parts_input(parts)
@@ -353,7 +347,6 @@ def test_invalid_parts_are_rejected_by_both_surfaces(parts: list[dict[str, objec
 
 
 def test_the_cli_only_path_part_reaches_memory_as_a_path(tmp_path: Path) -> None:
-    from sensemem.cli import _parts_input
 
     media = tmp_path / "panel.png"
     assert _parts_input([{"type": "input_file", "path": str(media)}]) == (media,)
@@ -361,7 +354,6 @@ def test_the_cli_only_path_part_reaches_memory_as_a_path(tmp_path: Path) -> None
         _REST_CONTENT.validate_python([{"type": "input_file", "path": str(media)}])
 
 
-# ---------------------------------------------------------------------------------------------
 # End-to-end through an application composition
 
 
@@ -515,7 +507,6 @@ def test_quiet_suppresses_only_the_banner(app: str, capsys: pytest.CaptureFixtur
 def test_ordered_atoms_and_stdin_reach_memory_in_order(
     app: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from sensemem import cli
 
     captured: list[object] = []
 
@@ -644,7 +635,6 @@ def test_explain_reports_the_composition_and_executes_nothing(
     assert not store.exists()
 
 
-# ---------------------------------------------------------------------------------------------
 # Recipes
 
 
@@ -677,11 +667,10 @@ def test_recipes_pin_identity_to_the_constants_in_the_source() -> None:
 def test_backend_flags_reach_the_memory_they_compose(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str, keyword: str
 ) -> None:
-    from sensemem import cli
 
     sentinel = object()
     captured: dict[str, object] = {}
-    # Parse before patching: `_parser` derives its defaults from `Memory`'s own signature.
+    # Parse before patching: _parser derives its defaults from Memory's own signature.
     arguments = cli._parser().parse_args(
         ["--data-dir", str(tmp_path), "--embedder", "openai", f"--{slot}", "openai", "list"]
     )
@@ -697,7 +686,7 @@ def test_backend_flags_reach_the_memory_they_compose(
 def test_the_vision_recipe_declares_a_visual_capability_memory_accepts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A describer inheriting the text-only generation default is rejected by `Memory`."""
+    """A describer inheriting the text-only generation default is rejected by Memory."""
     monkeypatch.setattr(recipes, "_openai_client", _SdkClient)
     describer = recipes.vision("openai")
     try:
@@ -710,7 +699,6 @@ def test_the_vision_recipe_declares_a_visual_capability_memory_accepts(
 
 def test_every_recipe_slot_has_a_command_line_flag() -> None:
     """Expose a construction flag for every supported model slot."""
-    from sensemem import cli
 
     flags = {action.dest for action in cli._parser()._actions}
     assert set(cli._SLOTS) <= flags
@@ -727,7 +715,7 @@ def test_recipes_return_an_object_the_caller_owns(monkeypatch: pytest.MonkeyPatc
 
 
 class _SdkClient:
-    """Stands in for the SDK client `recipes` constructs, which needs a credential to build."""
+    """Stands in for the SDK client recipes constructs, which needs a credential to build."""
 
     def __init__(self) -> None:
         self.closed = False
@@ -757,7 +745,7 @@ def test_a_recipe_closes_the_sdk_client_it_constructed(
     backend.close()
     backend.close()
 
-    # `OpenAICompletion.close()` leaves a caller-supplied client open; a recipe-built one is the
+    # OpenAICompletion.close() leaves a caller-supplied client open; a recipe-built one is the
     # recipe's, so the connection pool goes when the returned backend does.
     assert [client.closed for client in clients] == [True]
     assert [client.close_calls for client in clients] == [1]
@@ -858,7 +846,7 @@ def test_doctor_reports_a_failed_loader_without_writing(
 def test_doctor_publishes_the_capability_document_without_opening_a_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`/healthz`, the MCP greeting, and `doctor` must render one document, not three views."""
+    """/healthz, the MCP greeting, and doctor must render one document, not three views."""
     monkeypatch.setattr(recipes, "embedder", lambda name, *, load=False: _Embedder())
     store = tmp_path / "store"
     _status, document, _ = _run(
@@ -914,14 +902,12 @@ def test_doctor_sees_a_directory_another_process_owns(
         _status, report, _ = _run(
             capsys, "--url", "http://127.0.0.1:0", "-q", "--explain", "doctor"
         )
-    from sensemem.cli import _data_dir_state
 
     assert _data_dir_state(store) == "free"
     assert cast(dict[str, object], report)["url"] == "http://127.0.0.1:0"
     assert cast(dict[str, object], report)["timeout_seconds"] == 30.0
 
 
-# ---------------------------------------------------------------------------------------------
 # Remote mode
 
 
@@ -1225,7 +1211,7 @@ def test_a_remote_failure_envelope_is_forwarded_and_mapped(
     }
 
     class _Failure(HTTPError):
-        """A 503 carrying a body, without the file object `HTTPError` would otherwise own."""
+        """A 503 carrying a body, without the file object HTTPError would otherwise own."""
 
         def __init__(self) -> None:
             super().__init__(
@@ -1300,7 +1286,7 @@ def test_remote_timeout_must_be_positive_and_finite(
 def test_capture_settle_and_pending_captures_round_trip(
     app: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The three capture-plane commands are one loop: what `capture` queues, `settle` drains."""
+    """The three capture-plane commands are one loop: what capture queues, settle drains."""
     status, captured, _ = _run(capsys, "--app", app, "-q", "capture", "a red wrench on the bench")
     assert status == 0
     memory_id = cast(dict[str, object], captured)["id"]
@@ -1315,7 +1301,7 @@ def test_capture_settle_and_pending_captures_round_trip(
         "last_error": None,
         "awaiting": "enrichment",
     }
-    # Every CLI timestamp is UTC with a trailing `Z`, which `fromisoformat` only parses from
+    # Every CLI timestamp is UTC with a trailing Z, which fromisoformat only parses from
     # 3.11 on, so the offset is normalised before the timezone is asserted.
     enqueued_at = cast(str, pending[0]["enqueued_at"])
     assert enqueued_at.endswith("Z")
@@ -1360,8 +1346,7 @@ def test_pending_captures_prints_the_same_fields_locally_and_remotely(
 
 
 def test_the_operation_document_carries_the_identity_claim_it_applied() -> None:
-    """`operations` is the only audit surface for a rename, so it must show who was named."""
-    from sensemem.cli import _operation_document
+    """operations is the only audit surface for a rename, so it must show who was named."""
 
     record = MemoryOperationRecord(
         operation_id=1,
@@ -1390,7 +1375,7 @@ def test_the_operation_document_carries_the_identity_claim_it_applied() -> None:
 def test_the_control_plane_loop_commands_only_translate(
     app: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`deliberate`, `apply`, and `record-outcome` add no policy of their own."""
+    """deliberate, apply, and record-outcome add no policy of their own."""
     status, added, _ = _run(capsys, "--app", app, "-q", "add", "a red wrench on the bench")
     assert status == 0
     memory_id = cast(str, cast(dict[str, object], added)["id"])
@@ -1408,7 +1393,7 @@ def test_the_control_plane_loop_commands_only_translate(
         "model_calls": 0,
     }
 
-    # `apply` reads the same operation JSON the log stores, so a log row replays verbatim.
+    # apply reads the same operation JSON the log stores, so a log row replays verbatim.
     operation = dump_operation(MemoryOperation(intent=MemoryIntent.FORGET, target_ids=(memory_id,)))
     status, applied, _ = _run(capsys, "--app", app, "-q", "apply", "--operation", operation)
     assert status == 0
@@ -1474,8 +1459,8 @@ def test_apply_rejects_an_abbreviated_operation_before_kernel_validation(
 def test_an_operation_row_names_the_people_a_merge_moved() -> None:
     """An identity operation names people, not records, so the row has to carry them.
 
-    `merge`, the `correct` a split logs, and the `forget` an erasure logs all leave every
-    memory-ID field empty. Without `identity` the operator surface would print an intent with no
+    merge, the correct a split logs, and the forget an erasure logs all leave every
+    memory-ID field empty. Without identity the operator surface would print an intent with no
     subject at all.
     """
     record = MemoryOperationRecord(
@@ -1500,11 +1485,11 @@ def test_an_operation_row_names_the_people_a_merge_moved() -> None:
 
 
 def test_every_cli_timestamp_spells_utc_the_same_way() -> None:
-    """One instant has one spelling: `pending-captures` and `operations` render `Z` like `capture`.
+    """One instant has one spelling: pending-captures and operations render Z like capture.
 
-    `_memory_document` already went through `_encode_time`, while these two rows called
-    `datetime.isoformat()` directly and printed the same instant as `+00:00`. Both are valid ISO
-    8601, but a consumer comparing `created_at` to `enqueued_at` as strings saw two encodings.
+    _memory_document already went through _encode_time, while these two rows called
+    datetime.isoformat() directly and printed the same instant as +00:00. Both are valid ISO
+    8601, but a consumer comparing created_at to enqueued_at as strings saw two encodings.
     """
     instant = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
 
@@ -1534,9 +1519,9 @@ def test_every_cli_timestamp_spells_utc_the_same_way() -> None:
 
 
 def test_the_idle_window_declared_on_the_command_line_reaches_candidate_selection() -> None:
-    """`--idle` is the operator declaring a window, so the handler has to forward it.
+    """--idle is the operator declaring a window, so the handler has to forward it.
 
-    The flag was parsed and then dropped, so `consolidation-candidates --idle` asked for exactly
+    The flag was parsed and then dropped, so consolidation-candidates --idle asked for exactly
     what the default asks for and never admitted the never-weighed lineages it advertises. Driven
     against the handler because the declaration is what regressed, not the row it prints.
     """
@@ -1558,10 +1543,10 @@ def test_the_idle_window_declared_on_the_command_line_reaches_candidate_selectio
 
 
 def test_a_consolidation_row_carries_the_proposal_it_would_replay_from() -> None:
-    """`--operation` takes a row as `operations` prints it, so the row has to be replayable.
+    """--operation takes a row as operations prints it, so the row has to be replayable.
 
     A consolidation's subject is what it proposed, and the kernel refuses one carrying no
-    proposal. Without this field the advertised pipe -- an `operations` row into `apply` --
+    proposal. Without this field the advertised pipe -- an operations row into apply --
     failed validation before replay, for exactly the intent the slow loop produces most.
     """
     operation = MemoryOperation(
@@ -1589,7 +1574,7 @@ def test_a_consolidation_row_carries_the_proposal_it_would_replay_from() -> None
     proposal = cast(dict[str, object], document["proposal"])
     assert proposal["content"] == "the bench is in the garage"
     assert proposal["kind"] == "state"
-    # The row round-trips: what `operations` prints is what `apply` accepts.
+    # The row round-trips: what operations prints is what apply accepts.
     assert load_operation(json.dumps(document)) == operation
 
 

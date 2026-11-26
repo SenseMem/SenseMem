@@ -25,7 +25,7 @@ from sensemem import (
     Modality,
     ModelInput,
 )
-from sensemem.benchmarks import eval_judge
+from sensemem.benchmarks import download, eval_judge, mosaic
 from sensemem.benchmarks._official.mosaic_scoring import (
     JUDGE_SYSTEM_PROMPT,
     answer_system_prompt,
@@ -34,6 +34,7 @@ from sensemem.benchmarks._official.mosaic_scoring import (
 )
 from sensemem.benchmarks.download import acquire_inputs
 from sensemem.benchmarks.eval_adapters import (
+    _selected,
     load_task,
 )
 from sensemem.benchmarks.eval_arms import _Arm
@@ -323,8 +324,6 @@ def test_bounded_loading_skips_unselected_histories_but_keeps_complete_persona_c
     offset: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sensemem.benchmarks import mosaic
-    from sensemem.benchmarks.eval_adapters import _selected
 
     dataset = _fixture(tmp_path)
     complete = load_mosaic(dataset)
@@ -385,7 +384,6 @@ def test_acquisition_uses_pinned_annotations_and_selected_personas(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sensemem.benchmarks import download
 
     calls: list[tuple[str, str, tuple[str, ...], Path]] = []
 

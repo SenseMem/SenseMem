@@ -70,7 +70,7 @@ def test_operation_logs_require_current_fields_even_when_the_value_has_a_default
     target = payload
     for key in path:
         target = cast(dict[str, object], target[key])
-    del target[field]
+    target.pop(field)
 
     with pytest.raises(StorageError, match="a logged memory operation could not be read"):
         load_operation(json.dumps(payload))

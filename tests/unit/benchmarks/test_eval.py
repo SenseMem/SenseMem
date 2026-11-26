@@ -20,10 +20,12 @@ from inspect import getattr_static, signature
 from pathlib import Path
 from threading import Event as ThreadEvent
 from types import SimpleNamespace
-from typing import Any, ClassVar, cast
+from typing import ClassVar, cast
 
+import httpx2 as httpx
 import pytest
 import yaml
+from openai import AsyncOpenAI
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
 from pydantic import BaseModel, ValidationError
@@ -86,8 +88,10 @@ from sensemem.benchmarks import eval_results as eval_results_module
 from sensemem.benchmarks import eval_runner as eval_runner_module
 from sensemem.benchmarks import eval_runtime as eval_runtime_module
 from sensemem.benchmarks import eval_samples as eval_samples_module
+from sensemem.benchmarks import prompts
 from sensemem.benchmarks.eval import _with_fallback_reference, main
 from sensemem.benchmarks.eval_adapters import (
+    _MEDIA_EPOCH,
     EvalQuestion,
     EvalUnit,
     LoadedTask,
@@ -95,6 +99,7 @@ from sensemem.benchmarks.eval_adapters import (
     MemoryItem,
     _gallery_memory,
     _gallery_question,
+    _mm_lifelong,
     _query_parts,
     load_task,
     parse_media_manifest,
@@ -138,10 +143,21 @@ from sensemem.benchmarks.model_config import (
     ModelConfig,
     default_benchmarks_root,
 )
-from sensemem.benchmarks.official_scorers import scorer_protocol, task_family
-from sensemem.benchmarks.prompts import _choice_prompt, _free_text_parts
+from sensemem.benchmarks.official_scorers import judge_plan, scorer_protocol, task_family
+from sensemem.benchmarks.prompts import (
+    BEST_EFFORT_TASKS,
+    COMPILE_SURFACE_TASKS,
+    MEM_GALLERY_QUERY_PROMPT,
+    MEM_GALLERY_REFUSAL_PROMPT,
+    MEMLENS_QUERY_PROMPT,
+    _choice_prompt,
+    _free_text_parts,
+    mem_gallery_format_constraint,
+    mem_gallery_refusal,
+    task_answer_surface,
+)
 from sensemem.benchmarks.quality_support import _FixtureEmbedder
-from sensemem.benchmarks.task_catalog import TASKS, TaskSpec, expand
+from sensemem.benchmarks.task_catalog import TASKS, MediaSource, TaskSpec, expand
 from sensemem.configuration import OpenAIEmbeddingConfig, OpenAIGenerationConfig
 from sensemem.models.base import SpeechBackend
 
@@ -227,11 +243,6 @@ def test_query_parts_and_gallery_image_id_preserve_retrieval_evidence(tmp_path: 
 def test_gallery_keeps_the_question_in_its_official_template_position(
     tmp_path: Path, point: str
 ) -> None:
-    from sensemem.benchmarks.prompts import (
-        MEM_GALLERY_QUERY_PROMPT,
-        mem_gallery_format_constraint,
-        mem_gallery_refusal,
-    )
 
     image = tmp_path / "query.jpg"
     image.write_bytes(b"image")
@@ -310,35 +321,14 @@ def test_catalog_requires_canonical_task_names(name: str) -> None:
         expand((name,))
 
 
-@pytest.mark.parametrize(
-    "name",
-    (
-        "beam",
-        "beam-100k",
-        "beam-500k",
-        "beam-1m",
-        "beam-10m",
-        "clbench",
-        "worldmemarena",
-        "video-mme-v2",
-        "openeqa",
-        "openeqa-hm3d",
-        "openeqa-scannet",
-        "beam-*",
-        "openeqa-*",
-        "video-mme-*",
-    ),
-)
-def test_eval_rejects_removed_tasks(
-    name: str, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
+def test_eval_rejects_unknown_tasks(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as error:
-        main(("--tasks", name, "--benchmarks-root", str(tmp_path)))
+        main(("--tasks", "unknown-task", "--benchmarks-root", str(tmp_path)))
 
     assert error.value.code == 2
     message = capsys.readouterr().err
     assert "unknown task" in message or "task selection is empty" in message
-    assert task_family(name) is None
+    assert task_family("unknown-task") is None
 
 
 def test_task_listing(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
@@ -467,7 +457,7 @@ def test_result_table_includes_per_task_time_and_tokens() -> None:
 
 
 def test_result_table_reports_the_writes_that_invalidated_a_score() -> None:
-    # A run that loses every write still answers every question, so `error_count` stays zero and
+    # A run that loses every write still answers every question, so error_count stays zero and
     # the score reads INVALID beside it with nothing saying why. One real run lost 7 784 writes to
     # a transcription dependency that was not installed and printed exactly that.
     output = eval_console_module._table(
@@ -480,7 +470,7 @@ def test_result_table_reports_the_writes_that_invalidated_a_score() -> None:
                     "question_count": 152,
                     "error_count": 0,
                     "ingest_failure_count": 7784,
-                    # `_table` refuses to render a task row with no controls block, so a
+                    # _table refuses to render a task row with no controls block, so a
                     # score can never be printed without the baselines that make it
                     # interpretable. This row is about the writes column, so the controls
                     # are all absent and correctly report themselves as missing.
@@ -613,14 +603,12 @@ def test_write_artifacts_persists_the_effective_config_beside_the_results(tmp_pa
 def test_mm_lifelong_memories_carry_their_media_offset_as_event_time(tmp_path: Path) -> None:
     """A clip's place on the video timeline is the only event time the split has.
 
-    The manifest gives every part `start_seconds`/`end_seconds`, but the adapter stored them as
-    metadata alone, so every memory reached the store with no `occurred_at`: the answerer was
-    told to resolve "before"/"after" against `created_at`, the ingest wall clock, which repeats
+    The manifest gives every part start_seconds/end_seconds, but the adapter stored them as
+    metadata alone, so every memory reached the store with no occurred_at: the answerer was
+    told to resolve "before"/"after" against created_at, the ingest wall clock, which repeats
     across a batch and says nothing about the video. Anchoring the offsets on one fixed epoch
-    gives the store a real chronology and `_with_corpus_reference` a real corpus end.
+    gives the store a real chronology and _with_corpus_reference a real corpus end.
     """
-    from sensemem.benchmarks.eval_adapters import _MEDIA_EPOCH, _mm_lifelong
-    from sensemem.benchmarks.task_catalog import MediaSource, TaskSpec
 
     dataset = tmp_path / "test.json"
     dataset.write_text(
@@ -730,7 +718,7 @@ def test_benchmark_speech_backend_serves_prefetched_analyses_without_a_second_mo
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Analysing the next chunk while the store embeds the current one is only a win if the
-    store's own `analyze` for those clips then costs nothing: same bytes, same digest, one
+    store's own analyze for those clips then costs nothing: same bytes, same digest, one
     model call. A clip nobody prefetched is still analysed on demand, in order.
     """
     ahead = tmp_path / "ahead.mp4"
@@ -845,12 +833,11 @@ def test_response_cache_namespace_changes_with_the_answer_policy(
 ) -> None:
     """A cached answer is an answer to the policy that was requested, per task.
 
-    Without the policy in the namespace, a `best_effort` arm run over an existing cache replays
-    the strict refusals already in it and records them as `best_effort` -- the arm reports the
+    Without the policy in the namespace, a best_effort arm run over an existing cache replays
+    the strict refusals already in it and records them as best_effort -- the arm reports the
     baseline's refusal rate as its own. The resolved per-task policy is in there too, so widening
-    `BEST_EFFORT_TASKS` cannot replay a task's older strict answers under its new default.
+    BEST_EFFORT_TASKS cannot replay a task's older strict answers under its new default.
     """
-    from sensemem.benchmarks import prompts
 
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
@@ -882,9 +869,8 @@ def test_response_cache_namespace_changes_with_the_full_context_budget() -> None
 def test_response_cache_namespace_changes_with_the_answer_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Widening `COMPILE_SURFACE_TASKS` must not replay a task's cached `ask` answers as answers
+    """Widening COMPILE_SURFACE_TASKS must not replay a task's cached ask answers as answers
     from the compiled bundle."""
-    from sensemem.benchmarks import prompts
 
     arguments = _namespace_arguments()
     before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
@@ -960,7 +946,6 @@ def test_backend_pool_forwards_every_memory_setting_and_plugin(
         def from_plugins(
             _data_dir: object, *, plugins: MemoryPlugins, settings: MemorySettings, tracer: Tracer
         ) -> None:
-            del tracer
             captured.update(
                 {entry.name: getattr(plugins, entry.name) for entry in fields(MemoryPlugins)}
             )
@@ -1042,12 +1027,18 @@ def test_benchmark_device_lock_skips_auto_when_cuda_is_hidden(
     assert eval_module._physical_cuda_identity("auto") is None
 
 
-def test_benchmark_device_lock_can_be_disabled_for_manual_scheduling(tmp_path: Path) -> None:
+def test_benchmark_device_lock_can_be_disabled_for_manual_scheduling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(eval_module, "_physical_cuda_identity", lambda _device: "gpu-0")
+    entered = False
     with (
         eval_module._benchmark_device_lock("cuda", enabled=True, quiet=True, lock_root=tmp_path),
         eval_module._benchmark_device_lock("cuda", enabled=False, quiet=True, lock_root=tmp_path),
     ):
-        pass
+        entered = True
+        assert any(tmp_path.iterdir())
+    assert entered
 
 
 def test_configured_devices_are_locked_in_physical_order(
@@ -1058,7 +1049,7 @@ def test_configured_devices_are_locked_in_physical_order(
             "embedding": {
                 "provider": "sentence-transformers",
                 "model": "google/embeddinggemma-2",
-                "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
+                "revision": "a" * 40,
                 "device": "cuda:0",
             },
             "speech": {"provider": "funasr", "device": "cuda:1"},
@@ -1146,7 +1137,7 @@ def test_eval_config_reuses_the_declarative_memory_schema(
                 "embedding": {
                     "provider": "sentence-transformers",
                     "model": "google/embeddinggemma-2",
-                    "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
+                    "revision": "a" * 40,
                     "device": "cpu",
                     "batch_size": 4,
                 },
@@ -1359,7 +1350,6 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
             return DefaultContextSelector.select(self, request)
 
         def process(self, input: base_module.ModelInput) -> StageResult:
-            del input
             calls.append("stage")
             return StageResult("The configured stage ran.")
 
@@ -1479,9 +1469,9 @@ def _protocol_members(protocol: type) -> set[str]:
 
 
 def test_every_lent_backend_declares_each_method_only_capability_its_pool_has() -> None:
-    """A `runtime_checkable` protocol with no properties is an optional capability that `Memory`
-    probes with `isinstance`, and the proxies have now hidden one of those twice. The expected
-    set is derived from `sensemem.models.base`, so the next capability protocol, or a method
+    """A runtime_checkable protocol with no properties is an optional capability that Memory
+    probes with isinstance, and the proxies have now hidden one of those twice. The expected
+    set is derived from sensemem.models.base, so the next capability protocol, or a method
     added to one, fails here instead of measuring the default policy under the harness. A
     protocol with properties describes a slot and needs its own explicit proxy, as above."""
     optional = [
@@ -1760,7 +1750,6 @@ async def test_answer_many_receives_the_fallback_reference_clock() -> None:
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
             assert limit == 5
-            del answer_policy
             observed.append(reference_at)
             return AnswerResult("Now")
 
@@ -1833,7 +1822,7 @@ def test_a_provider_error_scores_the_answer_zero_and_keeps_retrieval(tmp_path: P
 
     Transient provider failures are waited out before a sample records an error, so what
     remains is the system's loss: it scores zero, stays in the mean, and is still counted in
-    `error_count` with its provider message. The retriever did rank before the generator
+    error_count with its provider message. The retriever did rank before the generator
     failed, so its diagnostics stay.
     """
     question = EvalQuestion(
@@ -2029,7 +2018,6 @@ class _FakeMemory:
         reference_at: datetime | None = None,
         answer_policy: AnswerPolicy = "strict",
     ) -> AnswerResult:
-        del reference_at, answer_policy
         self.events.append(f"ask:{question}:{limit}")
         return AnswerResult("A")
 
@@ -2099,7 +2087,6 @@ async def test_ingest_stops_after_one_systemic_embedding_failure() -> None:
             self, contents: Sequence[object], **_kwargs: object
         ) -> tuple[object, ...]:
             nonlocal calls
-            del contents
             calls += 1
             raise ModelError("embedding failed", reason="model_failed", stage="embed") from (
                 UpstreamError()
@@ -2159,14 +2146,12 @@ async def test_ingest_does_not_misclassify_a_formation_504_as_embedding_failure(
         async def add_many(
             self, contents: Sequence[object], **_kwargs: object
         ) -> tuple[object, ...]:
-            del contents
             calls.append("batch")
             raise ModelError("formation failed", reason="model_failed", stage="form") from (
                 UpstreamError()
             )
 
         async def add(self, content: object, **_kwargs: object) -> object:
-            del content
             calls.append("single")
             raise ModelError("formation failed", reason="model_failed", stage="form") from (
                 UpstreamError()
@@ -2193,7 +2178,6 @@ async def test_ingest_records_the_failed_source_and_stable_error_detail() -> Non
         async def add_many(
             self, contents: Sequence[object], **_kwargs: object
         ) -> tuple[object, ...]:
-            del contents
             raise ModelError(
                 "speech failed",
                 reason="unsupported_backend",
@@ -2201,7 +2185,6 @@ async def test_ingest_records_the_failed_source_and_stable_error_detail() -> Non
             ) from TypeError("protocol mismatch")
 
         async def add(self, content: object, **_kwargs: object) -> object:
-            del content
             raise ModelError(
                 "speech failed",
                 reason="unsupported_backend",
@@ -2238,7 +2221,6 @@ async def test_ingest_announces_the_first_failure_once_with_its_message(
         async def add_many(
             self, contents: Sequence[object], **_kwargs: object
         ) -> tuple[object, ...]:
-            del contents
             raise ModelError(
                 "embedding response was invalid: the model returned 2048 values but the "
                 "configured dimension is 1536",
@@ -2247,7 +2229,6 @@ async def test_ingest_announces_the_first_failure_once_with_its_message(
             )
 
         async def add(self, content: object, **_kwargs: object) -> object:
-            del content
             raise ModelError(
                 "embedding response was invalid: the model returned 2048 values but the "
                 "configured dimension is 1536",
@@ -2383,13 +2364,9 @@ def test_progress_drives_a_bar_on_a_terminal(
 async def test_a_judge_that_still_fails_after_the_wait_scores_the_answer_wrong(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The judge's outage is waited out inside `_judge_call`; an answer that still has no verdict
+    # The judge's outage is waited out inside _judge_call; an answer that still has no verdict
     # is scored zero like an answer that was never produced, so one dead judge call is a wrong
     # answer in the mean, not an INVALID task.
-    import httpx2 as httpx
-    from openai import AsyncOpenAI
-
-    from sensemem.benchmarks.official_scorers import judge_plan
 
     sample = replace(
         _sample_fixture(1, answer="yes"),
@@ -3015,7 +2992,7 @@ async def test_resume_leaves_a_store_another_run_owns_alone(tmp_path: Path) -> N
     eval_ingest_module._IngestCheckpoint(run, "unit", "other-recipe").record(1, ())
 
     def occupied(path: Path) -> _FakeContext:
-        # What `Memory` raises when another live instance owns the directory.
+        # What Memory raises when another live instance owns the directory.
         raise StorageError(
             "the data directory is already in use by another live SenseMem instance",
             reason="data_dir_in_use",
@@ -3078,7 +3055,7 @@ def test_ingest_digest_ignores_the_answer_model(tmp_path: Path) -> None:
         arguments,
         config.model_copy(update={"embedding": embedding.model_copy(update={"model": "embed-2"})}),
     )
-    # `--deliberate` applies consolidation to the store itself, so a run that asks for it must
+    # --deliberate applies consolidation to the store itself, so a run that asks for it must
     # not resume into one built without it -- or the other way round.
     assert digest != eval_inputs_module._ingest_digest(
         task,
@@ -3125,7 +3102,6 @@ async def test_runner_scores_the_actual_ranking_at_a_causal_cutoff(
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del question, limit, reference_at, answer_policy
             _record_retrieval_results((ranked,))
             return AnswerResult("answer", (ranked,))
 
@@ -3188,7 +3164,6 @@ async def test_runner_allows_random_retrieval_at_a_causal_cutoff(tmp_path: Path)
             limit: int,
             reference_at: datetime | None = None,
         ) -> tuple[SearchHit, ...]:
-            del query, limit, reference_at
             return ()
 
     class Context:
@@ -3248,10 +3223,9 @@ async def test_runner_applies_request_concurrency_across_units(tmp_path: Path) -
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
             nonlocal active, peak
-            del question, limit, reference_at, answer_policy
             active += 1
             peak = max(peak, active)
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
             active -= 1
             return AnswerResult("A")
 
@@ -3311,7 +3285,6 @@ async def test_standalone_search_reopens_warm_stores_after_every_answer(
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             events.append(f"answer-start:{question}")
             await asyncio.sleep(0)
             events.append(f"answer-end:{question}")
@@ -3324,7 +3297,6 @@ async def test_standalone_search_reopens_warm_stores_after_every_answer(
             limit: int,
             reference_at: datetime | None = None,
         ) -> tuple[SearchHit, ...]:
-            del reference_at
             events.append(f"search:{limit}:{question}")
             return (
                 SearchHit(
@@ -3403,7 +3375,6 @@ async def test_run_arms_defers_replay_until_every_task_answer_finishes(
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             events.append(f"answer:{question}")
             _record_retrieval_results(
                 (
@@ -3425,7 +3396,6 @@ async def test_run_arms_defers_replay_until_every_task_answer_finishes(
             limit: int,
             reference_at: datetime | None = None,
         ) -> tuple[SearchHit, ...]:
-            del reference_at
             events.append(f"search:{limit}:{question}")
             return (
                 SearchHit(
@@ -3591,7 +3561,6 @@ async def test_answer_many_latency_excludes_request_semaphore_wait() -> None:
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             if question == "slow":
                 slow_started.set()
                 await release_slow.wait()
@@ -3634,7 +3603,6 @@ async def test_answer_arms_preserves_completed_cache_when_cancelled(
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             if question == "slow":
                 await release_slow.wait()
             return AnswerResult("A")
@@ -3714,7 +3682,6 @@ async def test_answer_many_reports_each_completed_answer_immediately() -> None:
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             if question == "slow":
                 await release_slow.wait()
             return AnswerResult("A")
@@ -3758,7 +3725,6 @@ async def test_answer_many_reports_failed_outcome_immediately() -> None:
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             if question == "failed":
                 raise RuntimeError("answer failed")
             await release_slow.wait()
@@ -3771,7 +3737,6 @@ async def test_answer_many_reports_failed_outcome_immediately() -> None:
             limit: int,
             reference_at: datetime | None = None,
         ) -> tuple[SearchHit, ...]:
-            del query, limit, reference_at
             raise RuntimeError("fallback failed")
 
     def on_complete() -> None:
@@ -3822,7 +3787,6 @@ async def test_unit_preserves_answers_before_a_systemic_query_embedding_failure(
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
             nonlocal calls
-            del question, limit, reference_at, answer_policy
             calls += 1
             if calls == 3:
                 raise ModelError(
@@ -3891,7 +3855,6 @@ async def test_generation_502_does_not_trigger_embedding_fail_fast() -> None:
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
             nonlocal calls
-            del question, limit, reference_at, answer_policy
             calls += 1
             if calls == 1:
                 raise ModelError(
@@ -3932,7 +3895,6 @@ async def test_runner_reports_cached_progress_before_pending_answer_finishes(
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del limit, reference_at, answer_policy
             await release_slow.wait()
             return AnswerResult("A")
 
@@ -4083,7 +4045,6 @@ async def test_answer_many_preserves_structured_abstention() -> None:
             reference_at: datetime | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> AnswerResult:
-            del question, limit, reference_at, answer_policy
             return AnswerResult(
                 "unknown",
                 abstained=True,
@@ -4126,14 +4087,14 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
             ),
         )
         breakdowns = eval_metrics_module._metric_breakdowns(
-            task, (), cast(Any, _breakdown_arguments())
+            task, (), cast(eval_config_module._Arguments, _breakdown_arguments())
         )
         assert isinstance(breakdowns, dict), name
 
 
 # The metadata fields each family groups its per-question scores by, written
-# from the adapters in `eval_adapters.py` -- which is what a real run puts in
-# `SampleResult.metadata` -- rather than read back off `_BREAKDOWN_FIELDS`, so
+# from the adapters in eval_adapters.py -- which is what a real run puts in
+# SampleResult.metadata -- rather than read back off _BREAKDOWN_FIELDS, so
 # that a family losing its breakdown turns these tests red instead of silently
 # agreeing with the regression. An empty tuple means the family is expected
 # to have no entry in the product table.
@@ -4180,11 +4141,16 @@ def test_every_family_breaks_its_scores_down_by_its_own_metadata(
     sample = _breakdown_sample(task.spec.name, {name: f"{name}-value" for name in fields_expected})
 
     breakdowns = eval_metrics_module._metric_breakdowns(
-        task, (sample,), cast(Any, _breakdown_arguments())
+        task, (sample,), cast(eval_config_module._Arguments, _breakdown_arguments())
     )
 
     assert set(breakdowns) == set(fields_expected), family
-    assert eval_metrics_module._metric_breakdowns(task, (), cast(Any, _breakdown_arguments())) == {}
+    assert (
+        eval_metrics_module._metric_breakdowns(
+            task, (), cast(eval_config_module._Arguments, _breakdown_arguments())
+        )
+        == {}
+    )
     for name in fields_expected:
         cell = cast(dict[str, object], breakdowns[name])
         assert f"{name}-value" in cell, f"{family}.{name}"
@@ -4193,7 +4159,7 @@ def test_every_family_breaks_its_scores_down_by_its_own_metadata(
 def test_the_breakdown_table_is_exactly_the_fields_this_suite_pins() -> None:
     # The behavioural test above only feeds the fields it expects, so a field
     # name added to the product table that no adapter emits -- a rename, or a
-    # `question_type`/`question_types` slip -- would group nothing and stay
+    # question_type/question_types slip -- would group nothing and stay
     # invisible there. Compare the table itself so an addition has to be
     # reviewed too, and so the families expected to have no entry really have
     # none rather than an entry that happens to group nothing.
@@ -4215,7 +4181,7 @@ def test_unlabelled_metadata_is_left_out_of_the_breakdown(tmp_path: Path) -> Non
     )
 
     breakdowns = eval_metrics_module._metric_breakdowns(
-        task, (sample,), cast(Any, _breakdown_arguments())
+        task, (sample,), cast(eval_config_module._Arguments, _breakdown_arguments())
     )
 
     assert set(breakdowns) == {"question_type"}
@@ -4226,7 +4192,7 @@ def _breakdown_arguments() -> SimpleNamespace:
 
 
 def test_a_task_worded_refusal_counts_as_an_abstention() -> None:
-    # `AnswerResult.abstained` recognises the product's own refusal sentence, which it cannot do
+    # AnswerResult.abstained recognises the product's own refusal sentence, which it cannot do
     # for a wording the task substituted. MEMLENS mandates "Insufficient information", so a real
     # dev run reported 0 abstentions where 16 of 59 answers were refusals.
     question = EvalQuestion(
@@ -4360,7 +4326,6 @@ def test_memlens_questions_declare_the_refusal_their_own_prompt_mandates(tmp_pat
     # Loading the real task, not the helper in isolation: a declaration the loader never attaches
     # returns the reported refusal rate to zero while the model keeps refusing, and a test of the
     # helper alone stays green through exactly that.
-    from sensemem.benchmarks.prompts import MEMLENS_QUERY_PROMPT
 
     dataset = tmp_path / "memlens.json"
     dataset.write_text(
@@ -4400,10 +4365,9 @@ def test_memlens_questions_declare_the_refusal_their_own_prompt_mandates(tmp_pat
 def test_mem_gallery_refusal_questions_declare_the_wording_their_constraint_mandates(
     tmp_path: Path,
 ) -> None:
-    # Loading the real task, for the same reason the MemLens case does: `AR` is the only one of
+    # Loading the real task, for the same reason the MemLens case does: AR is the only one of
     # the nine task types whose constraint overrides the refusal wording, so a declaration the
     # loader never attaches reports zero refusals for it while the model keeps refusing.
-    from sensemem.benchmarks.prompts import MEM_GALLERY_REFUSAL_PROMPT
 
     dialog = tmp_path / "dialog"
     dialog.mkdir()
@@ -4632,7 +4596,7 @@ benchmark:
         download,
         overrides.server_metrics,
     )
-    document = cast(dict[str, Any], yaml.safe_load(artifact))
+    document = cast(dict[str, object], yaml.safe_load(artifact))
 
     assert b"secret" not in artifact
     assert b"api_key" not in artifact
@@ -4641,18 +4605,21 @@ benchmark:
         "schema_version": 1,
         "credentials": "omitted",
     }
-    assert document["product"]["generation"]["model"] == "cli-model"
-    assert document["product"]["generation"]["base_url"] == "https://models.example.test/v1"
-    assert document["product"]["generation"]["extra_body"] == {
+    product = document["product"]
+    benchmark = document["benchmark"]
+    assert isinstance(product, dict) and isinstance(benchmark, dict)
+    assert product["generation"]["model"] == "cli-model"
+    assert product["generation"]["base_url"] == "https://models.example.test/v1"
+    assert product["generation"]["extra_body"] == {
         "configured": True,
         "values": "omitted",
     }
-    assert document["benchmark"]["judge"]["model"] == "cli-judge"
-    assert document["benchmark"]["run"]["limit"] == 1
+    assert benchmark["judge"]["model"] == "cli-judge"
+    assert benchmark["run"]["limit"] == 1
     # The artifact describes the run that produced the results: the pool pins answer-time
-    # reinforcement off for every product arm, so the file must not echo the input's `true`.
+    # reinforcement off for every product arm, so the file must not echo the input's true.
     assert memory_config is not None and memory_config.settings.reinforce_on_answer is True
-    assert document["product"]["settings"]["reinforce_on_answer"] is False
+    assert product["settings"]["reinforce_on_answer"] is False
 
 
 def test_eval_streams_task_results_by_default_and_can_be_disabled() -> None:
@@ -4788,8 +4755,8 @@ def test_eval_generation_credential_prefers_the_file_over_the_environment(
 def test_eval_video_floor_has_exactly_one_home(tmp_path: Path) -> None:
     """The floor is a generation-endpoint setting, so it lives in the product block only.
 
-    It reaches `ModelConfig` from there, which is what puts it in the result artifact and in the
-    cache namespace; naming it under `benchmark` must be rejected rather than quietly accepted in
+    It reaches ModelConfig from there, which is what puts it in the result artifact and in the
+    cache namespace; naming it under benchmark must be rejected rather than quietly accepted in
     a second place whose effective value nobody can read off the file.
     """
     path = tmp_path / "eval.yaml"
@@ -4930,11 +4897,11 @@ def test_eval_memory_config_pins_reinforcement_off_without_a_generation_section(
 ) -> None:
     """The reported settings must match the pool's whatever sections the file declares.
 
-    The pin used to live behind the `generation` rebuild, so a file that left generation to the
-    environment reported `reinforce_on_answer: true` for a run that had it off.
+    The pin used to live behind the generation rebuild, so a file that left generation to the
+    environment reported reinforce_on_answer: true for a run that had it off.
     """
     # The file loader fills a default generation block, so the section-less shape is the one a
-    # host composes directly, which `build_memory_composition` accepts.
+    # host composes directly, which build_memory_composition accepts.
     config = MemorySpec(
         data_dir=tmp_path,
         embedding=OpenAIEmbeddingConfig(provider="openai"),
@@ -4993,15 +4960,15 @@ def test_committed_example_configuration_still_loads() -> None:
         overrides=overrides,
     )
     assert judge.model == overrides.judge.model
-    # The template must also drive a whole run on its own, with no flag but `--config`.
+    # The template must also drive a whole run on its own, with no flag but --config.
     parser = eval_config_module._build_parser("eval")
     parsed = parser.parse_args(["--config", str(example)])
     arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
     assert arguments.tasks
     assert arguments.limit == -1
     assert arguments.recall_limit == 20
-    # Turning thinking off is a generation setting, so the template carries it in `extra_body`
-    # rather than needing `--gen-kwargs`.
+    # Turning thinking off is a generation setting, so the template carries it in extra_body
+    # rather than needing --gen-kwargs.
     assert config.generation.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
@@ -5030,10 +4997,10 @@ def test_committed_example_configuration_carries_no_usable_credential() -> None:
 def test_eval_model_config_keeps_env_model_when_file_omits_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A config file's `generation` block must not silently reset fields it never mentions.
+    """A config file's generation block must not silently reset fields it never mentions.
 
-    `model` and `modalities` have non-None schema defaults, unlike `base_url`/`timeout`, so a
-    plain `x or fallback` merge can never detect "the file left this unset" -- it always sees the
+    model and modalities have non-None schema defaults, unlike base_url/timeout, so a
+    plain x or fallback merge can never detect "the file left this unset" -- it always sees the
     schema default and prefers it. This regressed the "config file beats environment, but only
     for what it actually declares" contract for exactly these two fields.
     """
@@ -5081,9 +5048,9 @@ def test_eval_resolved_generation_keeps_an_env_only_credential(
 ) -> None:
     """The credential must survive into the config actually used to build the run's backend.
 
-    `_evaluation_memory_config` rebuilds `generation` via `model_copy`, which only overwrites the
-    keys named in its update dict -- an env-only credential merged into `ModelConfig` but never
-    named there is silently dropped, and the real client falls back to whatever `OPENAI_API_KEY`
+    _evaluation_memory_config rebuilds generation via model_copy, which only overwrites the
+    keys named in its update dict -- an env-only credential merged into ModelConfig but never
+    named there is silently dropped, and the real client falls back to whatever OPENAI_API_KEY
     happens to be (or to no credential at all).
     """
     monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "environment-key")
@@ -5150,7 +5117,7 @@ def test_eval_config_rejects_sampling_controls_the_harness_pins(field: str, tmp_
 
 
 def test_eval_run_section_supplies_every_tunable_the_flags_carry(tmp_path: Path) -> None:
-    """A file alone must be able to describe a whole sweep, with no flags but `--config`."""
+    """A file alone must be able to describe a whole sweep, with no flags but --config."""
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
@@ -5208,7 +5175,7 @@ benchmark:
     assert arguments.download is False
     assert arguments.overwrite is True
     assert arguments.regression_threshold == 0.25
-    # `--gen-kwargs` normalisation must pick up the configured seed, not the default.
+    # --gen-kwargs normalisation must pick up the configured seed, not the default.
     assert "seed=7" in arguments.gen_kwargs
 
 
@@ -5263,7 +5230,7 @@ def test_performance_budget_requires_a_comparison_result() -> None:
 
 
 class _StopResolving(Exception):
-    """Cut `_BackendPool.__init__` short once the document it would resolve has been captured."""
+    """Cut _BackendPool.__init__ short once the document it would resolve has been captured."""
 
 
 def test_backend_pool_hands_the_configured_video_floor_to_the_resolved_models(
@@ -5271,9 +5238,9 @@ def test_backend_pool_hands_the_configured_video_floor_to_the_resolved_models(
 ) -> None:
     """The floor must reach the document the backends are built from, not just the artifact.
 
-    `--config` always resolves a memory configuration, so the configured branch is the only one a
-    file-driven run takes. A floor recorded on `ModelConfig` alone would be reported in
-    `results.jsonl` while short videos still went to the endpoint whole.
+    --config always resolves a memory configuration, so the configured branch is the only one a
+    file-driven run takes. A floor recorded on ModelConfig alone would be reported in
+    results.jsonl while short videos still went to the endpoint whole.
     """
     configured: list[MemorySpec] = []
 
@@ -5360,7 +5327,7 @@ def test_eval_arm_flags_still_beat_the_run_section(tmp_path: Path) -> None:
 
 
 def test_eval_blind_rejects_a_configured_arm_selection(tmp_path: Path) -> None:
-    """`--blind` labels the whole run as the control, so a file naming another arm is a conflict."""
+    """--blind labels the whole run as the control, so a file naming another arm is a conflict."""
     path = tmp_path / "eval.yaml"
     path.write_text(
         "embedding: {provider: openai}\n"
@@ -5450,7 +5417,7 @@ def test_eval_run_section_carries_per_task_path_overrides(tmp_path: Path) -> Non
 def test_eval_run_section_run_id_is_validated_like_the_flag(tmp_path: Path) -> None:
     """A configured run ID must pass the same charset check the flag enforces.
 
-    The run ID becomes a path segment under `<benchmarks-root>/results/`, which is why the flag
+    The run ID becomes a path segment under <benchmarks-root>/results/, which is why the flag
     restricts it. A file that skipped the check could send every artifact outside the corpus tree.
     """
     path = tmp_path / "eval.yaml"
@@ -5493,9 +5460,9 @@ def test_eval_run_section_accepts_a_well_formed_run_id(tmp_path: Path) -> None:
     ),
 )
 def test_eval_run_section_reports_bad_values_as_usage_errors(body: str, tmp_path: Path) -> None:
-    """`--seed` and `--limit` validate with `ArgumentTypeError`, which is not a `ValueError`.
+    """--seed and --limit validate with ArgumentTypeError, which is not a ValueError.
 
-    Without catching it, a configured value that fails those checks left `_arguments` as an
+    Without catching it, a configured value that fails those checks left _arguments as an
     unhandled exception instead of the usage message a bad flag produces.
     """
     path = tmp_path / "eval.yaml"
@@ -5525,7 +5492,7 @@ def test_configure_logging_keeps_dependency_info_out_of_the_run(
 ) -> None:
     """Only SenseMem is verbose at INFO; a dependency has to reach WARNING to be heard."""
     eval_console_module._configure_logging("INFO")
-    # What `import funasr` does at module scope. It must not lift anything back up.
+    # What import funasr does at module scope. It must not lift anything back up.
     logging.basicConfig(level=logging.INFO)
     _emit_from_every_source()
 
@@ -5538,7 +5505,7 @@ def test_configure_logging_keeps_dependency_info_out_of_the_run(
 def test_configure_logging_opens_the_whole_process_for_debug(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`--verbosity DEBUG` is the one setting that asks for everyone else's detail too."""
+    """--verbosity DEBUG is the one setting that asks for everyone else's detail too."""
     eval_console_module._configure_logging("DEBUG")
     _emit_from_every_source()
 
@@ -5556,7 +5523,7 @@ def test_configure_logging_still_filters_while_a_bar_is_live(
 ) -> None:
     """The filter has to survive the progress bar, which is up for the whole of every task.
 
-    Routing console logging through `tqdm.contrib.logging.logging_redirect_tqdm` instead would
+    Routing console logging through tqdm.contrib.logging.logging_redirect_tqdm instead would
     hand the records to a handler of tqdm's own; carrying the filters across is a detail tqdm
     only started honouring in 4.69.1, so below that the dependency INFO came straight back for
     the duration of the bar.
@@ -5597,9 +5564,9 @@ def test_configure_logging_silences_sensemem_too_at_error(
 def test_configure_logging_turns_down_a_dependency_that_owns_its_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`modelscope` logs through a handler of its own with `propagate = False`, past every filter.
+    """modelscope logs through a handler of its own with propagate = False, past every filter.
 
-    `import funasr` imports it, and it reads its level from the environment once, at import, so
+    import funasr imports it, and it reads its level from the environment once, at import, so
     the threshold has to be there before that happens. A caller who set one explicitly keeps it.
     """
     monkeypatch.delenv("MODELSCOPE_LOG_LEVEL", raising=False)
@@ -5652,11 +5619,11 @@ async def _completion(
     task: LoadedTask,
     samples: tuple[SampleResult, ...],
 ) -> tuple[SampleResult, ...]:
-    """Wrap the per-task callback for `asyncio.run`, which wants a coroutine.
+    """Wrap the per-task callback for asyncio.run, which wants a coroutine.
 
-    `_TaskCompletion` promises only an awaitable, which is the right contract for a hook whose
-    implementations the caller does not own. Typeshed before Python 3.14 types `asyncio.run` as
-    taking a `Coroutine`, so the tests do the narrowing rather than the production alias.
+    _TaskCompletion promises only an awaitable, which is the right contract for a hook whose
+    implementations the caller does not own. Typeshed before Python 3.14 types asyncio.run as
+    taking a Coroutine, so the tests do the narrowing rather than the production alias.
     """
     return await completed(task, samples)
 
@@ -5666,7 +5633,7 @@ def _streaming_judge() -> eval_config_module._JudgeConfig:
 
 
 def _streaming_task(name: str) -> tuple[LoadedTask, SampleResult]:
-    # `open_end` is what makes `judge_plan` produce a plan for this family; without it every
+    # open_end is what makes judge_plan produce a plan for this family; without it every
     # judging assertion below would pass on an empty plan set and prove nothing.
     question = EvalQuestion(
         f"{name}-q",
@@ -5833,16 +5800,16 @@ def test_a_rerun_does_not_silently_discard_a_leftover_crash_copy(tmp_path: Path)
     with pytest.raises(FileExistsError, match=eval_config_module._PARTIAL_SAMPLES_FILE):
         eval_config_module._require_output(tmp_path, overwrite=False)
 
-    # `--overwrite` remains the one way through, as it is for every other artifact.
+    # --overwrite remains the one way through, as it is for every other artifact.
     eval_config_module._require_output(tmp_path, overwrite=True)
 
 
 def test_resume_is_not_blocked_by_the_crash_copy_of_the_run_it_continues(tmp_path: Path) -> None:
-    """`--resume` names an interrupted run, so that run's crash copy cannot be what refuses it."""
+    """--resume names an interrupted run, so that run's crash copy cannot be what refuses it."""
     (tmp_path / eval_config_module._PARTIAL_SAMPLES_FILE).write_bytes(b"{}\n")
     eval_config_module._require_output(tmp_path, overwrite=False, resume=True)
 
-    # A finished run is not one to resume, so its real artifacts still need `--overwrite`.
+    # A finished run is not one to resume, so its real artifacts still need --overwrite.
     (tmp_path / eval_config_module._RESULTS_FILE).write_bytes(b"{}\n")
     with pytest.raises(FileExistsError, match=eval_config_module._RESULTS_FILE):
         eval_config_module._require_output(tmp_path, overwrite=False, resume=True)
@@ -5881,7 +5848,7 @@ def test_final_judging_skips_answers_already_judged_while_streaming(
     judged = apply(already_judged={sample.sample_id})
 
     assert judged == (sample,)
-    # Nothing was planned, so `_apply_judges` returned before it built a judge client at all.
+    # Nothing was planned, so _apply_judges returned before it built a judge client at all.
     assert plans == []
 
 
@@ -5970,12 +5937,10 @@ def test_only_the_tasks_whose_protocol_credits_no_abstention_ask_for_a_guess() -
     not a protocol alignment.
 
     Membership only. That the mapping actually reaches the answerer is asserted end to end by
-    `test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path`; comparing
-    `task_answer_policy` with its own frozenset here would pass with the harness wired to
+    test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path; comparing
+    task_answer_policy with its own frozenset here would pass with the harness wired to
     nothing.
     """
-    from sensemem.benchmarks.prompts import BEST_EFFORT_TASKS
-    from sensemem.benchmarks.task_catalog import TASKS
 
     assert {
         "icm-bench",
@@ -5990,8 +5955,6 @@ def test_only_the_tasks_whose_protocol_credits_no_abstention_ask_for_a_guess() -
 
 def test_only_personamem_answers_through_the_compile_surface() -> None:
     """PersonaMem generates assistant responses; the other tasks answer from memory evidence."""
-    from sensemem.benchmarks.prompts import COMPILE_SURFACE_TASKS, task_answer_surface
-    from sensemem.benchmarks.task_catalog import TASKS
 
     assert {"personamem-v3"} == COMPILE_SURFACE_TASKS
     assert set(TASKS) >= COMPILE_SURFACE_TASKS

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 
+from examples.live import events
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -39,11 +40,6 @@ from sensemem.prompts import demo as demo_prompts
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
 NATIVE_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.AUDIO, Modality.VIDEO})
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 class TrackingEmbedder(TinyEmbedder):
@@ -89,7 +85,6 @@ def _config(directory: Path) -> MemorySpec:
 async def test_runtime_shares_native_omni_and_preserves_original_av(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live import events
 
     embedder = TrackingEmbedder()
     model = RecordingOmni()
@@ -161,7 +156,6 @@ async def test_review_embeds_only_recall_key_and_keeps_every_original_for_genera
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from examples.live import events
 
     class OrdinaryPolicy(DefaultQueryPolicy):
         def __init__(self) -> None:
@@ -239,7 +233,6 @@ def test_runtime_rejects_missing_native_capabilities_and_closes_composition(
     monkeypatch: pytest.MonkeyPatch,
     answerer: GenerationBackend | None,
 ) -> None:
-    from examples.live import events
 
     embedder = TrackingEmbedder()
     composition = MemoryComposition(

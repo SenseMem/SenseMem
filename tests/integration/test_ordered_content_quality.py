@@ -22,7 +22,6 @@ pytestmark = pytest.mark.integration
     reason="requires SENSEMEM_ORDERED_CONTENT_EVAL=1 and configured model services",
 )
 def test_native_image_order_quality(tmp_path: Path, colors: tuple[str, str], repeat: int) -> None:
-    del repeat
     images = []
     for color in colors:
         stream = BytesIO()

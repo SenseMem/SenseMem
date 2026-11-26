@@ -71,7 +71,6 @@ class _Models:
     def plan_recall(
         self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
     ) -> str:
-        del question, reference_at, corpus_digest, attempted
         return json.dumps(
             {"shape": "composite", "steps": [{"op": "similar", "query": _REWRITE, "k": 100}]}
         )
@@ -84,7 +83,6 @@ class _Models:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        del question, answer_policy, exhaustive
         self.delivered = tuple(hits)
         complete = self.use_evidence and any(hit.content.startswith("span:") for hit in hits)
         return AnswerResult(
@@ -138,7 +136,6 @@ def test_sequence_orders_the_entire_selected_union_without_changing_selection_or
         def plan_recall(
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
-            del reference_at, corpus_digest, attempted
             steps = [{"op": "match", "terms": ["last"]}] if matched else []
             return json.dumps(
                 {"shape": shape, "steps": [*steps, {"op": "similar", "query": question, "k": 3}]}
@@ -152,7 +149,6 @@ def test_sequence_orders_the_entire_selected_union_without_changing_selection_or
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del answer_policy
             self.question, self.exhaustive = question, exhaustive
             self.delivered = tuple(hits)
             return AnswerResult(answer="seen", hits=tuple(hits))
@@ -208,7 +204,6 @@ def test_sequence_orders_additions_after_packing_without_licensing_completeness(
         def plan_recall(
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
-            del reference_at, corpus_digest, attempted
             return json.dumps(
                 {
                     "shape": "sequence",
@@ -383,7 +378,6 @@ def test_semantic_support_precedes_a_saturated_original_tail(
         def plan_recall(
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
-            del question, reference_at, corpus_digest, attempted
             steps: list[dict[str, object]] = [{"op": "similar", "query": _REWRITE, "k": 100}]
             if exhaustive:
                 steps.insert(0, {"op": "match", "terms": ["recommendation"]})
@@ -462,7 +456,6 @@ def test_strict_semantic_replanning_reads_a_new_entity_before_searching_it(tmp_p
         def plan_recall(
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
-            del reference_at, corpus_digest
             self.attempts.append(attempted)
             query = question
             if attempted:
@@ -544,7 +537,6 @@ def test_replanning_retains_a_bridge_found_outside_the_original_ranking(  # noqa
         def plan_recall(
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
-            del reference_at, corpus_digest
             assert "Bridge Q" not in question
             self.attempts.append(attempted)
             query = "recommended bridge"
@@ -565,7 +557,6 @@ def test_replanning_retains_a_bridge_found_outside_the_original_ranking(  # noqa
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del question, answer_policy, exhaustive
             self.reads.append(tuple(hit.content for hit in hits))
             complete = recommendation in self.reads[-1] and span in self.reads[-1]
             return AnswerResult(
@@ -660,7 +651,6 @@ def test_semantic_routes_share_the_budget_before_a_route_spends_its_tail(  # noq
         def plan_recall(
             self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
         ) -> str:
-            del question, reference_at, corpus_digest
             followup = bool(attempted)
             if followup:
                 assert any(row["excerpt"] == bridge for row in json.loads(attempted)["evidence"])
@@ -681,7 +671,6 @@ def test_semantic_routes_share_the_budget_before_a_route_spends_its_tail(  # noq
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del question, answer_policy, exhaustive
             self.reads.append(tuple(hits))
             complete = {bridge, span} <= {hit.content for hit in hits}
             return AnswerResult(
@@ -734,3 +723,92 @@ def test_semantic_routes_share_the_budget_before_a_route_spends_its_tail(  # noq
     assert len(result.hits) == len({hit.id for hit in result.hits}) == 14
     assert sum(evidence_cost(hit) for hit in result.hits) == budget
     assert result.abstained is False
+
+
+class _QueryVisionModels:
+    embedding_model = "query-vision-v1"
+    embedding_space = "query-vision-v1:4"
+    embedding_dimension = 4
+    embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
+    generation_model = "query-vision-reader-v1"
+    generation_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
+    vision_model = "query-vision-ocr-v1"
+    vision_space = "query-vision-ocr-v1"
+    vision_capabilities = frozenset({Modality.IMAGE})
+
+    def __init__(self) -> None:
+        self.description_calls = 0
+        self.delivered: tuple[SearchHit, ...] = ()
+
+    def embed(
+        self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+    ) -> tuple[tuple[float, ...], ...]:
+        return tuple(
+            (0.0, 1.0, 0.0, 0.0)
+            if "ZX93" in value.text
+            else (1.0, 0.0, 0.0, 0.0)
+            if task is EmbedTask.QUERY
+            else (0.9, 0.0, math.sqrt(0.19), 0.0)
+            for value in inputs
+        )
+
+    def describe(self, inputs: Sequence[ModelInput]) -> tuple[str, ...]:
+        self.description_calls += 1
+        return tuple("Text: ZX93" for _ in inputs)
+
+    def answer(
+        self,
+        question: ModelInput,
+        hits: Sequence[SearchHit],
+        *,
+        answer_policy: AnswerPolicy = "strict",
+        exhaustive: bool = False,
+    ) -> AnswerResult:
+        _ = (question, answer_policy, exhaustive)
+        self.delivered = tuple(hits)
+        return AnswerResult(
+            answer="Orion Hall" if any("ZX93" in hit.content for hit in hits) else "unknown",
+            hits=tuple(hits),
+        )
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize("seed", (20261027, 20261028, 20261029))
+@pytest.mark.parametrize("quantization", (IndexQuantization.NONE, IndexQuantization.INT8))
+def test_query_vision_delivers_support_beyond_native_candidates(
+    tmp_path: Path, seed: int, quantization: IndexQuantization
+) -> None:
+    for enabled in (False, True):
+        models = _QueryVisionModels()
+        with Memory(
+            tmp_path / str(enabled),
+            embedder=models,
+            answerer=models,
+            vision_describer=models,
+            settings=MemorySettings(
+                query_vision=enabled,
+                retrieval_mode=RetrievalMode.DENSE,
+                index_quantization=quantization,
+                evidence_budget_chars=None,
+                ambiguity_margin=0,
+                reinforce_on_answer=False,
+            ),
+        ) as memory:
+            texts = [f"unrelated corridor {index}" for index in range(230)]
+            texts.append("ZX93 is the registration desk in Orion Hall")
+            random.Random(seed).shuffle(texts)
+            records = memory.add_many(texts)
+            support = next(record for record in records if "ZX93" in record.content)
+            question = ("What is its name?", Blob(b"query-vision-v1", "image/png"))
+            discovered = memory.search(question, limit=100, explain=True)
+            assert discovered.trace is not None
+            candidates = {row.memory_id for row in discovered.trace.candidates}
+            assert (support.id in candidates) is enabled
+            result = memory.ask(
+                question, limit=1, reference_at=datetime(2026, 10, 28, tzinfo=timezone.utc)
+            )
+            assert (support.id in {hit.id for hit in models.delivered}) is enabled
+            assert (result.answer == "Orion Hall") is enabled
+            assert models.description_calls == (2 if enabled else 0)

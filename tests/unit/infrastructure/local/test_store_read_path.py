@@ -10,19 +10,23 @@ import struct
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 
 import pytest
 
+import sensemem.infrastructure.local.store.semantics as semantics_module
 from sensemem import EmbedTask, Memory, ModelInput
 from sensemem.exceptions import ModelError
-from sensemem.infrastructure.local import LocalStore, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local import LocalStore, StoredAsset, StoredEmbedding, StoredMemory
 from sensemem.infrastructure.local.store import index as index_module
 from sensemem.infrastructure.local.store._codec import optional_datetime_from_row
+from sensemem.infrastructure.local.store._corroboration import _load_nodes
 from sensemem.infrastructure.local.store.records import MemoryRecords
-from sensemem.types import Modality
+from sensemem.kernel.corroboration import EvidenceNode
+from sensemem.semantics import RecordSemantics
+from sensemem.types import EvidenceBasis, Modality, RecordKind
 
 _NOW = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -100,7 +104,7 @@ def test_hydration_does_not_re_validate_a_stored_vector(tmp_path: Path) -> None:
     """A candidate hydrates on identity and text alone, whatever the stored vector holds.
 
     The vector is overwritten out of band with a non-finite, non-unit payload of the same byte
-    length, which is the one corruption the `length(vector) = dimension * 4` CHECK cannot see. A
+    length, which is the one corruption the length(vector) = dimension * 4 CHECK cannot see. A
     search must not spend an O(dimension) loop discovering it, because a search never reads it.
     """
     directory = tmp_path / "data"
@@ -252,7 +256,7 @@ def test_a_search_that_cannot_widen_does_not_count_survivors(
 ) -> None:
     """The survivor count is only asked for where it can still change the widening decision.
 
-    `count_memories` applies every scope predicate over the whole candidate window, and its one
+    count_memories applies every scope predicate over the whole candidate window, and its one
     caller uses the number for nothing but deciding whether to rank deeper. A store holding fewer
     memories than one route returns has already exhausted its routes, so the answer cannot change
     the decision and the pass is pure cost -- on every search such a store ever serves.
@@ -286,3 +290,128 @@ def test_reindex_rebuilds_from_stored_vectors_without_re_embedding(tmp_path: Pat
         results = memory.search("the kitchen at dusk", limit=2).hits
         assert kitchen.id in {result.id for result in results}
         assert embedder.document_calls == ingest_calls
+
+
+def test_delivery_evidence_keeps_snapshot_during_concurrent_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime(2026, 10, 8, tzinfo=timezone.utc)
+    with LocalStore(tmp_path) as store:
+        store.records.write_memory(
+            StoredMemory(
+                memory_id="root",
+                content="Original supporting observation.",
+                metadata_json="{}",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+        def load_then_delete(
+            connection: sqlite3.Connection, memory_id: str
+        ) -> tuple[dict[str, EvidenceNode], bool]:
+            nodes, truncated = _load_nodes(connection, memory_id)
+            assert store.records.delete_memory(memory_id)
+            return nodes, truncated
+
+        monkeypatch.setattr(semantics_module, "_load_nodes", load_then_delete)
+        nodes, records, truncated = store.semantics.delivery_evidence("root")
+        assert tuple(nodes) == ("root",)
+        assert not truncated
+        assert tuple(record.content for record in records) == ("Original supporting observation.",)
+        assert store.records.read_memory("root") is None
+
+
+def test_unknown_semantic_version_cannot_hide_an_older_eligible_history(tmp_path: Path) -> None:
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    known_before = start + timedelta(days=2)
+    with LocalStore(tmp_path) as store:
+        store.records.write_memory(
+            StoredMemory(
+                memory_id="older",
+                content="An earlier observation.",
+                metadata_json="{}",
+                created_at=start,
+                updated_at=start,
+            )
+        )
+        store.records.write_memory(
+            StoredMemory(
+                memory_id="later-claim",
+                content="A claim not yet recorded at the cutoff.",
+                metadata_json="{}",
+                created_at=start + timedelta(days=1),
+                updated_at=start + timedelta(days=3),
+                context=RecordSemantics(
+                    kind=RecordKind.EVENT,
+                    basis=EvidenceBasis.MODEL_INFERENCE,
+                    confidence=0.8,
+                    valid_from=None,
+                    valid_until=None,
+                    recorded_at=start + timedelta(days=3),
+                ),
+            )
+        )
+        background = store.records.formation_history(
+            known_before=known_before, exclude_ids=(), limit=1
+        )
+        assert tuple(record.memory_id for record in background) == ("older",)
+        assert background[0].context is None
+
+
+@pytest.mark.parametrize("place_id", (None, "selected", "absent"))
+def test_scoped_hydration_reads_related_rows_only_for_selected_memories(
+    tmp_path: Path, place_id: str | None
+) -> None:
+    now = datetime(2026, 10, 27, tzinfo=timezone.utc)
+    memories = tuple(
+        StoredMemory(
+            memory_id=f"memory-{index}",
+            content=f"source {index}",
+            metadata_json="{}",
+            created_at=now,
+            updated_at=now,
+            place_id="selected" if index == 0 else "excluded",
+            modality="image",
+            assets=(
+                StoredAsset(
+                    asset_id=f"{index:064x}",
+                    modality="image",
+                    mime_type="image/png",
+                    size_bytes=1,
+                    sha256=f"{index:064x}",
+                    relative_path=f"assets/00/{index:064x}",
+                    created_at=now,
+                ),
+            ),
+        )
+        for index in range(4)
+    )
+    statements: list[str] = []
+    with LocalStore(tmp_path) as store:
+        store.records.write_memories(memories)
+        with store._connections.connection() as connection:
+            connection.set_trace_callback(statements.append)
+        result = store.records.read_memories(
+            (*tuple(memory.memory_id for memory in reversed(memories)), "missing"),
+            place_id=place_id,
+        )
+        expected = (
+            tuple(reversed(memories))
+            if place_id is None
+            else (memories[0],)
+            if place_id == "selected"
+            else ()
+        )
+        assert result == expected
+        related_reads = [
+            statement
+            for statement in statements
+            if "FROM memory_assets AS ma" in statement or "FROM memory_semantics" in statement
+        ]
+        assert all("missing" not in statement for statement in related_reads)
+        if place_id is not None:
+            for memory_id in ("memory-1", "memory-2", "memory-3"):
+                assert all(memory_id not in statement for statement in related_reads)
+        if place_id == "absent":
+            assert related_reads == []

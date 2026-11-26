@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 from threading import Barrier, Event, Lock
 from types import ModuleType, SimpleNamespace
-from typing import Any, NoReturn, cast
+from typing import NoReturn, Protocol, cast
 
 import numpy as np
 import pytest
@@ -164,9 +164,14 @@ def test_delete_accepts_only_not_found_failures() -> None:
     index = object.__new__(ZvecIndex)
     index._gate = _CollectionGate()
     index._zvec = cast(ModuleType, _FakeZvec)
-    index._collection = _DeletingCollection()
+    collection = _DeletingCollection()
+    index._collection = collection
 
     index.delete(["already_deleted"])
+    assert collection.deleted == [["already_deleted"]]
+
+    with pytest.raises(ZvecWriteError, match="broken: INTERNAL_ERROR: disk full"):
+        index.delete(["broken"])
 
 
 def test_collection_gate_allows_readers_and_excludes_replacement() -> None:
@@ -273,7 +278,7 @@ def test_group_by_falls_back_until_it_has_distinct_parent_memories() -> None:
         exact=False,
     )
 
-    assert [cast(Any, doc).id for doc in docs] == ["parent_best", "neighbor"]
+    assert [cast(_QueryDocument, doc).id for doc in docs] == ["parent_best", "neighbor"]
     assert collection.group_counts == [4]
     assert collection.topks == [50]
     assert collection.output_fields == [["memory_id"]]
@@ -303,8 +308,8 @@ def test_dense_search_asks_for_the_largest_candidate_list_zvec_accepts() -> None
     # A collection whose vectors sit in an HNSW graph silently drops true nearest neighbours when
     # the candidate list is small, and reports full health while doing it: measured on a shipped
     # 24,271-vector 2048-dimension store, ef 300 returned 0.53 of the exhaustive cosine top-100
-    # against 0.95 at the bound below, with `doc_count` and `index_completeness` unchanged.
-    # Zvec refuses anything above that bound outright -- a `limit` past it used to reach the native
+    # against 0.95 at the bound below, with doc_count and index_completeness unchanged.
+    # Zvec refuses anything above that bound outright -- a limit past it used to reach the native
     # layer unclamped and fail the whole query -- so both ends are pinned here.
     parent = _QueryDocument("parent_best", 0.0, memory_id="parent")
     collection = _GroupedCollection(
@@ -420,7 +425,7 @@ def test_a_query_only_fuses_the_routes_that_can_answer_it() -> None:
 def test_punctuation_left_over_from_latin_words_does_not_open_a_second_route() -> None:
     """Stripping Latin words must leave nothing, not the punctuation between them.
 
-    `"?"` is truthy, so a query ending in one would otherwise fuse a second FTS route that
+    "?" is truthy, so a query ending in one would otherwise fuse a second FTS route that
     tokenizes to zero terms -- the ngram field takes only letters and digits -- and can never
     match. Most questions end in punctuation, so this is the common path, not an edge case.
     """
@@ -606,7 +611,7 @@ def test_full_text_search_reaches_a_latin_document_from_a_mixed_script_query(
 ) -> None:
     """One CJK character in a query must not cost it the stemmed route.
 
-    Routing a query to a single field by script did exactly that: `content_ngram` held nothing
+    Routing a query to a single field by script did exactly that: content_ngram held nothing
     for a Latin-only document, so the memory this query quotes two words of was unreachable.
     """
     _require_zvec()
@@ -629,10 +634,24 @@ def test_full_text_search_reaches_a_latin_document_from_a_mixed_script_query(
         assert "english" in {hit.id for hit in index.lexical_search("sourdough 面包", limit=2)}
 
 
+class _IndexParam(Protocol):
+    enable_range_optimization: bool
+
+
+class _SchemaField(Protocol):
+    name: str
+    index_param: _IndexParam
+
+
+class _Schema(Protocol):
+    fields: Sequence[_SchemaField]
+
+
 def test_schema_optimizes_time_ranges_and_automatic_maintenance(tmp_path: Path) -> None:
     _require_zvec()
     with ZvecIndex(tmp_path / "index", dimension=2) as index:
-        fields = {field.name: field for field in cast(Any, index._schema).fields}
+        schema = cast(_Schema, index._schema)
+        fields = {field.name: field for field in schema.fields}
         assert fields["occurred_at"].index_param.enable_range_optimization
         assert fields["occurred_end"].index_param.enable_range_optimization
 
@@ -955,7 +974,7 @@ def test_a_merge_over_a_dead_row_keeps_every_vector_bound_to_its_own_id(
     Zvec 0.7 merges a collection that still holds a dead row -- a document it stores but no
     longer serves -- by writing the surviving vectors densely while the ids keep their pre-merge
     positions, so every document from the first dead row onwards is served its neighbour's
-    vector. Nothing reports it: the scalar fields, `doc_count` and the number of hits all stay
+    vector. Nothing reports it: the scalar fields, doc_count and the number of hits all stay
     right, and only the ranking is wrong. A 2,847-record ingest that deleted during the run and
     merged when it closed agreed with an exhaustive cosine over its own stored vectors on 0.15 of
     its top 100 instead of 0.99.
@@ -984,7 +1003,7 @@ def test_a_merge_over_a_dead_row_keeps_every_vector_bound_to_its_own_id(
             index.flush()
         if dead_row == "delete":
             index.delete(["embedding_00"])
-            del angles["embedding_00"]
+            angles.pop("embedding_00")
         elif dead_row == "replace":
             # Five ids written a second time: each first copy is now a dead row.
             index.upsert(
@@ -1068,13 +1087,13 @@ def test_open_sweeps_the_debris_a_killed_compaction_leaves(tmp_path: Path) -> No
 def test_a_write_batch_above_the_native_limit_is_chunked_rather_than_refused(
     tmp_path: Path,
 ) -> None:
-    """Zvec refuses a batch above `_MAX_WRITE_BATCH`, and refusing one is unrecoverable.
+    """Zvec refuses a batch above _MAX_WRITE_BATCH, and refusing one is unrecoverable.
 
-    One outbox drain becomes one `upsert`, and its rows are committed to SQLite before the drain
+    One outbox drain becomes one upsert, and its rows are committed to SQLite before the drain
     runs. A refused batch therefore never acknowledges, so every later drain re-reads it and
     re-raises the same rejection: the store stops accepting writes and stops serving reads that
     drain, permanently. Both native write paths chunk, so the batch sizes above them --
-    `_OUTBOX_BATCH_SIZE` and `rebuild`'s public `batch_size` -- are free to be chosen for flush
+    _OUTBOX_BATCH_SIZE and rebuild's public batch_size -- are free to be chosen for flush
     cost without knowing the writer's limit.
     """
     _require_zvec()
@@ -1089,7 +1108,7 @@ def test_a_write_batch_above_the_native_limit_is_chunked_rather_than_refused(
         index.flush()
         assert index.doc_count == count
 
-        # `rebuild` takes its batch size from a caller, so it must survive one above the limit too.
+        # rebuild takes its batch size from a caller, so it must survive one above the limit too.
         assert index.rebuild(documents, batch_size=count) == count
         assert index.doc_count == count
 
@@ -1197,9 +1216,17 @@ class _CapturingCollection:
 
 
 class _DeletingCollection:
-    @staticmethod
-    def delete(_ids: Sequence[str]) -> list[_Status]:
-        return [_Status(_StatusCode.NOT_FOUND)]
+    def __init__(self) -> None:
+        self.deleted: list[list[str]] = []
+
+    def delete(self, ids: Sequence[str]) -> list[_Status]:
+        self.deleted.append(list(ids))
+        return [
+            _Status(_StatusCode.NOT_FOUND)
+            if item == "already_deleted"
+            else _Status(_StatusCode.INTERNAL_ERROR, "disk full")
+            for item in ids
+        ]
 
 
 class _QueryDocument:
@@ -1273,9 +1300,9 @@ class _DenseZvec:
 
 
 def _asked_ef(options: object) -> int:
-    payload = cast(dict[str, Any], options)
-    query = cast(dict[str, Any], payload.get("queries") or payload["query"])
-    return cast(int, cast(dict[str, Any], query["param"])["ef"])
+    payload = cast(dict[str, object], options)
+    query = cast(dict[str, object], payload.get("queries") or payload["query"])
+    return cast(int, cast(dict[str, object], query["param"])["ef"])
 
 
 @pytest.mark.parametrize("operation", ("upsert", "delete", "flush", "maintenance_check"))

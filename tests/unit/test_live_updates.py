@@ -13,10 +13,14 @@ from typing import Literal
 
 import pytest
 from _feature_support import TinyEmbedder
+from fixtures.events import ScriptedSegmenter
+from fixtures.events import make_chunk as _chunk
+from fixtures.live import ControlledMemory
 from PIL import Image
-from test_event_stream import ScriptedSegmenter, _chunk
-from test_live_recall import ControlledMemory
 
+from examples.live.capture import EventCapture
+from examples.live.recall import LiveRecall
+from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 from sensemem import (
     AsyncCaptureStream,
     AsyncEventStream,
@@ -35,11 +39,6 @@ from sensemem import (
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
 SOURCE_ID = "live:" + "a" * 32
-
-
-@pytest.fixture(autouse=True)
-def example_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 @pytest.fixture
@@ -91,8 +90,6 @@ async def _commit(
 async def test_native_events_publish_context_without_an_optional_response_assessor(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveUpdates
 
     received: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     recall = LiveRecall(memory)
@@ -115,8 +112,6 @@ async def test_committed_visual_window_triggers_event_while_audiovisual_activity
     tmp_path: Path,
     frame_count: int,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 
     received: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     assessed: list[LiveEvent] = []
@@ -218,8 +213,6 @@ async def test_all_native_parts_are_required_and_pending_observations_stay_durab
     modality: Literal["audio", "video"],
     expected_trigger: str,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 
     received: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     assessed: list[LiveEvent] = []
@@ -268,8 +261,6 @@ async def test_all_native_parts_are_required_and_pending_observations_stay_durab
 async def test_late_older_event_cannot_replace_a_newer_window_from_the_same_source(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates
 
     received: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     recall = LiveRecall(memory)
@@ -314,8 +305,6 @@ async def test_late_older_event_cannot_replace_a_newer_window_from_the_same_sour
 async def test_latest_event_coalesces_without_withdrawing_revalidated_past_events(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 
     messages: list[dict[str, object]] = []
     entered: asyncio.Queue[str] = asyncio.Queue()
@@ -333,7 +322,6 @@ async def test_latest_event_coalesces_without_withdrawing_revalidated_past_event
             invalidated.set()
 
     async def assess(event: LiveEvent, revision: int, trigger: Trigger) -> dict[str, object]:
-        del trigger
         assessed.append((event.event_id, revision))
         entered.put_nowait(event.event_id)
         if event.event_id == "first":
@@ -381,8 +369,6 @@ async def test_review_runs_alongside_context_and_requires_current_evidence_reval
     revalidated: bool,
     newer_event: bool,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 
     memory.block = True
     messages: list[dict[str, object]] = []
@@ -457,8 +443,6 @@ async def test_review_runs_alongside_context_and_requires_current_evidence_reval
 async def test_changed_revision_rejects_context_that_was_already_in_flight(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 
     memory.block = True
     messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -467,7 +451,6 @@ async def test_changed_revision_rejects_context_that_was_already_in_flight(
     recall.sender = messages.put
 
     async def assess(event: LiveEvent, revision: int, trigger: Trigger) -> None:
-        del event, trigger
         assessed.put_nowait(revision)
 
     updates = LiveUpdates(memory, recall, assess)
@@ -495,9 +478,6 @@ async def test_provisional_native_segments_never_become_events_and_capture_keeps
     memory: ControlledMemory,
     tmp_path: Path,
 ) -> None:
-    from examples.live.capture import EventCapture
-    from examples.live.recall import LiveRecall
-    from examples.live.updates import LiveEvent, LiveUpdates, Trigger
 
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -505,7 +485,6 @@ async def test_provisional_native_segments_never_become_events_and_capture_keeps
     recall = LiveRecall(memory)
 
     async def assess(event: LiveEvent, revision: int, trigger: Trigger) -> None:
-        del revision, trigger
         assessed.append(event)
         entered.set()
         await release.wait()
@@ -553,7 +532,6 @@ async def test_capture_pushes_failure_and_unfinished_eof_state_without_committin
     memory: ControlledMemory,
     tmp_path: Path,
 ) -> None:
-    from examples.live.capture import EventCapture
 
     states: list[tuple[bool, bool]] = []
     commits: list[StreamCommit] = []
@@ -593,7 +571,6 @@ async def test_capture_state_pushes_do_not_wait_for_semantic_analysis_to_accept_
     memory: ControlledMemory,
     tmp_path: Path,
 ) -> None:
-    from examples.live.capture import EventCapture
 
     class BlockingSegmenter:
         event_model = "blocked-live-state-fixture"
@@ -609,7 +586,6 @@ async def test_capture_state_pushes_do_not_wait_for_semantic_analysis_to_accept_
             *,
             end_of_stream: bool = False,
         ) -> tuple[EventSegment, ...]:
-            del observations, end_of_stream
             self.entered.set()
             assert self.release.wait(5), "test did not release semantic analysis"
             return ()

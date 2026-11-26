@@ -8,8 +8,11 @@ from typing import Literal, cast
 
 import httpx2 as httpx
 import pytest
+from fixtures.openai import NOW
+from fixtures.openai import make_asset as _asset
+from fixtures.openai import sdk_client as _sdk_client
+from fixtures.openai import search_hit as _search_hit
 from PIL import Image
-from test_openai_adapters import NOW, _asset, _sdk_client, _search_hit
 
 import sensemem.configuration as configuration
 import sensemem.models._openai_media as openai_media

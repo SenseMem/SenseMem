@@ -1,13 +1,23 @@
 """Source provenance never authorizes an automatically extracted subclaim."""
 
 import json
+from typing import Literal
 
+import httpx2 as httpx
 import pytest
+from openai import OpenAI
 
-from sensemem import EvidenceBasis, FormationInput, ModelInput, ObservationContext
+from sensemem import (
+    ContentPart,
+    EvidenceBasis,
+    FormationInput,
+    ModelInput,
+    ObservationContext,
+)
 from sensemem.models._openai_output import _formation_results
 from sensemem.models._openai_requests import _formation_aliases
 from sensemem.models._openai_schemas import response_schema
+from sensemem.models.openai_completion import OpenAICompletion
 from sensemem.prompts import generation as prompts
 
 
@@ -83,3 +93,71 @@ def test_formation_schema_does_not_offer_authority_fields() -> None:
     schema = json.dumps(response_schema("formation"))
     assert "statement_quote" not in schema
     assert '"basis"' not in schema
+
+
+_CLAIM = "Mina's current preferred drink is coffee."
+
+
+@pytest.mark.parametrize(
+    "derived_kind", ("audio_transcript", "visual_description", "model_interpretation")
+)
+@pytest.mark.parametrize("original", (False, True))
+def test_source_part_role_does_not_authorize_a_model_subclaim(
+    derived_kind: Literal["audio_transcript", "visual_description", "model_interpretation"],
+    original: bool,
+) -> None:
+    raw = _CLAIM if original else "This attachment is Mina's check-in."
+    content = ModelInput(
+        text=f"{raw}\n{_CLAIM}",
+        parts=(ContentPart("text", raw), ContentPart(derived_kind, _CLAIM)),
+    )
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "items": [
+                                        {
+                                            "observation_id": "observation_0",
+                                            "proposals": [
+                                                {
+                                                    "kind": "state",
+                                                    "subject": "Mina",
+                                                    "predicate": "preferred_drink",
+                                                    "value": "coffee",
+                                                    "content": _CLAIM,
+                                                    "confidence": 0.9,
+                                                    "evidence_observation_ids": ["observation_0"],
+                                                }
+                                            ],
+                                        }
+                                    ]
+                                }
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as transport,
+        OpenAI(api_key="test", http_client=transport, max_retries=0) as client,
+    ):
+        former = OpenAICompletion(client, generation_model="fixture")
+        (proposals,) = former.form(
+            (
+                FormationInput(
+                    "source", content, ObservationContext(basis=EvidenceBasis.USER_STATEMENT)
+                ),
+            )
+        )
+    assert len(proposals) == 1
+    assert proposals[0].basis is EvidenceBasis.MODEL_INFERENCE

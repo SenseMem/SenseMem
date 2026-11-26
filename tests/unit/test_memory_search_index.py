@@ -24,22 +24,34 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from sensemem import (
+    Blob,
+    DefaultRankingPolicy,
+    EmbedTask,
     Memory,
     MemorySettings,
+    Modality,
+    ModelInput,
+    RankingMemory,
+    RankingRequest,
+    RankingScore,
+    RetrievalMode,
     RetrievalScope,
     SpeakerEmbedding,
     SpeechAnalysis,
     SpeechTurn,
+    StorageError,
 )
 from sensemem._telemetry import (
     IDENTITY_NAMES_BOUND,
     IDENTITY_NAMES_REFUSED,
     VISION_BATCHES_FAILED,
 )
-from sensemem.content import AssetRef, Blob
+from sensemem.content import AssetRef
+from sensemem.context import evidence_cost
 from sensemem.control_values import MemoryIntent, MemoryTrigger
 from sensemem.exceptions import IndexUnavailableError, ModelError
 from sensemem.identity import SpeakerSegment
+from sensemem.infrastructure.local.store import StoredMemory
 from sensemem.infrastructure.local.store.index import IndexOutbox
 from sensemem.infrastructure.local.zvec_index import ZvecIndex
 from sensemem.kernel.derived import (
@@ -48,18 +60,21 @@ from sensemem.kernel.derived import (
     speech_evidence,
     speech_retrieval_text,
 )
+from sensemem.kernel.grounding import grounding_hits
 from sensemem.kernel.ranking import (
     LEXICAL_FULL_COVERAGE,
+    RANK_CEILING,
     lexical_query_terms,
     lexical_relevance,
+    rank_memories,
+    temporal_relevance,
 )
 from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
 from sensemem.models._openai_output import _visual_description
-from sensemem.models.base import EmbedTask, ModelInput
 from sensemem.perception import VisualDescription
 from sensemem.ranking_policy import LEXICAL_FULL_COVERAGE_RELEVANCE
 from sensemem.records import AnswerResult, SearchHit
-from sensemem.types import AnswerPolicy, EvidenceBasis, Modality
+from sensemem.types import AnswerPolicy, EvidenceBasis
 
 _ALL_INPUT_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO})
 
@@ -166,7 +181,7 @@ class _DirectionalEmbedder:
     """Places a memory at a chosen cosine to the query so a floor can be read back as a cosine.
 
     The query is always the unit vector on the first axis. A document whose text contains one of
-    the named markers is placed at that marker's cosine, which makes `minimum_relevance` directly
+    the named markers is placed at that marker's cosine, which makes minimum_relevance directly
     checkable against the similarity a caller would reason about.
     """
 
@@ -327,12 +342,12 @@ def test_the_relevance_floor_rejects_the_similarity_it_reports(tmp_path: Path) -
             hits = memory.search("resonance survey window").hits
             found = {hit.id for hit in hits}
             # A floor of 0.55 used to admit cosine 0.15, because the gate read (1 + cos) / 2 while
-            # the caller read cosine back on `SearchHit.score`.
+            # the caller read cosine back on SearchHit.score.
             assert (middling.id in found) is expected
             # With no rank prior enabled the score *is* the gated relevance, so the floor reads
-            # back exactly. Enable `decay_half_life_days` or ask a dated question and the priors
-            # move `score` below the floor on purpose — see
-            # `test_decay_demotes_an_old_memory_without_evicting_it`.
+            # back exactly. Enable decay_half_life_days or ask a dated question and the priors
+            # move score below the floor on purpose — see
+            # test_decay_demotes_an_old_memory_without_evicting_it.
             assert all(hit.score >= floor for hit in hits)
 
 
@@ -360,7 +375,7 @@ def test_a_weak_lexical_match_cannot_smuggle_an_anticorrelated_memory_past_the_f
             # even the permissive floor, so it is rejected at both. That is a stronger guarantee
             # than this test originally asserted: it used to be admitted at 0.10 and merely
             # scored honestly. A full-coverage lexical match still survives a floor well above
-            # the old constant, which `test_the_lexical_route_survives_...` pins.
+            # the old constant, which test_the_lexical_route_survives_... pins.
             assert opposite.id not in by_id
             assert all(hit.score >= floor for hit in traced.hits)
             candidate = next(
@@ -483,8 +498,8 @@ def test_dense_candidates_keep_the_index_score_without_completion(
 
 
 def test_a_text_only_embedder_reaches_an_image_through_the_describer(tmp_path: Path) -> None:
-    # The composition `VisionDescriptionBackend` exists for. `add` never asked for a description
-    # on any code path, so this write used to fail outright with `unsupported_modality`.
+    # The composition VisionDescriptionBackend exists for. add never asked for a description
+    # on any code path, so this write used to fail outright with unsupported_modality.
     embedder = _Embedder()
     embedder.embedding_capabilities = frozenset({Modality.TEXT})
     with Memory(tmp_path, embedder=embedder, vision_describer=_Describer()) as memory:
@@ -522,7 +537,7 @@ def test_a_second_ingest_of_the_same_image_reuses_the_stored_caption(tmp_path: P
         assert _caption(memory.get(repeat.id).content) == first_caption
         assert _caption(memory.get(second_instance.id).content) == first_caption
 
-    # A fresh `Memory` over the same data_dir is the crash-and-re-derive case.
+    # A fresh Memory over the same data_dir is the crash-and-re-derive case.
     with Memory(tmp_path, embedder=_Embedder(), vision_describer=describer) as reopened:
         after_restart = reopened.add(("evening note", picture))
         assert describer.calls == 1
@@ -585,7 +600,7 @@ def test_reindexing_does_not_re_describe_stored_visuals(tmp_path: Path) -> None:
 def test_only_a_store_with_embeddings_announces_a_rebuild(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """`data_dir/zvec` is absent until the index creates it, so "missing" alone means nothing.
+    """data_dir/zvec is absent until the index creates it, so "missing" alone means nothing.
 
     Every first open therefore looked like a rebuild in the log. What separates the two is the
     store: only embeddings that have to be projected again are a rebuild.
@@ -661,11 +676,11 @@ def test_close_does_not_optimize_a_session_that_flushed_once(
 def _segment_files(data_dir: Path) -> dict[str, int]:
     """The durable segments by name and size; a merge rewrites this map, a read must not.
 
-    Not every file under `zvec/`: SenseMem has no read-only open, so the embedded RocksDB stores
+    Not every file under zvec/: SenseMem has no read-only open, so the embedded RocksDB stores
     behind the scalar, full-text and id-map fields write a fresh log, MANIFEST and OPTIONS whenever
     the collection is opened at all. That churn belongs to the open, not the close, and no policy
     here can remove it. The three suffixes below are the durable segments -- exactly what
-    `_persisted_segment_count` counts, what a merge rewrites, and what a reader must hand back
+    _persisted_segment_count counts, what a merge rewrites, and what a reader must hand back
     unchanged.
     """
     zvec = data_dir / "zvec"
@@ -727,7 +742,7 @@ def test_a_session_that_writes_one_record_merges_an_inherited_store(
 
 
 def test_repeated_short_sessions_do_not_grow_the_index(tmp_path: Path) -> None:
-    """`open -> add one record -> close` in a loop must not accrue a segment per session.
+    """open -> add one record -> close in a loop must not accrue a segment per session.
 
     The flush counter is seeded from the files on disk, so every session after the first inherits
     the previous one's segment and merges it back down. Without that, five one-record sessions
@@ -746,7 +761,7 @@ def test_close_reports_a_failed_merge_and_still_releases_the_store(
 ) -> None:
     """A merge that cannot run must not cost the caller the close: it is derived state.
 
-    `close()` collects failures rather than raising at the first one, so the native collection is
+    close() collects failures rather than raising at the first one, so the native collection is
     closed and its file lock released whatever the merge did, and the failure is still raised.
     """
     with Memory(tmp_path, embedder=_Embedder()) as memory:
@@ -772,7 +787,7 @@ def test_reindexing_leaves_the_index_merged(tmp_path: Path) -> None:
     """The rebuild checkpoints every embedding in the outbox and then replays it over itself.
 
     That replay writes the corpus a second time in flush-sized pages, one durable segment each,
-    on top of the merged collection `rebuild` just wrote -- measured on a 578 MB store as Zvec
+    on top of the merged collection rebuild just wrote -- measured on a 578 MB store as Zvec
     +143 % and search p50 7.8x, in the operation the troubleshooting guide recommends for repair.
     """
     with Memory(tmp_path, embedder=_Embedder()) as memory:
@@ -787,10 +802,10 @@ def test_reindexing_leaves_the_index_merged(tmp_path: Path) -> None:
 
 
 def test_decay_demotes_an_old_memory_without_evicting_it(tmp_path: Path) -> None:
-    """`minimum_relevance` gates evidence quality, not the recency priors applied after it.
+    """minimum_relevance gates evidence quality, not the recency priors applied after it.
 
-    The priors are bounded below by `_RANK_FLOOR = 0.3`, so a *perfectly* relevant memory decays
-    to `0.30`, and to `0.09` once a temporal window also misses it — under the `0.10` default. A
+    The priors are bounded below by _RANK_FLOOR = 0.3, so a *perfectly* relevant memory decays
+    to 0.30, and to 0.09 once a temporal window also misses it — under the 0.10 default. A
     floor that included the priors therefore turned "prefer recent" into "hide old", which is the
     wrong failure for a companion that is asked about last year. Evidence relevance is what the
     caller set a floor on; how much a memory is preferred is a separate question.
@@ -821,7 +836,7 @@ def test_a_description_that_does_not_fit_is_omitted_not_fatal(tmp_path: Path) ->
     """A derived description must never cost the caller the write it was decorating.
 
     The description is convenience, not content: the asset is stored and embedded either way. So a
-    memory whose own text nearly fills `MAX_TEXT_CHARACTERS` still stores, minus the description,
+    memory whose own text nearly fills MAX_TEXT_CHARACTERS still stores, minus the description,
     rather than failing and leaving the caller no option but to drop the describer entirely.
     """
     describer = _Describer()
@@ -843,8 +858,8 @@ def test_a_description_that_does_not_fit_is_omitted_not_fatal(tmp_path: Path) ->
 def test_indexed_speech_is_prose_and_not_a_json_blob(tmp_path: Path) -> None:
     """The index document must carry the words, not the schema around them.
 
-    `index_speech` is on by default, so every speech-bearing memory's full-text document was a
-    JSON object: `start_ms`, `end_ms`, `speaker_id` and `identity_score` all became BM25 tokens
+    index_speech is on by default, so every speech-bearing memory's full-text document was a
+    JSON object: start_ms, end_ms, speaker_id and identity_score all became BM25 tokens
     while the spoken words sat among them. Index content is the only lever that moves the R@20
     ceiling, so what lands in the document is the whole point of the flag.
 
@@ -957,7 +972,7 @@ def test_a_transcribed_video_falls_back_instead_of_failing_the_write(tmp_path: P
     The transcript was already being derived -- the transcriber ran -- but the fallback set only
     admitted VIDEO when a *visual description* existed, never when a transcript did. So the video
     asset still reached an embedder that had just declared it could not take one, and the whole
-    write failed with `unsupported_modality` while its speech sat there unused.
+    write failed with unsupported_modality while its speech sat there unused.
 
     The visual content is not embedded in this composition, which is the honest cost of the
     fallback; the asset is still stored and still on the record.
@@ -981,9 +996,9 @@ def test_a_transcribed_video_falls_back_instead_of_failing_the_write(tmp_path: P
 def test_a_chinese_question_can_reach_full_lexical_coverage(tmp_path: Path) -> None:
     """A Chinese query must be able to fuse the two routes, which needs full term coverage.
 
-    `\\w+` matched an entire Chinese sentence as one token, so every multi-character Chinese
+    \\w+ matched an entire Chinese sentence as one token, so every multi-character Chinese
     query carried a term that is by construction the rarest in the corpus and can never match.
-    It took the largest IDF weight into the coverage ratio, which put `LEXICAL_FULL_COVERAGE`
+    It took the largest IDF weight into the coverage ratio, which put LEXICAL_FULL_COVERAGE
     permanently out of reach -- and that lift is the only term that performs cross-route fusion.
     Chinese retrieval was therefore stuck on the demoted rank proxy and lost to any mediocre
     dense neighbour, in the product's largest market.
@@ -1030,12 +1045,12 @@ def test_a_chinese_question_can_reach_full_lexical_coverage(tmp_path: Path) -> N
 def test_query_terms_mirror_what_the_index_can_actually_match() -> None:
     """Rerank terms have to be the terms the full-text index produces, or coverage cannot fuse.
 
-    Three separate ways they used not to be. Thai reached `\\w+`, whose word class excludes the
+    Three separate ways they used not to be. Thai reached \\w+, whose word class excludes the
     combining marks Thai writes its vowels and tones with, so a query shredded at every mark into
     fragments whose boundaries no index term shares. The unsegmented-script list that would have
     routed it to bigrams did not include Thai, or Lao, Khmer or Myanmar. And every run emitted its
-    single characters beside its bigrams, which the index cannot produce at `ngram_min` 2 and
-    which made the term count -- the denominator `LEXICAL_FULL_COVERAGE` is measured against --
+    single characters beside its bigrams, which the index cannot produce at ngram_min 2 and
+    which made the term count -- the denominator LEXICAL_FULL_COVERAGE is measured against --
     a property of the language rather than of the question.
     """
     thai = lexical_query_terms("ร้านเบเกอรี่")
@@ -1066,7 +1081,6 @@ def test_temporal_factor_boosts_overlap_and_never_penalises() -> None:
     under merely well-timed ones and, inside the gate, could delete it; replay showed the penalty
     recovered no gold on 810 paired questions while the boost alone won or tied on all of them.
     """
-    from sensemem.kernel.ranking import RANK_CEILING, temporal_relevance
 
     start = datetime(2024, 3, 1, tzinfo=timezone.utc)
     until = datetime(2024, 4, 1, tzinfo=timezone.utc)
@@ -1091,7 +1105,6 @@ class _HashedDense:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         vectors = []
         for value in inputs:
             digest = hashlib.blake2b(value.text.encode(), digest_size=2).digest()
@@ -1106,13 +1119,13 @@ class _HashedDense:
 def test_a_narrow_limit_returns_the_prefix_of_a_wide_one_with_the_same_scores(
     tmp_path: Path,
 ) -> None:
-    """The requested `limit` selects results; it must not change what they are worth.
+    """The requested limit selects results; it must not change what they are worth.
 
     Both mechanisms that used to break this are in play here. Every index route was truncated
-    to `max(_RERANK_CANDIDATES, limit * 3)`, so a memory's dense relevance -- the maximum over
-    the routes that reached it -- depended on the depth; and `lexical_relevance` counted its
+    to max(_RERANK_CANDIDATES, limit * 3), so a memory's dense relevance -- the maximum over
+    the routes that reached it -- depended on the depth; and lexical_relevance counted its
     document frequencies over the candidate pool that depth produced, so the rerank bonus moved
-    with `limit` even for a memory both runs found. With 200 records, limit 5 read 100 documents
+    with limit even for a memory both runs found. With 200 records, limit 5 read 100 documents
     per route and limit 100 read 300.
     """
     with Memory(tmp_path, embedder=_HashedDense()) as memory:
@@ -1198,11 +1211,11 @@ def test_the_candidate_trace_order_does_not_depend_on_the_process_hash_seed(
     """diagnostic search's candidate order must be reproducible across processes.
 
     A trace is a debugging surface and an arm-comparison input, so two runs of one query on one
-    library must print it in one order. Hydration used to be ordered through `lexical_matches`, a
-    `set` of memory ids, whose iteration order follows the interpreter's string hash seed.
+    library must print it in one order. Hydration used to be ordered through lexical_matches, a
+    set of memory ids, whose iteration order follows the interpreter's string hash seed.
 
     This test is the reason that is stated narrowly. It was written to reproduce a candidate-dump
-    difference observed between two replays, and it **passes on the pre-fix code**: `read_memories`
+    difference observed between two replays, and it **passes on the pre-fix code**: read_memories
     does not order by its argument, so the ranked trace never followed the set, and the observed
     difference turned out to be two genuinely different ranking rules rather than a seed effect.
     What remains is the general guarantee, which is what is worth pinning: the corpus deliberately
@@ -1230,8 +1243,6 @@ def test_the_candidate_trace_order_does_not_depend_on_the_process_hash_seed(
 
 def test_the_modality_floor_never_evicts_the_top_hit(tmp_path: Path) -> None:
     """A floor promotes into spare slots; it does not rebuild the window out of last places."""
-    from sensemem.kernel.grounding import grounding_hits
-    from sensemem.records import SearchHit
 
     created = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
     media_types = {
@@ -1298,9 +1309,6 @@ def test_the_modality_floor_never_evicts_the_top_hit(tmp_path: Path) -> None:
 
 def test_evidence_budget_skips_an_oversized_extra_and_keeps_a_later_fit() -> None:
     """The optional budget extension is not closed by one expensive lower-ranked record."""
-    from sensemem.context import evidence_cost
-    from sensemem.kernel.grounding import grounding_hits
-    from sensemem.records import SearchHit
 
     created = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
     ranking = tuple(
@@ -1324,8 +1332,8 @@ class _StructuredDescriber:
     """A describer that answers in the labelled-line shape and records the context it was given.
 
     Every real caption crosses the write path as one string per visual, so the labelled lines and
-    the `Fact:` lines arrive together and are cut apart by `_split_description`. This fake keeps
-    that shape, and keeps `ModelInput.text` so a test can assert what the model was shown.
+    the Fact: lines arrive together and are cut apart by _split_description. This fake keeps
+    that shape, and keeps ModelInput.text so a test can assert what the model was shown.
     """
 
     vision_capabilities = frozenset({Modality.IMAGE, Modality.VIDEO})
@@ -1450,7 +1458,7 @@ def test_a_described_clip_carries_its_durable_facts_as_their_own_section(tmp_pat
         assert "Hongqiao" in described
         assert "Fact:" not in described, "a fact must not stay inside the description"
         # The label is projected to the name this same write's own facts just staged, the same
-        # projection transcript prose gets -- see `_project_fact_labels`. The binding line reads
+        # projection transcript prose gets -- see _project_fact_labels. The binding line reads
         # a little redundant rendered that way ("Lily is called Lily"), which is the accepted
         # cost of one write-time pass rather than a second special case for the line that is the
         # assertion itself.
@@ -1465,7 +1473,7 @@ def test_a_described_clip_carries_its_durable_facts_as_their_own_section(tmp_pat
         assert record.id in _lexical_matches(memory, "Hongqiao")
         # And both reach the embedder as their own retrieval key -- in the *last* batch, which
         # is the reindex the stated name triggered, not the original write. Rebuilding a
-        # document from its stored text has to recover the same atomic parts `add()` embedded;
+        # document from its stored text has to recover the same atomic parts add() embedded;
         # rebuilding it as one merged string keys 2048-character windows of the whole document
         # instead, and the per-section keys are lost on exactly the clips that name somebody.
         keys = [value.text for value in embedder.document_batches[-1]]
@@ -1477,9 +1485,9 @@ def test_a_described_clip_is_shown_the_transcript_under_the_indexed_labels(tmp_p
     """A durable fact about a person is in the words, so the words travel with the stills.
 
     The labels the describer is shown have to be the labels the document prints, or a fact
-    naming `speaker_1` names nobody the reader can find. This clip's facts state no name, so the
+    naming speaker_1 names nobody the reader can find. This clip's facts state no name, so the
     document still prints the labels it was described under; a clip that does state one is
-    reindexed under that name, which is `test_a_stated_name_carries_to_every_later_clip`.
+    reindexed under that name, which is test_a_stated_name_carries_to_every_later_clip.
     """
     describer = _StructuredDescriber("Shown: two people at a kitchen table", "Fact: nobody cooks")
     with Memory(
@@ -1506,7 +1514,7 @@ def test_a_long_transcript_shown_to_the_describer_is_capped_at_a_line_boundary(
 ) -> None:
     """One long clip's own words must not dominate the token budget every visual in it pays.
 
-    Cut at `MAX_DESCRIBE_CONTEXT_CHARACTERS`, and at a line boundary -- each line is one
+    Cut at MAX_DESCRIBE_CONTEXT_CHARACTERS, and at a line boundary -- each line is one
     speaker turn -- so the cut context still ends on a whole turn.
     """
     describer = _StructuredDescriber("Shown: a long conversation")
@@ -1562,10 +1570,10 @@ def test_a_media_memory_derives_no_section_at_all_without_a_describer(tmp_path: 
 
 
 def test_a_speaker_label_shown_to_the_describer_is_the_label_the_index_prints() -> None:
-    """`speaker_labels` resolves a fact's label, so it must not drift from the projection.
+    """speaker_labels resolves a fact's label, so it must not drift from the projection.
 
-    The projection is what writes `speaker_2` into a searchable document; the label map is what
-    turns a distilled `speaker_2 is called Lily` back into a person. Two rules would silently
+    The projection is what writes speaker_2 into a searchable document; the label map is what
+    turns a distilled speaker_2 is called Lily back into a person. Two rules would silently
     name the wrong one.
     """
     asset_id = "a" * 64
@@ -1582,7 +1590,7 @@ def test_a_speaker_label_shown_to_the_describer_is_the_label_the_index_prints() 
 
 
 def _speaker_identity(memory: Memory, memory_id: str, label: str) -> str:
-    """Resolve the identity behind one `speaker_N` label of a stored memory's own clip."""
+    """Resolve the identity behind one speaker_N label of a stored memory's own clip."""
     segments = memory.perceive(memory_id, kinds=frozenset({"speech"})).speech
     labels = speaker_labels(segments)
     return next(identity for identity, alias in labels.items() if alias == label)
@@ -1784,11 +1792,11 @@ def test_a_stated_name_does_not_swallow_the_clause_that_follows_it(tmp_path: Pat
 def test_a_fact_naming_a_label_nobody_produced_is_counted_not_silently_dropped(
     tmp_path: Path,
 ) -> None:
-    """A fact naming `speaker_5` when the clip only produced two speakers names nobody.
+    """A fact naming speaker_5 when the clip only produced two speakers names nobody.
 
     That drop used to vanish with no trace once the label failed to resolve to an identity.
-    It is the same kind of event as the "already named" refusal `_bind_speaker_names` already
-    counted, so both land on `IDENTITY_NAMES_REFUSED`.
+    It is the same kind of event as the "already named" refusal _bind_speaker_names already
+    counted, so both land on IDENTITY_NAMES_REFUSED.
     """
     describer = _StructuredDescriber(
         "Shown: two people at a kitchen table",
@@ -1936,14 +1944,14 @@ class _TextOnlyAnswerer:
 def test_a_facts_only_caption_still_lets_a_text_only_answerer_read_the_image(
     tmp_path: Path,
 ) -> None:
-    """`_has_stream_description` has to count a facts-only caption, or `ask` refuses the image.
+    """_has_stream_description has to count a facts-only caption, or ask refuses the image.
 
-    A caption with no visible half sets no `[visual description:]` marker, only `[facts:]`.
-    `_route_generation` falls an image its answerer cannot take back to derived text only when
-    `_has_stream_description` says the image was described. The write-path test above covers the
-    asset cache, a different mechanism, and would pass unchanged even with the `[facts:]` clause
-    missing from `_has_stream_description`; a text-only answerer here would instead raise
-    `unsupported_modality` on exactly that gap.
+    A caption with no visible half sets no [visual description:] marker, only [facts:].
+    _route_generation falls an image its answerer cannot take back to derived text only when
+    _has_stream_description says the image was described. The write-path test above covers the
+    asset cache, a different mechanism, and would pass unchanged even with the [facts:] clause
+    missing from _has_stream_description; a text-only answerer here would instead raise
+    unsupported_modality on exactly that gap.
     """
     describer = _StructuredDescriber("Fact: the yoga mat lives in the storage room")
     with Memory(
@@ -1956,3 +1964,112 @@ def test_a_facts_only_caption_still_lets_a_text_only_answerer_read_the_image(
         result = memory.ask("where does the yoga mat live")
 
     assert "storage room" in result.answer
+
+
+class DistinctMediaEmbedder:
+    embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
+    embedding_model = "ranking-media-fixture"
+    embedding_space = "ranking-media-fixture:v1"
+    embedding_dimension = 2
+
+    def embed(
+        self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+    ) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0, 0.0) if "target" in value.text else (-1.0, 0.0) for value in inputs)
+
+    def close(self) -> None:
+        pass
+
+
+class InspectAssets(DefaultRankingPolicy):
+    def __init__(self) -> None:
+        self.requests: list[RankingRequest] = []
+
+    def rank(self, request: RankingRequest) -> tuple[RankingScore, ...]:
+        self.requests.append(request)
+        return super().rank(request)
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_missing_losing_asset_does_not_block_text_search(tmp_path: Path, custom: bool) -> None:
+    policy = InspectAssets() if custom else None
+    with Memory(
+        tmp_path,
+        embedder=DistinctMediaEmbedder(),
+        ranking_policy=policy,
+        settings=MemorySettings(ambiguity_margin=0),
+    ) as memory:
+        target = memory.add("target answer")
+        decoy = memory.add(("unrelated decoy", Blob(b"original image", "image/png")))
+        assert decoy.assets[0].path is not None
+        decoy.assets[0].path.unlink()
+        result = memory.search("target", limit=1)
+        assert [hit.id for hit in result.hits] == [target.id]
+        if policy is not None:
+            snapshot = next(
+                candidate.memory
+                for candidate in policy.requests[0].candidates
+                if candidate.memory.id == decoy.id
+            )
+            asset = snapshot.assets[0]
+            assert snapshot.modality is Modality.IMAGE
+            assert asset.id == decoy.assets[0].id
+            assert asset.sha256 == decoy.assets[0].sha256
+            assert asset.size_bytes == len(b"original image")
+            assert asset.media_type == "image/png"
+            assert asset.path is None
+
+
+def test_selected_asset_still_requires_a_valid_cas_file(tmp_path: Path) -> None:
+    with Memory(
+        tmp_path,
+        embedder=DistinctMediaEmbedder(),
+        settings=MemorySettings(ambiguity_margin=0),
+    ) as memory:
+        target = memory.add(("target image", Blob(b"original image", "image/png")))
+        assert target.assets[0].path is not None
+        target.assets[0].path.unlink()
+        with pytest.raises(StorageError, match="local media"):
+            memory.search("target", limit=1)
+
+
+def test_ranking_policy_receives_original_query_with_multiple_lexical_routes() -> None:
+    class RecordingPolicy(DefaultRankingPolicy):
+        def __init__(self) -> None:
+            self.requests: list[RankingRequest] = []
+
+        def rank(self, request: RankingRequest) -> tuple[RankingScore, ...]:
+            self.requests.append(request)
+            return super().rank(request)
+
+    reference = datetime(2026, 11, 16, tzinfo=timezone.utc)
+    memory = StoredMemory(
+        memory_id="source",
+        content="hint1 hint2",
+        metadata_json="{}",
+        created_at=reference,
+        updated_at=reference,
+    )
+    snapshot = RankingMemory(memory.memory_id, memory.content, memory.created_at)
+    policy = RecordingPolicy()
+    ranked, _trace = rank_memories(
+        (memory,),
+        policy=policy,
+        query="原问题",
+        hydrated=(snapshot,),
+        dense_relevance={memory.memory_id: 0.6},
+        dense_confidence={memory.memory_id: 1.0},
+        lexical_relevance_by_rank={memory.memory_id: 0.7},
+        lexical_matches={memory.memory_id},
+        lexical_queries=("hint1", "hint2"),
+        index_ids_by_memory={},
+        retrieval_mode=RetrievalMode.HYBRID,
+        reference_at=reference,
+        temporal_range=None,
+        decay_half_life=None,
+        capture_trace=False,
+    )
+    assert policy.requests[0].query == "原问题"
+    assert len(ranked) == 1
+    assert ranked[0][0] == memory
+    assert ranked[0][1] == pytest.approx(0.72)

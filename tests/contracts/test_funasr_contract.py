@@ -14,9 +14,12 @@ from pydantic import ValidationError as PydanticValidationError
 from sensemem import (
     AssetRef,
     Blob,
+    EmbedTask,
     FunASRTranscriber,
     Memory,
     MemorySpec,
+    Modality,
+    ModelInput,
     SpeechAnalysis,
     SpeechTurn,
     StorageError,
@@ -79,7 +82,6 @@ def test_funasr_upstream_assigns_the_speaker_with_most_total_overlap() -> None:
 
 
 def test_funasr_old_analysis_space_cannot_be_reopened(tmp_path: Path) -> None:
-    from sensemem import EmbedTask, Modality, ModelInput
 
     class Embedder:
         embedding_model = "speech-contract"

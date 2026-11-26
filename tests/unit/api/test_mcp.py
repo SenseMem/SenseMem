@@ -983,7 +983,7 @@ async def test_the_compile_tool_returns_the_whole_bundle_without_local_asset_pat
     assert [hit["id"] for hit in bundle["episodes"]] == ["memory_2"]
     assert bundle["actors"] == [{"identity_id": "identity_2", "memory_ids": ["memory_2"]}]
     # An affect entry is a hit plus its evidence hop: the events formed from the same
-    # observations the cue itself cites, which travel inside `context`.
+    # observations the cue itself cites, which travel inside context.
     assert [
         (cue["id"], cue["context"]["evidence_ids"], cue["event_ids"]) for cue in bundle["affect"]
     ] == [("memory_3", ["memory_2"], ["memory_9"])]
@@ -1057,9 +1057,9 @@ async def test_the_compile_tool_requires_a_real_boolean_for_partial_sources(valu
 async def test_the_compile_tool_reports_a_named_actor_too() -> None:
     """Mirrors the provisional-actor case above for a person a naming assertion already names.
 
-    `actors` carries a `SearchHit`, a `NamedActor`, or a `ProvisionalActor`; only the
+    actors carries a SearchHit, a NamedActor, or a ProvisionalActor; only the
     provisional shape was exercised through this tool. A named actor's structured content
-    carries `name` and `naming_assertion_id`, which is what discriminates it from the
+    carries name and naming_assertion_id, which is what discriminates it from the
     provisional one.
     """
     memory = FakeMemory()
@@ -1197,7 +1197,7 @@ async def _exposed(
 async def test_every_tool_belongs_to_exactly_one_withholdable_group() -> None:
     """Gate 5 wants recall and compile alone, so every group has to be nameable.
 
-    The read tools are the floor: `compile_context` and `search_memories` in particular must
+    The read tools are the floor: compile_context and search_memories in particular must
     survive every combination, because withholding them would leave an agent nothing to consume.
     """
     groups = (_READ_TOOLS, _WRITE_TOOLS, _EMBODIED_TOOLS, _IDENTITY_TOOLS)
@@ -1300,7 +1300,7 @@ def _error_text(result: CallToolResult) -> str:
 
 
 def _error_envelope(result: CallToolResult) -> dict[str, object]:
-    # A bare `json.loads` is the contract: no prefix to strip on any failure shape.
+    # A bare json.loads is the contract: no prefix to strip on any failure shape.
     return cast(dict[str, object], json.loads(_error_text(result)))
 
 

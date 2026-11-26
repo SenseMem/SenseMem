@@ -230,7 +230,7 @@ def test_a_symbolic_place_scopes_retrieval_and_needs_no_former(tmp_path: Path) -
 def test_a_sparse_place_keeps_widening_instead_of_stopping_early(tmp_path: Path) -> None:
     """The candidate loop must count survivors of the place filter, not of the ranking.
 
-    Retrieval widens its candidate window while fewer than `limit` memories survive the scope. If
+    Retrieval widens its candidate window while fewer than limit memories survive the scope. If
     the place filter is applied only when hydrating results and not when counting survivors, the
     loop counts memories from other rooms as satisfied, stops at the first window, and returns
     nothing from the room that was asked about -- the under-return this axis exists to avoid.

@@ -1,7 +1,7 @@
 """Erasing one person's biometric template, and the retention queries around it.
 
-`delete_memory` reaches memories, their embeddings, their outbox rows and their assets, but it
-never touched `identities` or `identity_exemplars`. A household robot asked to forget a person
+delete_memory reaches memories, their embeddings, their outbox rows and their assets, but it
+never touched identities or identity_exemplars. A household robot asked to forget a person
 therefore kept their fp32 face and voice templates forever. These tests pin what erasure removes,
 what it deliberately keeps, and -- because a privacy deletion a hexdump can undo is not one --
 that the vector bytes are actually gone from the database files.
@@ -215,7 +215,7 @@ def test_forgetting_an_identity_removes_the_whole_cluster_and_keeps_the_memories
 def test_forgotten_exemplar_vectors_are_not_recoverable_from_the_database_files(
     tmp_path: Path,
 ) -> None:
-    """A privacy deletion a `.db` hexdump can undo is not a privacy deletion.
+    """A privacy deletion a .db hexdump can undo is not a privacy deletion.
 
     The reader held open across the erasure is the point: SQLite only checkpoints the WAL on
     the last connection close, so without an explicit truncating checkpoint the pre-deletion
@@ -392,7 +392,7 @@ def test_asset_retention_candidates_are_oldest_first_and_filter_by_age(tmp_path:
             old.asset_id
         ]
         # Stored timestamps are normalised to UTC text, so the boundary must be too. An
-        # unnormalised `+09:00` boundary compares its local wall clock against `Z` strings and
+        # unnormalised +09:00 boundary compares its local wall clock against Z strings and
         # sweeps in nine extra hours -- here, the asset stored at exactly the boundary.
         elsewhere = _NOW.astimezone(timezone(timedelta(hours=9)))
         assert [
@@ -425,7 +425,7 @@ def test_erasing_a_person_reconciles_the_claims_that_cited_their_naming_assertio
 ) -> None:
     """Erasure removes records, so it owes them the same reconciliation an ordinary delete does.
 
-    The assertions went out through a raw `DELETE`, which skipped the evidence projection: a
+    The assertions went out through a raw DELETE, which skipped the evidence projection: a
     claim that rested on two independent groups, one of them the assertion, kept reporting two
     and stayed visible on the single group it had left.
     """

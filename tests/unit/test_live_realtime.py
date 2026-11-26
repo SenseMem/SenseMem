@@ -17,15 +17,14 @@ from _feature_support import TinyEmbedder
 from fastapi import WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
 
+from examples.live.app import create_app
+from examples.live.realtime import MAX_MESSAGE_BYTES, RealtimeRelay
+from examples.live.user_audio import UserAudioCapture
 from sensemem import AsyncMemory, EventObservation, EventSegment, Memory, MemorySpec
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 class Segmenter:
@@ -56,7 +55,6 @@ def _native_server(handler: Callable[[ServerConnection], None]) -> Iterator[str]
 
 
 def test_native_json_audio_video_and_disconnect_survive_the_local_relay(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     received: list[str] = []
     paths: list[str] = []
@@ -137,7 +135,6 @@ def test_native_json_audio_video_and_disconnect_survive_the_local_relay(tmp_path
 
 
 def test_stop_releases_only_the_owned_connection_and_allows_reconnect(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     released: list[Event] = []
 
@@ -193,8 +190,6 @@ def test_stop_releases_only_the_owned_connection_and_allows_reconnect(tmp_path: 
 
 @pytest.mark.parametrize("kind", ["binary", "oversized"])
 def test_relay_bounds_browser_messages_without_forwarding_them(tmp_path: Path, kind: str) -> None:
-    from examples.live.app import create_app
-    from examples.live.realtime import MAX_MESSAGE_BYTES
 
     received: list[str | bytes] = []
 
@@ -228,7 +223,6 @@ def test_relay_bounds_browser_messages_without_forwarding_them(tmp_path: Path, k
 
 
 def test_upstream_failure_is_safe_and_leaves_memory_available(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     def native(socket: ServerConnection) -> None:
         socket.close(code=1011, reason="private provider body and credential")
@@ -258,7 +252,6 @@ def test_upstream_failure_is_safe_and_leaves_memory_available(tmp_path: Path) ->
 
 
 def test_local_realtime_needs_no_cloud_key(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     config = MemorySpec.model_validate({"data_dir": tmp_path, "embedding": {"provider": "openai"}})
     with TestClient(create_app(config, memory_factory=_memory)) as client:
@@ -267,7 +260,6 @@ def test_local_realtime_needs_no_cloud_key(tmp_path: Path) -> None:
 
 
 async def test_browser_disconnect_during_final_close_releases_upstream_without_raising() -> None:
-    from examples.live.realtime import RealtimeRelay
 
     released = Event()
 
@@ -300,7 +292,6 @@ async def test_browser_disconnect_during_final_close_releases_upstream_without_r
 
 
 def test_native_pcm_audio_observation_retains_clock_and_leaves_16k_unchanged() -> None:
-    from examples.live.realtime import RealtimeRelay
 
     observed: list[tuple[bytes, int, float]] = []
     relay = RealtimeRelay(cast(WebSocket, object()), lambda *values: observed.append(values))
@@ -328,7 +319,6 @@ def test_native_pcm_audio_observation_retains_clock_and_leaves_16k_unchanged() -
 
 
 def test_24k_pcm_side_path_resamples_continuously_across_packet_boundaries() -> None:
-    from examples.live.realtime import RealtimeRelay
 
     observed: list[tuple[bytes, int, float]] = []
     relay = RealtimeRelay(cast(WebSocket, object()), lambda *values: observed.append(values))
@@ -359,8 +349,6 @@ def test_24k_pcm_side_path_resamples_continuously_across_packet_boundaries() -> 
 async def test_native_forwarding_precedes_original_user_audio_and_server_finality_observers() -> (
     None
 ):
-    from examples.live.realtime import RealtimeRelay
-    from examples.live.user_audio import UserAudioCapture
 
     order: list[tuple[str, object]] = []
     pcm = struct.pack("<3h", -300, 0, 500)
@@ -412,7 +400,6 @@ async def test_native_forwarding_precedes_original_user_audio_and_server_finalit
     relay = RealtimeRelay(cast(WebSocket, Browser()), user_audio=Capture())
     relay.input_rate = 24_000
     # The native protocol has no required client event_id; original user capture still works.
-    from websockets.asyncio.client import ClientConnection
 
     connection = cast(ClientConnection, Native())
     await relay._send(connection)

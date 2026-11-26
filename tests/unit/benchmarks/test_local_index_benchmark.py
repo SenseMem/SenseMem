@@ -62,7 +62,7 @@ def test_small_benchmark_reports_valid_metrics(tmp_path: Path) -> None:
     assert result["seed"] == 7
     assert result["quantization"] == "none"
     # The microbenchmark must label itself so its numbers cannot be read as product ingest
-    # or search latency; the SDK-path figures come from ``sensemem-bench eval``.
+    # or search latency; the SDK-path figures come from sensemem-bench eval.
     assert result["scope"] == "storage_microbenchmark"
     assert "the public Memory API" in cast(tuple[str, ...], result["excludes"])
     assert cast(float, result["ingest_seconds"]) > 0.0

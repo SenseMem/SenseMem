@@ -8,7 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from test_fast_capture import CountingEmbedder, CountingFormer
+from fixtures.events import CaptureCountingEmbedder as CountingEmbedder
+from fixtures.events import CountingFormer
 
 from sensemem import EmbedTask, FormationInput, FormationProposal, Memory, ModelInput, StreamInput
 

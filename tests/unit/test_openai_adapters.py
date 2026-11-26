@@ -15,7 +15,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import httpx2 as httpx
 import openai
@@ -88,6 +88,7 @@ from sensemem.models.openai_embedding import OpenAIEmbedder
 from sensemem.models.openai_speech import OpenAITranscriber
 from sensemem.prompts import generation as prompts
 from sensemem.prompts.generation import UNKNOWN_ANSWER
+from sensemem.prompts.recall import SEMANTIC_QUERY_CAPABILITY
 from sensemem.records import AnswerResult, MemoryRecord, SearchHit, VisualRetrievalMatch
 from sensemem.semantics import FormationProposal, RecordSemantics
 from sensemem.spatial import ObservationContext, RetrievalScope, SpatialContext
@@ -250,7 +251,7 @@ def test_embeddinggemma2_messages_prefix_text_only_in_multimodal_batches(
         ModelInput(text="remember", assets=(image, audio, video)),
         ModelInput(assets=(image, audio, video)),
     )
-    requests: list[dict[str, Any]] = []
+    requests: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
@@ -282,6 +283,7 @@ def test_embeddinggemma2_messages_prefix_text_only_in_multimodal_batches(
     assert "dimensions" not in payload
     assert payload["model"] == "google/embeddinggemma-2"
     messages = payload["messages"]
+    assert isinstance(messages, list)
     assert messages[0] == [
         {"role": "user", "content": [{"type": "text", "text": prefix + "find this"}]}
     ]
@@ -359,7 +361,7 @@ def test_embeddinggemma2_prefix_preserves_ordered_text_and_media(
 
 def test_embeddinggemma2_media_only_singleton_keeps_explicit_space(tmp_path: Path) -> None:
     image = _asset(tmp_path, "image", Modality.IMAGE, "image/png", b"image")
-    requests: list[dict[str, Any]] = []
+    requests: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
@@ -399,7 +401,7 @@ def test_embeddinggemma2_media_only_singleton_keeps_explicit_space(tmp_path: Pat
 
 
 def test_embeddinggemma2_input_mode_keeps_generic_recipe() -> None:
-    requests: list[dict[str, Any]] = []
+    requests: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
@@ -671,7 +673,7 @@ def test_formation_batches_grounded_observations_and_validates_typed_output(
         assert "microphone" not in serialized
         assert payload["response_format"] == {"type": "json_object"}
         # The per-kind field requirements are pinned by
-        # `test_formation_prompt_states_every_field_the_validator_demands`, which checks them
+        # test_formation_prompt_states_every_field_the_validator_demands, which checks them
         # against the validator instead of against one sentence's wording.
         assert "cue_modality" in payload["messages"][0]["content"]
         parts = payload["messages"][1]["content"]
@@ -793,7 +795,7 @@ def test_description_numbers_every_visual_in_one_request_and_sends_video_as_stil
 ) -> None:
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
     clip = _video_asset(tmp_path, "clip", 12)
-    seen: list[dict[str, Any]] = []
+    seen: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.content))
@@ -811,9 +813,12 @@ def test_description_numbers_every_visual_in_one_request_and_sends_video_as_stil
     assert len(seen) == 1
     payload = seen[0]
     assert payload["model"] == "caption-model"
-    assert payload["response_format"]["type"] == "json_schema"
-    assert payload["response_format"]["json_schema"]["name"] == "vision"
-    parts = payload["messages"][1]["content"]
+    response_format = payload["response_format"]
+    messages = payload["messages"]
+    assert isinstance(response_format, dict) and isinstance(messages, list)
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "vision"
+    parts = messages[1]["content"]
     # Ordinals, not identifiers: the reply is matched to inputs by position, and the caption is
     # stored in a searchable document, so nothing naming the asset may enter the prompt.
     assert [part["type"] for part in parts] == [
@@ -850,7 +855,7 @@ def test_description_follows_a_clips_stills_with_the_transcript_it_arrived_with(
     """
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
     clip = _video_asset(tmp_path, "clip", 12)
-    seen: list[dict[str, Any]] = []
+    seen: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.content))
@@ -869,7 +874,9 @@ def test_description_follows_a_clips_stills_with_the_transcript_it_arrived_with(
         )
 
     assert captions == ("Shown: a red bicycle", "Shown: a kitchen\nFact: speaker_1 cooks")
-    parts = seen[0]["messages"][1]["content"]
+    messages = seen[0]["messages"]
+    assert isinstance(messages, list)
+    parts = messages[1]["content"]
     # The image gets no transcript part at all; the clip's follows its four stills.
     assert [part["type"] for part in parts] == [
         "text",
@@ -888,7 +895,7 @@ def test_description_accepts_a_transcript_a_visual_only_capability_set_does_not_
 ) -> None:
     """Text is not a routing question for a chat completion, and the describer declares neither.
 
-    `Memory` narrows a describer to image and video at construction, so requiring text of it
+    Memory narrows a describer to image and video at construction, so requiring text of it
     would refuse every clip that arrived with a transcript -- the whole reason the context exists.
     """
     clip = _video_asset(tmp_path, "clip", 12)
@@ -906,7 +913,7 @@ def test_description_accepts_a_transcript_a_visual_only_capability_set_does_not_
 def test_a_caption_keeps_its_labelled_lines_and_never_a_blank_line(tmp_path: Path) -> None:
     """Single newlines carry the structure; a blank line would end the section that labels it.
 
-    A caption is stored under a `[visual description:<asset_id>]` marker line inside a document
+    A caption is stored under a [visual description:<asset_id>] marker line inside a document
     whose sections are separated by a blank line. A blank line inside the caption would leave
     everything after it as an unlabelled section of the memory's own text.
     """
@@ -1026,7 +1033,6 @@ def test_description_reports_its_own_token_cost(tmp_path: Path) -> None:
     tracer = provider.get_tracer("test")
 
     def respond(request: httpx.Request) -> httpx.Response:
-        del request
         return _caption_reply("a whiteboard covered in equations")
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
@@ -1476,7 +1482,6 @@ def test_description_rejects_output_it_cannot_align_with_its_inputs(
     second = _asset(tmp_path, "second", Modality.IMAGE, "image/png", b"two")
 
     def respond(request: httpx.Request) -> httpx.Response:
-        del request
         return httpx.Response(
             200,
             json={
@@ -1497,7 +1502,6 @@ def test_a_truncated_description_is_reported_as_truncation(tmp_path: Path) -> No
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
 
     def respond(request: httpx.Request) -> httpx.Response:
-        del request
         return httpx.Response(
             200,
             json={
@@ -1568,10 +1572,10 @@ def _malformed_reply() -> httpx.Response:
 def test_one_malformed_description_reply_is_retried_once(tmp_path: Path) -> None:
     # Measured against the round's endpoint: 3 of 24 single-image calls returned HTTP 200 with
     # truncated JSON, and the same image failed twice then succeeded four times running. The SDK's
-    # `max_retries` never sees this, because the transport call succeeded.
+    # max_retries never sees this, because the transport call succeeded.
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
     replies = [_malformed_reply(), _caption_reply("a red bicycle")]
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -1583,8 +1587,11 @@ def test_one_malformed_description_reply_is_retried_once(tmp_path: Path) -> None
 
     assert captions == ("a red bicycle",)
     assert len(sent) == 2
-    first_content = sent[0]["messages"][1]["content"]
-    retry_content = sent[1]["messages"][1]["content"]
+    first_messages = sent[0]["messages"]
+    retry_messages = sent[1]["messages"]
+    assert isinstance(first_messages, list) and isinstance(retry_messages, list)
+    first_content = first_messages[1]["content"]
+    retry_content = retry_messages[1]["content"]
     assert retry_content[:-1] == first_content
     correction = retry_content[-1]
     assert correction["type"] == "text"
@@ -1608,7 +1615,7 @@ def test_description_wrong_count_retry_reports_shape_without_replaying_content(
         ),
         _caption_reply("a red bicycle"),
     ]
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -1834,7 +1841,7 @@ def test_description_asks_the_endpoint_for_a_deterministic_sample(tmp_path: Path
     # the measured endpoint returns a different completion for identical requests anyway -- which
     # is why the benchmark harness caches descriptions by asset digest instead.
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -1855,7 +1862,7 @@ def test_description_asks_the_endpoint_for_a_deterministic_sample(tmp_path: Path
 
 def test_a_configured_sampler_still_wins_over_the_pinned_default(tmp_path: Path) -> None:
     picture = _asset(tmp_path, "picture", Modality.IMAGE, "image/png", b"png-bytes")
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -2378,7 +2385,7 @@ def test_consolidation_reports_a_malformed_proposal_without_exposing_its_content
 
 def test_consolidation_operations_parse_when_the_reply_uses_the_documented_keys() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
-        # The documented server contract is `json_object`; a `json_schema` response format would
+        # The documented server contract is json_object; a json_schema response format would
         # fail every endpoint that implements only the former, so the prompt carries the shape.
         assert json.loads(request.content)["response_format"] == {"type": "json_object"}
         return _completion(
@@ -2482,7 +2489,7 @@ def _consolidation_evidence() -> tuple[MemoryRecord, ...]:
 def test_vision_space_identifies_the_prompt_as_well_as_the_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A store caches one caption per `vision_space`, so the space must cover the whole recipe.
+    """A store caches one caption per vision_space, so the space must cover the whole recipe.
 
     The prompt decides what a caption contains and is still being iterated on, while the caption
     itself lands inside a searchable document. A space that tracked only the model would make an
@@ -2492,7 +2499,7 @@ def test_vision_space_identifies_the_prompt_as_well_as_the_model(
     assert baseline.startswith("compatible-model:sensemem-vision-v2:")
     # Stable for one configuration: two identical compositions must share cached captions.
     assert OpenAICompletion(generation_model="compatible-model").vision_space == baseline
-    # Distinct from `formation_space`, which digests the same knobs under a different prompt.
+    # Distinct from formation_space, which digests the same knobs under a different prompt.
     assert baseline != OpenAICompletion(generation_model="compatible-model").formation_space
 
     variants = {
@@ -2609,7 +2616,7 @@ def test_non_refusal_answers_are_not_reported_as_refusals(answer: str) -> None:
 
 
 def test_a_refusal_reports_prose_and_not_the_marker_as_its_answer() -> None:
-    """`answer` is what a caller shows or speaks; the machine signal is `abstention_reason`."""
+    """answer is what a caller shows or speaks; the machine signal is abstention_reason."""
     hit = SearchHit(id="memory_1", content="a note", score=0.9, created_at=NOW)
     result = openai_output._answer_result(prompts._ABSTENTION_MARKER, (hit,))
 
@@ -2989,7 +2996,7 @@ def test_stream_answer_close_failure_preserves_errors_and_records_usage(ending: 
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     try:
         with provider.get_tracer("test").start_as_current_span("model"):
-            stream = _model(cast(Any, client)).stream_answer(
+            stream = _model(cast(OpenAI, client)).stream_answer(
                 ModelInput(text="What is hello?"), (hit,)
             )
             if ending != "empty":
@@ -3829,11 +3836,11 @@ def test_answer_sends_shared_media_once_and_bounds_inline_bytes(
 
 
 def test_answer_numbers_attachments_instead_of_listing_asset_hashes(tmp_path: Path) -> None:
-    """The request text joins memories to their media by `attachment 1`, never by an asset hash.
+    """The request text joins memories to their media by attachment 1, never by an asset hash.
 
-    Asked for "the image ids", the reader used to return the hashes listed under `assets`:
+    Asked for "the image ids", the reader used to return the hashes listed under assets:
     2 of 12 ATM-Bench-Hard list questions with complete retrieval scored zero that way, and
-    labelled `image 1` it returned the labels. A numbered attachment matches neither the words
+    labelled image 1 it returned the labels. A numbered attachment matches neither the words
     of such a question nor the shape of an identifier, and a shared asset keeps one number
     across every memory that carries it.
     """
@@ -3860,7 +3867,7 @@ def test_answer_numbers_attachments_instead_of_listing_asset_hashes(tmp_path: Pa
             modality=Modality.OMNI,
         ),
     )
-    seen: list[dict[str, Any]] = []
+    seen: list[dict[str, object]] = []
     sequence: list[str] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -3889,12 +3896,15 @@ def test_answer_numbers_attachments_instead_of_listing_asset_hashes(tmp_path: Pa
 
     assert seen[0]["media"] == ["attachment 1"]
     assert seen[0]["media_modalities"] == {"attachment 1": "image"}
-    assert seen[1]["memory"]["media"] == ["attachment 2"]
-    assert seen[1]["memory"]["source_modality"] == "image"
-    assert seen[1]["memory"]["media_modalities"] == {"attachment 2": "image"}
-    assert seen[2]["memory"]["media"] == ["attachment 3", "attachment 2"]
-    assert seen[2]["memory"]["source_modality"] == "omni"
-    assert seen[2]["memory"]["media_modalities"] == {
+    first_memory = seen[1]["memory"]
+    second_memory = seen[2]["memory"]
+    assert isinstance(first_memory, dict) and isinstance(second_memory, dict)
+    assert first_memory["media"] == ["attachment 2"]
+    assert first_memory["source_modality"] == "image"
+    assert first_memory["media_modalities"] == {"attachment 2": "image"}
+    assert second_memory["media"] == ["attachment 3", "attachment 2"]
+    assert second_memory["source_modality"] == "omni"
+    assert second_memory["media_modalities"] == {
         "attachment 3": "video",
         "attachment 2": "image",
     }
@@ -4537,7 +4547,7 @@ def test_video_transcription_uploads_the_whole_demuxed_audio_track(
 ) -> None:
     """A video's speech must reach the endpoint, in a container the endpoint accepts.
 
-    `/v1/audio/transcriptions` takes flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav or webm, while
+    /v1/audio/transcriptions takes flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav or webm, while
     SenseMem also ingests .mkv, .mov, .avi and .ogv, so forwarding the container would drop
     the speech of every video it does not list. Both suffixes are checked because passing only
     .mp4 would also pass if the adapter simply forwarded the file.
@@ -4625,23 +4635,34 @@ def test_gpt_transcribe_sends_context_and_names_its_recipe(tmp_path: Path) -> No
         assert b'name="languages[]"\r\n\r\nzh-cn\r\n' in body
         return httpx.Response(200, json={"text": "context-aware transcript"})
 
-    options: dict[str, Any] = {
-        "transcription_model": "gpt-transcribe",
-        "transcription_prompt": "A support call",
-        "transcription_keywords": ("SenseMem", "AC-42"),
-        "transcription_languages": ("en", "zh-cn"),
-    }
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        model = OpenAITranscriber(client=_sdk_client(client), **options)
+        model = OpenAITranscriber(
+            client=_sdk_client(client),
+            transcription_model="gpt-transcribe",
+            transcription_prompt="A support call",
+            transcription_keywords=("SenseMem", "AC-42"),
+            transcription_languages=("en", "zh-cn"),
+        )
         result = model.transcribe((audio,))
 
     assert result == ("context-aware transcript",)
     assert model.transcription_space.startswith("gpt-transcribe:asr-v1:")
-    assert model.transcription_space == OpenAITranscriber(**options).transcription_space
+    assert (
+        model.transcription_space
+        == OpenAITranscriber(
+            transcription_model="gpt-transcribe",
+            transcription_prompt="A support call",
+            transcription_keywords=("SenseMem", "AC-42"),
+            transcription_languages=("en", "zh-cn"),
+        ).transcription_space
+    )
     assert (
         model.transcription_space
         != OpenAITranscriber(
-            **{**options, "transcription_keywords": ("SenseMem",)}
+            transcription_model="gpt-transcribe",
+            transcription_prompt="A support call",
+            transcription_keywords=("SenseMem",),
+            transcription_languages=("en", "zh-cn"),
         ).transcription_space
     )
 
@@ -4711,7 +4732,7 @@ def _search_hit() -> SearchHit:
             "rate_limited",
             True,
         ),
-        # The SDK raises `RateLimitError` for every 429, so exhausted billing is told from a
+        # The SDK raises RateLimitError for every 429, so exhausted billing is told from a
         # transient burst by the provider's own error code and never invites a retry.
         (
             lambda request: httpx.Response(
@@ -4747,7 +4768,7 @@ def test_provider_failures_keep_their_cause_and_the_sdk_classification(
     expected_retryable: bool,
 ) -> None:
     with (
-        httpx.Client(transport=httpx.MockTransport(cast(Any, respond))) as client,
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,  # type: ignore[arg-type]
         pytest.raises(ModelError) as failure,
     ):
         _embedder(_sdk_client(client)).embed((ModelInput(text="remember this"),))
@@ -4755,7 +4776,7 @@ def test_provider_failures_keep_their_cause_and_the_sdk_classification(
     assert failure.value.reason == expected_reason
     assert failure.value.retryable is expected_retryable
     assert failure.value.stage == "embed"
-    # The original provider exception survives as the cause instead of being erased by `from None`.
+    # The original provider exception survives as the cause instead of being erased by from None.
     assert isinstance(failure.value.__cause__, openai.OpenAIError)
 
 
@@ -4811,7 +4832,7 @@ def test_missing_client_and_unsupported_modality_fail_before_http(tmp_path: Path
 
 def test_adapter_controls_reject_invalid_values() -> None:
     with pytest.raises(ValidationError, match="embedding_request_format"):
-        OpenAIEmbedder(embedding_request_format=cast(Any, "unknown"))
+        OpenAIEmbedder(embedding_request_format="unknown")  # type: ignore[arg-type]
     with pytest.raises(ValidationError, match="generation_max_tokens"):
         OpenAICompletion(generation_max_tokens=0)
     with pytest.raises(ValidationError, match="generation_extra_body"):
@@ -4825,7 +4846,7 @@ def test_adapter_controls_reject_invalid_values() -> None:
     with pytest.raises(ValidationError, match="transcription_keywords"):
         OpenAITranscriber(transcription_keywords=("invalid\nkeyword",))
     with pytest.raises(ValidationError, match="transcription_languages"):
-        OpenAITranscriber(transcription_languages=cast(Any, "en"))
+        OpenAITranscriber(transcription_languages="en")
 
 
 def test_adapter_does_not_close_the_caller_owned_sdk_client() -> None:
@@ -4952,7 +4973,7 @@ def _video_asset(
     )
 
 
-def _tone_frames(seconds: float) -> list[Any]:
+def _tone_frames(seconds: float) -> list[object]:
     """Encode a 440 Hz mono tone as s16 frames, so a decode can tell it from silence."""
     av = pytest.importorskip("av")
     total = int(_SOURCE_AUDIO_RATE * seconds)
@@ -5005,7 +5026,7 @@ def _decoded_audio(data: bytes) -> tuple[int, int, int, int]:
         return stream.rate, len(stream.layout.channels), samples, peak
 
 
-# The fields `FormationProposal` requires per kind, as the system prompt states them. Keeping the
+# The fields FormationProposal requires per kind, as the system prompt states them. Keeping the
 # table here rather than parsing the prompt makes both directions fail loudly: a validator that
 # gains a requirement the prompt never mentions, and a prompt that stops mentioning one.
 _FORMATION_REQUIREMENTS = {
@@ -5015,9 +5036,9 @@ _FORMATION_REQUIREMENTS = {
     "state": ("subject", "predicate", "value"),
     "relation": ("subject", "predicate", "value"),
     "trait": ("subject", "predicate", "value"),
-    # `response_policy` is deliberately absent: the kernel refuses a model-proposed one
-    # (`_formation_refusal`), so asking the former for a kind that can only be thrown away
-    # spends tokens on refusals. The host authorizes one through `apply()` instead.
+    # response_policy is deliberately absent: the kernel refuses a model-proposed one
+    # (_formation_refusal), so asking the former for a kind that can only be thrown away
+    # spends tokens on refusals. The host authorizes one through apply() instead.
 }
 
 
@@ -5061,8 +5082,8 @@ def test_formation_value_constructors_reject_invalid_time_and_orientation(
 def test_formation_prompt_states_every_field_the_validator_demands(
     kind: str, extra: tuple[str, ...]
 ) -> None:
-    # Measured against qwen3.8-flash, a prompt that omitted `entity`'s subject, did not say
-    # `content` is required for every kind, and did not say values are strings produced proposals
+    # Measured against qwen3.8-flash, a prompt that omitted entity's subject, did not say
+    # content is required for every kind, and did not say values are strings produced proposals
     # the validator rejected 79% of the time. Naming exactly what is enforced took that to 0%.
     payload: dict[str, object] = {"kind": kind, "content": "a formed memory", "confidence": 0.9}
     for field in extra:
@@ -5096,8 +5117,8 @@ def test_consolidation_asks_only_for_kinds_its_own_field_rule_states() -> None:
     """The consolidation prompt has one sentence for proposal fields, so it may only list kinds
     that sentence covers -- subject, predicate and value.
 
-    It used to offer `affect` while stating no rule for it, and a compliant model that read the
-    sentence sent subject alone: `FormationProposal` requires a value for an affect, so the
+    It used to offer affect while stating no rule for it, and a compliant model that read the
+    sentence sent subject alone: FormationProposal requires a value for an affect, so the
     proposal parsed to nothing and the whole batch was rejected. An affect additionally needs a
     cue modality that the cited source itself carried, plus valence and arousal, which is what
     formation states at ingest against one observation's own modalities. Consolidation derives
@@ -5116,7 +5137,7 @@ def test_consolidation_asks_only_for_kinds_its_own_field_rule_states() -> None:
 
 
 def test_a_malformed_proposal_does_not_discard_its_valid_siblings() -> None:
-    # `add` commits the source before formation runs, so raising here failed a write that had
+    # add commits the source before formation runs, so raising here failed a write that had
     # already succeeded -- and the retry re-ran formation, failed again, and could never store the
     # memory at all. One badly shaped derived opinion must cost only itself.
     provider = TracerProvider()
@@ -5272,7 +5293,7 @@ def test_formation_drops_only_the_proposal_with_invalid_witness_aliases(
 def test_formation_prompt_states_every_source_rule_the_validator_enforces(
     proposal: FormationProposal, phrase: str
 ) -> None:
-    # These two rules are enforced in `memory.py`, not by the adapter's shape checks, and a
+    # These two rules are enforced in memory.py, not by the adapter's shape checks, and a
     # proposal that breaks one is dropped -- so the caller never learns it was formed, and the
     # prompt is the only place the model can learn the rule. Red in both directions: if the
     # prompt drops the sentence, or if the validator drops the rule.
@@ -5371,7 +5392,7 @@ def test_description_does_not_size_the_video_file_it_never_sends(
 
 
 def test_one_malformed_formation_reply_is_retried_once() -> None:
-    # The same HTTP 200 carrying invalid JSON that `describe` retries also reaches formation and
+    # The same HTTP 200 carrying invalid JSON that describe retries also reaches formation and
     # consolidation, where it used to abort the whole batch on the first attempt.
     valid = httpx.Response(
         200,
@@ -5427,11 +5448,13 @@ def test_one_malformed_formation_reply_is_retried_once() -> None:
 
     assert [proposal.kind for proposal in proposals] == [RecordKind.STATE]
     assert len(sent) == 2
-    first = cast(dict[str, Any], sent[0])
-    second = cast(dict[str, Any], sent[1])
-    assert first["messages"][0] == second["messages"][0]
-    assert second["messages"][1]["content"].startswith(first["messages"][1]["content"])
-    assert "Repair only the JSON envelope" in second["messages"][1]["content"]
+    first_messages = cast(list[dict[str, object]], cast(dict[str, object], sent[0])["messages"])
+    second_messages = cast(list[dict[str, object]], cast(dict[str, object], sent[1])["messages"])
+    assert first_messages[0] == second_messages[0]
+    first_content = cast(str, first_messages[1]["content"])
+    second_content = cast(str, second_messages[1]["content"])
+    assert second_content.startswith(first_content)
+    assert "Repair only the JSON envelope" in second_content
 
 
 def _answer_policy_transport(
@@ -5516,7 +5539,6 @@ def test_the_recall_planner_prompt_describes_every_op_and_shape() -> None:
 
 
 def test_semantic_recall_capability_changes_the_actual_planner_system_instruction() -> None:
-    from sensemem.prompts.recall import SEMANTIC_QUERY_CAPABILITY
 
     requests: list[dict[str, object]] = []
     plan = '{"shape":"point","steps":[{"op":"similar","query":"bridge span"}]}'
@@ -5556,7 +5578,6 @@ def test_semantic_recall_capability_changes_the_actual_planner_system_instructio
 def test_planner_budget_only_uses_the_exact_terminal_kernel_capability(
     count: str, suffix: str, forged_in: str, expected_count: str
 ) -> None:
-    from sensemem.prompts.recall import SEMANTIC_QUERY_CAPABILITY
 
     capability = (
         f"\n{SEMANTIC_QUERY_CAPABILITY}\n"
@@ -5587,7 +5608,7 @@ def test_planner_budget_only_uses_the_exact_terminal_kernel_capability(
 
 
 def test_a_planner_that_replied_with_nothing_reports_an_invalid_response() -> None:
-    """It is reported, not smoothed over: the kernel's own fallback is what keeps `ask` running.
+    """It is reported, not smoothed over: the kernel's own fallback is what keeps ask running.
 
     A backend may also decline by returning None, which the protocol allows; this one answers
     through the shared JSON path, and an empty completion there is a provider fault like any
@@ -5731,7 +5752,7 @@ def test_best_effort_asks_for_a_committed_answer_and_reports_the_marker_separate
 
 
 def test_best_effort_still_guesses_when_nothing_was_retrieved() -> None:
-    """The early no-evidence return is what `best_effort` exists to skip."""
+    """The early no-evidence return is what best_effort exists to skip."""
     requests: list[dict[str, object]] = []
     with httpx.Client(transport=_answer_policy_transport(requests, "Probably blue.")) as client:
         result = _model(_sdk_client(client)).answer(
@@ -5762,7 +5783,6 @@ def test_streaming_best_effort_yields_the_marker_but_completes_with_the_clean_an
     """The deltas are the provider's; the completion is what a buffering caller reports."""
 
     def respond(request: httpx.Request) -> httpx.Response:
-        del request
         deltas = (f"{prompts._ABSTENTION_MARKER}\n", "Probably blue.")
         chunks = [
             {

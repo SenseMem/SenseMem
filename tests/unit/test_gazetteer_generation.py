@@ -9,16 +9,16 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import httpx2 as httpx
 import pytest
 from _feature_support import TinyEmbedder
 from _gazetteer_support import index_fixture, multi_index_fixture
+from fixtures.openai import sdk_client as _sdk_client
 from openai import OpenAI
 from PIL import Image
 from PIL.TiffImagePlugin import IFDRational
-from test_openai_adapters import _sdk_client
 
 import sensemem.configuration as configuration
 import sensemem.models._openai_media as openai_media
@@ -109,7 +109,7 @@ def test_public_memory_answer_uses_external_map_without_changing_source(
     answer = "Second region museum" if multiple else "Named Museum"
     gazetteer = OfflineGazetteer(path, index_sha256=digest)
     asset = photo(tmp_path)
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -154,7 +154,9 @@ def test_public_memory_answer_uses_external_map_without_changing_source(
             assert not source.content
             assert source.assets[0].sha256 == asset.sha256
     assert len(sent) == 1
-    parts = sent[0]["messages"][1]["content"]
+    messages = sent[0]["messages"]
+    assert isinstance(messages, list)
+    parts = messages[1]["content"]
     assert sum(part["type"] == "image_url" for part in parts) == 1
     wire = [
         json.loads(part["text"])
@@ -208,7 +210,7 @@ def test_global_budget_counts_every_duplicate_metadata_occurrence_and_keeps_whol
         left, right = json.loads(before), json.loads(after)
         left = left.get("memory", left)
         right = right.get("memory", right)
-        del right["untrusted_source_metadata"][0]["offline_osm_candidates"]
+        right["untrusted_source_metadata"][0].pop("offline_osm_candidates")
         assert left == right
 
 

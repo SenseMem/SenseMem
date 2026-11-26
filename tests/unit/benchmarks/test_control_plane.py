@@ -46,7 +46,6 @@ class _TinyEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         vectors = []
         for value in inputs:
             digest = hashlib.sha256(value.text.encode()).digest()
@@ -210,7 +209,7 @@ def test_a_loop_that_merges_exactly_the_injected_duplicates_scores_one(tmp_path:
     assert metrics["consolidate_operations"] == 3
     assert metrics["consolidation_precision"] == pytest.approx(1.0)
     # Three merges and three CORRECTs, none refused: the claims the scenario derives are what
-    # makes the CORRECT eligible at all, where a CORRECT on a raw observation is `not_derived`.
+    # makes the CORRECT eligible at all, where a CORRECT on a raw observation is not_derived.
     assert metrics["applied_operations"] == 6
     deliberation = result["deliberation"]
     assert isinstance(deliberation, dict)
@@ -281,7 +280,7 @@ def test_a_loop_that_proposes_nothing_leaves_the_rates_undefined(tmp_path: Path)
 
 
 def test_the_outcome_verdict_is_recorded_on_every_applied_operation(tmp_path: Path) -> None:
-    """P5: `record_outcome` had no reader; the benchmark is one, so the log carries a judgement."""
+    """record_outcome needs a reader; the benchmark log carries its judgement."""
     control_plane.run_benchmark(
         tmp_path,
         embedder=_TinyEmbedder(),

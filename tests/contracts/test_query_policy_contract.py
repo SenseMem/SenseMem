@@ -55,7 +55,7 @@ def test_default_query_policy_preserves_aggregate_focus_and_description_routes(
         complete_inputs=complete,
         aggregate=aggregate,
         focused_text="focus",
-        focused_inputs=(focused, atomic),
+        focused_inputs=(focused, aggregate) if aggregate_supported else (focused,),
         descriptions=("visual description",),
         embedding_capabilities=frozenset({Modality.TEXT}),
     )
@@ -65,11 +65,11 @@ def test_default_query_policy_preserves_aggregate_focus_and_description_routes(
         assert plan.embedding_inputs == plan.optional_embedding_inputs == ()
     else:
         assert plan.embedding_inputs == (
-            (aggregate, focused, atomic) if aggregate_supported else (atomic, focused)
+            (aggregate, atomic, focused) if aggregate_supported else (atomic, focused)
         )
         assert plan.optional_embedding_inputs == (ModelInput(text="visual description"),)
     assert plan.lexical_queries == (
-        () if mode is RetrievalMode.DENSE else ("focus", "visual description")
+        () if mode is RetrievalMode.DENSE else ("focus", "complete", "visual description")
     )
     with pytest.raises(FrozenInstanceError):
         plan.text = "changed"  # type: ignore[misc]

@@ -131,6 +131,64 @@ def test_predicate_reveals_a_bridge_already_in_the_unshown_candidate_pool(tmp_pa
     assert terminal.id in {hit.id for hit in result.hits}
 
 
+def test_strict_stream_replans_with_predicates_without_semantic_expansion(tmp_path: Path) -> None:
+    class PredicateModels(_Models):
+        def plan_recall(
+            self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
+        ) -> str:
+            self.contexts.append(attempted)
+            term = "terminal" if attempted else "bridge-ledger"
+            return json.dumps({"shape": "composite", "steps": [{"op": "match", "terms": [term]}]})
+
+    models = PredicateModels()
+    with Memory(
+        tmp_path,
+        embedder=models,
+        answerer=models,
+        settings=MemorySettings(
+            recall_planning=True,
+            recall_rounds=2,
+            retrieval_mode=RetrievalMode.DENSE,
+            minimum_relevance=0.5,
+            ambiguity_margin=0,
+        ),
+    ) as memory:
+        memory.add("bridge-ledger: dispatch happened.")
+        terminal = memory.add("terminal: the crate is cobalt.")
+        chunks = tuple(memory.ask_stream("What color was the crate?", limit=1, reference_at=_CLOCK))
+
+    assert models.contexts[0] == ""
+    assert len(models.contexts) == 2
+    assert len(models.queries) == 1
+    result = chunks[-1].result
+    assert result is not None and not result.abstained
+    assert result.answer == "cobalt"
+    assert terminal.id in {hit.id for hit in result.hits}
+    assert "".join(chunk.text or "" for chunk in chunks) == "cobalt"
+
+
+def test_unusable_plan_falls_back_once_even_after_best_effort_abstains(tmp_path: Path) -> None:
+    class EmptyPlanner(_Models):
+        def plan_recall(
+            self, question: str, *, reference_at: datetime, corpus_digest: str, attempted: str = ""
+        ) -> str:
+            self.contexts.append(attempted)
+            return ""
+
+    models = EmptyPlanner()
+    with Memory(
+        tmp_path,
+        embedder=models,
+        answerer=models,
+        settings=MemorySettings(recall_planning=True, recall_rounds=2),
+    ) as memory:
+        memory.add("bridge-ledger: dispatch happened.")
+        result = memory.ask("What color was the crate?", answer_policy="best_effort")
+
+    assert result.abstained
+    assert models.contexts == [""]
+
+
 def test_repeating_a_predicate_uses_remaining_abstention_rounds_without_new_searches(
     tmp_path: Path,
 ) -> None:

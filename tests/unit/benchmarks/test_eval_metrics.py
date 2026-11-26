@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import json
 import math
+import random
+import signal
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from textwrap import dedent
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
+from _benchmark_support import make_arguments as _arguments
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -23,6 +29,7 @@ from opentelemetry.trace import StatusCode
 
 from sensemem import (
     AssetRef,
+    AsyncMemory,
     ContentPart,
     ContextBudget,
     ContextSupplement,
@@ -45,6 +52,7 @@ from sensemem.benchmarks import eval_ingest as eval_ingest_module
 from sensemem.benchmarks import eval_metrics as eval_metrics_module
 from sensemem.benchmarks import eval_results as eval_results_module
 from sensemem.benchmarks import eval_samples as eval_samples_module
+from sensemem.benchmarks import eval_statistics as statistics
 from sensemem.benchmarks import eval_telemetry as eval_telemetry_module
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
@@ -88,7 +96,7 @@ def _span(
     arm: str = "sensemem",
     error: bool = False,
 ) -> ReadableSpan:
-    """Build the minimum ``ReadableSpan`` surface the span processor consumes."""
+    """Build the minimum ReadableSpan surface the span processor consumes."""
     return cast(
         ReadableSpan,
         SimpleNamespace(
@@ -152,19 +160,6 @@ def _sample(
     )
 
 
-def _arguments(**overrides: object) -> eval_config_module._Arguments:
-    values: dict[str, object] = {
-        "seed": 7,
-        "bootstrap_samples": 32,
-        "recall_limit": 20,
-        "blind": False,
-        "offset": 0,
-        "limit": None,
-    }
-    values.update(overrides)
-    return cast(eval_config_module._Arguments, SimpleNamespace(**values))
-
-
 def _metric_task(
     name: str = "fixture", *, unavailable_units: Mapping[str, str] | None = None
 ) -> LoadedTask:
@@ -177,7 +172,7 @@ def _metric_task(
     )
 
 
-# --- family 1: ingestion latency to durable, searchable memory, plus throughput -------------
+# family 1: ingestion latency to durable, searchable memory, plus throughput
 
 
 def test_ingest_reports_durable_searchable_latency_and_sustained_throughput() -> None:
@@ -247,7 +242,9 @@ async def test_ingest_traces_one_span_per_accepted_batch_with_its_item_count() -
         def __init__(self) -> None:
             self.batches: list[int] = []
 
-        async def add_many(self, contents: Sequence[object], **_kwargs: object) -> tuple[Any, ...]:
+        async def add_many(
+            self, contents: Sequence[object], **_kwargs: object
+        ) -> tuple[object, ...]:
             self.batches.append(len(contents))
             return tuple(contents)
 
@@ -260,7 +257,7 @@ async def test_ingest_traces_one_span_per_accepted_batch_with_its_item_count() -
             attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
         ):
             failures = await eval_ingest_module._ingest(
-                cast(Any, memory),
+                cast(AsyncMemory, memory),
                 items,
                 batch_size=2,
                 tracer=telemetry.tracer,
@@ -277,7 +274,7 @@ async def test_ingest_traces_one_span_per_accepted_batch_with_its_item_count() -
     assert cast(float, ingest["items_per_active_second"]) > 0.0
 
 
-# --- family 2: search latency at p50/p95/p99 with throughput --------------------------------
+# family 2: search latency at p50/p95/p99 with throughput
 
 
 def test_search_latency_reports_p50_p95_and_p99_for_the_named_span() -> None:
@@ -402,7 +399,7 @@ def test_personamem_does_not_publish_a_biased_partial_micro_score() -> None:
     assert subset["mean"] == 90.0
 
 
-# --- family 3: ASR real-time factor and inference latency -----------------------------------
+# family 3: ASR real-time factor and inference latency
 
 
 def test_asr_reports_audio_seconds_per_wall_second_and_inference_latency() -> None:
@@ -489,7 +486,7 @@ def test_asr_block_is_absent_when_no_transcription_ran() -> None:
     assert result["asr"] is None
 
 
-# --- family 4: answer latency and time to first token when the backend streams ---------------
+# family 4: answer latency and time to first token when the backend streams
 
 
 def test_time_to_first_token_is_reported_only_when_the_backend_streams() -> None:
@@ -528,7 +525,7 @@ def test_time_to_first_token_is_reported_only_when_the_backend_streams() -> None
     ) == pytest.approx(200.0)
 
 
-# --- family 5: CPU, memory, storage growth, and GPU -----------------------------------------
+# family 5: CPU, memory, storage growth, and GPU
 
 
 def test_resource_sampler_reports_cpu_memory_and_media_dominated_storage_growth(
@@ -629,7 +626,7 @@ def test_storage_bytes_separates_media_rows_and_vectors(tmp_path: Path) -> None:
     }
 
 
-# --- family 6: fast-plane and compiler telemetry (capture, settle, compile) -----------------
+# family 6: fast-plane and compiler telemetry (capture, settle, compile)
 
 
 def _asset(asset_id: str) -> AssetRef:
@@ -785,7 +782,7 @@ def test_capture_settle_and_compile_report_nothing_when_unexercised() -> None:
     assert cast(Mapping[str, object], result["compile"])["count"] == 0
 
 
-# --- controls: random ranker, blind answer, and R@20 next to R@1 -----------------------------
+# controls: random ranker, blind answer, and R@20 next to R@1
 
 
 def test_random_ranker_expectation_is_reported_next_to_measured_recall() -> None:
@@ -999,7 +996,7 @@ def test_table_prints_missing_controls_instead_of_only_a_score() -> None:
                     "duration_seconds": {"total": 2.5, "average": 1.25},
                     "token_usage": {"total_tokens": 30, "average_tokens": 15.0},
                 },
-                # `_table` reports the writes that invalidated a score; a row
+                # _table reports the writes that invalidated a score; a row
                 # without this key cannot render.
                 "ingest_failure_count": 0,
                 "controls": {
@@ -1043,7 +1040,7 @@ def test_table_shows_the_control_values_when_they_are_present() -> None:
                     "duration_seconds": {"total": 2.5, "average": 1.25},
                     "token_usage": {"total_tokens": 30, "average_tokens": 15.0},
                 },
-                # `_table` reports the writes that invalidated a score; a row
+                # _table reports the writes that invalidated a score; a row
                 # without this key cannot render.
                 "ingest_failure_count": 0,
                 "controls": {
@@ -1107,7 +1104,7 @@ def test_table_prints_the_product_token_cost_when_the_judge_left_the_total_null(
     assert "40.0*" in table
 
 
-# --- blind baseline provenance ---------------------------------------------------------------
+# blind baseline provenance
 
 
 def _blind_document(**overrides: object) -> dict[str, object]:
@@ -1190,7 +1187,7 @@ def test_blind_baseline_rejects_a_different_answer_policy(tmp_path: Path) -> Non
         )
 
 
-# --- noise floor -----------------------------------------------------------------------------
+# noise floor
 
 
 def test_noise_floor_reports_the_smallest_resolvable_difference() -> None:
@@ -1232,7 +1229,7 @@ def test_scalar_metric_samples_do_not_truncate_late_observations() -> None:
     assert result["p99"] == pytest.approx(198_000.0)
 
 
-# --- reproducibility fields ------------------------------------------------------------------
+# reproducibility fields
 
 
 def test_table_refuses_a_task_row_that_carries_no_controls() -> None:
@@ -1268,7 +1265,6 @@ def test_retrieval_recall_scores_the_ranked_list_not_the_cited_evidence() -> Non
     A question whose gold was cited but never ranked scores zero, and one whose run recorded no
     ranked list is counted as unranked rather than scored.
     """
-    from dataclasses import replace
 
     cited_not_ranked = replace(
         _sample("q1", sources=("s9",), gold=("s1",), candidate_count=10),
@@ -1334,7 +1330,7 @@ def test_noise_floor_widens_past_the_measured_floor_for_a_noisy_run() -> None:
 
 
 def test_search_latency_never_mixes_the_narrower_lookup_or_the_search_operation() -> None:
-    """`sensemem.retrieve` is the reported boundary; two other spans must not join it."""
+    """sensemem.retrieve is the reported boundary; two other spans must not join it."""
     result = _aggregate(
         (
             _span(ASK_RETRIEVAL_SPAN, start_ms=0, end_ms=100),
@@ -1419,7 +1415,7 @@ def test_support_decomposition_separates_the_four_ways_a_window_can_fail() -> No
         recall_limit=3,
     )
 
-    decomposition = cast(Mapping[str, Any], retrieval["support_decomposition"])
+    decomposition = cast(Mapping[str, object], retrieval["support_decomposition"])
     assert decomposition["window_size"] == 3
     assert decomposition["counts"] == {
         "complete_in_window": 1,
@@ -1452,5 +1448,154 @@ def test_complete_support_is_all_or_nothing_per_question() -> None:
     complete = cast(Mapping[str, Mapping[str, float]], retrieval["complete_support_at_k"])
     assert recall["5"]["mean"] == pytest.approx(2 / 3)
     assert complete["5"]["mean"] == pytest.approx(0.0)
-    decomposition = cast(Mapping[str, Any], retrieval["support_decomposition"])
+    decomposition = cast(Mapping[str, object], retrieval["support_decomposition"])
     assert decomposition["counts"] == {"partial_in_window": 1}
+
+
+@pytest.mark.parametrize("exit_mode", ("normal", "atexit", "abrupt", "sigterm"))
+def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> None:
+    if exit_mode == "sigterm" and sys.platform == "win32":
+        pytest.skip("POSIX signal exit status")
+    code = dedent(
+        """
+        import atexit
+        import io
+        import logging
+        import multiprocessing
+        import os
+        import signal
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        exit_mode = sys.argv[1]
+
+        def report():
+            _announce("fixture")
+            _configure_logging("INFO")
+            logging.getLogger("sensemem.fixture").warning("fixture log")
+            with _progress("fixture", "sample", total=1) as progress:
+                progress(1, 1)
+
+        if exit_mode == "atexit":
+            # First output after multiprocessing's exit callback has already run.
+            atexit.register(report)
+
+        # Exercise named semaphore tracking on Python 3.11-3.13 as well as 3.14.
+        multiprocessing.set_start_method("spawn", force=True)
+        from multiprocessing import resource_tracker
+
+        register = resource_tracker.register
+
+        def tracked_register(name, kind):
+            print("TRACKED_RESOURCE", kind, flush=True)
+            register(name, kind)
+
+        resource_tracker.register = tracked_register
+
+        from sensemem.benchmarks.eval_console import (
+            _announce, _configure_logging, _progress,
+        )
+
+        if exit_mode != "atexit":
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                worker.submit(report).result()
+
+            class Terminal(io.StringIO):
+                def isatty(self):
+                    return True
+
+            terminal = Terminal()
+            original_stderr = sys.stderr
+            sys.stderr = terminal
+            try:
+                with _progress("terminal fixture", "sample", total=1) as progress:
+                    _announce("live fixture")
+                    logging.getLogger("sensemem.fixture").warning("live fixture log")
+                    progress(1, 1)
+            finally:
+                sys.stderr = original_stderr
+            print(terminal.getvalue(), file=sys.stderr, flush=True)
+
+        if exit_mode == "abrupt":
+            os._exit(73)
+        if exit_mode == "sigterm":
+            os.kill(os.getpid(), signal.SIGTERM)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, exit_mode],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    expected = {"normal": 0, "atexit": 0, "abrupt": 73, "sigterm": -signal.SIGTERM}
+    assert result.returncode == expected[exit_mode], result.stderr
+    assert "fixture log" in result.stderr
+    assert "TRACKED_RESOURCE" not in result.stdout, result.stdout
+    assert "resource_tracker:" not in result.stderr, result.stderr
+
+
+def _reference_draws(
+    clusters: Sequence[Sequence[float]], *, seed: int, samples: int
+) -> tuple[float, ...]:
+    generator = random.Random(seed)
+    draws = []
+    for _ in range(samples):
+        selected = tuple(clusters[generator.randrange(len(clusters))] for _ in clusters)
+        flattened = tuple(score for cluster in selected for score in cluster)
+        draws.append(sum(flattened) / len(flattened))
+    return tuple(sorted(draws))
+
+
+@pytest.mark.parametrize("seed", (0, 7, 1234))
+@pytest.mark.parametrize(
+    "clusters",
+    (
+        ((1.0, 0.0, 1.0), (0.0,), (1.0, 1.0)),
+        ((-2.0, 5.0), (2.0, -1.0, 0.0), (3.0,)),
+        ((0.1, 0.3, 0.7), (0.2,), (1 / 3, 2 / 3)),
+        ((1e16, 1.0, -1e16), (1.0,), (-1e16, 1e16, -1.0)),
+        ((float(2**53 // 3), 1.0), (-float(2**53 // 3), -1.0), (1.0,)),
+    ),
+)
+def test_bootstrap_matches_original_draws_exactly(
+    clusters: tuple[tuple[float, ...], ...], seed: int
+) -> None:
+    assert statistics._cluster_bootstrap(clusters, seed=seed, samples=257) == _reference_draws(
+        clusters, seed=seed, samples=257
+    )
+
+
+def test_paired_probability_and_interval_share_one_set_of_draws(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = (
+        statistics.ScoredValue("a", "first", 1.0),
+        statistics.ScoredValue("b", "first", 0.0),
+        statistics.ScoredValue("c", "second", 0.0),
+        statistics.ScoredValue("d", "third", 1.0),
+    )
+    baseline = tuple(
+        statistics.ScoredValue(value.sample_id, value.cluster_id, 0.5) for value in candidate
+    )
+    draws = _reference_draws(((0.5, -0.5), (-0.5,), (0.5,)), seed=7, samples=257)
+    calls = 0
+    original = statistics._cluster_bootstrap
+
+    def bootstrap(
+        clusters: Sequence[Sequence[float]], *, seed: int, samples: int
+    ) -> tuple[float, ...]:
+        nonlocal calls
+        calls += 1
+        return original(clusters, seed=seed, samples=samples)
+
+    monkeypatch.setattr(statistics, "_cluster_bootstrap", bootstrap)
+    result = statistics.paired_comparison(candidate, baseline, seed=7, bootstrap_samples=257)
+
+    assert calls == 1
+    assert result["confidence_interval_95"] == [
+        statistics.percentile(draws, 0.025, presorted=True),
+        statistics.percentile(draws, 0.975, presorted=True),
+    ]
+    assert result["probability_of_improvement"] == sum(draw > 0 for draw in draws) / len(draws)

@@ -181,7 +181,6 @@ async def test_unit_failures_and_cancellation_propagate_after_closing_memory(
         conversation: LoCoMoRefinedConversation,
         **_options: object,
     ) -> tuple[LoCoMoRefinedPrediction, ...]:
-        del memory, conversation
         raise failure
 
     monkeypatch.setattr(locomo_refined_cli, "run_locomo_refined_conversation", fail)

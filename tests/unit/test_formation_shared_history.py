@@ -6,12 +6,12 @@ import json
 from dataclasses import replace
 from datetime import timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import httpx2 as httpx
 import pytest
-from test_formation_history import _history_input
-from test_openai_adapters import _sdk_client
+from fixtures.formation import history_input as _history_input
+from fixtures.openai import sdk_client as _sdk_client
 
 import sensemem.models._openai_output as openai_output
 import sensemem.models._openai_protocol as openai_protocol
@@ -42,10 +42,10 @@ def _response(witnesses: list[list[str]]) -> str:
     )
 
 
-def _payload(inputs: tuple[FormationInput, ...]) -> dict[str, Any]:
+def _payload(inputs: tuple[FormationInput, ...]) -> dict[str, object]:
     content = openai_requests._formation_content(inputs)
     assert isinstance(content, str)
-    return cast(dict[str, Any], json.loads(content))
+    return cast(dict[str, object], json.loads(content))
 
 
 @pytest.mark.parametrize("mode", ["json_schema", "json_object"])
@@ -64,7 +64,7 @@ def test_http_request_sends_four_identical_thirty_record_histories_once(
     inputs = tuple(
         replace(first, memory_id=f"private-source-{i}", history=history) for i in range(4)
     )
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -92,7 +92,9 @@ def test_http_request_sends_four_identical_thirty_record_histories_once(
         )
         results = adapter.form(inputs)
     assert len(sent) == 1
-    wire = sent[0]["messages"][1]["content"]
+    messages = sent[0]["messages"]
+    assert isinstance(messages, list)
+    wire = messages[1]["content"]
     payload = json.loads(wire)
     assert tuple(payload["read_only_history_groups"]) == ("history_group_0",)
     shared = payload["read_only_history_groups"]["history_group_0"]
@@ -104,7 +106,7 @@ def test_http_request_sends_four_identical_thirty_record_histories_once(
         assert observation["history_truncated"] is False
         assert results[index][0].evidence_ids == (inputs[index].memory_id, history[0].id)
     inline = dict(payload)
-    del inline["read_only_history_groups"]
+    inline.pop("read_only_history_groups")
     inline["observations"] = [
         {key: value for key, value in observation.items() if key != "read_only_history_group"}
         | {"read_only_history": shared}
@@ -170,7 +172,9 @@ def test_only_complete_equal_ordered_snapshots_are_shared(difference: str) -> No
         second = replace(second, history=(changed, first.history[1]))
     payload = _payload((first, second))
     assert "read_only_history_groups" not in payload
-    assert all("read_only_history" in item for item in payload["observations"])
+    observations = payload["observations"]
+    assert isinstance(observations, list)
+    assert all("read_only_history" in item for item in observations)
     aliases = openai_requests._formation_aliases((first, second))
     assert set(aliases[0].values()).isdisjoint(aliases[1].values())
 
@@ -182,7 +186,9 @@ def test_shared_aliases_do_not_authorize_a_private_or_missing_history() -> None:
     empty = replace(first, memory_id="fourth", history=())
     inputs = (first, second, retired, empty)
     payload = _payload(inputs)
-    assert payload["observations"][2]["read_only_history"][0]["observation_id"] == "history_2"
+    observations = payload["observations"]
+    assert isinstance(observations, list)
+    assert observations[2]["read_only_history"][0]["observation_id"] == "history_2"
     response = _response(
         [
             ["observation_0", "history_0"],
@@ -216,7 +222,9 @@ def test_current_batch_history_keeps_observation_alias_and_own_source_once() -> 
     second = replace(first, memory_id="second")
     third = replace(first, memory_id="third", history=())
     inputs = (first, second, third)
-    shared = _payload(inputs)["read_only_history_groups"]["history_group_0"]
+    groups = _payload(inputs)["read_only_history_groups"]
+    assert isinstance(groups, dict)
+    shared = groups["history_group_0"]
     assert shared[0]["observation_id"] == "observation_2"
     results = openai_output._formation_results(
         _response(
@@ -281,11 +289,13 @@ def test_nonshared_and_empty_history_keep_the_inline_shape() -> None:
     truncated = replace(empty, memory_id="truncated", history_truncated=True)
     payload = _payload((first, empty, truncated))
     assert set(payload) == {"observations"}
-    assert payload["observations"][0]["read_only_history"][0]["observation_id"] == "history_0"
-    assert "read_only_history" not in payload["observations"][1]
-    assert "history_truncated" not in payload["observations"][1]
-    assert payload["observations"][2]["read_only_history"] == []
-    assert payload["observations"][2]["history_truncated"] is True
+    observations = payload["observations"]
+    assert isinstance(observations, list)
+    assert observations[0]["read_only_history"][0]["observation_id"] == "history_0"
+    assert "read_only_history" not in observations[1]
+    assert "history_truncated" not in observations[1]
+    assert observations[2]["read_only_history"] == []
+    assert observations[2]["history_truncated"] is True
 
 
 def test_shared_history_prompt_changes_both_formation_recipe_identities(

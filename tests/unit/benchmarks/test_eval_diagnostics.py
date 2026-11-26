@@ -9,11 +9,11 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-from sensemem import AnswerChunk, AnswerResult, AsyncMemory, SearchHit
+from sensemem import AnswerChunk, AnswerResult, AsyncMemory, ContextBudget, ContextBundle, SearchHit
 from sensemem._telemetry import _record_generation_inputs, _record_retrieval_results
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
 from sensemem.benchmarks.eval_answers import _answer_many, _answer_span
@@ -26,6 +26,7 @@ from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
 from sensemem.benchmarks.eval_samples import _cache_outcome, _cached_results
 from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
 from sensemem.benchmarks.task_catalog import TaskSpec
+from sensemem.context import compile_context
 
 
 def _sample(**changes: object) -> SampleResult:
@@ -50,13 +51,25 @@ def _sample(**changes: object) -> SampleResult:
         ranked_source_ids_complete=True,
         evidence=(EvidenceInterval("m1", "s1", None, None),),
     )
-    return replace(sample, **cast(dict[str, Any], changes))
+    return replace(sample, **changes)  # type: ignore[arg-type]
 
 
-def _diagnose(sample: SampleResult) -> dict[str, Any]:
+def _diagnose(sample: SampleResult) -> dict[str, object]:
     module = importlib.import_module("sensemem.benchmarks.eval_diagnostics")
-    result: dict[str, Any] = module.quality_diagnostics(sample)
+    result: dict[str, object] = module.quality_diagnostics(sample)
     return result
+
+
+def _layers(sample: SampleResult) -> dict[str, dict[str, object]]:
+    layers = _diagnose(sample)["layers"]
+    assert isinstance(layers, dict)
+    return cast(dict[str, dict[str, object]], layers)
+
+
+def _coverage(layer: dict[str, object]) -> dict[str, object]:
+    coverage = layer["source_coverage"]
+    assert isinstance(coverage, dict)
+    return cast(dict[str, object], coverage)
 
 
 def test_layers_use_observed_boundaries_instead_of_returned_hits() -> None:
@@ -76,12 +89,12 @@ def test_layers_use_observed_boundaries_instead_of_returned_hits() -> None:
         answer_span_id="b" * 16,
     )
     diagnostic = _diagnose(sample)
-    layers = diagnostic["layers"]
+    layers = _layers(sample)
     assert tuple(layers) == ("input", "retrieval", "organization", "reader_input", "answer")
     assert diagnostic["trace_id"] == "a" * 32
     assert diagnostic["answer_span_id"] == "b" * 16
-    assert layers["organization"]["source_coverage"]["matched_groups"] == [0, 1]
-    assert layers["reader_input"]["source_coverage"]["matched_groups"] == [1]
+    assert _coverage(layers["organization"])["matched_groups"] == [0, 1]
+    assert _coverage(layers["reader_input"])["matched_groups"] == [1]
     assert layers["reader_input"]["media_fallback"] is True
     assert diagnostic["fact_span_coverage"] is None
     assert diagnostic["causal_attribution"] is None
@@ -89,40 +102,40 @@ def test_layers_use_observed_boundaries_instead_of_returned_hits() -> None:
 
 
 def test_missing_observations_and_labels_never_become_zero_recall() -> None:
-    layers = _diagnose(_sample(metadata={}, ranked_source_ids_complete=False))["layers"]
+    layers = _layers(_sample(metadata={}, ranked_source_ids_complete=False))
     for name in ("input", "retrieval", "organization", "reader_input"):
         assert layers[name]["source_coverage"] is None
     assert layers["organization"]["observed"] is False
 
-    empty = _diagnose(_sample(ranked_source_ids=(), generation_evidence=()))["layers"]
-    assert empty["retrieval"]["source_coverage"]["recall"] == 0.0
-    assert empty["organization"]["source_coverage"]["recall"] == 0.0
+    empty = _layers(_sample(ranked_source_ids=(), generation_evidence=()))
+    assert _coverage(empty["retrieval"])["recall"] == 0.0
+    assert _coverage(empty["organization"])["recall"] == 0.0
 
 
 def test_unmapped_reader_ids_and_partial_excerpts_do_not_prove_coverage() -> None:
-    diagnostic = _diagnose(
+    layers = _layers(
         _sample(
             generation_evidence=(EvidenceInterval("m1", "s1", None, None),),
             excerpt_evidence=(EvidenceInterval("excerpt", "s2", 1.0, 2.0),),
             grounding_request={"record_ids": ("unmapped",), "successful": True},
         )
     )
-    assert diagnostic["layers"]["organization"]["source_coverage"]["recall"] == 0.5
-    assert diagnostic["layers"]["organization"]["partial_source_ids"] == ["s2"]
-    assert diagnostic["layers"]["reader_input"]["source_coverage"] is None
-    assert diagnostic["layers"]["reader_input"]["unmapped_record_ids"] == ["unmapped"]
+    assert _coverage(layers["organization"])["recall"] == 0.5
+    assert layers["organization"]["partial_source_ids"] == ["s2"]
+    assert layers["reader_input"]["source_coverage"] is None
+    assert layers["reader_input"]["unmapped_record_ids"] == ["unmapped"]
 
 
 def test_returned_metadata_cannot_replace_observed_reader_source_provenance() -> None:
-    diagnostic = _diagnose(
+    layers = _layers(
         _sample(
             generation_evidence=(EvidenceInterval("m1", "noise", None, None),),
             evidence=(EvidenceInterval("m1", "s1", None, None),),
             grounding_request={"record_ids": ("m1",), "successful": True},
         )
     )
-    assert diagnostic["layers"]["reader_input"]["source_coverage"]["recall"] == 0.0
-    unknown = _diagnose(_sample(ranked_source_ids=("s1", "")))["layers"]["retrieval"]
+    assert _coverage(layers["reader_input"])["recall"] == 0.0
+    unknown = _layers(_sample(ranked_source_ids=("s1", "")))["retrieval"]
     assert unknown["observed"] is True
     assert unknown["source_coverage"] is None
 
@@ -135,11 +148,12 @@ def test_text_only_sources_are_reported_without_full_or_reader_coverage() -> Non
         projection_source_ids=("projection",),
         projection_evidence=(EvidenceInterval("projection", "s2", None, None),),
     )
-    organization = _diagnose(sample)["layers"]["organization"]
+    layers = _layers(sample)
+    organization = layers["organization"]
     assert organization["text_only_source_ids"] == ["s2"]
     assert organization["source_ids"] == []
-    assert organization["source_coverage"]["recall"] == 0
-    assert _diagnose(sample)["layers"]["reader_input"]["source_coverage"] is None
+    assert _coverage(organization)["recall"] == 0
+    assert layers["reader_input"]["source_coverage"] is None
     assert sample.json()["projection_source_ids"] == ("projection",)
 
 
@@ -279,7 +293,7 @@ def test_compile_partial_organization_survives_response_cache(tmp_path: Path) ->
         ]
         assert sample.excerpt_evidence == partial
         assert sample.excerpt_source_ids == ("m2",)
-        assert _diagnose(sample)["layers"]["organization"]["partial_source_ids"] == ["s2"]
+        assert _layers(sample)["organization"]["partial_source_ids"] == ["s2"]
     finally:
         cache.close()
 
@@ -314,7 +328,7 @@ def test_compile_text_only_organization_survives_response_cache(tmp_path: Path) 
         assert sample.projection_evidence == projected
         assert sample.projection_source_ids == ("m2",)
         assert sample.evidence == () and sample.generation_evidence == ()
-        organization = _diagnose(sample)["layers"]["organization"]
+        organization = _layers(sample)["organization"]
         assert organization["text_only_source_ids"] == ["s2"]
         assert organization["source_coverage"] is None
     finally:
@@ -323,8 +337,6 @@ def test_compile_text_only_organization_survives_response_cache(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_failed_compile_generation_retains_the_organization_boundary() -> None:
-    from sensemem import ContextBudget, ContextBundle
-    from sensemem.context import compile_context
 
     class BrokenGenerator:
         async def answer(self, *_args: object, **_kwargs: object) -> str:
@@ -417,7 +429,7 @@ def test_review_requires_current_sample_format(tmp_path: Path) -> None:
     module = importlib.import_module("sensemem.benchmarks.eval_review")
     source = tmp_path / "samples.jsonl"
     row = _sample().json()
-    del row["schema_version"]
+    row.pop("schema_version")
     source.write_text(json.dumps(row) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="schema version is unsupported"):
         module.main(["--samples", str(source), "--output", str(tmp_path / "review.jsonl")])

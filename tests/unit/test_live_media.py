@@ -9,23 +9,16 @@ from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from io import BytesIO
 from itertools import cycle, pairwise
-from pathlib import Path
 from threading import Event, Thread
-from typing import TYPE_CHECKING
 
 import av
 import numpy as np
 import pytest
 
+from examples.live import media
+from examples.live.capture import EventCapture
+from examples.live.media import MAX_BUFFER_BYTES, MediaReceiver, _BufferedMediaInput
 from sensemem import EventChunk, ValidationError
-
-if TYPE_CHECKING:
-    from examples.live.media import MediaReceiver
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 def _recording(*, video: bool = True, frame_count: int = 24) -> bytes:
@@ -70,8 +63,6 @@ def _recording(*, video: bool = True, frame_count: int = 24) -> bytes:
 def _receiver(
     started_at: datetime, *, progress: asyncio.Event | None = None
 ) -> tuple[MediaReceiver, list[EventChunk]]:
-    from examples.live.capture import EventCapture
-    from examples.live.media import MediaReceiver
 
     class RecordingCapture(EventCapture):
         def __init__(self) -> None:
@@ -206,7 +197,6 @@ async def test_whole_call_shorter_than_transport_target_preserves_originals_with
 async def test_pending_predecessor_and_current_group_share_one_buffer_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from examples.live import media
 
     recording = _recording(frame_count=28)
     reference, groups = _receiver(datetime.now(timezone.utc))
@@ -231,7 +221,6 @@ async def test_pending_predecessor_and_current_group_share_one_buffer_budget(
 
 
 def test_input_reader_enforces_eight_mib_and_backpressures_until_bytes_are_consumed() -> None:
-    from examples.live.media import MAX_BUFFER_BYTES, _BufferedMediaInput
 
     assert MAX_BUFFER_BYTES == 8 * 1024 * 1024
     reader = _BufferedMediaInput()
@@ -293,7 +282,6 @@ async def test_audio_only_recording_is_rejected_without_creating_a_memory_chunk(
 
 @pytest.mark.asyncio
 async def test_completed_mp4_group_enforces_container_byte_budget() -> None:
-    from examples.live.media import MAX_BUFFER_BYTES
 
     receiver, chunks = _receiver(datetime.now(timezone.utc))
     try:

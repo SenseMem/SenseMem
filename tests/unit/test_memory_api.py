@@ -16,7 +16,7 @@ from dataclasses import MISSING, asdict, dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier, Event, Thread
-from typing import Any, ClassVar, cast
+from typing import ClassVar, cast
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
@@ -56,6 +56,7 @@ from sensemem._telemetry import (
     TOKEN_EXPECTED_REQUEST_COUNT,
     TOKEN_REPORTED_REQUEST_COUNT,
     TOKEN_TOTAL,
+    _observe_generation_inputs,
     _observe_retrieval_results,
     mark_model_requests,
     record_model_usage,
@@ -390,7 +391,6 @@ class _FakeIndex:
         ef: int | None = None,
         exact: bool = False,
     ) -> tuple[IndexHit, ...]:
-        del values, ef, exact
         self.dense_search_calls += 1
         if self.dense_hits_override is not None:
             return self.dense_hits_override[:limit]
@@ -488,13 +488,11 @@ class _FakeIndex:
             raise RuntimeError("simulated flush failure")
 
     def optimize(self, *, concurrency: int = 0) -> None:
-        del concurrency
         self.optimize_calls += 1
 
     def optimize_if_needed(
         self, *, minimum_unindexed: int = 100_000, minimum_flushes: int = 64
     ) -> bool:
-        del minimum_unindexed, minimum_flushes
         self.optimize_if_needed_calls += 1
         return False
 
@@ -505,7 +503,6 @@ class _FakeIndex:
         batch_size: int = 1_024,
         optimize_concurrency: int = 0,
     ) -> int:
-        del optimize_concurrency
         self.rebuild_calls += 1
         self.rebuild_batch_sizes.append(batch_size)
         self.documents.clear()
@@ -766,7 +763,6 @@ def test_ask_observes_the_pre_grounding_ranking(
 def test_generation_observer_sees_selected_evidence_and_reports_observer_errors(
     tmp_path: Path,
 ) -> None:
-    from sensemem._telemetry import _observe_generation_inputs
 
     observed: list[object] = []
 
@@ -876,7 +872,6 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             record_model_usage(input_tokens=5, output_tokens=3, total_tokens=8)
             yield "grounded "
             yield "answer"
@@ -964,7 +959,7 @@ def test_memory_traces_end_to_end_stages_and_streaming_ttft(tmp_path: Path) -> N
         "sensemem.index.sync.sqlite.read",
         "sensemem.index.sync.zvec.apply",
     } <= index_sync_children
-    # The flush is batched behind the write; here `close()` took it, under its own sync stage.
+    # The flush is batched behind the write; here close() took it, under its own sync stage.
     flush = next(span for span in spans if span.name == "sensemem.index.sync.zvec.flush")
     assert flush.parent is not None
     close_sync = next(span for span in spans if span.context.span_id == flush.parent.span_id)
@@ -1015,7 +1010,6 @@ def test_formation_and_consolidation_report_unmetered_requests_as_incomplete(
             trigger: MemoryTrigger,
             query_failure: QueryFailure | None = None,
         ) -> tuple[MemoryOperation, ...]:
-            del evidence, trigger
             return ()
 
         def close(self) -> None:
@@ -1083,7 +1077,6 @@ def test_empty_stream_is_invalid_model_output(tmp_path: Path, chunks: tuple[str,
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             yield from chunks
             return AnswerResult(answer="red", hits=tuple(hits))
 
@@ -1117,7 +1110,6 @@ def test_stream_ttft_requires_an_actual_model_request(tmp_path: Path) -> None:
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             mark_model_requests(0, token_usage_expected=0)
             yield "I do not know."
             return AnswerResult(answer="I do not know.", hits=tuple(hits))
@@ -1154,7 +1146,6 @@ def test_streaming_answer_reports_only_the_hits_the_stream_used(tmp_path: Path) 
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             yield "grounded"
             return AnswerResult(answer="grounded", hits=(hits[0],))
 
@@ -1177,7 +1168,6 @@ def test_streaming_answer_preserves_structured_abstention(tmp_path: Path) -> Non
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             yield "unknown"
             return AnswerResult(
                 answer="unknown",
@@ -1208,7 +1198,6 @@ def test_streaming_answer_rejects_an_unstructured_completion(
             answer_policy: AnswerPolicy = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, object]:
-            del question, hits, answer_policy, exhaustive
             yield "red"
             return completion
 
@@ -1318,7 +1307,7 @@ def test_explicit_event_range_stays_strict_after_temporal_fallback(tmp_path: Pat
     by_memory = {candidate.memory_id: candidate for candidate in result.trace.candidates}
     assert by_memory[outside.id].rejected_by is RetrievalRejection.OCCURRENCE_RANGE
     assert by_memory[allowed.id].rejected_by is None
-    # `lexical_relevance` is a ranking score contribution, and ranking never ran for the rejected
+    # lexical_relevance is a ranking score contribution, and ranking never ran for the rejected
     # candidate. Reporting the index-side strength in its place would make one disposition's
     # figure larger than the other's for the same match, so the unknown component stays unset.
     assert by_memory[outside.id].lexical_relevance is None
@@ -1595,7 +1584,7 @@ def test_duration_question_routes_the_reference_without_a_parsable_phrase(
     reference = datetime.fromisoformat(routed.rsplit(prefix, 1)[1].strip())
     assert before <= reference <= after
     # The note is for the reader, not the index: it must never reach an embedding, or the query
-    # vector would drift with the clock and `search()` would answer differently every minute.
+    # vector would drift with the clock and search() would answer differently every minute.
     assert [text for task, batch in embedded for text in batch if task is EmbedTask.QUERY] == [
         "How long ago did grandpa visit?"
     ] * 2
@@ -1975,7 +1964,7 @@ def test_ask_grounds_in_score_order_with_one_slot_per_present_modality(tmp_path:
     """The window is the top of the ranking, plus a floor for any modality it left out.
 
     Grounding used to pop one hit per modality in turn, capping every modality at
-    `ceil(limit / m)` however the scores fell. On this round's mem-gallery library that rebuilt
+    ceil(limit / m) however the scores fell. On this round's mem-gallery library that rebuilt
     31 % of a 20-hit window out of lower-ranked hits and cost 1.93 pp of gold recall the ranking
     had already found, so the guarantee is now a floor rather than a rotation: exactly one image
     is promoted here, into the last slot, and the nine best text hits keep theirs.
@@ -2143,7 +2132,7 @@ def test_ambiguity_gate_only_rejects_single_result_retrieval(tmp_path: Path) -> 
         index.hits_override = (IndexHit(id=first.id, relevance=0.54),)
         assert memory.search("unrelated question").hits == ()
 
-        # A top-two pair inside `ambiguity_margin` on the one scale retrieval now ranks, gates,
+        # A top-two pair inside ambiguity_margin on the one scale retrieval now ranks, gates,
         # and reports on. The pair used to be separated by 0.01 in relevance and 0.005 in
         # confidence, which pinned the margin to the rescaled quantity rather than to the scores
         # the caller reads back.
@@ -2346,7 +2335,7 @@ def test_memory_from_config_uses_the_same_kernel_and_closes_resolved_backends(
         "embedding": {
             "provider": "sentence-transformers",
             "model": "google/embeddinggemma-2",
-            "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
+            "revision": "a" * 40,
         },
         "generation": {"provider": "openai", "model": "gpt-5-mini"},
         "speech": {"provider": "funasr"},
@@ -2408,7 +2397,7 @@ def test_memory_from_config_validates_settings_before_building_backends(
                 "embedding": {
                     "provider": "sentence-transformers",
                     "model": "google/embeddinggemma-2",
-                    "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
+                    "revision": "a" * 40,
                 },
                 "settings": {"minimum_relevance": 2},
             }
@@ -2432,7 +2421,7 @@ def test_config_resolution_closes_an_earlier_backend_when_a_later_one_fails(
                 "embedding": {
                     "provider": "sentence-transformers",
                     "model": "google/embeddinggemma-2",
-                    "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
+                    "revision": "a" * 40,
                 },
                 "generation": {"provider": "openai"},
             }
@@ -2484,7 +2473,7 @@ def test_memory_plugins_reject_malformed_adapters_before_opening_storage(
 
 def test_async_memory_rejects_anything_but_an_open_memory(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="Memory instance"):
-        AsyncMemory(cast(Any, object()))
+        AsyncMemory(cast(Memory, object()))
     memory = Memory(tmp_path, embedder=_FakeEmbedder())
     memory.close()
     with pytest.raises(StorageError, match="closed"):
@@ -2493,7 +2482,7 @@ def test_async_memory_rejects_anything_but_an_open_memory(tmp_path: Path) -> Non
 
 def test_plugin_composition_stays_in_constructor_parity() -> None:
     parameters = inspect.signature(Memory).parameters
-    # The async facade wraps an open `Memory` rather than repeating its constructor.
+    # The async facade wraps an open Memory rather than repeating its constructor.
     assert list(inspect.signature(AsyncMemory).parameters) == ["memory"]
     assert (
         inspect.signature(Memory.search).parameters
@@ -2543,8 +2532,8 @@ def test_explicit_speech_is_lazy_and_recognizes_a_speaker_across_recordings(
     embedder = _FakeEmbedder()
     transcriber = _FakeSpeech()
 
-    # `index_speech=False` is the subject: analysis deferred to `speech()`. The default-on path
-    # is covered by `test_speech_backend_analysis_is_indexed_by_default`.
+    # index_speech=False is the subject: analysis deferred to speech(). The default-on path
+    # is covered by test_speech_backend_analysis_is_indexed_by_default.
     with Memory(
         tmp_path,
         embedder=embedder,
@@ -2978,7 +2967,7 @@ def test_unlink_identity_stops_the_index_quoting_the_other_persons_name(
 
     A merge writes the surviving person's name into every stored transcript projection of the
     voice it absorbed. Restoring that voice as its own unnamed identity while leaving the name
-    burned into `memory_records.content` makes the reversal a lie: search still answers to the
+    burned into memory_records.content makes the reversal a lie: search still answers to the
     retracted name, and the retrieved transcript still attributes the words to the wrong person.
     """
     with Memory(
@@ -3366,8 +3355,8 @@ def test_speaker_recognition_records_new_then_matched_identity_counts(tmp_path: 
         transcriber=_FakeSpeech(),
         tracer=provider.get_tracer("test"),
         # Deferred so recognition happens here and exactly one created-then-matched pair is
-        # emitted. With `index_speech` on, `add` recognizes and `speech()` re-reports the stored
-        # result with `cached=True`, so the same two yields arrive as four spans and this
+        # emitted. With index_speech on, add recognizes and speech() re-reports the stored
+        # result with cached=True, so the same two yields arrive as four spans and this
         # assertion cannot address the pair it is about.
         settings=MemorySettings(index_speech=False),
     ) as memory:
@@ -3957,8 +3946,6 @@ def test_composite_query_retains_atomic_media_recall(
             ef: int | None = None,
             exact: bool = False,
         ) -> tuple[IndexHit, ...]:
-            del space_id, task, memory_type, occurred_from, occurred_until, ef, exact
-            del place_id, identity_id
             current.dense_search_calls += 1
             return (
                 (IndexHit(id=record.id, relevance=0.9, confidence=0.9),)
@@ -4282,7 +4269,7 @@ def test_add_many_hydrates_the_index_outbox_in_batches(
     def counted_connection(
         store: Connections, *, secure_delete: bool = False
     ) -> Iterator[sqlite3.Connection]:
-        # Mirrors `Connections.connection`, forwarding its keyword arguments. This test counts
+        # Mirrors Connections.connection, forwarding its keyword arguments. This test counts
         # connections, so it must not change which kind of connection the store asked for.
         nonlocal connection_count
         connection_count += 1
@@ -4302,7 +4289,7 @@ def test_outbox_bounds_index_batches(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     One flush follows each batch and costs the same whatever it carries, which is what makes this
     bound the knob deciding how many of them a bulk write pays for. What the search index accepts
-    in one write is a separate limit that `ZvecIndex` enforces for itself.
+    in one write is a separate limit that ZvecIndex enforces for itself.
     """
     monkeypatch.setattr(projection_module, "OUTBOX_BATCH_SIZE", 64)
     bound = projection_module.OUTBOX_BATCH_SIZE
@@ -4335,7 +4322,7 @@ def test_writes_apply_at_once_and_flush_in_batches(tmp_path: Path) -> None:
         memory.add("blue kettle")
         assert index.flush_calls == 1
         assert memory._store.index.pending_index_operations() != ()
-    # `close()` flushes and acknowledges whatever the bound had not reached.
+    # close() flushes and acknowledges whatever the bound had not reached.
     assert index.flush_calls == 2
     with _memory(tmp_path, _FakeModels()) as memory:
         assert memory._store.index.pending_index_operations() == ()
@@ -4409,7 +4396,7 @@ def test_close_reports_a_failed_batched_flush_and_the_next_open_replays_it(
             memory.close()
     assert index.closed is True
     with _memory(tmp_path, _FakeModels()) as memory:
-        # The rows were pending in SQLite, so the open re-applied them; `close()` acknowledges.
+        # The rows were pending in SQLite, so the open re-applied them; close() acknowledges.
         assert len(memory._store.index.pending_index_operations()) > 0
         assert [hit.id for hit in memory.search("red lantern").hits] == [record.id]
     assert _FakeIndex.instances[-1].flush_calls == 1
@@ -4532,7 +4519,7 @@ def test_keyset_pages_reindex_optimize_and_missing_index_recovery(tmp_path: Path
     assert len(seen) == len(set(seen)) == len(records)
     assert memory.reindex() == len(records)
     # A rebuild merges the segments its own outbox replay leaves behind, so the explicit
-    # `optimize()` below is the second merge rather than the first.
+    # optimize() below is the second merge rather than the first.
     assert _FakeIndex.instances[-1].optimize_calls == 1
     memory.optimize()
     assert _FakeIndex.instances[-1].rebuild_calls == 1
@@ -4785,7 +4772,7 @@ def test_data_directories_are_isolated_and_metadata_changes_fail_fast(tmp_path: 
         with pytest.raises(StorageError, match="already in use") as busy:
             _memory(tmp_path / "first", _FakeModels())
         # Transient and permanent open failures no longer collapse into one message, and the
-        # directory travels in `subject` rather than in the message every transport forwards.
+        # directory travels in subject rather than in the message every transport forwards.
         assert busy.value.reason == "data_dir_in_use"
         assert busy.value.retryable is True
         assert busy.value.stage == "open"
@@ -4893,7 +4880,7 @@ def test_delete_leaves_no_trace_of_the_record_in_any_table_or_blob(tmp_path: Pat
         assert memory.delete(seen.id) is True
 
         assert [path for path in (tmp_path / "assets").rglob("*") if path.is_file()] == []
-        # `memory_operations` is audit history that outlives the records it names; every other
+        # memory_operations is audit history that outlives the records it names; every other
         # table holds record content, derived vectors, or a biometric template built from it.
         remaining = _table_counts(tmp_path)
         assert remaining["memory_operations"] == operations
@@ -5107,7 +5094,6 @@ class _CountingStreamer(_FakeModels):
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> Generator[str, None, AnswerResult]:
-        del question
         for part in ("the red ", "toolbox is ", "on the bench"):
             self.emitted.append(part)
             yield part
@@ -5128,7 +5114,7 @@ def test_ask_stream_yields_deltas_then_the_result_ask_would_have_returned(
     deltas = [chunk.text for chunk in chunks if chunk.result is None]
     finals = [chunk.result for chunk in chunks if chunk.result is not None]
     assert deltas == ["the red ", "toolbox is ", "on the bench"]
-    # Exactly one terminal chunk, and it is the whole `ask()` contract: answer, grounding,
+    # Exactly one terminal chunk, and it is the whole ask() contract: answer, grounding,
     # and abstention, not just the joined text.
     assert len(finals) == 1
     assert "".join(deltas) == finals[0].answer == buffered.answer
@@ -5179,7 +5165,7 @@ def test_ask_stream_reinforces_before_it_hands_over_the_result(tmp_path: Path) -
 
         # Stopping on the terminal chunk is how a result is read, and a generator stays
         # suspended wherever the caller stops. Nothing may still be open there, or every
-        # ordinary caller would pin an operation and hang `close()`.
+        # ordinary caller would pin an operation and hang close().
         assert memory._lifecycle._active_operations == 0
 
     # A caller holding the result holds a settled store, so reading access counts straight
@@ -5218,7 +5204,7 @@ def test_abandoning_ask_stream_releases_the_operation_it_holds(tmp_path: Path) -
         next(stream)
         assert memory._lifecycle._active_operations == 1
 
-        # `close()` waits on open operations, so a stream that pinned one would hang shutdown
+        # close() waits on open operations, so a stream that pinned one would hang shutdown
         # rather than fail a test.
         stream.close()
         assert memory._lifecycle._active_operations == 0
@@ -5336,12 +5322,12 @@ def test_ask_returns_only_retrieved_hits_the_answerer_used(tmp_path: Path) -> No
 
 
 def test_answering_reinforces_only_the_evidence_the_model_cited(tmp_path: Path) -> None:
-    """Answering has to move `access_count`, or decay only ever measures age.
+    """Answering has to move access_count, or decay only ever measures age.
 
-    `reinforce` was reachable from the public operation and the CLI and from nowhere else, so an
+    reinforce was reachable from the public operation and the CLI and from nowhere else, so an
     agent driving SenseMem over MCP or REST left every memory at zero for ever: the
     reinforcement factor was pinned at 1.0, and turning on
-    `decay_half_life_days` degraded memories purely by age with no usage signal to hold up the
+    decay_half_life_days degraded memories purely by age with no usage signal to hold up the
     ones that keep answering questions. The set reinforced is the answer's own citations, so a
     candidate that was retrieved and then not used earns nothing.
     """
@@ -5554,7 +5540,7 @@ def test_the_transcript_marker_names_no_modality(tmp_path: Path) -> None:
         indexed = _FakeIndex.instances[-1].documents[record.id].content
 
     # A full-text match covering every distinctive query term reaches
-    # `_LEXICAL_FULL_COVERAGE_RELEVANCE` on its own, which is above the default weak-evidence
+    # _LEXICAL_FULL_COVERAGE_RELEVANCE on its own, which is above the default weak-evidence
     # floor, so every word of the marker is a term that makes this memory visible to any query
     # containing it. A marker naming a modality both mislabels a video transcript as audio and
     # hands each media memory a free match on an ordinary English word.
@@ -5619,7 +5605,7 @@ def test_text_only_add_never_reaches_the_transcriber(tmp_path: Path) -> None:
 
 
 def test_speech_backend_analysis_is_indexed_by_default(tmp_path: Path) -> None:
-    """`index_speech` defaults on: a configured `SpeechBackend` reaches the index document.
+    """index_speech defaults on: a configured SpeechBackend reaches the index document.
 
     Off by default, a video memory's lexical document was the empty string, so the whole
     dense+lexical union collapsed to its dense half for every speech-bearing asset.
@@ -5634,10 +5620,10 @@ def test_speech_backend_analysis_is_indexed_by_default(tmp_path: Path) -> None:
 
 
 def test_indexed_speech_is_not_re_analyzed_when_speech_is_read_back(tmp_path: Path) -> None:
-    """`index_speech` moves the speech cost to `add`; it must not duplicate it.
+    """index_speech moves the speech cost to add; it must not duplicate it.
 
-    `speech()` still reports one `sensemem.identity.speakers` span per asset so a recognizer's
-    yield stays observable, but the span carries `cached=True` and no model call or write follows
+    speech() still reports one sensemem.identity.speakers span per asset so a recognizer's
+    yield stays observable, but the span carries cached=True and no model call or write follows
     it. Without the cache the analysis would run twice for any caller that both writes and reads.
     """
     provider, exporter = _identity_recorder()
@@ -5751,7 +5737,7 @@ def test_vlm_generation_recognizes_complete_speaker_identity_in_parallel(
     models = ParallelModels(capabilities=capabilities)
     speech = IdentitySpeech()
 
-    # Deferred so recognition is still outstanding at `ask` time, which is what this test
+    # Deferred so recognition is still outstanding at ask time, which is what this test
     # observes running in parallel with query embedding.
     with _memory(tmp_path, models, transcriber=speech, index_speech=False) as memory:
         record = memory.add(
@@ -6183,7 +6169,7 @@ async def test_async_ask_stream_rejects_arguments_at_the_call_like_the_sync_stre
 ) -> None:
     models = _CountingStreamer()
     async with AsyncMemory(Memory(tmp_path, embedder=models, answerer=models)) as memory:
-        # An `async def` generator would defer this to the first `__anext__`, so the two
+        # An async def generator would defer this to the first __anext__, so the two
         # facades would report the same bad argument from two different places.
         with pytest.raises(ValidationError, match="limit must be between 1 and 100"):
             memory.ask_stream("where is it?", limit=0)
@@ -6201,10 +6187,10 @@ async def test_async_ask_stream_releases_the_operation_when_the_caller_stops_ear
         stream = memory.ask_stream("where is the red toolbox?")
         assert (await anext(stream)).text == "the red "
         # Closing the async generator has to close the synchronous one behind it, off the
-        # event loop; otherwise `close()` waits on an operation nobody will finish.
+        # event loop; otherwise close() waits on an operation nobody will finish.
         await stream.aclose()
 
-        # `aclose()` awaits the synchronous close through the worker, so the operation is
+        # aclose() awaits the synchronous close through the worker, so the operation is
         # already released when it returns; a poll here would hide a leak behind a timeout.
         assert memory._memory._lifecycle._active_operations == 0
     finally:
@@ -6381,7 +6367,7 @@ async def test_async_memory_from_config_uses_the_same_composition(
             "embedding": {
                 "provider": "sentence-transformers",
                 "model": "google/embeddinggemma-2",
-                "revision": "f9972ac22e696a105c482202646979e33e4b5a1e",
+                "revision": "a" * 40,
             },
             "settings": {"minimum_relevance": 0},
         }
@@ -6414,7 +6400,7 @@ def test_identity_matching_publishes_how_often_an_observation_joined_a_known_ide
         for span in exporter.get_finished_spans()
         if span.attributes is not None and IDENTITY_OBSERVATIONS in span.attributes
     ]
-    # `_FakeFace` returns one embedding for every asset, so the first observation founds an
+    # _FakeFace returns one embedding for every asset, so the first observation founds an
     # identity and the second has to join it. A recognizer whose similarities separate nobody
     # reports the same two observations with zero matches, which is the case this exists to
     # make visible: analysis succeeds either way and only the match rate tells them apart.
@@ -6455,9 +6441,9 @@ def test_capabilities_declares_what_a_composition_can_do(tmp_path: Path) -> None
     """A caller and an agent must be able to ask, not infer, what this composition supports.
 
     Nothing published this before, so the library itself reached
-    `self._memory._memory._backends.embedding_capabilities` to learn it. When internal code needs two
-    underscores to find a fact, an external caller has no route at all: `/healthz` returned
-    `{"status": "ok"}` and no transport could report which modalities would actually work.
+    self._memory._memory._backends.embedding_capabilities to learn it. When internal code needs two
+    underscores to find a fact, an external caller has no route at all: /healthz returned
+    {"status": "ok"} and no transport could report which modalities would actually work.
     """
     models = _FakeModels()
     with Memory(tmp_path, embedder=models, answerer=models) as memory:
@@ -6483,14 +6469,14 @@ def test_capabilities_declares_what_a_composition_can_do(tmp_path: Path) -> None
 def test_forget_identity_erases_the_person_and_their_name_from_the_index(tmp_path: Path) -> None:
     """ "Forget that" must remove the biometric template AND the name it was indexed under.
 
-    `delete()` reaches memories cleanly but never touched `identities` or `identity_exemplars`,
+    delete() reaches memories cleanly but never touched identities or identity_exemplars,
     and no public verb removed them, so a household robot asked to forget someone kept their face
     and voice vectors forever. Erasing only the rows is not enough either: the indexed document
     carries the registered name, so the search projection would still answer to "Alice".
 
     The family's memories survive. Forgetting a person is not forgetting the evening.
     """
-    # `index_speech` on is what puts the speech section -- and therefore the registered name --
+    # index_speech on is what puts the speech section -- and therefore the registered name --
     # into the indexed document, which is the leak this verb has to close.
     with _memory(tmp_path, transcriber=_FakeSpeech()) as memory:
         record = memory.add(Blob(b"first speech", "audio/wav", "first.wav"))
@@ -6521,11 +6507,11 @@ def test_ranking_does_not_hydrate_stored_embedding_vectors(tmp_path: Path) -> No
     # are never consulted. Hydrating them anyway unpacked and revalidated one vector per
     # candidate, which measured at twenty-one times the cost of the query that produced the row.
     # Failing the full-document read proves ranking reaches the projection instead: reverting the
-    # search path to `read_index_documents` turns this red.
+    # search path to read_index_documents turns this red.
     with Memory(tmp_path, embedder=_FakeEmbedder()) as memory:
         memory.add("a stored fact about winter")
         memory.add("an unrelated fact about summer")
-        # `add` drains the search-index outbox, which legitimately needs whole documents. Only
+        # add drains the search-index outbox, which legitimately needs whole documents. Only
         # the ranking path that follows is under test.
         store = memory._store
         calls: list[int] = []
@@ -6655,10 +6641,10 @@ def test_scoped_survivor_count_returns_the_hits_the_discarded_hydration_did(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """`count_memories` stands in for a hydration whose only use was `len()`.
+    """count_memories stands in for a hydration whose only use was len().
 
     The candidate loop widens on that number, so the arm below re-runs the same searches with
-    the discarded hydration restored and compares whole `SearchHit` values, not just IDs.
+    the discarded hydration restored and compares whole SearchHit values, not just IDs.
     """
     near = SpatialContext(frame_id="home-map", anchor=SpatialAnchor.SUBJECT, x=1, y=1)
     wrong = SpatialContext(frame_id="wrong-map", anchor=SpatialAnchor.SUBJECT, x=1, y=1)
@@ -6758,7 +6744,7 @@ def test_add_stream_indexes_committed_items_in_bounded_groups(
     """One index apply per group of 32, every one after its own SQLite commit; the flush waits.
 
     The stream groups the *apply*; the flush that acknowledges the rows is batched behind every
-    write and here runs once, at `close()`.
+    write and here runs once, at close().
     """
     monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
@@ -6807,7 +6793,7 @@ def test_a_stream_that_ended_stops_deferring_even_if_another_outlives_it(
 
     While it was one shared slot, each stream saved the value it found and restored it on the way
     out, so the second to finish handed the *first* thread's id back. Nothing ever cleared it
-    again: every later `add`, `delete` or `optimize` on that thread returned without flushing the
+    again: every later add, delete or optimize on that thread returned without flushing the
     index, and the rows stayed durable but unsearchable.
     """
     monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
@@ -6852,10 +6838,10 @@ def test_a_stream_pumped_across_threads_stops_deferring_on_the_thread_that_opene
 ) -> None:
     """A stream clears deferral on every thread it ran on, not just the one that ended it.
 
-    `add_stream` is a generator, so its body runs on whichever thread calls `next`. A consumer
+    add_stream is a generator, so its body runs on whichever thread calls next. A consumer
     that hands the iterator between workers -- what an executor-backed pump does -- opened the
     group on one thread and closed it on another, so the exit cleared the finishing thread and
-    left the opener deferring forever: every later `add` or `delete` on that worker returned
+    left the opener deferring forever: every later add or delete on that worker returned
     without flushing the index and its rows stayed durable but unsearchable.
     """
     monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
@@ -6889,7 +6875,7 @@ def test_search_during_a_stream_sees_the_committed_items(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A group that has not flushed yet is still retrievable: `search` drains first."""
+    """A group that has not flushed yet is still retrievable: search drains first."""
     monkeypatch.setattr("sensemem.kernel.ingestion.STREAM_GROUP_SECONDS", 1e9)
 
     with _memory(tmp_path, _FakeModels()) as memory:
@@ -7125,8 +7111,8 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
     """The kernel's own irreversible-looking bind is neither invisible nor irreversible.
 
     Binding one voice to one face is a model embedding plus a corroboration count, committed as
-    a side effect of `faces()`. It has to reach the operation log like every other derived
-    state, or `operations()` cannot answer what fused two people and `rollback()` cannot undo
+    a side effect of faces(). It has to reach the operation log like every other derived
+    state, or operations() cannot answer what fused two people and rollback() cannot undo
     it.
     """
     with _linking_memory(tmp_path) as memory:
@@ -7188,9 +7174,9 @@ def test_a_cross_modal_merge_is_logged_and_rollback_re_splits_the_two_identities
         )
         assert _merge_row(memory).rolled_back_at is not None
 
-        # The restored identity's `created_at` is its own pre-merge value, not the moment the
-        # merge (or the rollback) happened: `_merge_identities` must not overwrite it with the
-        # merge time before `_split_identity` reads it back.
+        # The restored identity's created_at is its own pre-merge value, not the moment the
+        # merge (or the rollback) happened: _merge_identities must not overwrite it with the
+        # merge time before _split_identity reads it back.
         with closing(sqlite3.connect(tmp_path / "state.sqlite3")) as connection:
             restored_created_at = connection.execute(
                 "SELECT created_at FROM identities WHERE identity_id = ?",
@@ -7231,7 +7217,7 @@ def test_answer_recognition_never_implicitly_binds_face_and_voice(tmp_path: Path
 
 
 def test_unlinking_a_merge_is_logged_as_a_split_and_rollback_re_links_it(tmp_path: Path) -> None:
-    """`unlink_identity` is the split half of "correct or split", so it logs like one."""
+    """unlink_identity is the split half of "correct or split", so it logs like one."""
     with _linking_memory(tmp_path) as memory:
         record = memory.add(Blob(b"one person video", "video/mp4", "person.mp4"))
         survivor = _confirm_identity(memory, record.id)
@@ -7263,8 +7249,8 @@ def test_erasing_a_person_leaves_an_irreversible_log_row_holding_no_content(
 ) -> None:
     """Physical forgetting of a person is auditable and deliberately not recoverable.
 
-    `delete()` leaves no row at all, cognitive forgetting leaves a reversible `FORGET` row over
-    memory IDs, and this leaves a `FORGET` row over an identity: the marker that separates the
+    delete() leaves no row at all, cognitive forgetting leaves a reversible FORGET row over
+    memory IDs, and this leaves a FORGET row over an identity: the marker that separates the
     two is which of the two the row names. It carries IDs only, so the log cannot be mined for
     the name or the template the erasure destroyed.
     """
@@ -7333,7 +7319,6 @@ def test_answer_backends_receive_the_full_current_keyword_contract(
             hits: Sequence[SearchHit],
             **options: object,
         ) -> AnswerResult:
-            del question
             calls.append(
                 (cast(AnswerPolicy, options["answer_policy"]), cast(bool, options["exhaustive"]))
             )
@@ -7346,7 +7331,6 @@ def test_answer_backends_receive_the_full_current_keyword_contract(
             hits: Sequence[SearchHit],
             **options: object,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             calls.append(
                 (cast(AnswerPolicy, options["answer_policy"]), cast(bool, options["exhaustive"]))
             )
@@ -7370,7 +7354,6 @@ def test_recall_planner_receives_an_empty_attempt_note_on_the_first_round(tmp_pa
 
     class _CurrentPlanner(_FakeModels):
         def plan_recall(self, question: str, **options: object) -> str | None:
-            del question
             attempts.append(cast(str, options["attempted"]))
             return None
 
@@ -7395,7 +7378,6 @@ class _PlannerlessAnswerer:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        del question, answer_policy
         return AnswerResult(answer="answered", hits=tuple(hits))
 
     def close(self) -> None:
@@ -7600,7 +7582,7 @@ def test_planning_with_an_answerer_that_cannot_plan_is_said_once_and_keeps_the_f
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Every planning failure resolves to the fallback plan, so a wiring bug reads exactly like a
-    planner that chose nothing. An answerer without `plan_recall` is not a planner failing but a
+    planner that chose nothing. An answerer without plan_recall is not a planner failing but a
     configuration lying, and that is said once, at wiring, rather than once per question."""
 
     class Unplanning:
@@ -7614,7 +7596,6 @@ def test_planning_with_an_answerer_that_cannot_plan_is_said_once_and_keeps_the_f
             answer_policy: str = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del question, answer_policy, exhaustive
             return AnswerResult("red", tuple(hits))
 
         def close(self) -> None:
@@ -7651,7 +7632,7 @@ def test_planning_with_an_answerer_that_cannot_plan_is_said_once_and_keeps_the_f
 def test_a_point_plan_grounds_exactly_as_the_unplanned_path_does(tmp_path: Path) -> None:
     """Planning a point question buys a call and changes nothing else, deliberately.
 
-    Widening `k` on a point question is a measured null, so the plan the planner is allowed to
+    Widening k on a point question is a measured null, so the plan the planner is allowed to
     return for one leads to the same evidence the ranking already chose.
     """
     planned = _FakeModels()
@@ -8037,7 +8018,7 @@ def test_a_set_plan_grounds_the_whole_matched_set_in_time_order(tmp_path: Path) 
         answered = memory.ask("how many wrenches did I mention?", limit=1)
 
     question, grounded = models.answer_calls[-1]
-    # `limit=1` would have grounded one hit; the set is what the question asked for.
+    # limit=1 would have grounded one hit; the set is what the question asked for.
     assert [hit.content for hit in grounded] == ["a red wrench", "a blue wrench"]
     assert [hit.content for hit in answered.hits] == ["a red wrench", "a blue wrench"]
     assert "Recall program (set): records containing wrench (2)." in question.text
@@ -8249,7 +8230,7 @@ def test_the_answerer_is_told_whether_its_evidence_is_a_set_or_a_ranking(
 ) -> None:
     """The note says the rows are in time order, so the prompt has to agree with the note.
 
-    A backend cannot see this in the hits: the same `SearchHit` sequence is a ranking on one
+    A backend cannot see this in the hits: the same SearchHit sequence is a ranking on one
     question and a predicate's whole set on another, and only the plan knows which.
     """
     models = _FakeModels()
@@ -8291,7 +8272,7 @@ def test_a_truncated_set_tells_the_reader_it_is_not_a_set(tmp_path: Path) -> Non
 def test_a_cut_similarity_row_does_not_make_the_matched_set_incomplete(tmp_path: Path) -> None:
     """Completeness is a property of the predicate, not of how deep the ranking got to go.
 
-    Counting a dropped `similar` row as a missing "matched record" told a reader holding every
+    Counting a dropped similar row as a missing "matched record" told a reader holding every
     record the predicate matched that it held an incomplete set, which withdraws exactly the
     licence -- to state a total -- that running the set read bought.
     """
@@ -8424,7 +8405,7 @@ def test_a_predicate_that_matched_most_of_the_corpus_grounds_like_no_plan_at_all
 ) -> None:
     """A non-selective read is the corpus, not evidence, so it contributes nothing.
 
-    Measured on LoCoMo dev (525 questions): the planner chose `entity` on 229 of them, no
+    Measured on LoCoMo dev (525 questions): the planner chose entity on 229 of them, no
     identity registry existed so the step degraded to matching the name as text, and on a corpus
     whose every turn reads "[date] Caroline said: ..." that name selected ~300 of ~600 records.
     Handing those to the reader cost accuracy 0.721 -> 0.528 on exactly those questions and
@@ -8489,7 +8470,7 @@ def test_a_selective_predicate_on_the_same_corpus_still_grounds_its_whole_set(
 def test_a_matched_set_is_capped_in_rows_as_well_as_characters(tmp_path: Path) -> None:
     """A short-record corpus fits hundreds of matched rows inside the character budget.
 
-    `recall_set_max_rows` is the other axis of the same bound: the rows arrive chronological, the
+    recall_set_max_rows is the other axis of the same bound: the rows arrive chronological, the
     cap keeps the earliest of them -- the read's own order, not a second ranking -- and the rest
     are reported as matched records not shown, which is what makes the set incomplete. The ranked
     window is outside the cap, so this can never cost a question the evidence it already had.
@@ -8696,9 +8677,9 @@ def test_a_plan_the_store_would_refuse_answers_from_the_ranking_instead_of_raisi
 ) -> None:
     """Plan text is a model's output, so a read the store rejects may not surface as an error.
 
-    The store refuses a match term over its own limit with a `ValueError`, which nothing on the
+    The store refuses a match term over its own limit with a ValueError, which nothing on the
     answer path catches; the plan is unrunnable at validation instead, and the question keeps the
-    single search `ask` has always made.
+    single search ask has always made.
     """
     models = _FakeModels()
     models.recall_plan = _plan("set", step)
@@ -8714,7 +8695,7 @@ def test_a_plan_the_store_would_refuse_answers_from_the_ranking_instead_of_raisi
 
 
 def test_an_exhaustive_read_keeps_the_callers_own_scope(tmp_path: Path) -> None:
-    """A plan may narrow what `ask` reads; it may never widen it past what the caller allowed."""
+    """A plan may narrow what ask reads; it may never widen it past what the caller allowed."""
     models = _FakeModels()
     models.recall_plan = _plan("set", {"op": "match", "terms": ["wrench"]})
     with _memory(tmp_path, models, recall_planning=True) as memory:
@@ -8765,7 +8746,7 @@ def test_a_thin_best_effort_answer_buys_one_replan_round(
 def test_a_refusal_the_caller_asked_for_is_not_replanned_behind_their_back(
     tmp_path: Path,
 ) -> None:
-    """Under `strict` the abstention is the caller's answer, not a failure to work around."""
+    """Under strict the abstention is the caller's answer, not a failure to work around."""
     models = _FakeModels()
     models.recall_plan = _plan("set", {"op": "match", "terms": ["wrench"]})
     models.abstentions = 1
@@ -8798,7 +8779,7 @@ def test_a_streaming_caller_sees_only_the_round_that_stands(tmp_path: Path) -> N
     Two complete answers with no boundary between them is not something a caller can render, and
     a caller who concatenated the deltas would hold text the terminal result contradicts. So a
     round a later one may replace is held until it is known to stand, and the answer streamed is
-    the answer returned. The last round -- and every round under `strict`, where no replan is
+    the answer returned. The last round -- and every round under strict, where no replan is
     possible -- streams as the provider produces it.
     """
     models = _FakeModels()
@@ -8834,7 +8815,7 @@ def test_a_streaming_round_nothing_can_replace_is_not_held_back(tmp_path: Path) 
 
 
 def test_planning_and_the_reads_it_names_happen_inside_a_span(tmp_path: Path) -> None:
-    """The `sensemem.retrieve` leg closes on the ranked hits; these run after it.
+    """The sensemem.retrieve leg closes on the ranked hits; these run after it.
 
     A planning call and a set of exhaustive table scans with no span of their own are latency
     the trace cannot attribute: the operation gets longer and nothing says which leg grew.
@@ -8895,7 +8876,7 @@ def test_ask_reports_hits_in_rank_order_whatever_order_the_answerer_read_them_in
 ) -> None:
     """The reader may be handed the window as a timeline; the caller still gets the ranking.
 
-    `AnswerResult.hits` is the retrieval contract -- the harness measures recall from it and a
+    AnswerResult.hits is the retrieval contract -- the harness measures recall from it and a
     caller reads its top as the best match -- so the order an adapter chose for its own prompt
     must not leak into it.
     """

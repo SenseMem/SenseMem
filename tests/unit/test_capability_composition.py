@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Barrier, Lock
 
 import pytest
-from test_automatic_routing import ALL, TEXT, Answerer, Describer, Embedder, Speech
+from fixtures.routing import ALL, TEXT, Answerer, Describer, Embedder, Speech
 
 from sensemem import (
     AnswerPolicy,

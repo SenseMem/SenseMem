@@ -8,13 +8,13 @@ from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from _event_quality_support import native_observations as native_observations
 from openai import OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import BaseModel, ConfigDict
 from pydantic import ValidationError as SchemaValidationError
-from test_event_segmentation_quality import native_observations as native_observations
 
 from sensemem import Blob, Memory, Modality, SenseMemError, StreamInput
 from sensemem.models.base import EventObservation

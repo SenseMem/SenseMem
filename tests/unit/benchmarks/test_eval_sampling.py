@@ -167,7 +167,6 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
         def embed(
             self, inputs: Sequence[ModelInput], task: EmbedTask
         ) -> tuple[tuple[float, ...], ...]:
-            del task
             return tuple((1.0, 0.0) for _value in inputs)
 
         def close(self) -> None: ...
@@ -177,7 +176,7 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
     monkeypatch.setattr(configuration_module, "SentenceTransformersEmbedder", Embedder)
     options = _generation_kwargs(f"temperature={temperature}", 7)
     arguments = cast(_Arguments, SimpleNamespace(gen_kwargs=options, seed=7, device=None))
-    model = ModelConfig(generation_model="qwen3.8-27b")
+    model = ModelConfig(generation_model="fixture-generation-model")
     declared = (
         MemorySpec.model_validate(
             {

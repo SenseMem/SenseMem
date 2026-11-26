@@ -1,8 +1,8 @@
 """Both network transports carry the identity scope axis to the SDK unchanged.
 
-REST and MCP translate `scope` into a `RetrievalScope` and pass it through, so a new axis is a
+REST and MCP translate scope into a RetrievalScope and pass it through, so a new axis is a
 contract question rather than a routing one: does the payload the caller sends still reach the
-predicate, and does it still narrow the answer? These drive a real `Memory` for that reason.
+predicate, and does it still narrow the answer? These drive a real Memory for that reason.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ class _Embedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         return tuple((1.0, 0.0) for _value in inputs)
 
     def close(self) -> None:

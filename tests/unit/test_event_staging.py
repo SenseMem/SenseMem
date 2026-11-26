@@ -14,7 +14,9 @@ from typing import cast
 
 import pytest
 from _feature_support import TinyEmbedder
-from test_event_stream import ScriptedSegmenter, _chunk, _chunks
+from fixtures.events import ScriptedSegmenter
+from fixtures.events import make_chunk as _chunk
+from fixtures.events import stream_chunks as _chunks
 
 from sensemem import (
     AsyncEventStream,

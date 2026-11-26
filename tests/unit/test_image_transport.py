@@ -13,11 +13,12 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Literal, cast
 
 import httpx2 as httpx
 import pytest
 from openai import OpenAI
+from PIL.Image import Image
 
 import sensemem.configuration as configuration
 import sensemem.models._openai_media as media
@@ -34,10 +35,6 @@ from sensemem.content import AssetRef
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models.openai_completion import OpenAICompletion
 from sensemem.models.openai_embedding import OpenAIEmbedder
-from sensemem.models.openai_speech import OpenAITranscriber
-
-if TYPE_CHECKING:
-    from PIL.Image import Image
 
 
 def _image(
@@ -87,10 +84,6 @@ def _model(client: OpenAI, *, max_pixels: int | None = 4096) -> OpenAICompletion
         generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
         image_max_pixels=max_pixels,
     )
-
-
-def _transcriber(client: OpenAI, *, max_pixels: int | None = 4096) -> OpenAITranscriber:
-    return OpenAITranscriber(client)
 
 
 def _hit(asset: AssetRef) -> SearchHit:
@@ -277,7 +270,7 @@ def test_image_transport_recipe_separates_default_explicit_and_custom_spaces() -
 @pytest.mark.parametrize("pixels", (True, 0, -1, 64_000_001, 4096.0))
 def test_image_bound_rejects_invalid_constructor_values(pixels: object) -> None:
     with pytest.raises(ValidationError, match="image_max_pixels"):
-        OpenAICompletion(image_max_pixels=cast(Any, pixels))
+        OpenAICompletion(image_max_pixels=pixels)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("slot", ("embedding", "generation", "vision", "formation"))

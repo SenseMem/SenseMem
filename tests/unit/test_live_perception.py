@@ -18,6 +18,12 @@ from openai import OpenAI
 from PIL import Image
 from pydantic import ValidationError as PydanticValidationError
 
+from examples.live.perception import (
+    LivePerception,
+    PerceptionContext,
+    PerceptionFrame,
+    PerceptionResult,
+)
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -30,11 +36,6 @@ from sensemem import (
 from sensemem.models.openai_completion import OpenAICompletion
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 def _jpeg(color: tuple[int, int, int] = (30, 60, 160)) -> bytes:
@@ -100,12 +101,6 @@ class Reviewer:
 
 @pytest.mark.asyncio
 async def test_frames_coalesce_during_model_work_and_keep_real_timing_and_context() -> None:
-    from examples.live.perception import (
-        LivePerception,
-        PerceptionContext,
-        PerceptionFrame,
-        PerceptionResult,
-    )
 
     reviewer = Reviewer(blocked=True)
     results: list[PerceptionResult] = []
@@ -165,12 +160,6 @@ async def test_frames_coalesce_during_model_work_and_keep_real_timing_and_contex
 
 @pytest.mark.asyncio
 async def test_windows_retain_previous_frames_and_mark_expired_results_as_past() -> None:
-    from examples.live.perception import (
-        LivePerception,
-        PerceptionContext,
-        PerceptionFrame,
-        PerceptionResult,
-    )
 
     reviewer = Reviewer()
     results: list[PerceptionResult] = []
@@ -241,7 +230,6 @@ async def test_windows_retain_previous_frames_and_mark_expired_results_as_past()
 )
 @pytest.mark.asyncio
 async def test_unusable_model_decisions_never_escape_the_boundary(patch: dict[str, object]) -> None:
-    from examples.live.perception import LivePerception, PerceptionContext, PerceptionFrame
 
     reviewer = Reviewer()
     reviewer.patch = patch
@@ -280,12 +268,6 @@ async def test_unusable_model_decisions_never_escape_the_boundary(patch: dict[st
 
 @pytest.mark.asyncio
 async def test_interrupt_suggestion_needs_an_active_literal_claim_and_concrete_correction() -> None:
-    from examples.live.perception import (
-        LivePerception,
-        PerceptionContext,
-        PerceptionFrame,
-        PerceptionResult,
-    )
 
     reviewer = Reviewer()
     reviewer.patch = {
@@ -323,7 +305,6 @@ async def test_interrupt_suggestion_needs_an_active_literal_claim_and_concrete_c
 
 @pytest.mark.asyncio
 async def test_close_drains_model_and_suppresses_late_results() -> None:
-    from examples.live.perception import LivePerception, PerceptionContext, PerceptionFrame
 
     reviewer = Reviewer(blocked=True)
     results = []
@@ -347,7 +328,6 @@ async def test_close_drains_model_and_suppresses_late_results() -> None:
 
 @pytest.mark.asyncio
 async def test_model_failure_reports_only_a_safe_code_and_the_next_frame_recovers() -> None:
-    from examples.live.perception import LivePerception, PerceptionContext, PerceptionFrame
 
     reviewer = Reviewer()
     reviewer.fail_first = True
@@ -373,12 +353,6 @@ async def test_model_failure_reports_only_a_safe_code_and_the_next_frame_recover
 
 @pytest.mark.asyncio
 async def test_camera_reset_withdraws_inflight_epoch_and_reuses_one_worker() -> None:
-    from examples.live.perception import (
-        LivePerception,
-        PerceptionContext,
-        PerceptionFrame,
-        PerceptionResult,
-    )
 
     reviewer = Reviewer(blocked=True)
     delivered = asyncio.Event()
@@ -409,12 +383,6 @@ async def test_camera_reset_withdraws_inflight_epoch_and_reuses_one_worker() -> 
 
 @pytest.mark.asyncio
 async def test_identical_frames_reuse_observation_until_interaction_or_memory_changes() -> None:
-    from examples.live.perception import (
-        LivePerception,
-        PerceptionContext,
-        PerceptionFrame,
-        PerceptionResult,
-    )
 
     reviewer = Reviewer()
     delivered = asyncio.Event()
@@ -446,7 +414,6 @@ async def test_identical_frames_reuse_observation_until_interaction_or_memory_ch
 
 @pytest.mark.asyncio
 async def test_configured_native_adapter_receives_original_jpegs_without_embedding() -> None:
-    from examples.live.perception import LivePerception, PerceptionContext, PerceptionFrame
 
     requests: list[dict[str, object]] = []
     paths: list[str] = []
@@ -508,7 +475,6 @@ async def test_configured_native_adapter_receives_original_jpegs_without_embeddi
 
 
 def test_frame_schema_rejects_invalid_jpeg_and_missing_capture_timezone() -> None:
-    from examples.live.perception import PerceptionFrame
 
     with pytest.raises(PydanticValidationError):
         PerceptionFrame(sequence=1, captured_at=NOW, timestamp_ms=0, jpeg=b"not a JPEG")

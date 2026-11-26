@@ -365,7 +365,6 @@ def test_compile_reads_unranked_denial_from_sqlite(
         assert stored is not None
 
         def ranked_positive(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(stored, 0.9),),
                 matched_dense_index_ids={},
@@ -375,7 +374,6 @@ def test_compile_reads_unranked_denial_from_sqlite(
         if truncated:
 
             def clipped(*args: object, **kwargs: object) -> RecallRead:
-                del args, kwargs
                 return RecallRead((stored,), selected=2)
 
             monkeypatch.setattr(memory._store.semantics, "affect_links", clipped)

@@ -1,6 +1,6 @@
 """Mechanical parity checks between the Python SDK, REST, and MCP surfaces.
 
-`AGENTS.md` requires every surface that shares an operation to preserve the same
+AGENTS.md requires every surface that shares an operation to preserve the same
 IDs, field meanings, pagination, idempotency, defaults, and error semantics. Everything here is
 derived from the code so a drifting default, field, or error code fails instead of rotting.
 """
@@ -66,7 +66,7 @@ from sensemem.semantics import FormationProposal, RecordSemantics
 from sensemem.types import EvidenceBasis, Modality, RecordKind
 
 # The only hand-written mapping: which SDK operation each transport route and tool serves. Every
-# `/v1` route and every published tool must appear, so a new surface cannot skip this file.
+# /v1 route and every published tool must appear, so a new surface cannot skip this file.
 SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
     "add": ("createMemory", "add_memory"),
     "add_many": ("createMemories", None),
@@ -84,15 +84,15 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
     "capture": ("captureMemory", None),
     "settle": ("settleCaptures", None),
     "pending_captures": ("pendingCaptures", None),
-    # Embodied and identity operations are gated behind REST's `identity_operations` and
-    # `embodied_operations`, mirroring MCP's own switches; `_rest_route` below builds the app
+    # Embodied and identity operations are gated behind REST's identity_operations and
+    # embodied_operations, mirroring MCP's own switches; _rest_route below builds the app
     # with both on so the shared checks below see every gated route.
     "perceive": ("perceiveMemory", "perceive_memory"),
     "register_identity": ("registerIdentity", "register_identity"),
     "identity": ("getIdentity", "get_identity"),
     "unlink_identity": ("unlinkIdentity", "unlink_identity"),
     "forget_identity": ("forgetIdentity", "forget_identity"),
-    # The three data-subject rights REST serves behind the same `identity_operations` switch and
+    # The three data-subject rights REST serves behind the same identity_operations switch and
     # MCP deliberately does not serve at all. Consent is a statement its subject makes, so an
     # agent must not be able to record one; export and retention are the host's own account of,
     # and authority over, what is held.
@@ -101,10 +101,10 @@ SHARED_OPERATIONS: dict[str, tuple[str | None, str | None]] = {
     "export": ("exportSubject", None),
     "apply_retention": ("applyRetention", None),
 }
-# Operations no transport exposes, each with the reason. `docs/design-principles.md` requires a
-# transport gap to be documented rather than silently left out, and the union of this and
-# `SHARED_OPERATIONS` must be every public operation, so a new SDK operation cannot arrive without
-# someone deciding which of the two it belongs in.
+# Operations no transport exposes, each with the reason. Every transport gap must be documented
+# rather than silently left out, and the union of this and SHARED_OPERATIONS must be every public
+# operation, so a new SDK operation cannot arrive without someone deciding which of the two it
+# belongs in.
 UNEXPOSED_OPERATIONS: dict[str, str] = {
     "call_tool": "application-defined capabilities are granted by the host, outside fixed transports",
     "prepare_input": "a leased model-input context manager is an in-process lifecycle boundary",
@@ -112,7 +112,7 @@ UNEXPOSED_OPERATIONS: dict[str, str] = {
     "replay_sources": "source replay runs between two host-owned directories",
     "reindex": "unbounded index maintenance an operator schedules, not a caller",
     "optimize": "index maintenance an operator schedules, not a caller",
-    # The control plane rewrites derived memory under policy. `docs/context-os.md` keeps that
+    # The control plane rewrites derived memory under policy. docs/architecture.md keeps that
     # authority with the host: an agent must not gain it by holding ordinary recall access.
     "consolidation_candidates": "the control plane's own due-work queue, read by the host loop",
     "consolidate": "derives and retires memory under host authority, not agent authority",
@@ -124,7 +124,7 @@ UNEXPOSED_OPERATIONS: dict[str, str] = {
     "operations": "the control-plane audit log, read by an operator rather than a caller",
 }
 # Not operations: construction, lifecycle, and the capability declaration REST reports in
-# `/healthz`.
+# /healthz.
 NON_OPERATIONS = frozenset({"capabilities", "tools", "close", "from_config", "from_plugins"})
 # Every routed operation uses the SDK signature, including optional diagnostics.
 PROTOCOL_OPERATIONS = (
@@ -143,7 +143,7 @@ CAPABILITIES = MemoryCapabilities(
     reranking_model="test-reranker",
     speaker_recognition=True,
 )
-# Body models are matched to their route by `operation_id`; a route without one takes its arguments
+# Body models are matched to their route by operation_id; a route without one takes its arguments
 # from query or path parameters instead.
 REST_REQUEST_MODELS: dict[str, type[BaseModel]] = {
     "createMemory": schemas.MemoryCreate,
@@ -230,7 +230,7 @@ def _mcp_defaults(tool: str) -> dict[str, object]:
 class _UnusedMemory:
     """Adapter construction reads shapes and the capability declaration, nothing else.
 
-    MCP fixes `instructions` at construction, so building a server reads `capabilities`; every
+    MCP fixes instructions at construction, so building a server reads capabilities; every
     other member is only inspected.
     """
 
@@ -291,7 +291,7 @@ def test_every_sdk_operation_is_exposed_or_documented_as_a_gap() -> None:
     assert published == set(SHARED_OPERATIONS) | set(UNEXPOSED_OPERATIONS)
     assert not set(SHARED_OPERATIONS) & set(UNEXPOSED_OPERATIONS)
     # Every embodied and identity operation is agent-callable over MCP: the adapter runs in the
-    # process that owns `Memory`, so "owner-process concern" was never a transport boundary.
+    # process that owns Memory, so "owner-process concern" was never a transport boundary.
     for operation in (
         "perceive",
         "register_identity",
@@ -308,7 +308,7 @@ def test_mcp_tool_descriptions_state_the_contract_an_agent_needs() -> None:
     for tool in server._tool_manager.list_tools():
         description = tool.description
         assert description is not None, tool.name
-        # `inspect.cleandoc` output can never contain an indented continuation line, so this
+        # inspect.cleandoc output can never contain an indented continuation line, so this
         # fails on any interpreter that publishes the raw docstring.
         assert not any(line.startswith(" ") for line in description.splitlines()), tool.name
         assert description == description.strip(), tool.name
@@ -317,7 +317,7 @@ def test_mcp_tool_descriptions_state_the_contract_an_agent_needs() -> None:
 def test_tool_descriptions_are_normalized_whatever_the_interpreter_did() -> None:
     """CPython 3.13 strips docstring indentation and earlier versions do not.
 
-    `test_mcp_tool_descriptions_state_the_contract_an_agent_needs` cannot see the difference on
+    test_mcp_tool_descriptions_state_the_contract_an_agent_needs cannot see the difference on
     3.13 or later, where the compiler already stripped it, so the normalization is checked here
     against a docstring the compiler never touched.
     """
@@ -367,9 +367,9 @@ def test_every_public_exception_is_mapped_on_both_transports() -> None:
 
 
 def test_a_reason_gets_one_status_whatever_raised_it() -> None:
-    """The status is a function of `reason`, so no raise site can answer a mapped condition twice.
+    """The status is a function of reason, so no raise site can answer a mapped condition twice.
 
-    This is the whole point of the table: `payload_too_large` used to mean 413 from the request
+    This is the whole point of the table: payload_too_large used to mean 413 from the request
     middleware and 502 from a provider rejecting an oversized asset.
     """
     carriers = (
@@ -388,11 +388,11 @@ def test_a_reason_gets_one_status_whatever_raised_it() -> None:
 
 
 def test_every_retryable_reason_says_503_and_nothing_else_does() -> None:
-    """503 and `RETRYABLE_REASONS` must be the same set in both directions.
+    """503 and RETRYABLE_REASONS must be the same set in both directions.
 
     503 tells a client the condition is transient. A non-retryable reason mapped to 503 sends an
     agent into a retry loop it can never win, and a retryable reason mapped elsewhere loses the
-    retry. `io_failed` was 503 while `retryable` was false.
+    retry. io_failed was 503 while retryable was false.
     """
     transient = {
         reason
@@ -438,10 +438,10 @@ def test_result_records_expose_the_same_fields_on_both_transports(
 
 
 def test_an_operation_row_is_one_document_on_both_transports() -> None:
-    """The log row is an audit surface, so REST and `sensemem operations` print the same keys.
+    """The log row is an audit surface, so REST and sensemem operations print the same keys.
 
-    REST carried no `proposal`, so a consolidation row read over `--url` named an intent and no
-    statement -- and `apply`, which takes a row exactly as it is printed, refused to replay it.
+    REST carried no proposal, so a consolidation row read over --url named an intent and no
+    statement -- and apply, which takes a row exactly as it is printed, refused to replay it.
     """
     record = MemoryOperationRecord(
         operation_id=1,
@@ -470,8 +470,8 @@ def test_an_operation_row_is_one_document_on_both_transports() -> None:
 def test_a_memory_context_is_one_document_on_every_surface() -> None:
     """REST and MCP serialize the dataclass, so the CLI has to print every field it declares.
 
-    `identity_id` is the claim's semantic subject. Dropping it locally made `get`, `search`,
-    `compile`, and `export` say a claim was about nobody unless the caller went through `--url`.
+    identity_id is the claim's semantic subject. Dropping it locally made get, search,
+    compile, and export say a claim was about nobody unless the caller went through --url.
     """
     context = RecordSemantics(
         kind=RecordKind.ENTITY,
@@ -531,7 +531,7 @@ def test_embodied_tool_results_publish_every_public_field(
 
 
 def test_health_reports_every_declared_capability() -> None:
-    """`/healthz` says what the composition can do, so a new capability cannot go unreported."""
+    """/healthz says what the composition can do, so a new capability cannot go unreported."""
     assert set(responses.CapabilitiesResponse.model_fields) == set(CAPABILITIES.document())
     assert set(CAPABILITIES.document()) == {
         field.name for field in dataclass_fields(MemoryCapabilities)
@@ -539,7 +539,7 @@ def test_health_reports_every_declared_capability() -> None:
 
 
 class _TinyEmbedder:
-    """The smallest thing `declared_capabilities` accepts, so the CLI path needs no store."""
+    """The smallest thing declared_capabilities accepts, so the CLI path needs no store."""
 
     embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
     embedding_model = "test-omni"
@@ -565,10 +565,10 @@ class _TinyReranker:
 
 
 def test_every_surface_publishes_one_capability_document() -> None:
-    """REST, MCP, and the CLI must render `MemoryCapabilities.document()`, not three views.
+    """REST, MCP, and the CLI must render MemoryCapabilities.document(), not three views.
 
-    The two network surfaces narrow `operations` to what they route to, which
-    `test_capability_document.py` covers; this composition declares only `ask`, which every
+    The two network surfaces narrow operations to what they route to, which
+    test_capability_document.py covers; this composition declares only ask, which every
     surface serves, so the three documents here are the same object.
     """
     served = responses._capabilities_response(
@@ -591,7 +591,7 @@ def test_every_surface_publishes_one_capability_document() -> None:
 
 
 def test_the_capability_document_names_the_backend_each_operation_needs() -> None:
-    """`operations` is derived, so an agent never has to know that `ask` means generation."""
+    """operations is derived, so an agent never has to know that ask means generation."""
     assert CAPABILITIES.operations == frozenset({"ask"})
     assert MemoryCapabilities(
         embedding=frozenset({Modality.TEXT}),
@@ -609,7 +609,7 @@ def test_the_capability_document_names_the_backend_each_operation_needs() -> Non
 
 
 def test_the_compiled_bundle_mirrors_the_sdk_value_on_both_transports() -> None:
-    """A field added to `ContextBundle` must reach both transports instead of being dropped."""
+    """A field added to ContextBundle must reach both transports instead of being dropped."""
     for record, model, renamed in (
         (ContextBundle, responses.ContextBundleResponse, {}),
         (ContextConflict, responses.ContextConflictResponse, {}),
@@ -631,14 +631,14 @@ def test_the_compiled_bundle_mirrors_the_sdk_value_on_both_transports() -> None:
         ),
     ):
         expected = {renamed.get(field.name, field.name) for field in dataclass_fields(record)}
-        # `rendered` is the transports' serialization of `render()`, not a stored field.
+        # rendered is the transports' serialization of render(), not a stored field.
         if record is ContextBundle:
             expected |= {"rendered"}
         assert set(model.model_fields) == expected, record.__name__
 
 
 def test_the_context_budget_transport_defaults_come_from_the_sdk_value() -> None:
-    """`ContextBudget()` is the one source of the published default, on both surfaces."""
+    """ContextBudget() is the one source of the published default, on both surfaces."""
     budget = ContextBudget()
     expected = {
         "selected_proofs": budget.selected_proofs,
@@ -660,7 +660,7 @@ def test_the_context_budget_transport_defaults_come_from_the_sdk_value() -> None
 
 
 def test_the_mcp_instructions_publish_the_declared_capability_view() -> None:
-    """MCP has no capability tool: the declaration REST serves at `/healthz` is the greeting."""
+    """MCP has no capability tool: the declaration REST serves at /healthz is the greeting."""
     server = mcp_adapter.build_mcp_server(_UnusedMemory())  # type: ignore[arg-type]
     instructions = server.instructions
 
@@ -745,7 +745,7 @@ def _sample_bundle() -> ContextBundle:
 
 
 def test_every_surface_publishes_one_context_bundle_document() -> None:
-    """REST, MCP, and the CLI project `ContextBundle.document()`, not three field lists."""
+    """REST, MCP, and the CLI project ContextBundle.document(), not three field lists."""
     bundle = _sample_bundle()
     document = bundle.document()
     expected = {field.name for field in dataclass_fields(ContextBundle)} | {"rendered"}
@@ -760,7 +760,7 @@ def test_every_surface_publishes_one_context_bundle_document() -> None:
     actors = cast(list[object], rendered["actors"])
     assert [entry["id"] for entry in episodes] == ["memory_1"]
     # A JSON array, not the tuple the value object holds: the CLI document is JSON-native before
-    # it is dumped, because the same document also travels as a `--url` request body.
+    # it is dumped, because the same document also travels as a --url request body.
     assert actors[1] == {"identity_id": "identity_1", "memory_ids": ["memory_1"]}
     shared_document = responses.ContextBundleResponse.model_validate(document).model_dump(
         mode="json"
@@ -776,7 +776,7 @@ def test_the_temporary_context_input_names_match_the_sdk_value() -> None:
 
 
 def test_the_two_budget_projections_agree_on_every_bound() -> None:
-    """`ContextBudget.document()` is what all three surfaces publish and the CLI sends."""
+    """ContextBudget.document() is what all three surfaces publish and the CLI sends."""
     budget = ContextBudget(max_chars=2_000, max_items=8, min_confidence=0.5)
     document = budget.document()
 

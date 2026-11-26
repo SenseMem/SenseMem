@@ -12,7 +12,7 @@ from sensemem import AssetRef, Modality, ModelInput, Qwen3VLReranker
 from sensemem.exceptions import ModelError
 from sensemem.prompts import reranking as reranking_prompts
 
-REVISION = "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
+REVISION = "a" * 40
 
 
 class Tokenizer:

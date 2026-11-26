@@ -5,7 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_independent_evidence import _derive, _open, _root
+from fixtures.control import add_root_memory as _root
+from fixtures.control import derive_memory as _derive
+from fixtures.control import open_independent_memory as _open
 
 from sensemem import (
     ContextBudget,

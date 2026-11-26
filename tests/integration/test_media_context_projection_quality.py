@@ -13,17 +13,13 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from _event_quality_support import completion_signal_retained
+from _event_quality_support import native_observations as native_observations
 from openai import APIError, OpenAI
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import TypeAdapter
-from test_event_segmentation_quality import (
-    completion_signal_retained,
-)
-from test_event_segmentation_quality import (
-    native_observations as native_observations,
-)
 
 from sensemem import (
     AsyncEventStream,

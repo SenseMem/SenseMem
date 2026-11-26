@@ -7,11 +7,13 @@ from pathlib import Path
 import httpx2 as httpx
 import pytest
 from _feature_support import TinyEmbedder
+from fixtures.control import ScriptedConsolidator
+from fixtures.openai import consolidation_evidence as _consolidation_evidence
+from fixtures.openai import sdk_client as _sdk_client
+from fixtures.openai import search_hit as _search_hit
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from test_memory_control_plane import ScriptedConsolidator
-from test_openai_adapters import _consolidation_evidence, _sdk_client, _search_hit
 
 from sensemem import (
     FormationProposal,

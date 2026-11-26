@@ -104,7 +104,7 @@ def test_identity_and_place_scopes_reach_the_matches_a_window_would_lose(
 
 
 def test_a_place_label_with_an_apostrophe_indexes_and_scopes(tmp_path: Path) -> None:
-    """A room called "Ana's room" is a legal `place_id`, so the filter literal escapes it.
+    """A room called "Ana's room" is a legal place_id, so the filter literal escapes it.
 
     The projection used to be checked against the filter grammar on the write path, which
     refused an apostrophe outright -- after SQLite had committed the memory and queued its
@@ -125,10 +125,10 @@ def test_a_place_label_with_an_apostrophe_indexes_and_scopes(tmp_path: Path) -> 
 
 
 def test_a_place_label_the_grammar_cannot_spell_still_scopes(tmp_path: Path) -> None:
-    """Non-empty and trimmed is the whole `place_id` contract, so `attic\\` is storable.
+    """Non-empty and trimmed is the whole place_id contract, so attic\\ is storable.
 
     The literal cannot escape a trailing backslash or a control character, and raising for one
-    turned a legal stored value into `IndexUnavailableError` -- a 503 over REST. The predicate
+    turned a legal stored value into IndexUnavailableError -- a 503 over REST. The predicate
     is dropped from the pushdown instead, and SQLite hydration still enforces the scope.
     """
     with Memory(
@@ -157,7 +157,6 @@ class _CountingEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         self.calls += 1
         return tuple((1.0, 0.0) for _value in inputs)
 

@@ -11,7 +11,7 @@ from typing import cast
 
 import pytest
 from _feature_support import TinyEmbedder
-from test_automatic_routing import ALL, TEXT, Answerer, Describer, Embedder, Transcriber
+from fixtures.routing import ALL, TEXT, Answerer, Describer, Embedder, Transcriber
 
 from sensemem import (
     AnswerResult,

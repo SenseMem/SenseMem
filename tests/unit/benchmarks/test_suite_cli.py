@@ -111,7 +111,6 @@ def test_dispatch_has_stable_usage_failure_and_interrupt_codes(
     module = ModuleType("runner")
 
     def fail(_argv: Sequence[str], *, prog: str | None = None) -> None:
-        del prog
         raise RuntimeError("first line\nsecond line")
 
     module.main = fail  # type: ignore[attr-defined]
@@ -123,7 +122,6 @@ def test_dispatch_has_stable_usage_failure_and_interrupt_codes(
     )
 
     def interrupt(_argv: Sequence[str], *, prog: str | None = None) -> None:
-        del prog
         raise KeyboardInterrupt
 
     module.main = interrupt  # type: ignore[attr-defined]

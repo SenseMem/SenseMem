@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from test_automatic_routing import Answerer
-from test_visual_retrieval import VisualBackend
+from fixtures.routing import Answerer, Describer, VisualBackend
 
 from sensemem import (
     AssetRef,
@@ -110,6 +109,46 @@ def test_policy_can_select_lexical_rewrites_without_query_embeddings(
         target = memory.add("greenhouse key")
         memory.add("meeting archive")
         assert memory.search("meeting").hits[0].id == target.id
+        assert embedder.query_batches == []
+
+
+@pytest.mark.parametrize("mode", list(RetrievalMode))
+@pytest.mark.parametrize("native_image", [False, True])
+def test_default_query_routes_keep_text_after_media(
+    tmp_path: Path, mode: RetrievalMode, native_image: bool
+) -> None:
+    class ExactPartEmbedder(QueryEmbedder):
+        embedding_capabilities = (
+            QueryEmbedder.embedding_capabilities if native_image else frozenset({Modality.TEXT})
+        )
+
+        def embed(
+            self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
+        ) -> tuple[tuple[float, ...], ...]:
+            if task is EmbedTask.QUERY:
+                self.query_batches.append(tuple(inputs))
+                return tuple(
+                    (1.0, 0.0) if value.text == "greenhouse" else (0.0, 1.0) for value in inputs
+                )
+            return super().embed(inputs, task)
+
+    embedder = ExactPartEmbedder()
+    with Memory(
+        tmp_path,
+        embedder=embedder,
+        vision_describer=Describer() if not native_image or mode is RetrievalMode.LEXICAL else None,
+        settings=MemorySettings(retrieval_mode=mode, minimum_relevance=0),
+    ) as memory:
+        target = memory.add("greenhouse")
+        result = memory.search(("Where is it?", Blob(b"query", "image/png"), "greenhouse"))
+    assert [hit.id for hit in result.hits] == [target.id]
+    if mode is not RetrievalMode.LEXICAL:
+        inputs = embedder.query_batches[0]
+        assert ModelInput(text="greenhouse") in inputs
+        assert ModelInput(text="Where is it?") in inputs
+        if native_image:
+            assert any(value.assets and not value.text for value in inputs)
+    else:
         assert embedder.query_batches == []
 
 

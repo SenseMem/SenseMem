@@ -17,7 +17,7 @@ from sensemem import AssetRef, Modality, ModelInput, Qwen3VLReranker
 from sensemem._telemetry import MODEL_REQUEST_COUNT
 from sensemem.exceptions import ModelError, ValidationError
 
-REVISION = "b212dc8c91a8164aef1ea2de9c1a867611e75c04"
+REVISION = "a" * 40
 
 
 @dataclass

@@ -61,7 +61,6 @@ class _BlockingEmbedder:
     def embed(
         self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         with self.lock:
             self.active += 1
             self.calls += 1
@@ -423,7 +422,6 @@ class _ReverseDelayEmbedder(_BlockingEmbedder):
     def embed(
         self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         with self.lock:
             self.active += 1
             self.calls += 1

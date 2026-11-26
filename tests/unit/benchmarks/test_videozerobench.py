@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from test_eval_metrics import _arguments
+from _benchmark_support import make_arguments as _arguments
 
 from sensemem import (
     AnswerPolicy,

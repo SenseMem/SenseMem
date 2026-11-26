@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import openai
 import pytest
 from openai import OpenAI
 from opentelemetry import trace
@@ -96,13 +97,14 @@ from sensemem.models.base import (
     StreamingGenerationBackend,
 )
 from sensemem.models.openai_completion import OpenAICompletion
+from sensemem.prompts.generation import _BEST_EFFORT_SYSTEM_PROMPT, _styled_answer_prompt
 
 _ATOMIC_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.AUDIO, Modality.VIDEO})
 
 
 class _TinyEmbedder:
     """Small deterministic embedder so the fast-plane/compiler tests use a real, isolated
-    `AsyncMemory` (the public SDK) instead of a memory double, with no model service."""
+    AsyncMemory (the public SDK) instead of a memory double, with no model service."""
 
     embedding_capabilities = _ATOMIC_MODALITIES
     embedding_model = "tiny-eval-arm-test"
@@ -114,7 +116,6 @@ class _TinyEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         vectors = []
         for value in inputs:
             digest = hashlib.sha256(value.text.encode()).digest()
@@ -282,7 +283,7 @@ def _outcome(
 def test_retrieval_recall_scores_the_full_ranked_list_not_the_answer_hits() -> None:
     ranked = tuple(_hit(f"noise-{index}", 0.9 - index / 100) for index in range(7))
     ranked = (*ranked, _hit("gold-1", 0.2), *(_hit(f"tail-{i}", 0.1) for i in range(4)))
-    # `ask` returns the modality round robin's survivors: the gold first, everything else gone.
+    # ask returns the modality round robin's survivors: the gold first, everything else gone.
     memory = _RankedMemory(ranked, (_hit("gold-1", 0.2), _hit("noise-0", 0.9)))
     task, unit, question = _task()
 
@@ -860,7 +861,7 @@ def test_every_arm_answers_the_same_questions_against_one_ingest(tmp_path: Path)
 
 
 def test_compile_arm_answers_from_a_rendered_bundle_via_the_public_sdk(tmp_path: Path) -> None:
-    """The compile arm against a real, isolated `AsyncMemory` -- the public SDK, no doubles."""
+    """The compile arm against a real, isolated AsyncMemory -- the public SDK, no doubles."""
     generator = _RecordingGenerator("Ada")
     arm = _Arm("compile", generator=cast(eval_arms_module._BaselineGenerator, generator))
     _, _, question = _task()
@@ -904,9 +905,9 @@ def test_compile_arm_answers_from_a_rendered_bundle_via_the_public_sdk(tmp_path:
 def test_the_product_arm_answers_a_compile_surface_task_from_the_compiled_bundle(
     tmp_path: Path,
 ) -> None:
-    """On a task `task_answer_surface` maps to `compile`, the product arm is `Memory.compile`
+    """On a task task_answer_surface maps to compile, the product arm is Memory.compile
     plus the generator standing in for the host assistant -- under the assistant prompt, not the
-    baseline's "answer only, guess" one -- and never reaches `Memory.ask`."""
+    baseline's "answer only, guess" one -- and never reaches Memory.ask."""
     generator = _RecordingGenerator("a post in your voice")
     arm = _Arm(DEFAULT_ARM, generator=cast(eval_arms_module._BaselineGenerator, generator))
     _, _, question = _task(labelled=False)
@@ -940,7 +941,7 @@ def test_the_product_arm_answers_a_compile_surface_task_from_the_compiled_bundle
     assert (
         generator.media_calls[0]["system_prompt"] == baseline_prompts._COMPILE_SURFACE_SYSTEM_PROMPT
     )
-    # No `ask` request was made, so the row records no policy; and with no ranked list to
+    # No ask request was made, so the row records no policy; and with no ranked list to
     # observe the row is not flagged as a missing retrieval diagnostic.
     assert outcome.retrieval_diagnostic_error is None
     task, unit, _ = _task("personamem-v3", labelled=False)
@@ -1144,7 +1145,6 @@ def test_compile_arm_sends_query_and_evidence_images_on_the_final_provider_wire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Native media follows the selected public bundle without consulting gold metadata."""
-    import openai
 
     requests: list[dict[str, object]] = []
 
@@ -1264,8 +1264,8 @@ def test_compile_arm_sends_query_and_evidence_images_on_the_final_provider_wire(
 def test_ingest_capture_produces_real_capture_settle_spans_for_the_compile_arm(
     tmp_path: Path,
 ) -> None:
-    """`--ingest capture` drives `capture()`/`settle()` through the public SDK, so
-    `eval_telemetry` reports real capture-acknowledgement and time-to-searchable numbers
+    """--ingest capture drives capture()/settle() through the public SDK, so
+    eval_telemetry reports real capture-acknowledgement and time-to-searchable numbers
     instead of an empty block, and the compile arm still answers off the settled store.
     """
     generator = _RecordingGenerator("Ada")
@@ -1368,9 +1368,9 @@ def _sample_with(
 )
 def test_invented_metrics_are_never_stamped_official(metric: str, expected: bool) -> None:
     task, _, _ = _task()
-    # `_metrics` reads `recall_limit` for the retrieval cutoffs and `blind` for the
-    # controls block; both arrived with the arms merge. `_Arguments` bounds
-    # `recall_limit` to 1..100, so 10 is a value the real parser would accept.
+    # _metrics reads recall_limit for the retrieval cutoffs and blind for the
+    # controls block; both arrived with the arms merge. _Arguments bounds
+    # recall_limit to 1..100, so 10 is a value the real parser would accept.
     arguments = cast(
         eval_config_module._Arguments,
         SimpleNamespace(
@@ -1388,9 +1388,9 @@ def test_invented_metrics_are_never_stamped_official(metric: str, expected: bool
 
 def test_a_baseline_arm_never_reports_an_official_metric() -> None:
     task, _, _ = _task()
-    # `_metrics` reads `recall_limit` for the retrieval cutoffs and `blind` for the
-    # controls block; both arrived with the arms merge. `_Arguments` bounds
-    # `recall_limit` to 1..100, so 10 is a value the real parser would accept.
+    # _metrics reads recall_limit for the retrieval cutoffs and blind for the
+    # controls block; both arrived with the arms merge. _Arguments bounds
+    # recall_limit to 1..100, so 10 is a value the real parser would accept.
     arguments = cast(
         eval_config_module._Arguments,
         SimpleNamespace(
@@ -1527,8 +1527,8 @@ def test_answer_span_attributes_name_the_task_and_the_sample() -> None:
         with eval_answers_module._answer_span(
             telemetry.tracer, "atm-bench", "blind:atm-bench/unit/q1"
         ) as _:
-            # `get_current_span` is typed as the write-only `Span`; the SDK object it returns
-            # at runtime is a `ReadableSpan`, which is where `attributes` lives.
+            # get_current_span is typed as the write-only Span; the SDK object it returns
+            # at runtime is a ReadableSpan, which is where attributes lives.
             span = cast(ReadableSpan, trace.get_current_span())
             seen.append(dict(span.attributes or {}))
     finally:
@@ -1561,10 +1561,10 @@ def test_results_report_each_arm_beside_the_product_arm(search_replay: bool) -> 
             seed=7,
             seeds=(7, 7, 7, 7),
             bootstrap_samples=20,
-            # `_results` records the baseline document it was compared against; None is the
-            # in-run case, where the blind arm itself satisfies the control. `blind` reaches
-            # `_controls` as `is_blind_run`: this fake selects arms explicitly rather than via
-            # `--blind`, so it is False.
+            # _results records the baseline document it was compared against; None is the
+            # in-run case, where the blind arm itself satisfies the control. blind reaches
+            # _controls as is_blind_run: this fake selects arms explicitly rather than via
+            # --blind, so it is False.
             blind_baseline=None,
             blind=False,
             tasks=(task.spec.name,),
@@ -1638,7 +1638,7 @@ def test_results_report_each_arm_beside_the_product_arm(search_replay: bool) -> 
     assert arms["selected"] == [DEFAULT_ARM, "blind", "random"]
     assert arms["comparison_scope"] == "end_to_end_system"
     assert arms["memory_only_attribution"] is False
-    # No config file, so the product default budget applies and `ask` ranks the full pool.
+    # No config file, so the product default budget applies and ask ranks the full pool.
     assert arms["retrieval_candidate_limit"] == RETRIEVAL_CANDIDATE_LIMIT
     assert arms["retrieval_candidate_limit_arm"] == DEFAULT_ARM
     assert arms["search_e2e_limit"] == arguments.recall_limit
@@ -1719,7 +1719,7 @@ def test_answer_retrieval_candidate_limit_matches_budget_policy() -> None:
         eval_metrics_module._answer_retrieval_candidate_limit(1, budgeted)
         == RETRIEVAL_CANDIDATE_LIMIT
     )
-    # Without a config file the harness builds `Memory` from the product defaults, which carry a
+    # Without a config file the harness builds Memory from the product defaults, which carry a
     # budget, so the mirror has to report the full pool there as well.
     assert MemorySettings().evidence_budget_chars is not None
     assert (
@@ -1752,7 +1752,6 @@ def test_baseline_generator_uses_the_configured_generation_model(
     extra_body: dict[str, object] | None,
     controls: dict[str, object],
 ) -> None:
-    import openai
 
     requests: list[dict[str, object]] = []
 
@@ -1846,7 +1845,6 @@ def test_baseline_generator_uses_the_configured_generation_model(
         "question": "who signed it?",
     }
     assert requests[3] == requests[2]
-    from sensemem.prompts.generation import _BEST_EFFORT_SYSTEM_PROMPT, _styled_answer_prompt
 
     best_effort_messages = cast(list[dict[str, str]], requests[4]["messages"])
     assert best_effort_messages[0]["content"] == (
@@ -1871,7 +1869,6 @@ def test_baseline_generator_uses_the_configured_generation_model(
 def test_baseline_generator_rejects_explicit_unsupported_controls(
     monkeypatch: pytest.MonkeyPatch, extra_body: dict[str, object]
 ) -> None:
-    import openai
 
     class Client:
         def __init__(self, **_options: object) -> None: ...
@@ -1894,13 +1891,13 @@ def test_baseline_generator_rejects_explicit_unsupported_controls(
 def test_a_failed_answer_keeps_retrieval_and_scores_the_joint_metrics_zero() -> None:
     """A question the run never answered is a question it got wrong.
 
-    `joint_*` is accuracy times recall, so it follows the answer to zero while the separately
-    measured recall stays; the failure is still counted in `error_count`.
+    joint_* is accuracy times recall, so it follows the answer to zero while the separately
+    measured recall stays; the failure is still counted in error_count.
     """
     ranked = (_hit("gold-1", 0.9),)
     memory = _RankedMemory(ranked, ranked)
     task, unit, question = _task()
-    # `joint_*` exists only where the family scores an answer deterministically beside recall.
+    # joint_* exists only where the family scores an answer deterministically beside recall.
     question = replace(question, metadata={**question.metadata, "qtype": "list_recall"})
     outcome = replace(_outcome(memory, question, arm=PRODUCT_ARM), error=ModelError("boom"))
 
@@ -1923,10 +1920,10 @@ def test_a_failed_answer_keeps_retrieval_and_scores_the_joint_metrics_zero() -> 
 
 
 def test_a_sample_with_no_ranked_list_carries_no_retrieval_metrics() -> None:
-    """The per-sample metrics and the task's `retrieval` block must share one denominator.
+    """The per-sample metrics and the task's retrieval block must share one denominator.
 
-    `_retrieval_quality` excludes a labelled question that recorded no ranked list; a sample
-    that still carried `retrieval_recall@10 = 0` made the same task publish two recalls.
+    _retrieval_quality excludes a labelled question that recorded no ranked list; a sample
+    that still carried retrieval_recall@10 = 0 made the same task publish two recalls.
     """
     task, unit, question = _task()
     outcome = replace(
@@ -1959,10 +1956,10 @@ def test_a_sample_with_no_ranked_list_carries_no_retrieval_metrics() -> None:
 def test_a_replayed_answer_still_carries_the_ranked_list_it_was_scored_from(
     tmp_path: Path,
 ) -> None:
-    """`--use-cache` must not silently delete a run's retrieval numbers.
+    """--use-cache must not silently delete a run's retrieval numbers.
 
     Recall is measured over the ranked list, so a cache that stored only the answer replayed as
-    a labelled question with no ranked list and the whole run reported `recall_at_k = {}`.
+    a labelled question with no ranked list and the whole run reported recall_at_k = {}.
     """
     ranked = (_hit("noise", 0.9), _hit("gold-1", 0.5))
     memory = _RankedMemory(ranked, (_hit("gold-1", 0.5),))
@@ -1988,7 +1985,7 @@ def test_a_replayed_answer_still_carries_the_ranked_list_it_was_scored_from(
     recall = cast(dict[str, dict[str, float]], retrieval["recall_at_k"])
     assert recall["5"]["mean"] == pytest.approx(1.0)
     assert retrieval["unranked_labelled_question_count"] == 0
-    # The bound recall was measured under, not the `--recall-limit` that bounds `ask`.
+    # The bound recall was measured under, not the --recall-limit that bounds ask.
     assert retrieval["retrieval_candidate_limit"] == RETRIEVAL_CANDIDATE_LIMIT
 
 
@@ -2005,11 +2002,11 @@ def test_a_replayed_answer_still_carries_the_ranked_list_it_was_scored_from(
 def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path(
     tmp_path: Path, task_name: str, override: str | None, expected: str
 ) -> None:
-    """The whole chain: `_arm_answer` -> `AsyncMemory.ask_stream` -> `_BorrowedGenerationBackend`.
+    """The whole chain: _arm_answer -> AsyncMemory.ask_stream -> _BorrowedGenerationBackend.
 
     The harness lends one answerer to every per-unit memory, so the borrowed wrapper is the last
     hop before the provider. It once declared the keyword and dropped it, which made the whole
-    arm a silent no-op that no fake-`ask` test could see. The same wrapper forwards `exhaustive`,
+    arm a silent no-op that no fake-ask test could see. The same wrapper forwards exhaustive,
     which is why this answerer accepts it: a wrapper that dropped an argument the protocol
     declares would fail the call instead of the arm.
     """
@@ -2027,7 +2024,6 @@ def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path
             answer_policy: str = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del question
             recorded.append(answer_policy)
             return AnswerResult("Ada.", tuple(hits))
 
@@ -2039,7 +2035,6 @@ def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path
             answer_policy: str = "strict",
             exhaustive: bool = False,
         ) -> Generator[str, None, AnswerResult]:
-            del question
             recorded.append(answer_policy)
             yield "Ada."
             return AnswerResult(answer="Ada.", hits=tuple(hits))
@@ -2086,10 +2081,10 @@ def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path
 
 
 def test_the_lent_answerer_declares_the_planning_capability_its_pool_actually_has() -> None:
-    """`isinstance` against a `runtime_checkable` protocol reads attributes statically.
+    """isinstance against a runtime_checkable protocol reads attributes statically.
 
-    So a `plan_recall` reachable only through the proxy's `__getattr__` was invisible to
-    `Answering._recall_plan`, which fell back to the point plan for every question under the
+    So a plan_recall reachable only through the proxy's __getattr__ was invisible to
+    Answering._recall_plan, which fell back to the point plan for every question under the
     harness: measured, one generation call per question and the baseline's own hits. The
     declaration has to follow the pooled backend both ways -- absent when the pool cannot plan,
     or route-by-capability would claim a capability no one has.
@@ -2111,7 +2106,6 @@ def test_the_lent_answerer_declares_the_planning_capability_its_pool_actually_ha
             answer_policy: str = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del question, answer_policy, exhaustive
             return AnswerResult("Ada.", tuple(hits))
 
         def close(self) -> None:
@@ -2127,9 +2121,9 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The whole chain: `_arm_answer` -> `AsyncMemory.ask_stream` -> the borrowed proxy.
+    """The whole chain: _arm_answer -> AsyncMemory.ask_stream -> the borrowed proxy.
 
-    `recall_planning` is only observable through the plan call, and the fallback is silent by
+    recall_planning is only observable through the plan call, and the fallback is silent by
     design, so a hidden capability reads exactly like a planner that chose a point plan. This
     asserts the call happened, and the trace attribute says it was the planner's plan rather
     than the fallback.
@@ -2148,7 +2142,6 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
             corpus_digest: str,
             attempted: str = "",
         ) -> str | None:
-            del reference_at, corpus_digest, attempted
             planned.append(question)
             return json.dumps({"shape": "set", "steps": [{"op": "match", "terms": ["signed"]}]})
 
@@ -2160,7 +2153,6 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
             answer_policy: str = "strict",
             exhaustive: bool = False,
         ) -> AnswerResult:
-            del question, answer_policy, exhaustive
             return AnswerResult("Ada.", tuple(hits))
 
         def close(self) -> None:
