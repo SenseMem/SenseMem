@@ -51,14 +51,17 @@ source-bound evidence operations for selection, counting, and arithmetic.
 | Open-ended | 78.60% |
 | Overall | 79.63% |
 
-The configuration uses `tencent/WeMM-Embedding-9B` embeddings, `Qwen3-VL-Rerank-8B` reranking,
+The measured configuration used `tencent/WeMM-Embedding-9B` embeddings, `Qwen3-VL-Rerank-8B` reranking,
 `deepseek-v4.1-flash` with maximum reasoning effort, and `gpt-5-mini` for open-ended judging.
-It enables concise text answers, `image_source_prose: context_when_supplied`, and
+It enabled concise text answers, `image_source_prose: context_when_supplied`, and
 `evidence_operation_tool: true`, with recall limit 20, two recall rounds, two query expansions,
 and 64,000-character evidence allowances.
 
 This measurement belongs to the
 [evaluated source revision](https://github.com/SenseMem/SenseMem/commit/ddb85e7e67fa86a41e34e2b763d783e51426704c).
+The checked-in [ATM SGM example](../examples/atm-sgm-max-thinking-vllm.yaml) is a starting recipe
+for new runs. It relies on the generation defaults `image_source_prose: include` and
+`evidence_operation_tool: false`.
 See [ATM-Bench protocols](tasks.md#atm-bench-and-mem-gallery) for input conditions and scoring,
 and [provider fields](../configuration/providers.md#answer-presentation) for the answer controls.
 

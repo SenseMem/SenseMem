@@ -1,8 +1,8 @@
 # MOSAIC native multimodal baseline
 
-Run SenseMem with native text, image, audio, and video evidence on MOSAIC. The configuration
-combines `google/embeddinggemma-2` and `qwen3.8-omni-flash` and reaches **77.76% mean judge
-score** on answerable questions, using `qwen3.7-plus` as judge.
+Run SenseMem with native text, image, audio, and video evidence on MOSAIC using the current CLI.
+The 2026-11-06 measurement combined `google/embeddinggemma-2` and `qwen3.8-omni-flash` and reached
+**77.76% mean judge score** on answerable questions, using `qwen3.7-plus` as judge.
 
 Original media goes directly to the embedder and reader, with no separate captioner, speech
 recognizer, or reranker. See [benchmark results](results.md) for the headline and task breakdowns.
@@ -14,10 +14,11 @@ This guide provides the service setup, input protocol, and reproduction commands
 | Correct refusal rate | 53.2374% | 74 / 139 unanswerable questions |
 | False refusal rate | 0.5102% | 4 / 784 answerable questions |
 
-The 2026-11-06 measurement covers all 923 questions across 70 personas. Scheduled answerable
-questions remain in the denominator, with request failures scored as zero. The
-[configuration](../examples/mosaic-embeddinggemma2-qwen38.yaml) and
-[measurement summary](runs/mosaic-native-2026-11-06.json) retain the exact values and completion counts.
+The measurement covers all 923 questions across 70 personas. Two reader requests failed and
+scored zero. Both remain in the 784-question denominator. The
+[measurement summary](runs/mosaic-native-2026-11-06.json) records the source base commit, working-tree
+state, corpus integrity, configuration checksum, and completion counts. Use the
+[configuration](../examples/mosaic-embeddinggemma2-qwen38.yaml) with the commands below for a new run.
 
 ## Model services
 
@@ -101,10 +102,9 @@ and fitting the model's shared context window. The embedding adapter applies
 `task: search result | query:` to text queries and `title: none | text:` to documents,
 each followed by a space, with special tokens enabled.
 
-The public CLI sends inline media. The recorded measurement also used verified original assets
-from the official CDN after SDK media admission, preserving evidence selection and part order.
-Its summary records that transport condition. Account for inline payload size when sizing your
-gateway.
+The current CLI sends inline media. The 2026-11-06 measurement used both inline media and
+SHA-256-verified original assets from the official CDN after SDK media admission, preserving
+evidence selection and part order. Account for inline payload size when sizing your gateway.
 
 The headline is the mean judge score over answerable questions. Refusal rates use MOSAIC's
 refusal-phrase matcher and separate answerable/unanswerable denominators. The measurement covers

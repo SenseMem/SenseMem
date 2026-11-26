@@ -227,11 +227,14 @@ and reviewer revisions with real annotations; the scripted example is not a mode
 
 ## Results and failures
 
-Artifacts use schema `24` and runner `sensemem_eval_official_v27`. `results.jsonl` contains one
-run record with task/arm rows; `samples.jsonl` contains predictions; resolved `config.yaml` omits
-credentials and unconstrained provider fields. `--log-samples` adds original questions, prompts,
-references, and raw judge responses. An in-progress `samples.partial.jsonl` is a task-level crash
-copy with no result digest, removed when final artifacts land.
+New evaluations write schema `25` with runner `sensemem_eval_official_v28`. Historical run summaries
+retain the provenance recorded at measurement time.
+
+`results.jsonl` contains one run record with task/arm rows. `samples.jsonl` contains predictions.
+The resolved `config.yaml` omits credentials and unconstrained provider fields. `--log-samples`
+adds original questions, prompts, references, and raw judge responses. An in-progress
+`samples.partial.jsonl` is a task-level crash copy with no result digest, removed when final
+artifacts land.
 
 The runner lends the complete configured plugin set to each isolated SDK instance, including
 query, candidate, ranking, context-selection, ingestion, and tool plugins.

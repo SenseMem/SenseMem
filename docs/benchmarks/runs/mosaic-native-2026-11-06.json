@@ -155,14 +155,7 @@
   },
   "blind_reader_control_run": false,
   "reproduction_validation": {
-    "full_corpus_integrity": "passed; 70 personas, 923 questions, matching evaluation_sha256",
-    "unit_and_contract_tests_passed": 93,
-    "lock_check": "passed",
-    "ruff_format_and_lint": "passed",
-    "mypy": "passed",
-    "markdownlint": "passed",
-    "lychee": "passed",
-    "full_test_suite_run": false
+    "full_corpus_integrity": "passed; 70 personas, 923 questions, matching evaluation_sha256"
   },
   "environment": {
     "python": "3.13.12",
