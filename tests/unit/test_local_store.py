@@ -2883,6 +2883,11 @@ def test_operation_log_rejects_missing_current_effect_fields(tmp_path: Path, fie
 @pytest.mark.parametrize(
     ("field", "effect"),
     [
+        ("created_ids", [123]),
+        ("changed_ids", "derived"),
+        ("activated_ids", {"derived": True}),
+        ("forgotten_ids", "ab"),
+        ("clause_changes[0].previous_active", "false"),
         ("linked", {}),
         ("linked", [["derived"]]),
         ("linked", [["derived", "source-a", "extra"]]),

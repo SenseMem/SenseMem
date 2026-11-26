@@ -22,7 +22,13 @@ from sensemem.infrastructure.local.store.rows import (
     require_identifier,
 )
 
-_EffectValue = TypeVar("_EffectValue", str, int)
+_EffectValue = TypeVar("_EffectValue", str, int, bool)
+
+
+def _effect_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError("logged operation effect IDs must encode an array")
+    return tuple(_effect_value(item, str) for item in value)
 
 
 def active_operation_id(connection: sqlite3.Connection, operation_key: str) -> int | None:
@@ -189,16 +195,16 @@ def operation_from_row(row: sqlite3.Row) -> StoredOperation:
             model_id=optional_row_text(row, "model_id"),
             recipe=optional_row_text(row, "recipe"),
             operation_json=row_text(row, "operation_json"),
-            created_ids=tuple(effects["created_ids"]),
-            changed_ids=tuple(effects["changed_ids"]),
-            activated_ids=tuple(effects["activated_ids"]),
-            forgotten_ids=tuple(effects["forgotten_ids"]),
+            created_ids=_effect_ids(effects["created_ids"]),
+            changed_ids=_effect_ids(effects["changed_ids"]),
+            activated_ids=_effect_ids(effects["activated_ids"]),
+            forgotten_ids=_effect_ids(effects["forgotten_ids"]),
             linked=_effect_pairs(effects["linked"], str),
             clause_changes=tuple(
                 StoredEvidenceClauseChange(
                     memory_id=change["memory_id"],
                     clause_id=change["clause_id"],
-                    previous_active=change["previous_active"],
+                    previous_active=_effect_value(change["previous_active"], bool),
                     previous_confidence=change["previous_confidence"],
                     applied_confidence=change["applied_confidence"],
                     applied_recorded_at=parse_datetime(change["applied_recorded_at"]),
