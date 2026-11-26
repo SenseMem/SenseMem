@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import multiprocessing
 import os
@@ -13,6 +14,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
+from _feature_support import TinyEmbedder
 
 import sensemem.infrastructure.local.store._codec as codec_module
 import sensemem.infrastructure.local.store._identity as identity_module
@@ -22,6 +24,7 @@ from sensemem import (
     FaceAnalysis,
     FaceEmbedding,
     IdentityProfile,
+    Memory,
     RecordKind,
     RecordSemantics,
     SpatialAnchor,
@@ -29,6 +32,7 @@ from sensemem import (
     SpeakerEmbedding,
     SpeechAnalysis,
     SpeechTurn,
+    StorageError,
 )
 from sensemem.infrastructure.local import (
     DataDirectoryInUseError,
@@ -2874,6 +2878,60 @@ def test_operation_log_rejects_missing_current_effect_fields(tmp_path: Path, fie
 
         with pytest.raises(StoredDataError, match="stored memory operation is invalid"):
             store.control.read_operations(operation_id=operation.operation_id)
+
+
+@pytest.mark.parametrize(
+    ("field", "effect"),
+    [
+        ("linked", {}),
+        ("linked", [["derived"]]),
+        ("linked", [["derived", "source-a", "extra"]]),
+        ("linked", ["ab"]),
+        ("linked", [["derived", 1]]),
+        ("superseded", [["derived", 1, 2]]),
+        ("superseded", [["derived", True]]),
+        ("superseded", [["derived", 1.5]]),
+        ("superseded", [["derived", "1"]]),
+        ("superseded", [["derived", 0]]),
+        ("clause_changes[0].applied_version", True),
+        ("clause_changes[0].applied_version", 1.0),
+        ("clause_changes[0].applied_version", "1"),
+        ("clause_changes[0].applied_version", -1),
+    ],
+)
+def test_operation_log_rejects_invalid_effect_pairs_and_versions(
+    tmp_path: Path, field: str, effect: object
+) -> None:
+    recorded_at = datetime(2026, 9, 8, 13, tzinfo=timezone.utc)
+    members = ("source-a", "source-b")
+    derived = _joint_state_memory("derived", members, confidence=0.7, recorded_at=recorded_at)
+    with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
+        store = memory._store
+        store.records.write_memories((_memory("source-a"), _memory("source-b")))
+        operation = _apply_joint_clause_operation(
+            store,
+            derived,
+            members,
+            confidence=0.7,
+            applied_at=recorded_at + timedelta(minutes=1),
+            key="invalid-operation-effects",
+        )
+        with closing(sqlite3.connect(store.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE memory_operations SET effects_json = json_set(effects_json, ?, json(?)) "
+                "WHERE operation_id = ?",
+                (f"$.{field}", json.dumps(effect), operation.operation_id),
+            )
+
+        with pytest.raises(StoredDataError, match="stored memory operation is invalid"):
+            store.control.read_operations(operation_id=operation.operation_id)
+
+        with pytest.raises(StorageError, match="failed to list memory operations") as exc:
+            memory.operations()
+        assert isinstance(exc.value.__cause__, StoredDataError)
+        with pytest.raises(StorageError, match="failed to read a memory operation") as exc:
+            memory.rollback(operation.operation_id)
+        assert isinstance(exc.value.__cause__, StoredDataError)
 
 
 def test_clause_snapshots_round_trip_and_rollback_preserves_the_version_history(

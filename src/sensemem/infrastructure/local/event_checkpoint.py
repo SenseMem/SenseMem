@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic import ValidationError as SchemaError
 
 from sensemem.content import Blob
@@ -59,7 +59,7 @@ class CheckpointEvent(BaseModel):
 class Checkpoint(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    version: Literal[5] = 5
+    version: Literal[5]
     model: str
     recipe: str
     data_dir: str
@@ -68,6 +68,13 @@ class Checkpoint(BaseModel):
     streams: tuple[CheckpointStream, ...]
     events: tuple[CheckpointEvent, ...]
     pending: tuple[CheckpointChunk, ...]
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_integer_version(cls, value: object) -> int:
+        if type(value) is not int:
+            raise ValueError("event checkpoint version must be an integer")
+        return value
 
 
 class EventCheckpoint:

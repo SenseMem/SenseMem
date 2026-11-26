@@ -215,6 +215,11 @@ Lists the append-only log newest first, including intent, affected IDs, provenan
 versions, rollback state, and optional outcome. Returned values are defined in
 [the value reference](python-values.md#control-operations).
 
+The local log stores `linked` and `superseded` effects as lists of two-element JSON arrays. A link
+pairs two memory IDs. A supersession pairs a memory ID with a positive integer version. Clause
+snapshots also require a positive integer `applied_version`. Invalid pairs and version values
+raise `StorageError` when listing operations or rolling back the affected operation.
+
 ## record_outcome
 
 ```text

@@ -489,6 +489,7 @@ class EventSegmentation(Traced):
         if checkpoint is None:
             return None
         saved = Checkpoint(
+            version=5,
             model=self._segmenter.event_model,
             recipe=self._segmenter.event_recipe,
             data_dir=checkpoint.data_dir,

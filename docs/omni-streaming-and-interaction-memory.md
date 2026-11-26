@@ -140,9 +140,8 @@ Event identity includes the original capture intervals, media, segmenter recipe,
 source/place/pose context. Equal media captured under different source contexts cannot join one
 event merely because their timestamps coincide.
 Checkpoint format v5 preserves these event identities, durably staged pending input with byte-size
-metadata, and the storage-part bounds. Earlier v1–v4 manifests are rejected without migration; finish
-their pending work with the original runtime before upgrading, or retain a complete backup for
-explicit operator handling. Checkpoint format and the segmenter's event recipe have independent versions.
+metadata, and the storage-part bounds. The checkpoint format and the segmenter's event recipe have
+independent versions.
 
 A single-part event includes its synopsis as explicitly unverified model interpretation. For an
 event spanning several parts, the full synopsis remains in event metadata; each part's searchable
@@ -242,13 +241,13 @@ without loading the entire activity into RAM; staged pending bytes are checked w
 loads them. Checkpoint media is removed after the
 complete event's storage parts have been acknowledged; ordinary SQLite memories and assets remain.
 
-The v5 manifest pins `max_chunks` and `max_buffer_bytes`, because changing either would change
-storage-part boundaries and invalidate an acknowledgement cursor. Reopening with a different bound fails
-before processing. It records `pending` references and each media reference's `size_bytes`,
-alongside its digest, media type, and name. Preserve the manifest and its content-addressed media as one unit;
-do not edit or replace either while an instance owns the directory. Earlier v1–v4 formats are rejected
-without migration. Finish them with their original runtime before upgrading, or preserve the
-checkpoint, media directory, and memory store together for explicit operator handling.
+The manifest requires an explicit integer `"version": 5` and pins `max_chunks` and `max_buffer_bytes`
+to preserve storage-part boundaries and acknowledgement cursors. Reopening with a different bound
+fails before processing. The manifest records `pending` references and each media reference's
+`size_bytes`, digest, media type, and name. Keep the manifest and its content-addressed media
+together throughout recovery. A missing, non-integer, or unsupported version raises
+`ValidationError`. Finish earlier checkpoints with their original runtime before upgrading, or
+preserve the checkpoint, media directory, and memory store together for explicit operator handling.
 
 Without `checkpoint_path`, the same helper can resume after an interrupted `consume()`, but its
 pending input does not survive process exit. Delivery can repeat when a storage write committed

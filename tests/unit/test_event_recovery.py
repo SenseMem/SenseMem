@@ -148,7 +148,7 @@ async def test_checkpoint_spools_long_continuation_and_resumes_byte_bounded_part
         assert [len(call) for call in first.calls] == [1, 2, 2, 2]
         assert (await memory.list()).items == ()
         saved = json.loads(checkpoint.read_text())
-        assert saved["version"] == 5
+        assert type(saved["version"]) is int and saved["version"] == 5
         assert saved["max_buffer_bytes"] == budget
         assert len(saved["streams"][0]["chunks"]) == 4
 
@@ -604,28 +604,29 @@ async def test_full_analysis_window_requires_continuation_but_preserves_retryabl
         assert len(commits[0].record.assets) == 2
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4])
-def test_legacy_event_checkpoint_is_rejected_without_changing_the_original(
-    tmp_path: Path, version: int
+@pytest.mark.parametrize(
+    "version",
+    [pytest.param(None, id="missing"), 1, 2, 3, 4, 5.0, "5", True],
+)
+def test_invalid_event_checkpoint_version_is_rejected_without_changing_the_original(
+    tmp_path: Path, version: int | float | str | None
 ) -> None:
     backend = ScriptedSegmenter([])
     with Memory(tmp_path / "memory", embedder=TinyEmbedder()) as core:
         checkpoint = tmp_path / "capture.json"
-        checkpoint.write_text(
-            json.dumps(
-                {
-                    "version": version,
-                    "model": backend.event_model,
-                    "recipe": backend.event_recipe,
-                    "data_dir": str(core.data_dir),
-                    "max_buffer_bytes": 64 * 1024 * 1024,
-                    "max_chunks": 32,
-                    "streams": [],
-                    "events": [],
-                    "pending": [],
-                }
-            )
-        )
+        manifest: dict[str, object] = {
+            "model": backend.event_model,
+            "recipe": backend.event_recipe,
+            "data_dir": str(core.data_dir),
+            "max_buffer_bytes": 64 * 1024 * 1024,
+            "max_chunks": 32,
+            "streams": [],
+            "events": [],
+            "pending": [],
+        }
+        if version is not None:
+            manifest["version"] = version
+        checkpoint.write_text(json.dumps(manifest))
         original = checkpoint.read_bytes()
         with pytest.raises(ValidationError, match="unsupported format"):
             AsyncEventStream(AsyncMemory(core), segmenter=backend, checkpoint_path=checkpoint)

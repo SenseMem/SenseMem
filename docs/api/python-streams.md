@@ -239,12 +239,13 @@ incrementally on reopen without loading the entire event. `positions` returns ea
 source resumption. Only one helper may own a checkpoint. Without a path, only that live helper
 retains unfinished state between calls. See [capture recovery](../omni-streaming-and-interaction-memory.md#resume-continuous-capture).
 
-Checkpoint format v5 pins `max_chunks` and `max_buffer_bytes` to preserve storage-part boundaries
-during recovery; a different bound is rejected before processing. It retains the durable `pending`
-list and each media reference's `size_bytes`. Earlier v1–v4 manifests are rejected; the runtime
-contains no format migration. Finish an old
-checkpoint with its original runtime before upgrading, or back up its manifest, media, and memory
-store together for explicit operator handling. Do not replace a checkpoint in an active instance.
+Checkpoint manifests require an explicit integer `"version": 5`. The format pins `max_chunks` and
+`max_buffer_bytes` to preserve storage-part boundaries during recovery. Reopening with a different
+bound fails before processing. The manifest retains the durable `pending` list and `size_bytes` for
+each media reference. A missing, non-integer, or unsupported version raises `ValidationError`.
+Finish an old checkpoint with its original runtime before upgrading, or back up its manifest,
+media, and memory store together for explicit operator handling. Do not replace a checkpoint in
+an active instance.
 The bundled event recipe is v3, preserving within-observation part order, source roles, and native
 media references. Changing that recipe also requires finishing pending checkpoints with their
 original segmenter. Checkpoint format and model recipe are separate versioned contracts.
