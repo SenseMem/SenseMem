@@ -114,7 +114,6 @@ APPLICABILITY = {
         "avoid_leak": True,
         "privacy_leak": True,
     },
-    "over_personalization_distractor_reject": {"over_personalization": True, "privacy_leak": True},
     "over_personalization_sensitive_event": {"over_personalization": True, "privacy_leak": True},
     "over_personalization_repetition_recsys": {"over_personalization": True},
     "over_personalization_repetition_chatbot": {"over_personalization": True},
@@ -151,12 +150,6 @@ APPLICABILITY = {
         "stale_preference_use": True,
     },
     "agentic_trending_alert": {"preference_alignment": True, "avoid_leak": True},
-    "agentic_draft_audit": {
-        "over_personalization": True,
-        "privacy_leak": True,
-        "stale_preference_use": True,
-    },
-    "agentic_wrong_recipient_check": {"preference_alignment": True, "privacy_leak": True},
     "local_recommendation_geo_shift": {
         "preference_alignment": True,
         "avoid_leak": True,
@@ -176,11 +169,9 @@ PENALTY_CHECKS = {
     "agentic_proactive_daily_catchup": {},
     "agentic_trending_alert": {},
     "agentic_vague_refind": {"telegraph_avoidance": 5.0},
-    "agentic_wrong_recipient_check": {"relationship_aware": 5.0},
     "local_recommendation_geo_shift": {"telegraph_avoidance": 5.0},
     "over_personalization_chatbot_text": {"helpfulness": 5.0},
     "over_personalization_context_shift": {"helpfulness": 5.0},
-    "over_personalization_distractor_reject": {"helpfulness": 5.0},
     "over_personalization_sensitive_event": {"helpfulness": 5.0},
 }
 
@@ -392,7 +383,7 @@ HALLUCINATION_JUDGE_PROMPT = (
 )
 
 
-# The historical `APPLICABILITY` key `relationship_aware` resolves to the
+# The upstream penalty key `relationship_aware` resolves to the
 # canonical `relationship_awareness` definition.
 DIM_DEF_ALIAS = {"relationship_aware": "relationship_awareness"}
 
@@ -406,10 +397,8 @@ SECONDARY_WEIGHT = 0.2
 # purpose: it also lists tasks whose `pr_*` output upstream keeps as a
 # *diagnostic* beside a different headline -- `new_suggestions_*` score on
 # their own `alignment_score`, the repetition pair on fatigue counters,
-# `local_recommendation_geo_shift` on `geo_shift_correctness` -- plus three
-# retired types kept so historical rows still parse. Emitting a rubric headline
-# for any of those would put a number upstream does not publish into the
-# aggregate, so the judged set is this table, not the applicability map.
+# `local_recommendation_geo_shift` on `geo_shift_correctness`. Use this table
+# to select the task types that contribute a unified rubric headline.
 RUBRIC_HEADLINE_TASK_TYPES = frozenset(
     {
         "agentic_auto_reply",

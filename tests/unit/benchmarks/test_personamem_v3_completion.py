@@ -32,7 +32,7 @@ from sensemem.benchmarks.official_scorers import (
     parse_judge_response,
 )
 from sensemem.benchmarks.personamem_v3_results import complete_lifecycle, mistake_summary
-from sensemem.benchmarks.task_catalog import TASKS, expand
+from sensemem.benchmarks.task_catalog import TASKS
 
 SUBSTANTIVE = (
     "Try an outdoor painting workshop with friends this weekend, exploring unfamiliar colors, "
@@ -76,13 +76,6 @@ def _sample(
         metadata={"task_type": task_type, "task_family": "fixture", "judge_evidence": evidence},
         metrics=metrics,
     )
-
-
-def test_removed_task_is_rejected_and_absent_from_all() -> None:
-    assert "es-memeval-qa" not in TASKS
-    assert "es-memeval-qa" not in expand(("all",))
-    with pytest.raises(ValueError, match="unknown"):
-        expand(("es-memeval",))
 
 
 def test_released_unprompted_and_cluster_rows_keep_labels_out_of_prompts(tmp_path: Path) -> None:

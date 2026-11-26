@@ -2,9 +2,34 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
+from sensemem.benchmarks._official import personamem_v3_scoring as scoring
 from sensemem.benchmarks._official.personamem_v3_scoring import compute_geo_shift_metrics
+
+
+def test_personamem_relationship_penalty_preserves_prompt_and_score() -> None:
+    task_type = "agentic_auto_reply"
+    prompt = scoring.build_unified_rubric_prompt(
+        task_type,
+        "{}",
+        "A reply.",
+        scoring.positive_dims(task_type),
+        scoring.hard_rule_dims(task_type),
+        scoring.penalty_dims(task_type),
+        query_text="Write a reply.",
+    )
+    assert hashlib.sha256(prompt.encode()).hexdigest() == (
+        "4ad0c0b3f5ee1c83a8604c86aa21fda41c44bcfcd3793c446711efe048110ee9"
+    )
+    scores = scoring.score_unified_rubric(
+        task_type, {"voice_match": 8, "telegraph_avoidance": 10, "relationship_aware": 6}
+    )
+    assert scores["pr_relationship_aware_score"] == 6.0
+    assert scores["pr_penalty_points"] == 2.0
+    assert scores["pr_combined_personalization_score"] == 6.0
 
 
 @pytest.mark.parametrize(

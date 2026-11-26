@@ -319,6 +319,8 @@ def test_catalog_requires_canonical_task_names(name: str) -> None:
         "beam-1m",
         "beam-10m",
         "clbench",
+        "es-memeval",
+        "es-memeval-qa",
         "worldmemarena",
         "video-mme-v2",
         "openeqa",
@@ -329,7 +331,7 @@ def test_catalog_requires_canonical_task_names(name: str) -> None:
         "video-mme-*",
     ),
 )
-def test_eval_rejects_removed_tasks(
+def test_eval_rejects_retired_tasks(
     name: str, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     with pytest.raises(SystemExit) as error:
@@ -339,6 +341,7 @@ def test_eval_rejects_removed_tasks(
     message = capsys.readouterr().err
     assert "unknown task" in message or "task selection is empty" in message
     assert task_family(name) is None
+    assert name not in expand(("all",))
 
 
 def test_task_listing(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

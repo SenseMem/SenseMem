@@ -862,6 +862,33 @@ def test_personamem_scores_exactly_the_reproducible_task_types() -> None:
 
 
 @pytest.mark.parametrize(
+    "task_type",
+    (
+        "over_personalization_distractor_reject",
+        "agentic_draft_audit",
+        "agentic_wrong_recipient_check",
+    ),
+)
+def test_personamem_retired_tasks_have_no_rubric_or_scores(task_type: str) -> None:
+    from sensemem.benchmarks._official.personamem_v3_scoring import APPLICABILITY, PENALTY_CHECKS
+
+    metadata: dict[str, object] = {"task_type": task_type}
+    assert task_type not in APPLICABILITY
+    assert task_type not in PENALTY_CHECKS
+    assert (
+        judge_plan(
+            "personamem-v3",
+            question="q",
+            references=("gold",),
+            prediction="answer",
+            metadata=metadata,
+        )
+        is None
+    )
+    assert _scores("personamem-v3", "answer", "gold", metadata) == {}
+
+
+@pytest.mark.parametrize(
     ("task", "metric", "upstream"),
     [
         # Published by the pinned scorers.
