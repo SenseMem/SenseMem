@@ -19,10 +19,10 @@ from sensemem.benchmarks import eval_answers, eval_judge, eval_metrics
 from sensemem.benchmarks._official import personamem_v3_tasks as tasks
 from sensemem.benchmarks.artifact_io import encode_jsonl_bytes
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, load_task
-from sensemem.benchmarks.eval_arms import _Arm
-from sensemem.benchmarks.eval_config import _Arguments, _JudgeConfig
+from sensemem.benchmarks.eval_arms import Arm
+from sensemem.benchmarks.eval_config import Arguments, JudgeConfig
 from sensemem.benchmarks.eval_options import EvaluationOptions
-from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
+from sensemem.benchmarks.eval_results import AnswerOutcome, SampleResult
 from sensemem.benchmarks.eval_runner import _run_unit
 from sensemem.benchmarks.official_scorers import (
     JudgePlan,
@@ -324,9 +324,9 @@ def _cluster_question(name: str = "cluster-row") -> EvalQuestion:
 async def test_cluster_threads_filler_answers_without_disclosing_hidden_evidence() -> None:
     prompts = []
 
-    async def request(question: EvalQuestion) -> _AnswerOutcome:
+    async def request(question: EvalQuestion) -> AnswerOutcome:
         prompts.append("\n".join(str(part) for part in question.content))
-        return _AnswerOutcome(
+        return AnswerOutcome(
             json.dumps({"response": f"reply-{len(prompts)} {SUBSTANTIVE}"}), 3.0, 1.0, (), ()
         )
 
@@ -418,7 +418,7 @@ async def test_failed_repetition_judgment_is_reported_without_shifting_the_tail(
         client=cast(AsyncOpenAI, object()),
         cache=None,
         semaphore=asyncio.Semaphore(1),
-        config=_JudgeConfig("gpt-5.5", "http://judge.test/v1", api_key="test"),
+        config=JudgeConfig("gpt-5.5", "http://judge.test/v1", api_key="test"),
         log_samples=False,
         tracer=trace.get_tracer(__name__),
     )
@@ -436,10 +436,10 @@ async def test_cluster_generation_is_shared_across_cutoffs_but_isolated_per_arm(
 
     async def guarded(
         _memory: AsyncMemory, _question: EvalQuestion, **kwargs: object
-    ) -> _AnswerOutcome:
-        calls.append(cast(_Arm, kwargs["arm"]).name)
+    ) -> AnswerOutcome:
+        calls.append(cast(Arm, kwargs["arm"]).name)
         await asyncio.sleep(0)
-        return _AnswerOutcome('{"responses": []}', 1.0, 1.0, (), ())
+        return AnswerOutcome('{"responses": []}', 1.0, 1.0, (), ())
 
     class MemoryContext:
         async def __aenter__(self) -> AsyncMemory:
@@ -463,7 +463,7 @@ async def test_cluster_generation_is_shared_across_cutoffs_but_isolated_per_arm(
         options=EvaluationOptions(predict_only=True),
         request_semaphore=asyncio.Semaphore(4),
         response_cache=None,
-        arms=(_Arm("blind"), _Arm("full-context")),
+        arms=(Arm("blind"), Arm("full-context")),
     )
     assert calls == ["blind", "full-context"]
     assert len(samples) == 4
@@ -511,12 +511,12 @@ async def test_cluster_judging_is_shared_across_published_sibling_rows(
         return replace(sample, score=0.8, metrics={"personamem_score": 0.8}, judge_model="gpt-5.5")
 
     monkeypatch.setattr(eval_judge, "_judge_sample", judge)
-    arguments = cast(_Arguments, SimpleNamespace(quiet=True, use_cache=None, log_samples=False))
-    results = await eval_judge._apply_judges(
+    arguments = cast(Arguments, SimpleNamespace(quiet=True, use_cache=None, log_samples=False))
+    results = await eval_judge.apply_judges(
         (task,),
         samples,
         arguments=arguments,
-        config=_JudgeConfig("gpt-5.5", "http://judge.test/v1", api_key="test"),
+        config=JudgeConfig("gpt-5.5", "http://judge.test/v1", api_key="test"),
     )
     assert len(calls) == 1
     assert [sample.score for sample in results] == [0.8, 0.8]
@@ -548,15 +548,15 @@ def test_complete_micro_counts_lifecycle_pairs_once_and_requires_full_coverage(
     unit = EvalUnit("persona", (), (EvalQuestion("q", ("question",), ("gold",)),))
     task = LoadedTask(TASKS["personamem-v3"], tmp_path, "d" * 64, (unit,))
     arguments = cast(
-        _Arguments,
+        Arguments,
         SimpleNamespace(
             seed=7, bootstrap_samples=32, recall_limit=20, blind=False, offset=0, limit=None
         ),
     )
-    result = eval_metrics._metrics(task, rows, arguments)
+    result = eval_metrics.compute_task_metrics(task, rows, arguments)
     assert cast(Mapping[str, object], result["score"])["mean"] == 50.0
     assert cast(Mapping[str, object], result["score_coverage"])["complete"] is True
-    missing = eval_metrics._metrics(task, rows[1:], arguments)
+    missing = eval_metrics.compute_task_metrics(task, rows[1:], arguments)
     assert cast(Mapping[str, object], missing["score"])["mean"] == 0.0
     coverage = cast(Mapping[str, object], missing["score_coverage"])
     assert coverage["complete"] is True

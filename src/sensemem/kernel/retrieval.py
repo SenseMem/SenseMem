@@ -23,7 +23,7 @@ from sensemem.exceptions import ModelError, SenseMemError
 from sensemem.infrastructure.local.scoring import max_cosine_part_scores, max_cosine_scores
 from sensemem.infrastructure.local.store.rows import IndexCandidate, StoredEmbedding, StoredMemory
 from sensemem.kernel.candidates import Candidates
-from sensemem.kernel.content import PreparedContent, text_content
+from sensemem.kernel.content import PreparedContent
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.embedding import DOCUMENT_TASK, MAX_RETRIEVAL_KEYS, Embedding
 from sensemem.kernel.evidence_windows import query_evidence_windows
@@ -450,13 +450,8 @@ class Retrieval(Traced):
                     margin=self._settings.ambiguity_margin,
                     temporal_range=temporal_range,
                 )
-                ranked, reranking_scores_by_id = self._rerank_candidates(
-                    focused_text, prepared, ranked, ranked_traces
-                )
-                if ambiguous:
-                    first, second = (row[0].memory_id for row in ranked[:2])
-                    if first in reranking_scores_by_id and second in reranking_scores_by_id:
-                        ambiguous = reranking_scores_by_id[first] <= reranking_scores_by_id[second]
+                if not ambiguous:
+                    ranked = self._rerank_candidates(focused_text, prepared, ranked, ranked_traces)
                 extend_ranked_traces(
                     trace_candidates,
                     ranked_traces,
@@ -549,16 +544,19 @@ class Retrieval(Traced):
         focused_inputs: tuple[ModelInput, ...] = ()
         aggregate: ModelInput | None = None
         if self._query_mode is not RetrievalMode.LEXICAL:
+            focused = replace(
+                prepared,
+                text=focused_text,
+                canonical_parts=(("text", focused_text),) if focused_text else (),
+            )
             complete = self._embedding.build_retrieval_inputs(
                 prepared, maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS
             )
             aggregate = self._embedding.route_input(prepared)
-            if len(text_parts) > 1:
-                focused_inputs = self._embedding.build_retrieval_inputs(
-                    text_content(focused_text), maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS
-                )
-            else:
-                focused_inputs = complete
+            focused_inputs = self._embedding.build_retrieval_inputs(
+                focused,
+                maximum_keys=_MAX_QUERY_RETRIEVAL_KEYS,
+            )
         encoded = self._querying.encode(
             QueryRequest(
                 content=self._hydrator.model_input(prepared),
@@ -700,18 +698,18 @@ class Retrieval(Traced):
         prepared: PreparedContent,
         ranked: list[tuple[StoredMemory, float, float, bool]],
         traces: dict[str, partial[RetrievalCandidateTrace]] | None,
-    ) -> tuple[list[tuple[StoredMemory, float, float, bool]], dict[str, float]]:
-        """Order authoritative candidates and return comparable scores for supported inputs."""
+    ) -> list[tuple[StoredMemory, float, float, bool]]:
+        """Score authoritative candidates in supported modalities without changing gates."""
         reranker = self._backends.reranker
         if reranker is None:
-            return ranked, {}
+            return ranked
         capabilities = self._backends.reranking_capabilities
         query_text = query if Modality.TEXT in capabilities else ""
         query_assets = tuple(
             asset for asset in prepared.assets if Modality(asset.modality) in capabilities
         )
         if not query_text.strip() and not query_assets:
-            return ranked, {}
+            return ranked
         candidates = [
             (index, row)
             for index, row in enumerate(ranked)
@@ -719,7 +717,7 @@ class Retrieval(Traced):
             or any(Modality(asset.modality) in capabilities for asset in row[0].assets)
         ]
         if not candidates:
-            return ranked, {}
+            return ranked
         assets = tuple(
             asset
             for _index, row in candidates
@@ -777,7 +775,7 @@ class Retrieval(Traced):
         if traces is not None:
             for memory_id, score in by_id.items():
                 traces[memory_id] = partial(traces[memory_id], reranking_score=score)
-        return result, by_id
+        return result
 
     def _image_matches(
         self,

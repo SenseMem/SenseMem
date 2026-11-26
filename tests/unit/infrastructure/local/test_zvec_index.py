@@ -15,6 +15,7 @@ from typing import NoReturn, Protocol, cast
 
 import numpy as np
 import pytest
+import zvec
 
 import sensemem.infrastructure.local.zvec_index as zvec_index_module
 from sensemem.infrastructure.local.store import IndexDocument, StoredEmbedding
@@ -22,29 +23,12 @@ from sensemem.infrastructure.local.zvec_index import (
     _MAX_WRITE_BATCH,
     IndexHit,
     ZvecIndex,
-    ZvecUnavailableError,
     ZvecWriteError,
     _CollectionGate,
 )
 from sensemem.types import IndexQuantization
 
 _NOW = datetime(2026, 8, 27, tzinfo=timezone.utc)
-
-
-def test_missing_zvec_has_an_actionable_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    def missing_module(_name: str) -> NoReturn:
-        raise ModuleNotFoundError("No module named 'zvec'")
-
-    monkeypatch.setattr(
-        "sensemem.infrastructure.local.zvec_index.import_module",
-        missing_module,
-    )
-
-    with pytest.raises(ZvecUnavailableError, match=r"Zvec 0.8.*64-bit zvec wheel"):
-        ZvecIndex(tmp_path / "index", dimension=2)
 
 
 def test_rabitq_rejects_unsupported_dimensions_before_open(tmp_path: Path) -> None:
@@ -61,7 +45,7 @@ def test_every_batch_status_is_checked() -> None:
     index._gate = _CollectionGate()
     index.dimension = 2
     index._zvec = cast(ModuleType, _FakeZvec)
-    index._collection = _FailingCollection()
+    index._collection = cast(zvec.Collection, _FailingCollection())
 
     with pytest.raises(ZvecWriteError, match="embedding_bad: INTERNAL_ERROR: disk full"):
         index.upsert([_document("embedding_bad", "content", (1.0, 0.0))])
@@ -72,7 +56,7 @@ def test_native_fd_status_becomes_safe_emfile() -> None:
     index._gate = _CollectionGate()
     index.dimension = 2
     index._zvec = cast(ModuleType, _FakeZvec)
-    index._collection = _FileDescriptorFailingCollection()
+    index._collection = cast(zvec.Collection, _FileDescriptorFailingCollection())
 
     with pytest.raises(OSError) as failure:
         index.upsert([_document("embedding_bad", "content", (1.0, 0.0))])
@@ -110,7 +94,7 @@ def test_native_writes_are_serialized_across_collections() -> None:
         index._gate = _CollectionGate()
         index.dimension = 2
         index._zvec = cast(ModuleType, _FakeZvec)
-        index._collection = BlockingCollection()
+        index._collection = cast(zvec.Collection, BlockingCollection())
         indexes.append(index)
 
     def second_write() -> None:
@@ -139,7 +123,7 @@ def test_only_aggregate_vector_carries_full_text() -> None:
     index.dimension = 2
     index._zvec = cast(ModuleType, _FakeZvec)
     collection = _CapturingCollection()
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
 
     index.upsert(
         [
@@ -165,7 +149,7 @@ def test_delete_accepts_only_not_found_failures() -> None:
     index._gate = _CollectionGate()
     index._zvec = cast(ModuleType, _FakeZvec)
     collection = _DeletingCollection()
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
 
     index.delete(["already_deleted"])
     assert collection.deleted == [["already_deleted"]]
@@ -211,7 +195,7 @@ def test_lexical_search_preserves_relative_bm25_score_and_all_filters() -> None:
     )
     index = object.__new__(ZvecIndex)
     index._zvec = cast(ModuleType, _QueryZvec)
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
     index._gate = _CollectionGate()
 
     hits = index.lexical_search(
@@ -262,7 +246,7 @@ def test_group_by_falls_back_until_it_has_distinct_parent_memories() -> None:
     index.ef_search = 300
     index.quantization = IndexQuantization.NONE
     index._zvec = cast(ModuleType, _DenseZvec)
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
 
     docs = index._dense_query(
         (1.0, 0.0),
@@ -297,7 +281,7 @@ def test_quantized_candidate_pool_does_not_repeat_native_group_oversampling() ->
     index.ef_search = 2048
     index.quantization = IndexQuantization.INT8
     index._zvec = cast(ModuleType, _DenseZvec)
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
     hits = index.search((1.0, 0.0), limit=2)
     assert [hit.id for hit in hits] == ["first", "second"]
     assert collection.group_counts == [2]
@@ -322,7 +306,7 @@ def test_dense_search_asks_for_the_largest_candidate_list_zvec_accepts() -> None
     index.ef_search = zvec_index_module._DEFAULT_EF_SEARCH
     index.quantization = IndexQuantization.NONE
     index._zvec = cast(ModuleType, _DenseZvec)
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
 
     # Zvec's own bound, spelled out: the module constant must not be able to drift away from it.
     for limit in (2, 4096):
@@ -409,7 +393,7 @@ def test_a_query_only_fuses_the_routes_that_can_answer_it() -> None:
     collection = _LexicalCollection([_QueryDocument("first", 0.8)])
     index = object.__new__(ZvecIndex)
     index._zvec = cast(ModuleType, _QueryZvec)
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
     index._gate = _CollectionGate()
 
     hits = index.lexical_search("Alice 星期二 bakery", limit=1)
@@ -432,7 +416,7 @@ def test_punctuation_left_over_from_latin_words_does_not_open_a_second_route() -
     collection = _LexicalCollection([_QueryDocument("first", 0.8)])
     index = object.__new__(ZvecIndex)
     index._zvec = cast(ModuleType, _QueryZvec)
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
     index._gate = _CollectionGate()
 
     index.lexical_search("What did Alice buy?", limit=1)
@@ -729,7 +713,7 @@ def test_write_refuses_to_consume_the_fd_safety_reserve(
     index.dimension = 2
     index._zvec = cast(ModuleType, _FakeZvec)
     collection = _CapturingCollection()
-    index._collection = collection
+    index._collection = cast(zvec.Collection, collection)
     monkeypatch.setattr(zvec_index_module, "_file_descriptor_usage", lambda: (900, 1_024))
 
     with pytest.raises(OSError, match="before file descriptor exhaustion") as failure:
@@ -1329,7 +1313,7 @@ def test_native_writes_overlap_queries(operation: str) -> None:
     index = object.__new__(ZvecIndex)
     index._gate = _CollectionGate()
     index._zvec = cast(ModuleType, _FakeZvec)
-    index._collection = FlushingCollection()
+    index._collection = cast(zvec.Collection, FlushingCollection())
     index.dimension = 2
     index._flushes_since_optimization = 0
     index._flushes_since_compaction = 0
@@ -1378,7 +1362,7 @@ def test_close_waits_for_an_in_flight_native_write() -> None:
 
     index = object.__new__(ZvecIndex)
     index._gate = _CollectionGate()
-    index._collection = Collection()
+    index._collection = cast(zvec.Collection, Collection())
     index._flushes_since_optimization = 0
     index._flushes_since_compaction = 0
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1412,7 +1396,7 @@ def test_close_waits_for_an_in_flight_document_count() -> None:
 
     index = object.__new__(ZvecIndex)
     index._gate = _CollectionGate()
-    index._collection = Collection()
+    index._collection = cast(zvec.Collection, Collection())
     with ThreadPoolExecutor(max_workers=2) as executor:
         count = executor.submit(lambda: index.doc_count)
         try:

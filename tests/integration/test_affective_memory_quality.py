@@ -7,14 +7,16 @@ import pytest
 from openai import OpenAI
 
 from sensemem import Modality
-from sensemem.benchmarks.affective_quality import DEFAULT_MODEL, run_affective_quality_eval
+from sensemem.benchmarks.affective_quality import run_affective_quality_eval
 from sensemem.models.openai_completion import OpenAICompletion
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.environ.get("SENSEMEM_AFFECTIVE_EVAL") != "1" or not os.environ.get("OPENAI_API_KEY"),
-        reason="requires SENSEMEM_AFFECTIVE_EVAL=1 and OPENAI_API_KEY",
+        os.environ.get("SENSEMEM_AFFECTIVE_EVAL") != "1"
+        or not os.environ.get("OPENAI_API_KEY")
+        or not os.environ.get("SENSEMEM_AFFECTIVE_EVAL_MODEL"),
+        reason="requires SENSEMEM_AFFECTIVE_EVAL=1, OPENAI_API_KEY, and SENSEMEM_AFFECTIVE_EVAL_MODEL",
     ),
 ]
 
@@ -23,7 +25,7 @@ def test_affective_memory_quality() -> None:
     with OpenAI(timeout=120, max_retries=0) as client:
         models = OpenAICompletion(
             client,
-            generation_model=os.environ.get("SENSEMEM_AFFECTIVE_EVAL_MODEL", DEFAULT_MODEL),
+            generation_model=os.environ["SENSEMEM_AFFECTIVE_EVAL_MODEL"],
             generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
             generation_max_tokens=None,
             generation_extra_body={"reasoning_effort": "none"},

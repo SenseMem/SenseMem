@@ -22,7 +22,7 @@ from sensemem.benchmarks.eval_adapters import (
     _with_corpus_reference,
     load_task,
 )
-from sensemem.benchmarks.eval_inputs import _memory_content, _memory_metadata
+from sensemem.benchmarks.eval_inputs import memory_content, memory_metadata
 from sensemem.benchmarks.memlens import load_memlens
 from sensemem.benchmarks.personamem_v3 import (
     load_personamem_v3,
@@ -760,12 +760,12 @@ def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     clip = tmp_path / "segment.mp4"
     clip.write_bytes(b"video")
 
-    assert _memory_content(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0)) == (clip,)
-    assert _memory_metadata(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0))["source_id"] == (
+    assert memory_content(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0)) == (clip,)
+    assert memory_metadata(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0))["source_id"] == (
         "0.mp4-00001"
     )
-    assert _memory_content(MemoryItem("t", ("hello",))) == "[source_id: t]\nhello"
-    assert _memory_content(MemoryItem("t", ("hello", clip))) == ("[source_id: t]\nhello", clip)
+    assert memory_content(MemoryItem("t", ("hello",))) == "[source_id: t]\nhello"
+    assert memory_content(MemoryItem("t", ("hello", clip))) == ("[source_id: t]\nhello", clip)
 
 
 @pytest.mark.parametrize(

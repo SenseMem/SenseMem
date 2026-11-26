@@ -18,15 +18,24 @@ class _ExifFields(Protocol):
 
 
 class _ExifMap(_ExifFields, Protocol):
-    def __contains__(self, key: object) -> bool: ...
+    def __contains__(self, key: object, /) -> bool: ...
 
-    def get_ifd(self, key: int) -> Mapping[int, object]: ...
+    def get_ifd(self, key: int, /) -> Mapping[int, object]: ...
+
+
+class _ImageInfo(Protocol):
+    def get(self, key: str, /) -> object: ...
 
 
 class _OpenedImage(Protocol):
-    width: int
-    height: int
-    info: Mapping[object, object]
+    @property
+    def width(self) -> int: ...
+
+    @property
+    def height(self) -> int: ...
+
+    @property
+    def info(self) -> _ImageInfo: ...
 
     def getexif(self) -> _ExifMap: ...
 

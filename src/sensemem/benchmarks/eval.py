@@ -22,6 +22,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import gettempdir
+from types import ModuleType
 from typing import cast
 
 from opentelemetry.trace import Tracer
@@ -146,14 +147,13 @@ from sensemem.configuration import (
 )
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError, DataDirectoryLock
 
-_LeaderboardMain = Callable[..., int]
-_SERVE_LEADERBOARD: _LeaderboardMain | None
+_LEADERBOARD_MODULE: ModuleType | None
 try:
-    from sensemem.benchmarks.eval_leaderboard import main as _serve_leaderboard
+    from sensemem.benchmarks import eval_leaderboard as _eval_leaderboard_module
 except ImportError:
-    _SERVE_LEADERBOARD = None
+    _LEADERBOARD_MODULE = None
 else:
-    _SERVE_LEADERBOARD = _serve_leaderboard
+    _LEADERBOARD_MODULE = _eval_leaderboard_module
 
 # Called once per task, the moment that task has answered every question, and returns the samples
 # to keep. It is what lets a run persist and report a finished task without waiting for the rest.
@@ -168,9 +168,13 @@ def main(  # noqa: C901 - offline gates and evaluation share one CLI entry point
     """Parse one reproducible evaluation sweep and write its artifacts."""
     arguments_cli = list(sys.argv[1:] if argv is None else argv)
     if arguments_cli[:1] == ["serve"]:
-        if _SERVE_LEADERBOARD is None:
+        if _LEADERBOARD_MODULE is None:
             raise RuntimeError("serving requires uvicorn and sensemem[benchmarks,server]")
-        return _SERVE_LEADERBOARD(arguments_cli[1:], prog=f"{prog or 'sensemem-bench eval'} serve")
+        return int(
+            _LEADERBOARD_MODULE.main(
+                arguments_cli[1:], prog=f"{prog or 'sensemem-bench eval'} serve"
+            )
+        )
     parser = build_parser(prog)
     parsed = parser.parse_args(arguments_cli)
     # The configuration file can name the corpus root, so it is read before the listing and

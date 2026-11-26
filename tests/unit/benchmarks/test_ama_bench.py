@@ -18,8 +18,8 @@ from openai import AsyncOpenAI
 from sensemem.benchmarks import ama_bench, eval_judge
 from sensemem.benchmarks._official import ama_scoring
 from sensemem.benchmarks.eval_adapters import load_task
-from sensemem.benchmarks.eval_config import _Arguments, _JudgeConfig
-from sensemem.benchmarks.eval_metrics import _metrics
+from sensemem.benchmarks.eval_config import Arguments, JudgeConfig
+from sensemem.benchmarks.eval_metrics import compute_task_metrics
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.official_scorers import (
     judge_model_is_official,
@@ -263,7 +263,7 @@ async def test_judge_transport_keeps_official_qwen_sampling_and_thinking() -> No
             call_index=0,
             cache=None,
             semaphore=asyncio.Semaphore(1),
-            config=_JudgeConfig("Qwen/Qwen3-32B", "http://judge.invalid/v1"),
+            config=JudgeConfig("Qwen/Qwen3-32B", "http://judge.invalid/v1"),
         )
     assert not cached
     assert scores["accuracy"] == 1.0
@@ -295,12 +295,12 @@ def test_unified_metrics_include_official_summary_and_judge_provenance(tmp_path:
     _write(spec.dataset_path(tmp_path), [_episode()])
     task = load_task(spec, root=tmp_path, verify_digest=False)
     arguments = cast(
-        _Arguments,
+        Arguments,
         SimpleNamespace(
             seed=7, bootstrap_samples=20, recall_limit=20, blind=False, offset=0, limit=None
         ),
     )
-    result = _metrics(task, (_sample(),), arguments)
+    result = compute_task_metrics(task, (_sample(),), arguments)
     assert result["primary_metric"] == "accuracy"
     assert result["official_metric"] is True
     assert result["judge_model_official"] is True
@@ -310,7 +310,9 @@ def test_unified_metrics_include_official_summary_and_judge_provenance(tmp_path:
         "accuracy": 1.0,
     }
     assert cast(dict[str, object], result["leaderboard"])["complete"] is False
-    proxy = _metrics(task, (replace(_sample(), judge_model="another-judge"),), arguments)
+    proxy = compute_task_metrics(
+        task, (replace(_sample(), judge_model="another-judge"),), arguments
+    )
     assert proxy["official_metric"] is False
 
 

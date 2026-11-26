@@ -22,10 +22,14 @@ from sensemem import (
 )
 from sensemem.benchmarks import prepare_media
 from sensemem.benchmarks.eval_adapters import LoadedTask, load_task
-from sensemem.benchmarks.eval_console import _table
-from sensemem.benchmarks.eval_metrics import _comparisons, _metrics, _videozerobench_metrics
+from sensemem.benchmarks.eval_console import render_summary_table
+from sensemem.benchmarks.eval_metrics import (
+    _videozerobench_metrics,
+    build_comparisons,
+    compute_task_metrics,
+)
 from sensemem.benchmarks.eval_options import EvaluationOptions
-from sensemem.benchmarks.eval_report import _regressed
+from sensemem.benchmarks.eval_report import has_regression
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.eval_runner import run_loaded_task
 from sensemem.benchmarks.isolation import BenchmarkRun
@@ -285,7 +289,7 @@ async def test_eval_runs_all_levels_through_asyncmemory_without_writing_gold_hin
         for batch in documents
         for value in batch
     )
-    result = _metrics(task, samples, _arguments())
+    result = compute_task_metrics(task, samples, _arguments())
     assert cast(dict[str, object], result["score"])["mean"] == 1
     metrics = cast(dict[str, dict[str, object]], result["metrics"])
     assert metrics["accuracy"]["sample_count"] == 2
@@ -306,7 +310,7 @@ async def test_eval_runs_all_levels_through_asyncmemory_without_writing_gold_hin
             for sample in samples
         )
     )
-    comparisons = _comparisons(_arguments(compare=baseline), (task,), samples)
+    comparisons = build_comparisons(_arguments(compare=baseline), (task,), samples)
     assert {row["metric"]: row["mean"] for row in comparisons} == {
         "Level-1_acc": 100,
         "Level-2_acc": 100,
@@ -322,23 +326,27 @@ async def test_eval_runs_all_levels_through_asyncmemory_without_writing_gold_hin
         "duration_seconds": {"total": 1.0, "average": 0.125},
         "token_usage": {"total_tokens": 0, "average_tokens": 0.0},
     }
-    table = _table({"tasks": [{**result, "task": "videozerobench", "performance": performance}]})
+    table = render_summary_table(
+        {"tasks": [{**result, "task": "videozerobench", "performance": performance}]}
+    )
     assert all(name in table for name in VIDEOZERO_METRICS)
     baseline.write_text("\n".join(baseline.read_text().splitlines()[1:]))
     with pytest.raises(ValueError, match="identical complete level requests"):
-        _comparisons(_arguments(compare=baseline), (task,), samples)
+        build_comparisons(_arguments(compare=baseline), (task,), samples)
     baseline.write_text(
         "\n".join(json.dumps(replace(sample, score=None, metrics={}).json()) for sample in samples)
     )
     with pytest.raises(ValueError, match="baseline has no scored samples"):
-        _comparisons(_arguments(compare=baseline), (task,), samples)
+        build_comparisons(_arguments(compare=baseline), (task,), samples)
 
 
 def test_regression_threshold_respects_percentage_and_fraction_scales() -> None:
-    assert not _regressed(
+    assert not has_regression(
         ({"confidence_interval_95": [-2, -1], "score_scale": 100.0},), threshold=0.03
     )
-    assert _regressed(({"confidence_interval_95": [-5, -4], "score_scale": 100.0},), threshold=0.03)
-    assert _regressed(
+    assert has_regression(
+        ({"confidence_interval_95": [-5, -4], "score_scale": 100.0},), threshold=0.03
+    )
+    assert has_regression(
         ({"confidence_interval_95": [-0.05, -0.04], "score_scale": 1.0},), threshold=0.03
     )

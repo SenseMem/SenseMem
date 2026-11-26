@@ -16,14 +16,14 @@ import pytest
 from sensemem import AnswerChunk, AnswerResult, AsyncMemory, ContextBudget, ContextBundle, SearchHit
 from sensemem._telemetry import _record_generation_inputs, _record_retrieval_results
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from sensemem.benchmarks.eval_answers import _answer_many, _answer_span
-from sensemem.benchmarks.eval_arms import _Arm, _BaselineGenerator
+from sensemem.benchmarks.eval_answers import _answer_span, answer_many
+from sensemem.benchmarks.eval_arms import Arm, BaselineGenerator
 from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
 from sensemem.benchmarks.eval_evidence import EvidenceInterval
 from sensemem.benchmarks.eval_options import EvaluationOptions
-from sensemem.benchmarks.eval_report import _with_grounding_loss
-from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
-from sensemem.benchmarks.eval_samples import _cache_outcome, _cached_results
+from sensemem.benchmarks.eval_report import with_grounding_loss
+from sensemem.benchmarks.eval_results import AnswerOutcome, SampleResult
+from sensemem.benchmarks.eval_samples import cache_outcome, cached_results
 from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
 from sensemem.benchmarks.task_catalog import TaskSpec
 from sensemem.context import compile_context
@@ -184,7 +184,7 @@ def test_failed_answer_keeps_its_trace_and_cached_sample_cannot_acquire_a_fresh_
             assert context is not None
         failed = _sample(error_code="provider_failed", prediction="")
         cached = _sample(cached=True, trace_id="a" * 32, answer_span_id="b" * 16)
-        restored_failure, restored_cache = _with_grounding_loss((failed, cached), telemetry)
+        restored_failure, restored_cache = with_grounding_loss((failed, cached), telemetry)
         assert restored_failure.trace_id == f"{context.trace_id:032x}"
         assert restored_failure.answer_span_id == f"{context.span_id:016x}"
         assert restored_cache == cached
@@ -217,7 +217,7 @@ async def test_answer_pipeline_correlates_concurrent_samples_without_a_second_se
 
     telemetry = EvaluationTelemetry()
     try:
-        outcomes = await _answer_many(
+        outcomes = await answer_many(
             cast(AsyncMemory, Memory()),
             tuple(
                 EvalQuestion(f"q{index}", (f"source{index}",), references=("answer",))
@@ -274,7 +274,7 @@ def test_compile_partial_organization_survives_response_cache(tmp_path: Path) ->
         (unit,),
     )
     partial = (EvidenceInterval("m2", "s2", None, None),)
-    outcome = _AnswerOutcome(
+    outcome = AnswerOutcome(
         "answer",
         1.0,
         0.0,
@@ -284,11 +284,11 @@ def test_compile_partial_organization_survives_response_cache(tmp_path: Path) ->
         excerpt_source_ids=("m2",),
         excerpt_evidence=partial,
     )
-    arm = _Arm("compile")
+    arm = Arm("compile")
     cache = ResponseCache(tmp_path / "responses.db", "run", "fixture")
     try:
-        _cache_outcome(cache, task, unit, question, outcome, 0, arm=arm)
-        sample = _cached_results(cache, task, unit, arm=arm, predict_only=False, log_samples=False)[
+        cache_outcome(cache, task, unit, question, outcome, 0, arm=arm)
+        sample = cached_results(cache, task, unit, arm=arm, predict_only=False, log_samples=False)[
             ("compile", "q")
         ]
         assert sample.excerpt_evidence == partial
@@ -308,7 +308,7 @@ def test_compile_text_only_organization_survives_response_cache(tmp_path: Path) 
         (unit,),
     )
     projected = (EvidenceInterval("m2", "s2", None, None),)
-    outcome = _AnswerOutcome(
+    outcome = AnswerOutcome(
         "answer",
         1.0,
         0.0,
@@ -318,11 +318,11 @@ def test_compile_text_only_organization_survives_response_cache(tmp_path: Path) 
         projection_source_ids=("m2",),
         projection_evidence=projected,
     )
-    arm = _Arm("compile")
+    arm = Arm("compile")
     cache = ResponseCache(tmp_path / "responses.db", "run", "fixture")
     try:
-        _cache_outcome(cache, task, unit, question, outcome, 0, arm=arm)
-        sample = _cached_results(cache, task, unit, arm=arm, predict_only=False, log_samples=False)[
+        cache_outcome(cache, task, unit, question, outcome, 0, arm=arm)
+        sample = cached_results(cache, task, unit, arm=arm, predict_only=False, log_samples=False)[
             ("compile", "q")
         ]
         assert sample.projection_evidence == projected
@@ -360,11 +360,11 @@ async def test_failed_compile_generation_retains_the_organization_boundary() -> 
             )
 
     outcome = (
-        await _answer_many(
+        await answer_many(
             cast(AsyncMemory, CompiledMemory()),
             (EvalQuestion("q", ("question",), references=("answer",)),),
             options=EvaluationOptions(request_concurrency=1, recall_limit=3),
-            arm=_Arm("compile", generator=cast(_BaselineGenerator, BrokenGenerator())),
+            arm=Arm("compile", generator=cast(BaselineGenerator, BrokenGenerator())),
             task_name="fixture",
             unit_id="unit",
         )

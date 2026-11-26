@@ -67,7 +67,8 @@ class MemorySettings:
     # Additional matched rows when recall_planning is on. Rows beyond the cap are reported as
     # omitted, making the matched set incomplete. The mandatory ranked window is outside this cap.
     recall_set_max_rows: _PositiveInt = 60
-    # How many answer attempts one ask may spend after a usable plan.
+    # How many answer attempts one ask may spend. Only an eligible abstention triggers
+    # another plan: under best-effort, or under strict with query expansion enabled.
     # 1 disables follow-up rounds. Only read when recall_planning is on.
     recall_rounds: _PositiveInt = 2
     # Add records linked by capture, identity, place, lineage, or evidence without model calls.

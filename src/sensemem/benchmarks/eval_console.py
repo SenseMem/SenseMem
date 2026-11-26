@@ -41,6 +41,7 @@ class _TqdmHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            _ensure_tqdm_lock()
             tqdm.write(self.format(record), file=sys.stderr)
         except Exception:  # logging must never raise into the run it is reporting on
             self.handleError(record)
@@ -80,6 +81,7 @@ def announce(message: str) -> None:
     # tqdm.write is how a bar and a message share one stream: it erases the bar, writes the
     # line, and redraws. With no bar live it is a print with a flush, so every caller is
     # bar-safe without knowing whether one is running.
+    _ensure_tqdm_lock()
     tqdm.write(f"sensemem-bench eval: {message}", file=sys.stderr)
 
 

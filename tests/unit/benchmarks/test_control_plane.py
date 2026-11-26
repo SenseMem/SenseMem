@@ -176,7 +176,7 @@ def test_the_scenario_is_deterministic_and_declares_its_ground_truth(tmp_path: P
     with Memory(
         tmp_path,
         embedder=_TinyEmbedder(),
-        former=control_plane._PreferenceFormer(),
+        former=control_plane.PreferenceFormer(),
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
         scenario = control_plane.build_scenario(memory, persons=3, seed=7)

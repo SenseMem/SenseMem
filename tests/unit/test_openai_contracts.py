@@ -59,7 +59,7 @@ def _reply(content: str | None, *, refusal: str | None = None) -> httpx.Response
     )
 
 
-@pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5-mini-2025-08-07", "o3", "gpt-6-astra"])
+@pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5-mini-2025-08-07", "o3"])
 def test_reasoning_plans_omit_sampling_and_use_completion_budget(model: str) -> None:
     sent: list[dict[str, object]] = []
 
@@ -394,8 +394,6 @@ def test_trace_keeps_request_id_without_provider_bodies(failed: bool) -> None:
 @pytest.mark.parametrize(
     ("code", "reason", "retryable"),
     [
-        ("502001", "provider_unavailable", True),
-        (502001, "provider_unavailable", True),
         ("unknown", None, False),
     ],
 )

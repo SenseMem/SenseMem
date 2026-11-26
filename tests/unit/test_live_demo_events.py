@@ -10,6 +10,7 @@ import pytest
 from _feature_support import TinyEmbedder
 
 from examples.live import events
+from examples.live import prompts as demo_prompts
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -36,7 +37,6 @@ from sensemem import (
     ValidationError,
 )
 from sensemem.models.openai_completion import OpenAICompletion
-from sensemem.prompts import demo as demo_prompts
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
 NATIVE_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.AUDIO, Modality.VIDEO})

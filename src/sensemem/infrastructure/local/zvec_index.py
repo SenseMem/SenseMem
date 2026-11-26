@@ -165,10 +165,6 @@ _FTS_FIELDS = (
 )
 
 
-class ZvecUnavailableError(RuntimeError):
-    """Raised when the optional native Zvec runtime cannot be imported."""
-
-
 class ZvecWriteError(RuntimeError):
     """Raised when any operation in a Zvec write batch fails."""
 

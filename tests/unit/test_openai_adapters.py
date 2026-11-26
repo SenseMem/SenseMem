@@ -3403,15 +3403,14 @@ def test_answer_text_ceiling_includes_system_prompt_before_reading_media(
 
 
 @pytest.mark.parametrize(
-    ("model_name", "audio_data"),
+    ("audio_data_url", "audio_data"),
     [
-        ("answer-model", "c3BlZWNo"),
-        ("qwen3.8-omni-flash", "data:;base64,c3BlZWNo"),
-        ("qwen/qwen3.8-omni-flash", "data:;base64,c3BlZWNo"),
+        (False, "c3BlZWNo"),
+        (True, "data:;base64,c3BlZWNo"),
     ],
 )
 def test_answer_uses_provider_inline_audio_part(
-    tmp_path: Path, model_name: str, audio_data: str
+    tmp_path: Path, audio_data_url: bool, audio_data: str
 ) -> None:
     audio = _asset(tmp_path, "audio", Modality.AUDIO, "audio/wav", b"speech")
 
@@ -3446,8 +3445,9 @@ def test_answer_uses_provider_inline_audio_part(
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         model = OpenAICompletion(
             _sdk_client(client),
-            generation_model=model_name,
+            generation_model="answer-model",
             generation_capabilities=ALL_MODALITIES,
+            generation_audio_data_url=audio_data_url,
         )
         answer = model.answer(ModelInput(text="What?"), (hit,))
 
@@ -3456,15 +3456,14 @@ def test_answer_uses_provider_inline_audio_part(
 
 @pytest.mark.parametrize("operation", ["form", "consolidate"])
 @pytest.mark.parametrize(
-    ("model_name", "audio_data"),
+    ("audio_data_url", "audio_data"),
     [
-        ("answer-model", "c3BlZWNo"),
-        ("qwen3.8-omni-flash", "data:;base64,c3BlZWNo"),
-        ("qwen/qwen3.8-omni-flash", "data:;base64,c3BlZWNo"),
+        (False, "c3BlZWNo"),
+        (True, "data:;base64,c3BlZWNo"),
     ],
 )
 def test_structured_memory_calls_use_provider_inline_audio_part(
-    tmp_path: Path, operation: str, model_name: str, audio_data: str
+    tmp_path: Path, operation: str, audio_data_url: bool, audio_data: str
 ) -> None:
     audio = _asset(tmp_path, "audio", Modality.AUDIO, "audio/wav", b"speech")
 
@@ -3495,8 +3494,9 @@ def test_structured_memory_calls_use_provider_inline_audio_part(
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         model = OpenAICompletion(
             _sdk_client(client),
-            generation_model=model_name,
+            generation_model="answer-model",
             generation_capabilities=ALL_MODALITIES,
+            generation_audio_data_url=audio_data_url,
         )
         if operation == "form":
             assert model.form(

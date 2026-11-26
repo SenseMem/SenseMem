@@ -11,7 +11,7 @@ For direct construction, pass `settings=MemorySettings(...)` to `Memory` or `Mem
 | `retrieval_mode` | `hybrid` | Dense+lexical, dense only, or lexical only |
 | `index_quantization` | `none` | `none`, `fp16`, unrotated `int8`, or `rabitq`; rebuilds from stored vectors on change |
 | `minimum_relevance` | `0.10` | Query-relevance gate before reinforcement/decay |
-| `ambiguity_margin` | `0.01` | Minimum base margin for top-one retrieval; a reranker can resolve a close pair |
+| `ambiguity_margin` | `0.01` | Reject unresolved top-two ties at limit 1 |
 | `evidence_budget_chars` | `24000` | Soft answer-grounding expansion allowance; `None` disables ranked-tail expansion |
 | `query_vision` | `False` | Temporary query description/OCR routes using the vision slot |
 | `index_speech` | `True` | Optional persisted speech-identity analysis when using a `SpeechBackend` |
@@ -39,7 +39,7 @@ Character prices are packing estimates, not provider token counts. OpenAI answer
 | `recall_query_expansion` | `False` | Enable distinct planner semantic searches (requires `recall_planning=True`) |
 | `recall_max_queries` | `6` | Additional searches across steps/rounds (`1`–`32`) |
 
-An answerer without `plan_recall` warns once at open and falls back to ordinary retrieval. Either answer policy can replan after abstention when an earlier plan was usable and attempts remain; a non-abstained answer or fallback ends the operation, and streaming delivers only the selected answer.
+An answerer without `plan_recall` warns once at open and falls back to ordinary retrieval. A best-effort abstention can replan, and strict abstention can replan when query expansion is enabled; a non-abstained answer or unusable plan ends the operation, and replaceable rounds buffer instead of leaking intermediate streamed text.
 
 ### Matched reads and completeness
 

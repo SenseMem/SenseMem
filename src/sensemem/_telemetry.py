@@ -254,7 +254,7 @@ _CURRENT_FORMATION_REFUSALS: ContextVar[_FormationRefusals | None] = ContextVar(
 
 
 class _PayloadObserver(Protocol):
-    def __call__(self, value: object) -> None: ...
+    def __call__(self, value: object, /) -> None: ...
 
 
 _RETRIEVAL_OBSERVER: ContextVar[_PayloadObserver | None] = ContextVar(

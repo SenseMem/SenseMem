@@ -130,7 +130,7 @@ FormationBackend.form(
 ) -> tuple[tuple[FormationProposal, ...], ...]
 ```
 
-Receives committed sources and returns one proposal tuple per input in order without writing storage. Resolve relative dates against `occurred_at`, then `created_at`. `evidence_ids` is `None` (primary singleton) or a nonempty unique ordered conjunction including the primary input and citing only the current batch or that target's active history. Invalid citations or self-citation refuse the individual proposal while valid proposals survive.
+Receives committed sources and returns one proposal tuple per input in order without writing storage. Resolve relative dates against `occurred_at`, then `created_at`. `evidence_ids` is `None` (primary singleton) or a nonempty unique ordered conjunction including the primary input and citing only the current batch or that target's active history. Canonical self-citation refuses the individual proposal while valid proposals survive; citations omitting the primary input or outside the batch and history fail the derived commit.
 
 Automatic formation and consolidation proposals must carry `MODEL_INFERENCE` basis, even when the source is host-marked `USER_STATEMENT`. To confirm a typed claim explicitly, use `Memory.apply(MemoryOperation(intent=MemoryIntent.CONSOLIDATE, evidence_ids=(source.id,), proposal=FormationProposal(..., basis=EvidenceBasis.USER_STATEMENT)))`.
 

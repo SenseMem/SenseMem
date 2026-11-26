@@ -26,6 +26,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import examples.live.app as live_app
 from examples.live import app as demo
+from examples.live import prompts as demo_prompts
 from examples.live.app import DemoStaticFiles, LiveRuntime, create_app
 from sensemem import (
     AsyncEventStream,
@@ -45,7 +46,6 @@ from sensemem import (
     StorageError,
 )
 from sensemem.configuration import OpenAIGenerationConfig
-from sensemem.prompts import demo as demo_prompts
 
 
 def _config(path: Path) -> MemorySpec:
@@ -326,7 +326,7 @@ def test_s2s_configuration_exposes_native_audio_context_and_tool_contract(tmp_pa
             "tool_choice": "auto",
             "reasoning": {"effort": "none"},
         }
-        assert config["realtime_model"] == "qwen3.8-omni-flash"
+        assert config["realtime_model"] is None
         assert config["speech_service"] == "speech-to-speech"
         assert config["capabilities"] == {
             "input_audio": True,

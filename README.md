@@ -26,7 +26,6 @@
 
 <p align="center">
   <a href="docs/quickstart.md">Quick start</a> ·
-  <a href="docs/best-practices.md">Best practices</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="docs/api/python-sdk.md">API reference</a> ·
   <a href="docs/benchmarking.md">Benchmarking</a>
@@ -130,7 +129,6 @@ Deploy one owner per physical data directory. Share that owner through a transpo
 | Goal | Guide |
 | --- | --- |
 | Store and retrieve your first memory | [Quick start](docs/quickstart.md) |
-| Track what changed across sessions and verify sources | [Best practices](docs/best-practices.md) |
 | Run memory recipes and concurrent audio/video recall | [Best practices notebook](examples/best_practices.ipynb) |
 | Understand the memory model | [Core concepts](docs/concepts.md) |
 | Choose models and optional capabilities | [Configuration](docs/configuration.md) |

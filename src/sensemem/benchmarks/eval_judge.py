@@ -15,11 +15,13 @@ from dataclasses import replace
 from typing import Literal, TypedDict, cast
 
 try:
+    import openai
     from httpx2 import TransportError
     from openai import APIError, APIStatusError, AsyncOpenAI
     from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
     from openai.types.responses import Response, ResponseTextConfigParam
 except ImportError:
+    openai = None  # type: ignore[assignment]
     TransportError = None  # type: ignore[assignment,misc]
     APIError = None  # type: ignore[assignment,misc]
     APIStatusError = None  # type: ignore[assignment,misc]
@@ -200,9 +202,9 @@ async def apply_judges(  # noqa: C901 - shared-cluster planning retains per-samp
         return tuple(samples)
     if not arguments.quiet:
         announce(f"judging {len(planned)} answers with {config.model}")
-    if AsyncOpenAI is None:
+    if openai is None:
         raise RuntimeError("official LLM scorers require sensemem[openai]")
-    client = AsyncOpenAI(
+    client = openai.AsyncOpenAI(
         api_key=config.api_key,
         base_url=config.base_url,
         timeout=config.timeout_seconds,

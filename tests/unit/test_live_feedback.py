@@ -163,7 +163,7 @@ async def test_review_is_nonblocking_coalesces_pending_and_preserves_original_me
         assert results[0]["facts"] == [
             {
                 "memory_id": first.id,
-                "text": "历史记录原片复核(模型): 钥匙放在蓝色盒子里。",
+                "text": "History record source review (model): 钥匙放在蓝色盒子里。",
                 "occurred_at": NOW.isoformat(),
                 "verification": "source_review",
                 "asset_ids": [first.assets[0].id],
@@ -245,7 +245,7 @@ async def test_new_revision_drops_old_review_and_accepts_only_current_source(
         assert published[0]["facts"] == [
             {
                 "memory_id": latest.id,
-                "text": "历史记录文本/未核实: new authoritative record",
+                "text": "History record text/unverified: new authoritative record",
                 "occurred_at": None,
                 "verification": "record_text",
                 "asset_ids": [],
@@ -314,7 +314,7 @@ async def test_pending_and_current_agent_outputs_cannot_feed_back_as_external_fa
         assert published[-1]["facts"] == [
             {
                 "memory_id": prior_reply.id,
-                "text": "Agent记录文本/未核实: I suggested bringing a notebook.",
+                "text": "Agent record text/unverified: I suggested bringing a notebook.",
                 "occurred_at": None,
                 "verification": "record_text",
                 "asset_ids": [],
@@ -389,7 +389,7 @@ async def test_feedback_bounds_text_and_records_without_promoting_excerpts_to_ve
         for fact in facts:
             text = fact["text"]
             assert isinstance(text, str)
-            assert text.startswith("历史记录文本/未核实: ") and text.endswith("…")
+            assert text.startswith("History record text/unverified: ") and text.endswith("…")
             total += len(text)
             assert fact["verification"] == "record_text"
             assert fact["asset_ids"] == []

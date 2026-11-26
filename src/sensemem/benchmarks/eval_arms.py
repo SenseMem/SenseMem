@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Literal, cast
 
 try:
+    import openai
     from openai import AsyncOpenAI
     from openai.types.chat import ChatCompletion
 except ImportError:
+    openai = None  # type: ignore[assignment]
     AsyncOpenAI = None  # type: ignore[assignment,misc]
     ChatCompletion = None  # type: ignore[assignment,misc]
 
@@ -92,7 +94,7 @@ class BaselineGenerator:
         generation: MemorySpec | None = None,
         tracer: Tracer | None = None,
     ) -> None:
-        if AsyncOpenAI is None:
+        if openai is None:
             raise RuntimeError("baseline arms require sensemem[openai]")
         self._tracer = trace.get_tracer("sensemem.benchmarks.eval") if tracer is None else tracer
         options = dict(item.split("=", 1) for item in gen_kwargs.split(",") if "=" in item)
@@ -128,7 +130,7 @@ class BaselineGenerator:
                 self._max_tokens = stanza.max_tokens
         self._extra_body = extra_body or None
         self._temperature = resolve_generation_temperature(self._model, options, self._extra_body)
-        self._client = AsyncOpenAI(
+        self._client = openai.AsyncOpenAI(
             api_key=config.generation_api_key,
             base_url=config.generation_base_url,
             timeout=config.timeout_seconds,

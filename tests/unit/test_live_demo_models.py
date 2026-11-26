@@ -24,15 +24,9 @@ from sensemem import (
 )
 
 
-@pytest.mark.parametrize(
-    ("task", "prefix"),
-    [
-        (EmbedTask.DOCUMENT, "title: none | text: "),
-        (EmbedTask.QUERY, "task: search result | query: "),
-    ],
-)
-def test_live_embedding_recipe_uses_existing_native_embeddinggemma2_service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: EmbedTask, prefix: str
+@pytest.mark.parametrize("task", [EmbedTask.DOCUMENT, EmbedTask.QUERY])
+def test_live_embedding_recipe_preserves_multimodal_messages_wire_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: EmbedTask
 ) -> None:
     config = MemorySpec.model_validate_json(
         (Path(__file__).parents[2] / "examples/live/config.example.json").read_text()
@@ -42,7 +36,7 @@ def test_live_embedding_recipe_uses_existing_native_embeddinggemma2_service(
         update={"data_dir": tmp_path, "generation": None, "formation": None, "consolidation": None}
     )
     assets: list[AssetRef] = []
-    parts: list[dict[str, object]] = [{"type": "text", "text": prefix + "Remember this."}]
+    parts: list[dict[str, object]] = [{"type": "text", "text": "Remember this."}]
     for modality, media_type in (
         (Modality.AUDIO, "audio/wav"),
         (Modality.VIDEO, "video/webm"),
@@ -71,12 +65,12 @@ def test_live_embedding_recipe_uses_existing_native_embeddinggemma2_service(
     requests: list[dict[str, object]] = []
 
     def respond(request: httpx2.Request) -> httpx2.Response:
-        assert request.url == "http://127.0.0.1:8000/v1/embeddings"
+        assert request.url == "https://embedding.example.com/v1/embeddings"
         assert request.headers["authorization"] == "Bearer EMPTY"
         payload = cast(dict[str, object], json.loads(request.content))
         requests.append(payload)
-        assert payload["model"] == "google/embeddinggemma-2"
-        assert payload["add_special_tokens"] is True
+        assert payload["model"] == "your-embedding-model"
+        assert "add_special_tokens" not in payload
         assert "dimensions" not in payload
         assert "input" not in payload
         assert payload["messages"] == [{"role": "user", "content": parts}]
@@ -87,10 +81,10 @@ def test_live_embedding_recipe_uses_existing_native_embeddinggemma2_service(
     with httpx2.Client(transport=httpx2.MockTransport(respond)) as http_client:
 
         def client(**values: object) -> OpenAI:
-            assert values["base_url"] == "http://127.0.0.1:8000/v1"
+            assert values["base_url"] == "https://embedding.example.com/v1"
             assert values["api_key"] == "EMPTY"
             return OpenAI(
-                base_url="http://127.0.0.1:8000/v1",
+                base_url="https://embedding.example.com/v1",
                 api_key="EMPTY",
                 http_client=http_client,
                 max_retries=0,

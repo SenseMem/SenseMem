@@ -32,9 +32,9 @@ from sensemem import (
 )
 from sensemem.benchmarks import eval_backends
 from sensemem.benchmarks.eval_adapters import MemoryItem
-from sensemem.benchmarks.eval_backends import _BackendPool, _BorrowedSpeechBackend
+from sensemem.benchmarks.eval_backends import BackendPool, _BorrowedSpeechBackend
 from sensemem.benchmarks.model_config import ModelConfig
-from sensemem.benchmarks.quality_support import _FixtureEmbedder
+from sensemem.benchmarks.quality_support import FixtureEmbedder
 from sensemem.models.base import GenerationRoutingBackend
 
 
@@ -85,7 +85,7 @@ async def test_model_slots_execute_through_the_sdk_without_closing_the_pool_owne
 
     backend = Backend()
     plugins = MemoryPlugins(
-        embedder=_FixtureEmbedder(),
+        embedder=FixtureEmbedder(),
         former=backend if slot == "former" else None,
         consolidator=backend if slot == "consolidator" else None,
         transcriber=backend if slot == "transcriber" else None,
@@ -93,7 +93,7 @@ async def test_model_slots_execute_through_the_sdk_without_closing_the_pool_owne
     )
     resolved = MemoryComposition(tmp_path, plugins, MemorySettings(minimum_relevance=0))
     monkeypatch.setattr(eval_backends, "build_memory_composition", lambda _config: resolved)
-    pool = eval_backends._BackendPool(
+    pool = eval_backends.BackendPool(
         ModelConfig(),
         memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
     )
@@ -147,11 +147,11 @@ async def test_borrowed_generation_router_preserves_routes_and_nested_model_owne
     router = GenerationRouter((text, image))
     resolved = MemoryComposition(
         tmp_path,
-        MemoryPlugins(embedder=_FixtureEmbedder(), answerer=router),
+        MemoryPlugins(embedder=FixtureEmbedder(), answerer=router),
         MemorySettings(minimum_relevance=0),
     )
     monkeypatch.setattr(eval_backends, "build_memory_composition", lambda _config: resolved)
-    pool = eval_backends._BackendPool(
+    pool = eval_backends.BackendPool(
         ModelConfig(),
         memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
     )
@@ -195,6 +195,9 @@ def test_backend_pool_drains_speech_prefetch_before_closing_its_model(tmp_path: 
             lifecycle.append("model closed")
             model_closed.set()
 
+        transcription_model = "fixture"
+        transcription_space = "fixture:v1"
+
     class Composition:
         def __init__(self, backend: Backend) -> None:
             self._backend = backend
@@ -211,7 +214,7 @@ def test_backend_pool_drains_speech_prefetch_before_closing_its_model(tmp_path: 
 
     backend = Backend()
     borrowed = _BorrowedSpeechBackend(backend)
-    pool = object.__new__(_BackendPool)
+    pool = object.__new__(BackendPool)
     pool._description_cache = None
     pool._composition = cast(MemoryComposition, Composition(backend))
     pool._plugins = cast(MemoryPlugins, SimpleNamespace(transcriber=borrowed))

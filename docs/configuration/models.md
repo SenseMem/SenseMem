@@ -62,7 +62,7 @@ The exact `google/embeddinggemma-2` model name automatically applies the checkpo
 
 ## Semantic reranking
 
-Reranking is off unless configured. It runs after authoritative hydration, filters, and relevance gating, before the final `limit`. It can resolve a close top-one pair when it scores both leaders and strictly prefers the first; ties preserve original rank. `SearchHit.score` keeps the bounded base score, and `search(..., explain=True)` exposes `reranking_score`. Changing rerankers requires reopening `Memory`, not re-embedding.
+Reranking is off unless configured. It runs after authoritative hydration, filters, relevance gating, and ambiguity checks, before the final `limit`. It changes order without modifying stored embeddings or bounded `SearchHit.score`; original rank breaks ties, and `search(..., explain=True)` exposes `reranking_score`. Changing rerankers requires reopening `Memory`, not re-embedding.
 
 ### Remote vLLM service
 

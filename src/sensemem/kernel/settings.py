@@ -16,11 +16,8 @@ from sensemem.kernel.validation import (
     validated_retrieval_mode,
 )
 from sensemem.recall import RECALL_MAX_ROWS
-from sensemem.settings import MemorySettings
+from sensemem.settings import MAX_FORMATION_HISTORY_ROWS, MAX_RECALL_QUERIES, MemorySettings
 from sensemem.types import IndexQuantization, RetrievalMode
-
-MAX_FORMATION_HISTORY_ROWS = 128
-MAX_RECALL_QUERIES = 32
 
 
 @dataclass(frozen=True, slots=True)

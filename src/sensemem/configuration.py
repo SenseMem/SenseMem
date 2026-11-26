@@ -31,7 +31,12 @@ from sensemem.candidate_sources import CandidateSource, DefaultCandidateSource
 from sensemem.context_selection import ContextSelector, DefaultContextSelector
 from sensemem.control_values import RetentionPolicy
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.gazetteer import OfflineGazetteer
+from sensemem.infrastructure.local.gazetteer import (
+    DEFAULT_GAZETTEER_BUDGET_CHARS,
+    DEFAULT_GAZETTEER_LIMIT,
+    DEFAULT_GAZETTEER_RADIUS_M,
+    OfflineGazetteer,
+)
 from sensemem.infrastructure.local.source_metadata import GazetteerEnricher
 from sensemem.kernel.answer_evidence import EvidenceGeneration
 from sensemem.models._openai_defaults import (
@@ -92,7 +97,7 @@ _DISCRIMINATED_SLOTS = frozenset({"embedding", "reranking", "speech"})
 
 
 class PluginFactory(Protocol):
-    def __call__(self, options: Mapping[str, object]) -> Closable: ...
+    def __call__(self, options: Mapping[str, object], /) -> Closable: ...
 
 
 _ConfigT = TypeVar("_ConfigT", bound=BaseModel)
@@ -224,9 +229,13 @@ class OfflineGazetteerConfig(_ConfigModel):
 
     index_path: Path
     index_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$", strict=True)]
-    radius_m: Annotated[float, Field(strict=True, gt=0, le=500)] = 500
-    limit: Annotated[int, Field(strict=True, ge=1, le=8)] = 8
-    budget_chars: _PositiveInt = 16_000
+    radius_m: Annotated[float, Field(strict=True, gt=0, le=DEFAULT_GAZETTEER_RADIUS_M)] = (
+        DEFAULT_GAZETTEER_RADIUS_M
+    )
+    limit: Annotated[int, Field(strict=True, ge=1, le=DEFAULT_GAZETTEER_LIMIT)] = (
+        DEFAULT_GAZETTEER_LIMIT
+    )
+    budget_chars: _PositiveInt = DEFAULT_GAZETTEER_BUDGET_CHARS
 
 
 class OpenAIGenerationConfig(_OpenAICompletionConfig):

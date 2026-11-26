@@ -364,7 +364,7 @@ def test_cli_loads_config_runs_server_and_closes_backends(
             assert client.post("/add", headers=HEADERS, json=payload()).status_code == 200
             assert len(search(client)) == 1
 
-    monkeypatch.setattr(eval_backends_module, "_BackendPool", Pool)
+    monkeypatch.setattr(eval_backends_module, "BackendPool", Pool)
     monkeypatch.setattr(uvicorn, "run", run)
     monkeypatch.setenv("SENSEMEM_AML_API_KEY", "secret")
     for name, value in environment.items():
@@ -399,7 +399,7 @@ def test_cli_refuses_an_owned_root_before_loading_models(
     def load(*args: object, **kwargs: object) -> None:
         raise AssertionError("an owned root must fail before any backend is loaded")
 
-    monkeypatch.setattr(eval_backends_module, "_BackendPool", load)
+    monkeypatch.setattr(eval_backends_module, "BackendPool", load)
     with closing(DataDirectoryLock(tmp_path / "data")), pytest.raises(DataDirectoryInUseError):
         aml.main(
             [
@@ -440,7 +440,7 @@ def test_cli_releases_root_after_startup_failure(
     def run(app: object, **kwargs: object) -> None:
         raise RuntimeError("startup failed")
 
-    monkeypatch.setattr(eval_backends_module, "_BackendPool", Pool)
+    monkeypatch.setattr(eval_backends_module, "BackendPool", Pool)
     monkeypatch.setattr(uvicorn, "run", run)
     with pytest.raises(RuntimeError, match="startup failed"):
         aml.main(

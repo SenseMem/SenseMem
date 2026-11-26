@@ -80,7 +80,7 @@ from sensemem.models.base import (
     StreamingGenerationBackend,
 )
 from sensemem.prompts import recall as recall_prompts
-from sensemem.recall import RecallResult, fallback_recall_program
+from sensemem.recall import RecallResult
 from sensemem.records import AnswerChunk, AnswerResult, SearchHit
 from sensemem.spatial import RetrievalScope
 from sensemem.types import AnswerPolicy, MemoryCategory, Modality
@@ -465,7 +465,7 @@ class Answering(Traced):
         self,
         context: AnswerContext,
     ) -> Generator[str, None, tuple[AnswerResult, tuple[SearchHit, ...]]]:
-        """Answer this question, replanning after abstention while attempts remain.
+        """Answer this question, replanning once when the first round's own answer asked for it.
 
         A round another round may replace is held rather than streamed. Two complete answers on
         one wire with no boundary between them is not something a caller can render, and the
@@ -477,13 +477,8 @@ class Answering(Traced):
         reads = self._recall.reads(context)
         for attempt in range(self._settings.recall_rounds if self._settings.recall_planning else 1):
             held: list[str] = []
-            program = self._recall.execute(context, reads, attempted=attempted)
-            replannable = (
-                program is not None
-                and attempt + 1 < self._settings.recall_rounds
-                and program.plan != fallback_recall_program(context.prepared.text, k=context.limit)
-            )
-            with closing(self._recall_round(context, reads, program)) as deltas:
+            replannable = self._replan_possible(context, attempt=attempt)
+            with closing(self._recall_round(context, reads, attempted=attempted)) as deltas:
                 while True:
                     try:
                         delta = next(deltas)
@@ -506,7 +501,8 @@ class Answering(Traced):
         self,
         context: AnswerContext,
         reads: RecallReads,
-        program: RecallResult | None,
+        *,
+        attempted: str,
     ) -> Generator[str, None, tuple[AnswerResult, tuple[SearchHit, ...]]]:
         """Ground one attempt at this question and yield its answer deltas.
 
@@ -514,6 +510,7 @@ class Answering(Traced):
         has always run: the ranking's own grounding window, the routed question with the
         reference clock last, then the answer.
         """
+        program = self._recall.execute(context, reads, attempted=attempted)
         semantic = (
             program is not None
             and self._settings.recall_query_expansion
@@ -969,6 +966,18 @@ class Answering(Traced):
                 )
                 return packed, recall_prompts.append_note(note, linked_note)
         return hits, note
+
+    def _replan_possible(self, context: AnswerContext, *, attempt: int) -> bool:
+        """Whether a later round could replace this one, which is what makes it unstreamable.
+
+        Another round needs an abstention. Experimental semantic recall may also investigate a
+        strict refusal before releasing it; ordinary planning retains its best-effort-only rule.
+        """
+        return (
+            self._settings.recall_planning
+            and (context.answer_policy == "best_effort" or self._settings.recall_query_expansion)
+            and attempt + 1 < self._settings.recall_rounds
+        )
 
     def _answer_chunks(  # noqa: C901 - streaming and non-streaming validation share one span
         self,

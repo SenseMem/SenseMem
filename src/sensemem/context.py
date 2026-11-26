@@ -124,7 +124,7 @@ _Claim: TypeAlias = tuple[str, str, str | None, str | None]
 # Resolves affect memory IDs to the event IDs their own observations also formed. The compiler
 # calls it once, for the affect entries the budget actually bought, and never past the deadline.
 class _CoDerivedEventResolver(Protocol):
-    def __call__(self, memory_ids: Sequence[str]) -> Mapping[str, Sequence[str]]: ...
+    def __call__(self, memory_ids: Sequence[str], /) -> Mapping[str, Sequence[str]]: ...
 
 
 @dataclass(frozen=True, slots=True)

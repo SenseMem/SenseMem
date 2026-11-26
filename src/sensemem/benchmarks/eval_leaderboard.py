@@ -23,8 +23,8 @@ from pydantic import Field, StringConstraints, field_validator, model_validator
 from sensemem import AsyncMemory, Blob, MemoryRecord, MemorySpec, SearchHit
 from sensemem.api.content import StrictModel
 from sensemem.api.errors import register_error_handlers
+from sensemem.benchmarks import eval_backends
 from sensemem.benchmarks.artifact_io import encode_json_bytes, replace_artifact_files
-from sensemem.benchmarks.eval_backends import BackendPool
 from sensemem.benchmarks.eval_config import read_config_document
 from sensemem.benchmarks.model_config import ModelConfig
 from sensemem.content import ContentInput
@@ -351,7 +351,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
         root = arguments.data_root.expanduser().resolve()
         owner = DataDirectoryLock(root)
         cleanup.callback(owner.close)
-        pool = BackendPool(ModelConfig(), memory_config=config)
+        pool = eval_backends.BackendPool(ModelConfig(), memory_config=config)
         cleanup.callback(pool.close)
         uvicorn.run(
             create_app(

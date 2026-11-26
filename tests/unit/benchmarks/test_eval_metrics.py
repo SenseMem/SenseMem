@@ -256,7 +256,7 @@ async def test_ingest_traces_one_span_per_accepted_batch_with_its_item_count() -
             BENCHMARK_TASK_SPAN,
             attributes={BENCHMARK_TASK: "fixture", SPAN_KIND: "benchmark"},
         ):
-            failures = await eval_ingest_module._ingest(
+            failures = await eval_ingest_module.ingest(
                 cast(AsyncMemory, memory),
                 items,
                 batch_size=2,
@@ -309,7 +309,7 @@ def test_answer_latency_names_the_quantity_it_measures() -> None:
     )
     task = _metric_task()
 
-    metrics = eval_metrics_module._metrics(task, samples, _arguments())
+    metrics = eval_metrics_module.compute_task_metrics(task, samples, _arguments())
     latency = cast(Mapping[str, object], metrics["answer_latency_ms"])
 
     assert "memory.ask" in str(latency["measures"])
@@ -331,7 +331,7 @@ def test_a_failed_answer_counts_as_wrong_without_invalidating_the_task_score() -
     )
     task = _metric_task()
 
-    metrics = eval_metrics_module._metrics(task, (answered, failed), _arguments())
+    metrics = eval_metrics_module.compute_task_metrics(task, (answered, failed), _arguments())
     score = cast(Mapping[str, object], metrics["score"])
 
     assert metrics["score_valid"] is True
@@ -344,7 +344,7 @@ def test_metrics_mark_an_unavailable_dataset_unit_as_incomplete() -> None:
     sample = _sample("q1", sources=(), gold=(), candidate_count=0)
     task = _metric_task(unavailable_units={"private-video": "ERROR: Private video"})
 
-    metrics = eval_metrics_module._metrics(task, (sample,), _arguments())
+    metrics = eval_metrics_module.compute_task_metrics(task, (sample,), _arguments())
     coverage = cast(Mapping[str, object], metrics["dataset_coverage"])
 
     assert metrics["score_valid"] is False
@@ -361,7 +361,9 @@ def test_metrics_do_not_compare_a_selected_slice_to_the_full_dataset() -> None:
     sample = _sample("q1", sources=(), gold=(), candidate_count=0)
     task = _metric_task()
 
-    metrics = eval_metrics_module._metrics(task, (sample,), _arguments(limit=1, offset=0))
+    metrics = eval_metrics_module.compute_task_metrics(
+        task, (sample,), _arguments(limit=1, offset=0)
+    )
     coverage = cast(Mapping[str, object], metrics["dataset_coverage"])
 
     assert metrics["score_valid"] is True
@@ -386,7 +388,7 @@ def test_personamem_does_not_publish_a_biased_partial_micro_score() -> None:
     )
     task = _metric_task("personamem-v3")
 
-    result = eval_metrics_module._metrics(task, (supported, unsupported), _arguments())
+    result = eval_metrics_module.compute_task_metrics(task, (supported, unsupported), _arguments())
     score = cast(Mapping[str, object], result["score"])
     coverage = cast(Mapping[str, object], result["score_coverage"])
 
@@ -970,7 +972,7 @@ def test_metrics_attach_the_controls_and_never_hide_a_missing_one() -> None:
     task = _metric_task()
     samples = (_sample("q1", sources=("s1",), gold=(), candidate_count=4),)
 
-    metrics = eval_metrics_module._metrics(task, samples, _arguments())
+    metrics = eval_metrics_module.compute_task_metrics(task, samples, _arguments())
     controls = cast(Mapping[str, object], metrics["controls"])
 
     assert controls["interpretable"] is False
@@ -1013,7 +1015,7 @@ def test_table_prints_missing_controls_instead_of_only_a_score() -> None:
         ]
     }
 
-    table = eval_console_module._table(results)
+    table = eval_console_module.render_summary_table(results)
 
     header, row = table.splitlines()
     assert "controls" in header
@@ -1022,7 +1024,7 @@ def test_table_prints_missing_controls_instead_of_only_a_score() -> None:
     # Four absent control cells render as MISSING, and the summary column names all three.
     assert row.split().count("MISSING") == 5
     assert "MISSING random_ranker,blind,recall_at_20" in row
-    assert eval_console_module._uninterpretable_tasks(results) == (
+    assert eval_console_module.uninterpretable_tasks(results) == (
         "fixture reports a score without random_ranker, blind, recall_at_20",
     )
 
@@ -1057,12 +1059,12 @@ def test_table_shows_the_control_values_when_they_are_present() -> None:
         ]
     }
 
-    table = eval_console_module._table(results)
+    table = eval_console_module.render_summary_table(results)
 
     assert "0.9941" in table
     assert "0.3830" in table
     assert "ok" in table
-    assert eval_console_module._uninterpretable_tasks(results) == ()
+    assert eval_console_module.uninterpretable_tasks(results) == ()
 
 
 def test_table_prints_the_product_token_cost_when_the_judge_left_the_total_null() -> None:
@@ -1097,7 +1099,7 @@ def test_table_prints_the_product_token_cost_when_the_judge_left_the_total_null(
         ]
     }
 
-    table = eval_console_module._table(results)
+    table = eval_console_module.render_summary_table(results)
 
     # The marker says these are the product modules' tokens, not the run total.
     assert "80*" in table
@@ -1142,7 +1144,7 @@ def test_blind_baseline_is_read_from_a_blind_run_of_the_same_inputs(tmp_path: Pa
     path = tmp_path / "results.jsonl"
     path.write_text(json.dumps(_blind_document()), encoding="utf-8")
 
-    rows = eval_metrics_module._blind_baseline_rows(tmp_path, (_loaded_task(),))
+    rows = eval_metrics_module.blind_baseline_rows(tmp_path, (_loaded_task(),))
 
     assert rows["fixture"]["mean"] == pytest.approx(0.383)
     assert rows["fixture"]["run_id"] == "blind-run"
@@ -1153,7 +1155,7 @@ def test_blind_baseline_rejects_a_run_that_had_memory(tmp_path: Path) -> None:
     path.write_text(json.dumps(_blind_document(blind=False)), encoding="utf-8")
 
     with pytest.raises(ValueError, match="--blind"):
-        eval_metrics_module._blind_baseline_rows(path, (_loaded_task(),))
+        eval_metrics_module.blind_baseline_rows(path, (_loaded_task(),))
 
 
 def test_blind_baseline_rejects_different_evaluation_inputs(tmp_path: Path) -> None:
@@ -1161,7 +1163,7 @@ def test_blind_baseline_rejects_different_evaluation_inputs(tmp_path: Path) -> N
     path.write_text(json.dumps(_blind_document()), encoding="utf-8")
 
     with pytest.raises(ValueError, match="evaluation inputs differ"):
-        eval_metrics_module._blind_baseline_rows(path, (_loaded_task("f" * 64),))
+        eval_metrics_module.blind_baseline_rows(path, (_loaded_task("f" * 64),))
 
 
 def test_blind_baseline_rejects_the_old_forced_guess_prompt(tmp_path: Path) -> None:
@@ -1174,7 +1176,7 @@ def test_blind_baseline_rejects_the_old_forced_guess_prompt(tmp_path: Path) -> N
     )
 
     with pytest.raises(ValueError, match="prompt"):
-        eval_metrics_module._blind_baseline_rows(path, (_loaded_task(),))
+        eval_metrics_module.blind_baseline_rows(path, (_loaded_task(),))
 
 
 def test_blind_baseline_rejects_a_different_answer_policy(tmp_path: Path) -> None:
@@ -1182,7 +1184,7 @@ def test_blind_baseline_rejects_a_different_answer_policy(tmp_path: Path) -> Non
     path.write_text(json.dumps(_blind_document()), encoding="utf-8")
 
     with pytest.raises(ValueError, match="answer policy"):
-        eval_metrics_module._blind_baseline_rows(
+        eval_metrics_module.blind_baseline_rows(
             path, (_loaded_task(),), answer_policy="best_effort"
         )
 
@@ -1199,7 +1201,7 @@ def test_noise_floor_reports_the_smallest_resolvable_difference() -> None:
 
     noise = cast(
         Mapping[str, object],
-        eval_metrics_module._metrics(task, samples, _arguments())["noise_floor"],
+        eval_metrics_module.compute_task_metrics(task, samples, _arguments())["noise_floor"],
     )
 
     assert noise["floor"] == pytest.approx(NOISE_FLOOR)
@@ -1250,7 +1252,7 @@ def test_table_refuses_a_task_row_that_carries_no_controls() -> None:
     }
 
     with pytest.raises(KeyError, match="controls"):
-        eval_console_module._table(results)
+        eval_console_module.render_summary_table(results)
 
 
 def test_retrieved_sources_are_deduplicated_in_rank_order() -> None:
@@ -1470,10 +1472,10 @@ def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> No
         exit_mode = sys.argv[1]
 
         def report():
-            _announce("fixture")
-            _configure_logging("INFO")
+            announce("fixture")
+            configure_logging("INFO")
             logging.getLogger("sensemem.fixture").warning("fixture log")
-            with _progress("fixture", "sample", total=1) as progress:
+            with progress_reporter("fixture", "sample", total=1) as progress:
                 progress(1, 1)
 
         if exit_mode == "atexit":
@@ -1493,7 +1495,7 @@ def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> No
         resource_tracker.register = tracked_register
 
         from sensemem.benchmarks.eval_console import (
-            _announce, _configure_logging, _progress,
+            announce, configure_logging, progress_reporter,
         )
 
         if exit_mode != "atexit":
@@ -1508,8 +1510,8 @@ def test_console_does_not_create_multiprocessing_resources(exit_mode: str) -> No
             original_stderr = sys.stderr
             sys.stderr = terminal
             try:
-                with _progress("terminal fixture", "sample", total=1) as progress:
-                    _announce("live fixture")
+                with progress_reporter("terminal fixture", "sample", total=1) as progress:
+                    announce("live fixture")
                     logging.getLogger("sensemem.fixture").warning("live fixture log")
                     progress(1, 1)
             finally:

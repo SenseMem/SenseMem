@@ -34,12 +34,16 @@ from sensemem.benchmarks._official.mosaic_scoring import (
 )
 from sensemem.benchmarks.download import acquire_inputs
 from sensemem.benchmarks.eval_adapters import (
-    _selected,
     load_task,
+    select_slice,
 )
-from sensemem.benchmarks.eval_arms import _Arm
-from sensemem.benchmarks.eval_config import _Arguments, _JudgeConfig
-from sensemem.benchmarks.eval_metrics import _comparisons, _in_run_blind_rows, _metrics
+from sensemem.benchmarks.eval_arms import Arm
+from sensemem.benchmarks.eval_config import Arguments, JudgeConfig
+from sensemem.benchmarks.eval_metrics import (
+    build_comparisons,
+    compute_task_metrics,
+    in_run_blind_rows,
+)
 from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.eval_runner import run_loaded_task
@@ -158,9 +162,9 @@ def _fixture(root: Path) -> Path:
     return dataset
 
 
-def _arguments(**overrides: object) -> _Arguments:
+def _arguments(**overrides: object) -> Arguments:
     return cast(
-        _Arguments,
+        Arguments,
         SimpleNamespace(
             **{
                 "seed": 42,
@@ -256,7 +260,7 @@ async def test_serial_and_batched_runs_preserve_persona_isolation_and_question_o
                 predict_only=True,
                 ingest_concurrency=concurrency,
             ),
-            arms=(_Arm("random"),),
+            arms=(Arm("random"),),
             on_search_replay_ready=lambda _replay: None,
         )
         assert all(
@@ -309,7 +313,7 @@ async def test_mosaic_never_silently_drops_binding_judge_controls(unsupported: s
             client=client,
             cache=None,
             semaphore=asyncio.Semaphore(1),
-            config=_JudgeConfig("qwen/qwen3.7-plus", "http://judge.invalid/v1"),
+            config=JudgeConfig("qwen/qwen3.7-plus", "http://judge.invalid/v1"),
             log_samples=False,
             tracer=trace.get_tracer(__name__),
         )
@@ -327,7 +331,7 @@ def test_bounded_loading_skips_unselected_histories_but_keeps_complete_persona_c
 
     dataset = _fixture(tmp_path)
     complete = load_mosaic(dataset)
-    selected = _selected(
+    selected = select_slice(
         tuple((p.persona_id, q.question_id) for p in complete for q in p.questions), limit, offset
     )
     parsed: list[bytes] = []
@@ -545,7 +549,7 @@ def test_headline_refusal_and_comparison_denominators(tmp_path: Path) -> None:
                     scorer_protocol=scorer_protocol("mosaic"),
                 )
             )
-    result = _metrics(task, samples, _arguments())
+    result = compute_task_metrics(task, samples, _arguments())
     assert cast(Mapping[str, object], result["score"])["mean"] == 0.5
     assert result["question_count"] == 3 and result["scored_question_count"] == 2
     metrics_by_name = cast(Mapping[str, Mapping[str, object]], result["metrics"])
@@ -553,11 +557,11 @@ def test_headline_refusal_and_comparison_denominators(tmp_path: Path) -> None:
     assert metrics_by_name["correct_refusal_rate"]["mean"] == 1.0
     assert metrics_by_name["false_refusal_rate"]["mean"] == 0.5
     blind = [replace(sample, arm="blind") for sample in samples]
-    rows = _in_run_blind_rows(_arguments(arms=("blind",), run_id="fixture"), (task,), blind)
+    rows = in_run_blind_rows(_arguments(arms=("blind",), run_id="fixture"), (task,), blind)
     assert rows["mosaic"]["mean"] == 0.5 and rows["mosaic"]["question_count"] == 2
     baseline = tmp_path / "samples.jsonl"
     baseline.write_text("\n".join(json.dumps(sample.json()) for sample in samples))
-    comparisons = _comparisons(
+    comparisons = build_comparisons(
         _arguments(compare=baseline, regression_threshold=0.0), (task,), samples
     )
     assert comparisons[0]["metric"] == "judge_score"
@@ -674,7 +678,7 @@ async def test_official_judge_transport_keeps_both_thinking_controls() -> None:
             client=client,
             cache=None,
             semaphore=asyncio.Semaphore(1),
-            config=_JudgeConfig("qwen/qwen3.7-plus", "http://judge.invalid/v1"),
+            config=JudgeConfig("qwen/qwen3.7-plus", "http://judge.invalid/v1"),
             log_samples=False,
             tracer=trace.get_tracer(__name__),
         )

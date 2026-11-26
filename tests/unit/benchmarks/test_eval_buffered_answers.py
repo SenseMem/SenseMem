@@ -19,7 +19,7 @@ from sensemem import (
 )
 from sensemem.benchmarks import eval_config
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from sensemem.benchmarks.eval_config import _arguments, _build_parser
+from sensemem.benchmarks.eval_config import build_parser, resolve_arguments
 from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_runner import run_loaded_task
 from sensemem.benchmarks.isolation import BenchmarkRun
@@ -28,20 +28,22 @@ from sensemem.benchmarks.task_catalog import TASKS
 
 
 def test_buffered_answer_cli_overrides_the_default() -> None:
-    parser = _build_parser("eval")
-    assert _arguments(parser, parser.parse_args(["--tasks", "atm-bench-main"])).stream_answers
-    assert not _arguments(
+    parser = build_parser("eval")
+    assert resolve_arguments(
+        parser, parser.parse_args(["--tasks", "atm-bench-main"])
+    ).stream_answers
+    assert not resolve_arguments(
         parser, parser.parse_args(["--tasks", "atm-bench-main", "--no-stream-answers"])
     ).stream_answers
 
 
 def test_buffered_answer_yaml_and_cli_precedence() -> None:
-    parser = _build_parser("eval")
+    parser = build_parser("eval")
     overrides = HarnessOverrides(run=RunOverrides(stream_answers=False))
     default = parser.parse_args(["--tasks", "atm-bench-main"])
     streamed = parser.parse_args(["--tasks", "atm-bench-main", "--stream-answers"])
-    assert not eval_config._arguments(parser, default, overrides=overrides).stream_answers
-    assert eval_config._arguments(parser, streamed, overrides=overrides).stream_answers
+    assert not eval_config.resolve_arguments(parser, default, overrides=overrides).stream_answers
+    assert eval_config.resolve_arguments(parser, streamed, overrides=overrides).stream_answers
 
 
 async def test_buffered_runner_reaches_sixteen_real_sdk_answers(tmp_path: Path) -> None:

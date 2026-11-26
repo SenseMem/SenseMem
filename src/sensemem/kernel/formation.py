@@ -80,7 +80,11 @@ def _proposal_sources(
     if source.memory_id not in evidence or any(
         item not in batch and item not in history_ids for item in evidence
     ):
-        return None
+        raise ModelError(
+            "formation proposal cited an observation outside its batch",
+            reason="response_invalid",
+            stage="form",
+        )
     return evidence if all(formation_evidence_active(records[item]) for item in evidence) else None
 
 

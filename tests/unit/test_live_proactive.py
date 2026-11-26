@@ -196,7 +196,7 @@ def test_source_review_and_proactive_dialogue_preserve_origin(
             assert dialogue["reviewed_memory_ids"] == proposal["reviewed_memory_ids"]
             assert proposal["candidate_id"] in runtime.completed_initiatives
             assert dialogue["event_id"] == "event-1"
-            assert record.content == f"SenseMem\uff1a\n{proposal['utterance']}"
+            assert record.content == f"SenseMem:\n{proposal['utterance']}"
 
         client.portal.call(inspect)
 

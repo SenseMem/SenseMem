@@ -47,7 +47,7 @@ from sensemem.benchmarks.eval_adapters import (
 )
 from sensemem.benchmarks.eval_cache import CachedAnswer, DescriptionCache, ResponseCache, _answer
 from sensemem.benchmarks.eval_evidence import EvidenceInterval
-from sensemem.benchmarks.eval_inputs import _cache_task
+from sensemem.benchmarks.eval_inputs import cache_task
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_TASK,
     BENCHMARK_TASK_SPAN,
@@ -365,7 +365,7 @@ def test_atm_raw_media_filename_supplies_capture_time(tmp_path: Path, stem: str)
         spec.adapter_version for name, spec in TASKS.items() if name.startswith("atm-bench-")
     } == {ATM_BENCH_ADAPTER_VERSION}
     assert ATM_BENCH_ADAPTER_VERSION == "atm_bench_official_v4"
-    assert _cache_task(task) == (
+    assert cache_task(task) == (
         f"atm-bench-main:{ATM_BENCH_ADAPTER_VERSION}:{task.evaluation_sha256}"
     )
     email = next(item for item in task.units[0].memories if item.source_id.startswith("email"))
@@ -490,16 +490,16 @@ def test_response_cache_write_uses_the_selected_arm_namespace() -> None:
         (),
         (EvalQuestion("question", ("Question?",), references=("Answer",)),),
     )
-    outcome = eval_results_module._AnswerOutcome("Answer", 1.0, 0.5, (), ())
+    outcome = eval_results_module.AnswerOutcome("Answer", 1.0, 0.5, (), ())
 
-    eval_samples_module._cache_outcome(
+    eval_samples_module.cache_outcome(
         cast(ResponseCache, cache),
         task,
         unit,
         unit.questions[0],
         outcome,
         0,
-        arm=eval_arms_module._Arm("blind"),
+        arm=eval_arms_module.Arm("blind"),
     )
 
     assert calls[0][0] == f"blind:fixture:v1:{'e' * 64}"
@@ -1265,7 +1265,7 @@ def test_the_description_cache_is_opened_only_for_a_configured_vision_slot(
     tmp_path: Path,
 ) -> None:
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             data_root=tmp_path,
             use_cache=tmp_path / "cache" / "run.db",
@@ -1278,17 +1278,17 @@ def test_the_description_cache_is_opened_only_for_a_configured_vision_slot(
         {"data_dir": tmp_path, "embedding": embedding, "vision": {"provider": "openai"}}
     )
 
-    assert eval_config_module._description_cache_path(arguments, None) is None
-    assert eval_config_module._description_cache_path(arguments, without) is None
+    assert eval_config_module.description_cache_path(arguments, None) is None
+    assert eval_config_module.description_cache_path(arguments, without) is None
     # Shared across units in this run, but a later repeat must execute the same model workload.
-    assert eval_config_module._description_cache_path(arguments, described) == (
+    assert eval_config_module.description_cache_path(arguments, described) == (
         tmp_path / "cache" / "run-one" / "descriptions.db"
     )
     no_response_cache = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(data_root=tmp_path, use_cache=None, run_id="run-two"),
     )
-    assert eval_config_module._description_cache_path(no_response_cache, described) == (
+    assert eval_config_module.description_cache_path(no_response_cache, described) == (
         tmp_path / "cache" / "run-two" / "descriptions.db"
     )
 
@@ -1305,7 +1305,7 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
     value = _description_input(tmp_path, "e" * 64)
     cache_path = tmp_path / "cache" / "descriptions.db"
 
-    def pool(describer: _CountingDescriber) -> eval_backends_module._BackendPool:
+    def pool(describer: _CountingDescriber) -> eval_backends_module.BackendPool:
         resolved = SimpleNamespace(
             plugins=MemoryPlugins(
                 embedder=cast(
@@ -1320,7 +1320,7 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
         monkeypatch.setattr(
             eval_backends_module, "build_memory_composition", lambda _config: resolved
         )
-        return eval_backends_module._BackendPool(
+        return eval_backends_module.BackendPool(
             ModelConfig(),
             memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
             description_cache=cache_path,

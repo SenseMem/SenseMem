@@ -68,7 +68,7 @@ Default [context compilation](context-compilation.md#evidence-closed-selection) 
 
 ## Formation failures and inherited context
 
-Individually ungrounded proposals (missing cue modality, incompatible frame, invalid citation, or intra-source conflict) are refused independently, incrementing `sensemem.formation.refused_proposals` while valid proposals and the source commit. Invalid batch envelopes and model, embedding, or commit failures raise errors and leave the committed source pending settlement.
+Individually ungrounded proposals (missing cue modality, incompatible frame, or intra-source conflict) are refused independently, incrementing `sensemem.formation.refused_proposals` while valid proposals and the source commit. Invalid batch envelopes and model, embedding, or commit failures raise errors and leave the committed source pending settlement.
 
 Formation inherits event/valid time and metric pose from its primary source. Place and metadata are retained only when every cited source agrees on each complete value. Derived records carry text and evidence links, not their own media assets.
 

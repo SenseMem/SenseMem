@@ -24,12 +24,12 @@ from sensemem import (
 )
 from sensemem.benchmarks import eval_ingest as eval_ingest_module
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from sensemem.benchmarks.eval_answers import _answer_many
-from sensemem.benchmarks.eval_arms import PRODUCT_ARM, _Arm
+from sensemem.benchmarks.eval_answers import answer_many
+from sensemem.benchmarks.eval_arms import PRODUCT_ARM, Arm
 from sensemem.benchmarks.eval_options import EvaluationOptions
-from sensemem.benchmarks.eval_results import SampleResult, _AnswerOutcome
+from sensemem.benchmarks.eval_results import AnswerOutcome, SampleResult
 from sensemem.benchmarks.eval_runner import _measure_standalone_searches, run_loaded_task
-from sensemem.benchmarks.eval_runtime import _model_operation
+from sensemem.benchmarks.eval_runtime import model_operation
 from sensemem.benchmarks.eval_telemetry import EvaluationTelemetry
 from sensemem.benchmarks.isolation import BenchmarkRun
 from sensemem.benchmarks.task_catalog import TaskSpec
@@ -248,7 +248,7 @@ async def test_cancelled_model_work_keeps_its_slot_until_the_sdk_stops(
             return super().embed(inputs, task)
 
     async with AsyncMemory(Memory(tmp_path, embedder=Embedder())) as memory:
-        pending = asyncio.create_task(_model_operation(budget, lambda: memory.add("evidence")))
+        pending = asyncio.create_task(model_operation(budget, lambda: memory.add("evidence")))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
             pending.cancel()
@@ -291,10 +291,10 @@ async def test_ingest_backoff_releases_model_capacity_and_can_be_cancelled(
             await resume.wait()
             await operation()
 
-    monkeypatch.setattr(eval_ingest_module, "_retry_transient", retry)
+    monkeypatch.setattr(eval_ingest_module, "retry_transient", retry)
     async with AsyncMemory(Memory(tmp_path, embedder=Embedder())) as memory:
         pending = asyncio.create_task(
-            eval_ingest_module._ingest(
+            eval_ingest_module.ingest(
                 memory,
                 (MemoryItem("evidence", ("evidence",)),),
                 batch_size=1,
@@ -416,22 +416,20 @@ async def test_non_streaming_evaluation_queues_excess_requests_per_store(tmp_pat
     ) as memory:
         memory.add("The answer is A.")
         try:
-            outcomes = await _answer_many(
+            outcomes = await answer_many(
                 AsyncMemory(memory),
                 tuple(
                     EvalQuestion(f"q{index}", ("What is the answer?",), references=("A",))
                     for index in range(128)
                 ),
                 options=EvaluationOptions(request_concurrency=128, recall_limit=1),
-                arm=_Arm("random"),
+                arm=Arm("random"),
             )
         finally:
             embedder.release.set()
 
     assert len(outcomes) == 128
-    assert all(
-        isinstance(outcome, _AnswerOutcome) and outcome.error is None for outcome in outcomes
-    )
+    assert all(isinstance(outcome, AnswerOutcome) and outcome.error is None for outcome in outcomes)
     assert embedder.peak == 28
 
 

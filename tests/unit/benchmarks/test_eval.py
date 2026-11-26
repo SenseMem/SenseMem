@@ -20,12 +20,12 @@ from inspect import getattr_static, signature
 from pathlib import Path
 from threading import Event as ThreadEvent
 from types import SimpleNamespace
-from typing import ClassVar, cast
+from typing import cast
 
 import httpx2 as httpx
 import pytest
 import yaml
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
 from pydantic import BaseModel, ValidationError
@@ -104,19 +104,19 @@ from sensemem.benchmarks.eval_adapters import (
     load_task,
     parse_media_manifest,
 )
-from sensemem.benchmarks.eval_answers import _answer_many
+from sensemem.benchmarks.eval_answers import answer_many
 from sensemem.benchmarks.eval_backends import _BorrowedFaceBackend, _BorrowedSpeechBackend
 from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
 from sensemem.benchmarks.eval_config import (
     _fallback_reference_at,
     _generation_kwargs,
-    _load_memory_config,
-    _model_config,
     _run_identifier,
     _seed_values,
+    load_memory_config,
+    model_config,
 )
-from sensemem.benchmarks.eval_ingest import _ingest
-from sensemem.benchmarks.eval_inputs import _cache_namespace
+from sensemem.benchmarks.eval_ingest import ingest
+from sensemem.benchmarks.eval_inputs import cache_namespace
 from sensemem.benchmarks.eval_options import EvaluationOptions
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.eval_runner import run_loaded_task
@@ -150,13 +150,13 @@ from sensemem.benchmarks.prompts import (
     MEM_GALLERY_QUERY_PROMPT,
     MEM_GALLERY_REFUSAL_PROMPT,
     MEMLENS_QUERY_PROMPT,
-    _choice_prompt,
-    _free_text_parts,
+    choice_prompt,
+    free_text_parts,
     mem_gallery_format_constraint,
     mem_gallery_refusal,
     task_answer_surface,
 )
-from sensemem.benchmarks.quality_support import _FixtureEmbedder
+from sensemem.benchmarks.quality_support import FixtureEmbedder
 from sensemem.benchmarks.task_catalog import TASKS, MediaSource, TaskSpec, expand
 from sensemem.configuration import OpenAIEmbeddingConfig, OpenAIGenerationConfig
 from sensemem.models.base import SpeechBackend
@@ -193,7 +193,7 @@ def test_samples_report_structured_abstentions() -> None:
     )
 
     assert abstained.json()["abstention_reason"] == "insufficient_evidence"
-    assert eval_metrics_module._abstentions((abstained, _sample_fixture(2))) == {
+    assert eval_metrics_module.abstentions((abstained, _sample_fixture(2))) == {
         "count": 1,
         "rate": 0.5,
         "reasons": {"insufficient_evidence": 1},
@@ -232,8 +232,8 @@ def test_query_parts_and_gallery_image_id_preserve_retrieval_evidence(tmp_path: 
         "Where is it?",
         format_constraint="Answer briefly.",
     ) == ("Where is it?", "Instruction", "Answer briefly.")
-    assert _free_text_parts("Where is it?")[0] == "Where is it?"
-    assert _choice_prompt("Where is it?", ("Desk", "Shelf")) == (
+    assert free_text_parts("Where is it?")[0] == "Where is it?"
+    assert choice_prompt("Where is it?", ("Desk", "Shelf")) == (
         "Select the best answer using only the memories. Reply with one letter (A, B).\n"
         "Question: Where is it?\nA. Desk\nB. Shelf\nAnswer:"
     )
@@ -363,8 +363,8 @@ def test_integrity_check_is_an_offline_json_gate(
 
     monkeypatch.setattr(eval_module, "load_task", load)
     for name in (
-        "_model_config",
-        "_require_output",
+        "model_config",
+        "require_output",
         "acquire_inputs",
         "prepare_task_media",
         "_execute",
@@ -421,7 +421,7 @@ def test_integrity_check_is_an_offline_json_gate(
 
 
 def test_result_table_includes_per_task_time_and_tokens() -> None:
-    output = eval_console_module._table(
+    output = eval_console_module.render_summary_table(
         {
             "tasks": [
                 {
@@ -460,7 +460,7 @@ def test_result_table_reports_the_writes_that_invalidated_a_score() -> None:
     # A run that loses every write still answers every question, so error_count stays zero and
     # the score reads INVALID beside it with nothing saying why. One real run lost 7 784 writes to
     # a transcription dependency that was not installed and printed exactly that.
-    output = eval_console_module._table(
+    output = eval_console_module.render_summary_table(
         {
             "tasks": [
                 {
@@ -571,22 +571,22 @@ def test_comparison_rejects_different_scorers_and_judges(tmp_path: Path) -> None
             encoding="utf-8",
         )
         arguments = cast(
-            eval_config_module._Arguments,
+            eval_config_module.Arguments,
             SimpleNamespace(compare=baseline_dir, seed=7, bootstrap_samples=20),
         )
 
         with pytest.raises(ValueError, match=message):
-            eval_metrics_module._comparisons(arguments, (task,), (current,))
+            eval_metrics_module.build_comparisons(arguments, (task,), (current,))
 
 
 def test_write_artifacts_persists_the_effective_config_beside_the_results(tmp_path: Path) -> None:
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(output_path=tmp_path, overwrite=True),
     )
     config_bytes = b"generation:\n  provider: openai\n"
 
-    eval_artifacts_module._write_artifacts(
+    eval_artifacts_module.write_artifacts(
         arguments, (_sample_fixture(1),), {}, config_bytes=config_bytes
     )
 
@@ -696,13 +696,13 @@ def test_benchmark_speech_backend_skips_video_without_an_audio_stream(
             calls.append(tuple(assets))
             return tuple(SpeechAnalysis((), ()) for _asset in assets)
 
-    monkeypatch.setattr(eval_backends_module, "_has_audio", lambda path: path == audible)
+    monkeypatch.setattr(eval_backends_module, "has_audio", lambda path: path == audible)
     monkeypatch.setattr(
         eval_backends_module,
         "record_unmetered_model_usage",
         lambda *, request_count: skipped_request_counts.append(request_count),
     )
-    backend = _BorrowedSpeechBackend(Backend())
+    backend = _BorrowedSpeechBackend(cast(base_module.SpeechBackend, Backend()))
     assets = (
         AssetRef("a" * 64, Modality.VIDEO, "video/mp4", 6, "a" * 64, path=silent),
         AssetRef("b" * 64, Modality.VIDEO, "video/mp4", 7, "b" * 64, path=audible),
@@ -737,8 +737,8 @@ def test_benchmark_speech_backend_serves_prefetched_analyses_without_a_second_mo
                 SpeechAnalysis((SpeechTurn(0, 500, asset.name or "", "0"),), ()) for asset in assets
             )
 
-    monkeypatch.setattr(eval_backends_module, "_has_audio", lambda path: True)
-    backend = _BorrowedSpeechBackend(Backend())
+    monkeypatch.setattr(eval_backends_module, "has_audio", lambda path: True)
+    backend = _BorrowedSpeechBackend(cast(base_module.SpeechBackend, Backend()))
 
     backend.prefetch((MemoryItem("ahead", (ahead,)),))
     stored = tuple(
@@ -803,10 +803,10 @@ def test_benchmark_speech_backend_satisfies_the_runtime_protocol() -> None:
     assert backend.transcription_space == "speech-space"
 
 
-def _namespace_arguments() -> eval_config_module._Arguments:
+def _namespace_arguments() -> eval_config_module.Arguments:
     """The subset of a run's arguments the response-cache namespace is built from."""
     return cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             tasks=("m3-bench-robot", "locomo-refined"),
             answer_policy=None,
@@ -840,28 +840,28 @@ def test_response_cache_namespace_changes_with_the_answer_policy(
     """
 
     arguments = _namespace_arguments()
-    before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
+    before = cache_namespace(arguments, ModelConfig(), {"text": 1})
 
     for override in ("strict", "best_effort"):
         forced = cast(
-            eval_config_module._Arguments,
+            eval_config_module.Arguments,
             SimpleNamespace(**{**vars(arguments), "answer_policy": override}),
         )
-        assert _cache_namespace(forced, ModelConfig(), {"text": 1}) != before
+        assert cache_namespace(forced, ModelConfig(), {"text": 1}) != before
 
     monkeypatch.setattr(prompts, "BEST_EFFORT_TASKS", frozenset({"locomo-refined"}))
 
-    assert _cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
+    assert cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
 
 
 def test_response_cache_namespace_changes_with_the_full_context_budget() -> None:
     arguments = _namespace_arguments()
     smaller = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(**{**vars(arguments), "full_context_chars": 1000}),
     )
 
-    assert _cache_namespace(arguments, ModelConfig(), {}) != _cache_namespace(
+    assert cache_namespace(arguments, ModelConfig(), {}) != cache_namespace(
         smaller, ModelConfig(), {}
     )
 
@@ -873,11 +873,11 @@ def test_response_cache_namespace_changes_with_the_answer_surface(
     from the compiled bundle."""
 
     arguments = _namespace_arguments()
-    before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
+    before = cache_namespace(arguments, ModelConfig(), {"text": 1})
 
     monkeypatch.setattr(prompts, "COMPILE_SURFACE_TASKS", frozenset({"locomo-refined"}))
 
-    assert _cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
+    assert cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
 
 
 def test_response_cache_namespace_changes_with_runner_recipe(
@@ -886,23 +886,23 @@ def test_response_cache_namespace_changes_with_runner_recipe(
     assert eval_results_module.EVAL_SCHEMA_VERSION == 25
     assert eval_runtime_module.EVAL_RUNNER_VERSION == "sensemem_eval_official_v28"
     arguments = _namespace_arguments()
-    before = _cache_namespace(arguments, ModelConfig(), {"text": 1})
+    before = cache_namespace(arguments, ModelConfig(), {"text": 1})
 
     buffered_arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(**{**vars(arguments), "stream_answers": False}),
     )
-    assert _cache_namespace(buffered_arguments, ModelConfig(), {"text": 1}) != before
+    assert cache_namespace(buffered_arguments, ModelConfig(), {"text": 1}) != before
 
     monkeypatch.setattr(eval_inputs_module, "EVAL_RUNNER_VERSION", "next-runner-recipe")
 
-    assert _cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
+    assert cache_namespace(arguments, ModelConfig(), {"text": 1}) != before
     assert (
-        _cache_namespace(arguments, ModelConfig(generation_min_video_seconds=2.0), {"text": 1})
+        cache_namespace(arguments, ModelConfig(generation_min_video_seconds=2.0), {"text": 1})
         != before
     )
     clocked_arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             **{
                 **vars(arguments),
@@ -910,12 +910,12 @@ def test_response_cache_namespace_changes_with_runner_recipe(
             },
         ),
     )
-    assert _cache_namespace(clocked_arguments, ModelConfig(), {"text": 1}) != before
+    assert cache_namespace(clocked_arguments, ModelConfig(), {"text": 1}) != before
 
 
 def test_backend_pool_requires_an_explicit_embedding_configuration() -> None:
     with pytest.raises(ValueError, match="explicit embedding"):
-        eval_backends_module._BackendPool(ModelConfig())
+        eval_backends_module.BackendPool(ModelConfig())
 
 
 def test_execution_requires_embedding_configuration_before_downloading_inputs(
@@ -953,7 +953,7 @@ def test_backend_pool_forwards_every_memory_setting_and_plugin(
 
     monkeypatch.setattr(eval_backends_module, "Memory", Recorder)
     monkeypatch.setattr(eval_backends_module, "AsyncMemory", lambda memory: memory)
-    pool = object.__new__(eval_backends_module._BackendPool)
+    pool = object.__new__(eval_backends_module.BackendPool)
     settings = MemorySettings(
         evidence_budget_chars=4_242, minimum_relevance=0.11, recall_set_max_rows=17
     )
@@ -1083,21 +1083,21 @@ def test_model_base_url_override_replaces_environment_operation_urls(
 ) -> None:
     monkeypatch.setenv("SENSEMEM_GENERATION_BASE_URL", "https://old.example/v1")
 
-    config = _model_config("base_url=https://new.example/v1")
+    config = model_config("base_url=https://new.example/v1")
 
     assert config.generation_base_url == "https://new.example/v1"
 
 
 def test_model_short_video_limit_is_explicit_and_validated() -> None:
-    config = _model_config("generation_min_video_seconds=2")
+    config = model_config("generation_min_video_seconds=2")
 
     assert config.generation_min_video_seconds == 2.0
     with pytest.raises(ValueError, match="generation_min_video_seconds"):
-        _model_config("generation_min_video_seconds=0")
+        model_config("generation_min_video_seconds=0")
 
 
 def test_eval_rejects_unknown_options(capsys: pytest.CaptureFixture[str]) -> None:
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
 
     with pytest.raises(SystemExit) as error:
         parser.parse_args(["--tasks", "locomo-refined", "--unknown-option"])
@@ -1108,18 +1108,18 @@ def test_eval_rejects_unknown_options(capsys: pytest.CaptureFixture[str]) -> Non
 
 def test_eval_model_args_reject_unknown_keys() -> None:
     with pytest.raises(ValueError, match="invalid --model-args item"):
-        _model_config("unknown=fixture")
+        model_config("unknown=fixture")
 
 
 def test_eval_judge_args_reject_unknown_keys() -> None:
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         ["--tasks", "locomo-refined", "--judge-model-args", "unknown=fixture"]
     )
-    arguments = eval_config_module._arguments(parser, parsed)
+    arguments = eval_config_module.resolve_arguments(parser, parsed)
 
     with pytest.raises(ValueError, match="invalid --judge-model-args item"):
-        eval_config_module._judge_config(ModelConfig(), arguments)
+        eval_config_module.resolve_judge_config(ModelConfig(), arguments)
 
 
 @pytest.mark.parametrize(
@@ -1154,10 +1154,10 @@ def test_eval_config_reuses_the_declarative_memory_schema(
         encoding="utf-8",
     )
 
-    loaded, overrides = eval_config_module._load_memory_config(path)
+    loaded, overrides = eval_config_module.load_memory_config(path)
     assert loaded is not None
     assert overrides == HarnessOverrides()
-    model = _model_config(
+    model = model_config(
         f"generation_model={model_id}",
         memory_config=loaded,
     )
@@ -1166,7 +1166,7 @@ def test_eval_config_reuses_the_declarative_memory_schema(
         generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE}),
     )
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             gen_kwargs="temperature=0,do_sample=false,seed=7,max_tokens=512",
             seed=7,
@@ -1186,7 +1186,7 @@ def test_eval_config_reuses_the_declarative_memory_schema(
             fallback_reference_at=None,
         ),
     )
-    effective = eval_config_module._evaluation_memory_config(
+    effective = eval_config_module.evaluation_memory_config(
         loaded, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
     )
 
@@ -1202,8 +1202,8 @@ def test_eval_config_reuses_the_declarative_memory_schema(
     assert effective.generation.max_tokens == 512
     assert effective.generation.modalities == frozenset({Modality.TEXT, Modality.IMAGE})
     assert effective.settings.minimum_relevance == 0.2
-    assert "data_dir" not in eval_config_module._memory_config_payload(effective)
-    assert _cache_namespace(arguments, model, {"task": 4}) != _cache_namespace(
+    assert "data_dir" not in eval_config_module.memory_config_payload(effective)
+    assert cache_namespace(arguments, model, {"task": 4}) != cache_namespace(
         arguments,
         model,
         {"task": 4},
@@ -1213,7 +1213,7 @@ def test_eval_config_reuses_the_declarative_memory_schema(
     assert recorded["generation_model"] == model_id
     assert recorded["generation_temperature"] == temperature
     assert recorded["generation_seed"] == seed
-    assert recorded["memory_config"] == eval_config_module._memory_config_payload(effective)
+    assert recorded["memory_config"] == eval_config_module.memory_config_payload(effective)
 
 
 def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
@@ -1276,7 +1276,7 @@ def test_configured_backend_pool_lends_plugins_and_closes_the_owner(
         }
     )
 
-    pool = eval_backends_module._BackendPool(
+    pool = eval_backends_module.BackendPool(
         ModelConfig(generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})),
         memory_config=memory_config,
     )
@@ -1323,7 +1323,7 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
     calls: list[str] = []
     closed: list[str] = []
 
-    class Embedder(_FixtureEmbedder):
+    class Embedder(FixtureEmbedder):
         def close(self) -> None:
             closed.append("embedder")
 
@@ -1373,7 +1373,7 @@ def test_backend_pool_borrows_every_configured_plugin_slot(
     )
     resolved = MemoryComposition(tmp_path, plugins, MemorySettings(minimum_relevance=0))
     monkeypatch.setattr(eval_backends_module, "build_memory_composition", lambda _config: resolved)
-    pool = eval_backends_module._BackendPool(
+    pool = eval_backends_module.BackendPool(
         ModelConfig(),
         memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
     )
@@ -1496,8 +1496,9 @@ def test_every_lent_backend_declares_each_method_only_capability_its_pool_has() 
         )()
         assert isinstance(able, protocol)
         for proxy in proxies:
-            assert isinstance(proxy(able), protocol), (proxy.__name__, protocol.__name__)
-            assert not isinstance(proxy(object()), protocol), (proxy.__name__, protocol.__name__)
+            factory = cast(Callable[[object], object], proxy)
+            assert isinstance(factory(able), protocol), (proxy.__name__, protocol.__name__)
+            assert not isinstance(factory(object()), protocol), (proxy.__name__, protocol.__name__)
 
 
 @pytest.mark.parametrize("key", ("temperature", "seed", "max_tokens", "do_sample"))
@@ -1517,7 +1518,7 @@ def test_eval_config_rejects_benchmark_controls_in_extra_body(
     )
 
     with pytest.raises(ValueError, match=rf"benchmark controls: {key}"):
-        eval_config_module._load_memory_config(path)
+        eval_config_module.load_memory_config(path)
 
 
 def test_generation_kwargs_normalize_bounded_non_thinking_inference() -> None:
@@ -1543,12 +1544,12 @@ def test_generation_kwargs_normalize_sampling(value: str, normalized: str) -> No
 
 
 def test_cli_sampling_override_reaches_the_normalized_run_arguments() -> None:
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         ["--tasks", "mem-gallery", "--gen-kwargs", "temperature=0.7", "--seed", "7"]
     )
 
-    assert eval_config_module._arguments(parser, parsed).gen_kwargs == (
+    assert eval_config_module.resolve_arguments(parser, parsed).gen_kwargs == (
         "temperature=0.7,do_sample=true,seed=7"
     )
 
@@ -1577,17 +1578,17 @@ def test_generation_kwargs_reject_invalid_or_contradictory_sampling(value: str) 
 def test_sampling_controls_participate_in_the_response_cache_identity() -> None:
     arguments = _namespace_arguments()
     deterministic = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(**{**vars(arguments), "gen_kwargs": _generation_kwargs("", 7)}),
     )
     sampled = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             **{**vars(arguments), "gen_kwargs": _generation_kwargs("temperature=0.7", 7)}
         ),
     )
 
-    assert _cache_namespace(deterministic, ModelConfig(), {}) != _cache_namespace(
+    assert cache_namespace(deterministic, ModelConfig(), {}) != cache_namespace(
         sampled, ModelConfig(), {}
     )
 
@@ -1641,7 +1642,7 @@ async def test_memlens_question_date_is_a_reference_clock_not_query_text(tmp_pat
             observed.append(reference_at)
             return AnswerResult("Blue.")
 
-    await _answer_many(
+    await answer_many(
         cast(AsyncMemory, Memory([])),
         (question,),
         options=EvaluationOptions(request_concurrency=1, recall_limit=5),
@@ -1676,7 +1677,7 @@ def test_invalid_fallback_clock_fails_before_configuration_or_provider_setup(
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("argument validation must run first")
 
-    monkeypatch.setattr(eval_module, "_load_memory_config", forbidden)
+    monkeypatch.setattr(eval_module, "load_memory_config", forbidden)
 
     with pytest.raises(SystemExit):
         main(("--fallback-reference-at", "2026-09-08T08:30:00"))
@@ -1754,7 +1755,7 @@ async def test_answer_many_receives_the_fallback_reference_clock() -> None:
             return AnswerResult("Now")
 
     loaded = _with_fallback_reference(task, fallback)
-    await _answer_many(
+    await answer_many(
         cast(AsyncMemory, Memory([])),
         loaded.units[0].questions,
         options=EvaluationOptions(request_concurrency=1, recall_limit=5),
@@ -1786,7 +1787,7 @@ async def test_answer_failure_preserves_the_product_retrieval_ranking(tmp_path: 
 
     question = EvalQuestion("q1", ("question",), references=("answer",))
     outcome = (
-        await _answer_many(
+        await answer_many(
             cast(AsyncMemory, Memory([])),
             (question,),
             options=EvaluationOptions(request_concurrency=1, recall_limit=5),
@@ -1800,7 +1801,7 @@ async def test_answer_failure_preserves_the_product_retrieval_ranking(tmp_path: 
         "1" * 64,
         (unit,),
     )
-    sample = eval_samples_module._sample(
+    sample = eval_samples_module.build_sample_result(
         task,
         unit,
         question,
@@ -1840,7 +1841,7 @@ def test_a_provider_error_scores_the_answer_zero_and_keeps_retrieval(tmp_path: P
         "1" * 64,
         (unit,),
     )
-    outcome = eval_results_module._AnswerOutcome(
+    outcome = eval_results_module.AnswerOutcome(
         "",
         12.0,
         0.0,
@@ -1851,7 +1852,7 @@ def test_a_provider_error_scores_the_answer_zero_and_keeps_retrieval(tmp_path: P
         ranked_source_ids_complete=True,
     )
 
-    sample = eval_samples_module._sample(
+    sample = eval_samples_module.build_sample_result(
         task, unit, question, outcome, ingest_failures=0, predict_only=False, log_samples=False
     )
 
@@ -2069,7 +2070,7 @@ async def test_ingest_bisects_a_failed_batch_without_losing_items() -> None:
     memory = _BatchLimitedMemory(events)
     items = tuple(MemoryItem(str(index), (str(index),)) for index in range(4))
 
-    assert await _ingest(cast(AsyncMemory, memory), items, batch_size=4) == 0
+    assert await ingest(cast(AsyncMemory, memory), items, batch_size=4) == 0
     assert events == ["batch:4", "batch:2", "batch:2"]
 
 
@@ -2077,10 +2078,13 @@ async def test_ingest_bisects_a_failed_batch_without_losing_items() -> None:
 async def test_ingest_stops_after_one_systemic_embedding_failure() -> None:
     calls = 0
 
-    class UpstreamError(RuntimeError):
-        def __init__(self) -> None:
-            super().__init__("embedding service unavailable")
-            self.response = SimpleNamespace(status_code=502)
+    def upstream_error() -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://provider.example.test/v1/embeddings")
+        return httpx.HTTPStatusError(
+            "embedding service unavailable",
+            request=request,
+            response=httpx.Response(502, request=request),
+        )
 
     class Memory(_FakeMemory):
         async def add_many(
@@ -2089,7 +2093,7 @@ async def test_ingest_stops_after_one_systemic_embedding_failure() -> None:
             nonlocal calls
             calls += 1
             raise ModelError("embedding failed", reason="model_failed", stage="embed") from (
-                UpstreamError()
+                upstream_error()
             )
 
         async def add(self, content: object, **_kwargs: object) -> object:
@@ -2097,8 +2101,8 @@ async def test_ingest_stops_after_one_systemic_embedding_failure() -> None:
 
     items = tuple(MemoryItem(f"source-{index}", (str(index),)) for index in range(8))
 
-    with pytest.raises(eval_results_module._SystemicEmbeddingFailure):
-        await _ingest(cast(AsyncMemory, Memory([])), items, batch_size=8)
+    with pytest.raises(eval_results_module.SystemicEmbeddingFailure):
+        await ingest(cast(AsyncMemory, Memory([])), items, batch_size=8)
 
     assert calls == 1
 
@@ -2128,7 +2132,7 @@ async def test_ingest_keeps_item_isolation_for_an_embedding_400() -> None:
 
     items = tuple(MemoryItem(f"source-{index}", (str(index),)) for index in range(2))
 
-    assert await _ingest(cast(AsyncMemory, Memory([])), items, batch_size=2) == 0
+    assert await ingest(cast(AsyncMemory, Memory([])), items, batch_size=2) == 0
     assert batch_sizes == [2, 1, 1]
     assert [str(content).rsplit("\n", 1)[-1] for content in added] == ["0", "1"]
 
@@ -2160,7 +2164,7 @@ async def test_ingest_does_not_misclassify_a_formation_504_as_embedding_failure(
     failures: list[eval_results_module.FailureDetail] = []
 
     assert (
-        await _ingest(
+        await ingest(
             cast(AsyncMemory, Memory([])),
             (MemoryItem("source", ("content",)),),
             batch_size=1,
@@ -2193,7 +2197,7 @@ async def test_ingest_records_the_failed_source_and_stable_error_detail() -> Non
 
     failures: list[eval_results_module.FailureDetail] = []
 
-    count = await _ingest(
+    count = await ingest(
         cast(AsyncMemory, Memory([])),
         (MemoryItem("clip-7", ("content",)),),
         batch_size=1,
@@ -2238,7 +2242,7 @@ async def test_ingest_announces_the_first_failure_once_with_its_message(
 
     items = tuple(MemoryItem(f"turn-{index}", ("content",)) for index in range(3))
 
-    count = await _ingest(cast(AsyncMemory, Memory([])), items, batch_size=3)
+    count = await ingest(cast(AsyncMemory, Memory([])), items, batch_size=3)
 
     captured = capsys.readouterr().err
     assert count == 3
@@ -2255,7 +2259,7 @@ def test_progress_throttles_a_non_interactive_run_by_elapsed_time(
     now = 0.0
     monkeypatch.setattr(time, "monotonic", lambda: now)
 
-    with eval_console_module._progress("running fixture", "sample", total=20) as report:
+    with eval_console_module.progress_reporter("running fixture", "sample", total=20) as report:
         report(1, 20)  # the first completion always reports
         now = 1.0
         report(2, 20)  # too soon
@@ -2278,11 +2282,11 @@ def test_progress_throttles_a_non_interactive_run_by_elapsed_time(
 def test_progress_reports_nothing_when_disabled_or_empty(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    with eval_console_module._progress(
+    with eval_console_module.progress_reporter(
         "running fixture", "sample", total=20, enabled=False
     ) as report:
         report(1, 20)
-    with eval_console_module._progress("running fixture", "sample", total=0) as report:
+    with eval_console_module.progress_reporter("running fixture", "sample", total=0) as report:
         report(1, 0)
 
     assert capsys.readouterr().err == ""
@@ -2294,7 +2298,7 @@ def test_deferred_progress_starts_when_media_total_is_discovered(
     now = 0.0
     monkeypatch.setattr(time, "monotonic", lambda: now)
 
-    with eval_console_module._deferred_progress("preparing fixture media", "source") as report:
+    with eval_console_module.deferred_progress("preparing fixture media", "source") as report:
         report(0, 2)
         now = 1.0
         report(1, 2)
@@ -2347,7 +2351,7 @@ def test_progress_drives_a_bar_on_a_terminal(
     monkeypatch.setattr(eval_console_module, "tqdm", Bar)
     monkeypatch.setattr(eval_console_module, "_PROGRESS_REFRESH_SECONDS", 0.001)
 
-    with eval_console_module._progress("running fixture", "sample", total=3) as report:
+    with eval_console_module.progress_reporter("running fixture", "sample", total=3) as report:
         report.set_activity("ingesting unit 1/1")
         report(1, 3)
         assert refreshed.wait(timeout=1)
@@ -2397,7 +2401,7 @@ async def test_a_judge_that_still_fails_after_the_wait_scores_the_answer_wrong(
             client=client,
             cache=None,
             semaphore=asyncio.Semaphore(1),
-            config=eval_config_module._JudgeConfig("judge", "https://judge.example/v1"),
+            config=eval_config_module.JudgeConfig("judge", "https://judge.example/v1"),
             log_samples=False,
             tracer=trace.get_tracer("test"),
         )
@@ -2420,11 +2424,11 @@ async def test_judge_skips_samples_with_ingest_failures(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(eval_judge_module, "judge_plan", unexpected_plan)
 
-    result = await eval_judge_module._apply_judges(
+    result = await eval_judge_module.apply_judges(
         (),
         (sample,),
-        arguments=cast(eval_config_module._Arguments, SimpleNamespace(quiet=True)),
-        config=eval_config_module._JudgeConfig("judge", "https://judge.example/v1"),
+        arguments=cast(eval_config_module.Arguments, SimpleNamespace(quiet=True)),
+        config=eval_config_module.JudgeConfig("judge", "https://judge.example/v1"),
     )
 
     assert result == (sample,)
@@ -2492,7 +2496,7 @@ async def test_ingest_preserves_event_time_and_source_interval() -> None:
     memory = _ProvenanceMemory([])
     item = MemoryItem("clip-1", ("event",), 10.0, 20.0, occurred)
 
-    assert await _ingest(cast(AsyncMemory, memory), (item,), batch_size=1) == 0
+    assert await ingest(cast(AsyncMemory, memory), (item,), batch_size=1) == 0
     assert memory.kwargs == {
         "occurred_at": (occurred,),
         "occurred_end": (None,),
@@ -2720,9 +2724,9 @@ def test_planned_ingest_count_stops_at_the_latest_cutoff() -> None:
         ),
     )
 
-    assert eval_inputs_module._planned_ingest_count(unit) == 2
+    assert eval_inputs_module.planned_ingest_count(unit) == 2
     assert (
-        eval_inputs_module._planned_ingest_count(
+        eval_inputs_module.planned_ingest_count(
             replace(
                 unit,
                 questions=(
@@ -2893,7 +2897,7 @@ async def test_resume_rebuilds_a_store_that_ran_past_a_pending_cutoff(tmp_path: 
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
     stale = run.unit_dir("unit") / "leaked.sqlite3"
     stale.write_text("both memories", encoding="utf-8")
-    eval_ingest_module._IngestCheckpoint(run, "unit", "recipe").record(2, ())
+    eval_ingest_module.IngestCheckpoint(run, "unit", "recipe").record(2, ())
 
     events: list[str] = []
     await run_loaded_task(
@@ -2921,7 +2925,7 @@ async def test_resume_distrusts_a_checkpoint_whose_store_is_gone(tmp_path: Path)
     )
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
     run.unit_dir("unit")
-    eval_ingest_module._IngestCheckpoint(run, "unit", "recipe").record(2, ())
+    eval_ingest_module.IngestCheckpoint(run, "unit", "recipe").record(2, ())
 
     events: list[str] = []
     await run_loaded_task(
@@ -2941,7 +2945,7 @@ async def test_resume_distrusts_a_checkpoint_whose_store_is_gone(tmp_path: Path)
 async def test_resume_rebuilds_a_store_built_by_another_recipe(tmp_path: Path) -> None:
     task = _resumable_task(tmp_path, [MemoryItem("early", ("early",))], None)
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
-    eval_ingest_module._IngestCheckpoint(run, "unit", "recipe").record(1, ())
+    eval_ingest_module.IngestCheckpoint(run, "unit", "recipe").record(1, ())
 
     events: list[str] = []
     await run_loaded_task(
@@ -2964,7 +2968,7 @@ async def test_ingest_checkpoint_carries_prior_write_failures_into_the_resumed_r
     run = BenchmarkRun(tmp_path / "stores", "fixture", "run", resume=True)
     data_dir = run.unit_dir("unit")
     (data_dir / "store.db").write_text("two memories", encoding="utf-8")
-    checkpoint = eval_ingest_module._IngestCheckpoint(run, "unit", "recipe")
+    checkpoint = eval_ingest_module.IngestCheckpoint(run, "unit", "recipe")
     detail = eval_results_module.FailureDetail(
         "early", "storage_failed", "disk_full", "write", "OSError"
     )
@@ -2977,7 +2981,7 @@ async def test_ingest_checkpoint_carries_prior_write_failures_into_the_resumed_r
         [detail],
     )
     # A note whose store is gone describes nothing, and one rebuilt store leaves no stale count.
-    stale = eval_ingest_module._IngestCheckpoint(run, "unit", "recipe-2")
+    stale = eval_ingest_module.IngestCheckpoint(run, "unit", "recipe-2")
     assert await stale.start((), (), memory_factory=factory, data_dir=data_dir) == (0, [])
     assert await checkpoint.start((), (), memory_factory=factory, data_dir=data_dir) == (0, [])
 
@@ -2989,7 +2993,7 @@ async def test_resume_leaves_a_store_another_run_owns_alone(tmp_path: Path) -> N
     owned = run.unit_dir("unit") / "store.sqlite3"
     owned.write_text("another run is writing here", encoding="utf-8")
     # A checkpoint from a different recipe is what sends this unit down the rebuild path.
-    eval_ingest_module._IngestCheckpoint(run, "unit", "other-recipe").record(1, ())
+    eval_ingest_module.IngestCheckpoint(run, "unit", "other-recipe").record(1, ())
 
     def occupied(path: Path) -> _FakeContext:
         # What Memory raises when another live instance owns the directory.
@@ -3023,7 +3027,7 @@ def test_ingest_digest_ignores_the_answer_model(tmp_path: Path) -> None:
         (EvalUnit("unit", (), (EvalQuestion("q1", ("first",), references=("A",)),)),),
     )
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             device=None,
             ingest="add",
@@ -3040,41 +3044,41 @@ def test_ingest_digest_ignores_the_answer_model(tmp_path: Path) -> None:
         generation=OpenAIGenerationConfig(provider="openai", model="answer-1"),
     )
 
-    digest = eval_inputs_module._ingest_digest(task, arguments, config)
+    digest = eval_inputs_module.ingest_digest(task, arguments, config)
 
     # Only the answer model moved, and no store's contents depend on it.
-    assert digest == eval_inputs_module._ingest_digest(
+    assert digest == eval_inputs_module.ingest_digest(
         task,
         arguments,
         config.model_copy(
             update={"generation": OpenAIGenerationConfig(provider="openai", model="answer-2")}
         ),
     )
-    assert digest != eval_inputs_module._ingest_digest(
+    assert digest != eval_inputs_module.ingest_digest(
         task,
         arguments,
         config.model_copy(update={"embedding": embedding.model_copy(update={"model": "embed-2"})}),
     )
     # --deliberate applies consolidation to the store itself, so a run that asks for it must
     # not resume into one built without it -- or the other way round.
-    assert digest != eval_inputs_module._ingest_digest(
+    assert digest != eval_inputs_module.ingest_digest(
         task,
         cast(
-            eval_config_module._Arguments, SimpleNamespace(**vars(arguments) | {"deliberate": True})
+            eval_config_module.Arguments, SimpleNamespace(**vars(arguments) | {"deliberate": True})
         ),
         config,
     )
 
 
 def test_resume_needs_the_run_id_of_the_run_it_continues() -> None:
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
 
     with pytest.raises(SystemExit):
-        eval_config_module._arguments(
+        eval_config_module.resolve_arguments(
             parser, parser.parse_args(["--tasks", "locomo-refined", "--resume"])
         )
 
-    arguments = eval_config_module._arguments(
+    arguments = eval_config_module.resolve_arguments(
         parser, parser.parse_args(["--tasks", "locomo-refined", "--resume", "--run-id", "keep"])
     )
 
@@ -3201,7 +3205,7 @@ async def test_runner_allows_random_retrieval_at_a_causal_cutoff(tmp_path: Path)
         options=EvaluationOptions(
             batch_size=1, unit_concurrency=1, request_concurrency=1, recall_limit=1
         ),
-        arms=(eval_arms_module._Arm("random", seed=7),),
+        arms=(eval_arms_module.Arm("random", seed=7),),
     )
 
     assert len(samples) == 1
@@ -3437,7 +3441,7 @@ async def test_run_arms_defers_replay_until_every_task_answer_finishes(
 
     tasks = (task("task-a"), task("task-b"))
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             compile_max_items=24,
             compile_max_chars=16_000,
@@ -3567,7 +3571,7 @@ async def test_answer_many_latency_excludes_request_semaphore_wait() -> None:
             return AnswerResult("A")
 
     pending = asyncio.create_task(
-        _answer_many(
+        answer_many(
             cast(AsyncMemory, Memory([])),
             (
                 EvalQuestion("slow", ("slow",), references=("A",)),
@@ -3646,7 +3650,7 @@ async def test_answer_arms_preserves_completed_cache_when_cancelled(
         await asyncio.wait_for(completed.wait(), timeout=1)
         assert not pending.done()
         answer = cache.get(
-            eval_inputs_module._cache_task(task, eval_arms_module.PRODUCT_ARM), "unit", "fast"
+            eval_inputs_module.cache_task(task, eval_arms_module.PRODUCT_ARM), "unit", "fast"
         )
         assert (answer is not None) is (ingest_failures == 0)
         if answer is not None:
@@ -3660,7 +3664,7 @@ async def test_answer_arms_preserves_completed_cache_when_cancelled(
 
     reopened = ResponseCache(cache_path, "run", "namespace")
     try:
-        task_key = eval_inputs_module._cache_task(task, eval_arms_module.PRODUCT_ARM)
+        task_key = eval_inputs_module.cache_task(task, eval_arms_module.PRODUCT_ARM)
         assert (reopened.get(task_key, "unit", "fast") is not None) is (ingest_failures == 0)
         assert reopened.get(task_key, "unit", "slow") is None
     finally:
@@ -3692,7 +3696,7 @@ async def test_answer_many_reports_each_completed_answer_immediately() -> None:
             first_completed.set()
 
     pending = asyncio.create_task(
-        _answer_many(
+        answer_many(
             cast(AsyncMemory, Memory([])),
             (
                 EvalQuestion("fast", ("fast",), references=("A",)),
@@ -3745,7 +3749,7 @@ async def test_answer_many_reports_failed_outcome_immediately() -> None:
         failed.set()
 
     pending = asyncio.create_task(
-        _answer_many(
+        answer_many(
             cast(AsyncMemory, Memory([])),
             (
                 EvalQuestion("failed", ("failed",), references=("A",)),
@@ -3762,7 +3766,7 @@ async def test_answer_many_reports_failed_outcome_immediately() -> None:
 
     release_slow.set()
     outcomes = await pending
-    assert isinstance(outcomes[0], eval_results_module._AnswerOutcome)
+    assert isinstance(outcomes[0], eval_results_module.AnswerOutcome)
     assert isinstance(outcomes[0].error, RuntimeError)
 
 
@@ -3772,10 +3776,13 @@ async def test_unit_preserves_answers_before_a_systemic_query_embedding_failure(
 ) -> None:
     calls = 0
 
-    class UpstreamError(RuntimeError):
-        def __init__(self) -> None:
-            super().__init__("embedding service unavailable")
-            self.response = SimpleNamespace(status_code=502)
+    def upstream_error() -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://provider.example.test/v1/embeddings")
+        return httpx.HTTPStatusError(
+            "embedding service unavailable",
+            request=request,
+            response=httpx.Response(502, request=request),
+        )
 
     class Memory(_FakeMemory):
         async def ask(
@@ -3791,7 +3798,7 @@ async def test_unit_preserves_answers_before_a_systemic_query_embedding_failure(
             if calls == 3:
                 raise ModelError(
                     "query embedding failed", reason="model_failed", stage="embed"
-                ) from UpstreamError()
+                ) from upstream_error()
             return AnswerResult("A")
 
     memory = Memory([])
@@ -3833,7 +3840,7 @@ async def test_unit_preserves_answers_before_a_systemic_query_embedding_failure(
     assert calls == 3
     assert [sample.prediction for sample in samples[:2]] == ["A", "A"]
     assert all(sample.error_code is None for sample in samples[:2])
-    assert all(sample.error_code == "_SystemicEmbeddingFailure" for sample in samples[2:])
+    assert all(sample.error_code == "SystemicEmbeddingFailure" for sample in samples[2:])
 
 
 @pytest.mark.asyncio
@@ -3862,7 +3869,7 @@ async def test_generation_502_does_not_trigger_embedding_fail_fast() -> None:
                 ) from UpstreamError()
             return AnswerResult("A")
 
-    outcomes = await _answer_many(
+    outcomes = await answer_many(
         cast(AsyncMemory, Memory([])),
         tuple(
             EvalQuestion(f"q{index}", (f"question {index}",), references=("A",))
@@ -3872,9 +3879,9 @@ async def test_generation_502_does_not_trigger_embedding_fail_fast() -> None:
     )
 
     assert calls == 2
-    assert isinstance(outcomes[0], eval_results_module._AnswerOutcome)
+    assert isinstance(outcomes[0], eval_results_module.AnswerOutcome)
     assert isinstance(outcomes[0].error, ModelError)
-    assert isinstance(outcomes[1], eval_results_module._AnswerOutcome)
+    assert isinstance(outcomes[1], eval_results_module.AnswerOutcome)
     assert outcomes[1].error is None
 
 
@@ -3937,7 +3944,7 @@ async def test_runner_reports_cached_progress_before_pending_answer_finishes(
             ),
         ),
     )
-    with eval_console_module._progress("running fixture", "sample", total=2) as report:
+    with eval_console_module.progress_reporter("running fixture", "sample", total=2) as report:
 
         def on_progress(completed: int, total: int) -> None:
             report(completed, total)
@@ -4052,14 +4059,14 @@ async def test_answer_many_preserves_structured_abstention() -> None:
             )
 
     outcome = (
-        await _answer_many(
+        await answer_many(
             cast(AsyncMemory, Memory([])),
             (EvalQuestion("q", ("question",), references=("A",)),),
             options=EvaluationOptions(request_concurrency=1, recall_limit=1),
         )
     )[0]
 
-    assert isinstance(outcome, eval_results_module._AnswerOutcome)
+    assert isinstance(outcome, eval_results_module.AnswerOutcome)
     assert outcome.abstained is True
     assert outcome.abstention_reason == "insufficient_evidence"
 
@@ -4087,7 +4094,7 @@ def test_metric_breakdowns_cover_every_catalog_task(tmp_path: Path) -> None:
             ),
         )
         breakdowns = eval_metrics_module._metric_breakdowns(
-            task, (), cast(eval_config_module._Arguments, _breakdown_arguments())
+            task, (), cast(eval_config_module.Arguments, _breakdown_arguments())
         )
         assert isinstance(breakdowns, dict), name
 
@@ -4141,13 +4148,13 @@ def test_every_family_breaks_its_scores_down_by_its_own_metadata(
     sample = _breakdown_sample(task.spec.name, {name: f"{name}-value" for name in fields_expected})
 
     breakdowns = eval_metrics_module._metric_breakdowns(
-        task, (sample,), cast(eval_config_module._Arguments, _breakdown_arguments())
+        task, (sample,), cast(eval_config_module.Arguments, _breakdown_arguments())
     )
 
     assert set(breakdowns) == set(fields_expected), family
     assert (
         eval_metrics_module._metric_breakdowns(
-            task, (), cast(eval_config_module._Arguments, _breakdown_arguments())
+            task, (), cast(eval_config_module.Arguments, _breakdown_arguments())
         )
         == {}
     )
@@ -4181,7 +4188,7 @@ def test_unlabelled_metadata_is_left_out_of_the_breakdown(tmp_path: Path) -> Non
     )
 
     breakdowns = eval_metrics_module._metric_breakdowns(
-        task, (sample,), cast(eval_config_module._Arguments, _breakdown_arguments())
+        task, (sample,), cast(eval_config_module.Arguments, _breakdown_arguments())
     )
 
     assert set(breakdowns) == {"question_type"}
@@ -4454,7 +4461,7 @@ benchmark:
         encoding="utf-8",
     )
 
-    config, overrides = eval_config_module._load_memory_config(path)
+    config, overrides = eval_config_module.load_memory_config(path)
 
     assert config is not None
     assert isinstance(config.embedding, OpenAIEmbeddingConfig)
@@ -4484,7 +4491,7 @@ def test_eval_config_still_reads_the_json_it_used_to_take(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    config, overrides = eval_config_module._load_memory_config(path)
+    config, overrides = eval_config_module.load_memory_config(path)
 
     assert config is not None
     assert isinstance(config.generation, OpenAIGenerationConfig)
@@ -4509,7 +4516,7 @@ def test_eval_config_requires_an_explicit_embedding_section(
     path.write_text(document, encoding="utf-8")
 
     with pytest.raises(ValueError, match="explicit embedding"):
-        eval_config_module._load_memory_config(path)
+        eval_config_module.load_memory_config(path)
 
 
 @pytest.mark.parametrize("section", ("judge", "run"))
@@ -4521,7 +4528,7 @@ def test_eval_config_rejects_an_unknown_harness_key(tmp_path: Path, section: str
     )
 
     with pytest.raises(ValidationError):
-        eval_config_module._load_memory_config(path)
+        eval_config_module.load_memory_config(path)
 
 
 def test_eval_config_reports_the_yaml_error_position(tmp_path: Path) -> None:
@@ -4529,7 +4536,7 @@ def test_eval_config_reports_the_yaml_error_position(tmp_path: Path) -> None:
     path.write_text("generation:\n  provider: openai\n :\n  - [\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="invalid YAML at line"):
-        eval_config_module._load_memory_config(path)
+        eval_config_module.load_memory_config(path)
 
 
 def test_eval_config_artifact_records_effective_values_without_credentials(tmp_path: Path) -> None:
@@ -4555,8 +4562,8 @@ benchmark:
 """,
         encoding="utf-8",
     )
-    memory_config, overrides = eval_config_module._load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    memory_config, overrides = eval_config_module.load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         [
             "--tasks",
@@ -4574,13 +4581,13 @@ benchmark:
         benchmarks_root=tmp_path / "corpus",
         data_root=tmp_path / "data",
     )
-    arguments = eval_config_module._arguments(parser, parsed, download, overrides)
-    model = eval_config_module._model_config(
+    arguments = eval_config_module.resolve_arguments(parser, parsed, download, overrides)
+    model = eval_config_module.model_config(
         arguments.model_args,
         memory_config=memory_config,
     )
-    judge = eval_config_module._judge_config(model, arguments, overrides=overrides)
-    effective_memory = eval_config_module._evaluation_memory_config(
+    judge = eval_config_module.resolve_judge_config(model, arguments, overrides=overrides)
+    effective_memory = eval_config_module.evaluation_memory_config(
         memory_config,
         model,
         gen_kwargs=arguments.gen_kwargs,
@@ -4588,7 +4595,7 @@ benchmark:
         device=arguments.device,
     )
 
-    artifact = eval_artifacts_module._config_artifact(
+    artifact = eval_artifacts_module.config_artifact(
         arguments,
         model,
         judge,
@@ -4623,12 +4630,12 @@ benchmark:
 
 
 def test_eval_streams_task_results_by_default_and_can_be_disabled() -> None:
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
 
-    default = eval_config_module._arguments(
+    default = eval_config_module.resolve_arguments(
         parser, parser.parse_args(["--tasks", "locomo-refined"])
     )
-    deferred = eval_config_module._arguments(
+    deferred = eval_config_module.resolve_arguments(
         parser,
         parser.parse_args(["--tasks", "locomo-refined", "--no-stream-results"]),
     )
@@ -4742,13 +4749,13 @@ def test_eval_generation_credential_prefers_the_file_over_the_environment(
         "embedding: {provider: openai}\n" + "generation:\n  provider: openai\n", encoding="utf-8"
     )
 
-    config, _ = _load_memory_config(declared)
+    config, _ = load_memory_config(declared)
     assert config is not None and isinstance(config.generation, OpenAIGenerationConfig)
-    resolved = _model_config("", memory_config=config)
+    resolved = model_config("", memory_config=config)
     assert resolved.generation_api_key == "file-key"
 
-    config, _ = _load_memory_config(silent)
-    inherited = _model_config("", memory_config=config)
+    config, _ = load_memory_config(silent)
+    inherited = model_config("", memory_config=config)
     assert inherited.generation_api_key == "environment-key"
 
 
@@ -4766,11 +4773,11 @@ def test_eval_video_floor_has_exactly_one_home(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    config, _ = _load_memory_config(path)
+    config, _ = load_memory_config(path)
 
     assert config is not None and isinstance(config.generation, OpenAIGenerationConfig)
     assert config.generation.min_video_seconds == 4.0
-    resolved = _model_config("", memory_config=config)
+    resolved = model_config("", memory_config=config)
     assert resolved.generation_min_video_seconds == 4.0
 
     path.write_text(
@@ -4778,7 +4785,7 @@ def test_eval_video_floor_has_exactly_one_home(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValidationError):
-        _load_memory_config(path)
+        load_memory_config(path)
 
 
 def test_eval_results_never_serialize_a_configured_credential(tmp_path: Path) -> None:
@@ -4795,10 +4802,10 @@ generation:
         encoding="utf-8",
     )
 
-    config, _ = _load_memory_config(path)
+    config, _ = load_memory_config(path)
     assert config is not None
 
-    payload = eval_config_module._memory_config_payload(config)
+    payload = eval_config_module.memory_config_payload(config)
     serialized = json.dumps(payload)
     assert "embedding-secret" not in serialized
     assert "generation-secret" not in serialized
@@ -4819,14 +4826,14 @@ def test_eval_judge_prefers_the_file_then_the_environment_then_generation(
         timeout_seconds=33.0,
     )
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             judge_concurrency=4,
             judge_model_args="",
         ),
     )
 
-    from_file = eval_config_module._judge_config(
+    from_file = eval_config_module.resolve_judge_config(
         generation,
         arguments,
         overrides=HarnessOverrides.model_validate(
@@ -4845,7 +4852,7 @@ def test_eval_judge_prefers_the_file_then_the_environment_then_generation(
     assert from_file.api_key == "file-judge-key"
     assert from_file.timeout_seconds == 90.0
 
-    from_environment = eval_config_module._judge_config(generation, arguments)
+    from_environment = eval_config_module.resolve_judge_config(generation, arguments)
     assert from_environment.model == "environment-judge"
     assert from_environment.api_key == "environment-judge-key"
     assert from_environment.timeout_seconds == 11.0
@@ -4857,7 +4864,7 @@ def test_eval_judge_prefers_the_file_then_the_environment_then_generation(
         "SENSEMEM_JUDGE_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(name)
-    from_generation = eval_config_module._judge_config(generation, arguments)
+    from_generation = eval_config_module.resolve_judge_config(generation, arguments)
     assert from_generation.model == "generation-model"
     assert from_generation.base_url == "https://generation.example/v1"
     assert from_generation.api_key == "generation-key"
@@ -4869,9 +4876,9 @@ def test_eval_memory_config_survives_an_empty_gen_kwargs(tmp_path: Path) -> None
     path.write_text(
         "embedding: {provider: openai}\n" + "generation:\n  provider: openai\n", encoding="utf-8"
     )
-    config, _ = eval_config_module._load_memory_config(path)
+    config, _ = eval_config_module.load_memory_config(path)
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             gen_kwargs="",
             seed=0,
@@ -4879,7 +4886,7 @@ def test_eval_memory_config_survives_an_empty_gen_kwargs(tmp_path: Path) -> None
         ),
     )
 
-    resolved = eval_config_module._evaluation_memory_config(
+    resolved = eval_config_module.evaluation_memory_config(
         config,
         ModelConfig(),
         gen_kwargs=arguments.gen_kwargs,
@@ -4909,11 +4916,11 @@ def test_eval_memory_config_pins_reinforcement_off_without_a_generation_section(
         settings=MemorySettings(reinforce_on_answer=True),
     )
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(gen_kwargs="", seed=0, device=None),
     )
 
-    resolved = eval_config_module._evaluation_memory_config(
+    resolved = eval_config_module.evaluation_memory_config(
         config,
         ModelConfig(),
         gen_kwargs=arguments.gen_kwargs,
@@ -4925,7 +4932,7 @@ def test_eval_memory_config_pins_reinforcement_off_without_a_generation_section(
     assert resolved is not None and resolved.generation is None
     assert resolved.settings.reinforce_on_answer is False
     reported_settings = cast(
-        dict[str, object], eval_config_module._memory_config_payload(resolved)["settings"]
+        dict[str, object], eval_config_module.memory_config_payload(resolved)["settings"]
     )
     assert reported_settings["reinforce_on_answer"] is False
 
@@ -4939,7 +4946,7 @@ def test_committed_example_configuration_still_loads() -> None:
     example = Path(__file__).parents[3] / "docs" / "examples" / "eval.example.yaml"
     assert example.exists()
 
-    config, overrides = _load_memory_config(example)
+    config, overrides = load_memory_config(example)
 
     assert config is not None
     assert isinstance(config.generation, OpenAIGenerationConfig)
@@ -4950,20 +4957,20 @@ def test_committed_example_configuration_still_loads() -> None:
     assert overrides.judge.model is not None
     assert overrides.download.hf_endpoint == "https://huggingface.co"
 
-    model = _model_config("", memory_config=config)
-    judge = eval_config_module._judge_config(
+    model = model_config("", memory_config=config)
+    judge = eval_config_module.resolve_judge_config(
         model,
         cast(
-            eval_config_module._Arguments,
+            eval_config_module.Arguments,
             SimpleNamespace(judge_concurrency=4, judge_model_args=""),
         ),
         overrides=overrides,
     )
     assert judge.model == overrides.judge.model
     # The template must also drive a whole run on its own, with no flag but --config.
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(example)])
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
     assert arguments.tasks
     assert arguments.limit == -1
     assert arguments.recall_limit == 20
@@ -4976,7 +4983,7 @@ def test_committed_example_configuration_carries_no_usable_credential() -> None:
     """A committed template must not ship anything that could be a real key."""
     example = Path(__file__).parents[3] / "docs" / "examples" / "eval.example.yaml"
 
-    config, overrides = _load_memory_config(example)
+    config, overrides = load_memory_config(example)
 
     assert config is not None and isinstance(config.generation, OpenAIGenerationConfig)
     assert isinstance(config.embedding, OpenAIEmbeddingConfig)
@@ -5013,8 +5020,8 @@ def test_eval_model_config_keeps_env_model_when_file_omits_it(
         encoding="utf-8",
     )
 
-    config, _ = _load_memory_config(path)
-    resolved = _model_config("", memory_config=config)
+    config, _ = load_memory_config(path)
+    resolved = model_config("", memory_config=config)
 
     assert resolved.generation_model == "environment-model"
     assert sorted(m.value for m in resolved.generation_capabilities) == [
@@ -5036,8 +5043,8 @@ def test_eval_model_config_still_prefers_a_declared_model_and_modalities(
         encoding="utf-8",
     )
 
-    config, _ = _load_memory_config(path)
-    resolved = _model_config("", memory_config=config)
+    config, _ = load_memory_config(path)
+    resolved = model_config("", memory_config=config)
 
     assert resolved.generation_model == "file-model"
     assert sorted(m.value for m in resolved.generation_capabilities) == ["text"]
@@ -5059,14 +5066,14 @@ def test_eval_resolved_generation_keeps_an_env_only_credential(
         "embedding: {provider: openai}\n" + "generation:\n  provider: openai\n", encoding="utf-8"
     )
 
-    config, _ = _load_memory_config(path)
-    model = _model_config("", memory_config=config)
+    config, _ = load_memory_config(path)
+    model = model_config("", memory_config=config)
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(gen_kwargs="", seed=0, device=None),
     )
 
-    resolved = eval_config_module._evaluation_memory_config(
+    resolved = eval_config_module.evaluation_memory_config(
         config, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
     )
 
@@ -5083,14 +5090,14 @@ def test_eval_resolved_generation_still_prefers_a_declared_credential(tmp_path: 
         encoding="utf-8",
     )
 
-    config, _ = _load_memory_config(path)
-    model = _model_config("", memory_config=config)
+    config, _ = load_memory_config(path)
+    model = model_config("", memory_config=config)
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(gen_kwargs="", seed=0, device=None),
     )
 
-    resolved = eval_config_module._evaluation_memory_config(
+    resolved = eval_config_module.evaluation_memory_config(
         config, model, gen_kwargs=arguments.gen_kwargs, seed=arguments.seed, device=arguments.device
     )
 
@@ -5113,7 +5120,7 @@ def test_eval_config_rejects_sampling_controls_the_harness_pins(field: str, tmp_
     )
 
     with pytest.raises(ValueError, match=f"cannot set {field}"):
-        _load_memory_config(path)
+        load_memory_config(path)
 
 
 def test_eval_run_section_supplies_every_tunable_the_flags_carry(tmp_path: Path) -> None:
@@ -5148,11 +5155,11 @@ benchmark:
 """,
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path)])
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.tasks == ("locomo-refined",)
     assert arguments.limit == -1
@@ -5194,8 +5201,8 @@ benchmark:
 """,
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         [
             "--config",
@@ -5209,7 +5216,7 @@ benchmark:
         ]
     )
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.repeat_index == 4
     assert arguments.performance_budgets == {
@@ -5220,13 +5227,13 @@ benchmark:
 
 
 def test_performance_budget_requires_a_comparison_result() -> None:
-    parser = eval_config_module._build_parser("eval")
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         ["--tasks", "locomo-refined", "--performance-budget", "answer_e2e_latency_p95=0.1"]
     )
 
     with pytest.raises(SystemExit):
-        eval_config_module._arguments(parser, parsed)
+        eval_config_module.resolve_arguments(parser, parsed)
 
 
 class _StopResolving(Exception):
@@ -5254,7 +5261,7 @@ def test_backend_pool_hands_the_configured_video_floor_to_the_resolved_models(
     )
 
     with pytest.raises(_StopResolving):
-        eval_backends_module._BackendPool(
+        eval_backends_module.BackendPool(
             ModelConfig(generation_min_video_seconds=2.5), memory_config=memory_config
         )
 
@@ -5281,7 +5288,7 @@ def test_backend_pool_leaves_an_unset_video_floor_alone(
     )
 
     with pytest.raises(_StopResolving):
-        eval_backends_module._BackendPool(ModelConfig(), memory_config=memory_config)
+        eval_backends_module.BackendPool(ModelConfig(), memory_config=memory_config)
 
     assert isinstance(configured[0].generation, OpenAIGenerationConfig)
     assert configured[0].generation.min_video_seconds == 4.0
@@ -5296,11 +5303,11 @@ def test_eval_run_section_selects_the_baseline_arms(tmp_path: Path) -> None:
         "    full_context_chars: 4096\n",
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path)])
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.arms == ("sensemem", "full-context")
     assert arguments.full_context_chars == 4096
@@ -5314,13 +5321,13 @@ def test_eval_arm_flags_still_beat_the_run_section(tmp_path: Path) -> None:
         "    full_context_chars: 4096\n",
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         ["--config", str(path), "--arms", "random", "--full-context-chars", "512"]
     )
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.arms == ("random",)
     assert arguments.full_context_chars == 512
@@ -5334,12 +5341,12 @@ def test_eval_blind_rejects_a_configured_arm_selection(tmp_path: Path) -> None:
         + "benchmark:\n  run:\n    tasks: locomo-refined\n    arms: sensemem,full-context\n",
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path), "--blind"])
 
     with pytest.raises(SystemExit):
-        eval_config_module._arguments(parser, parsed, overrides=overrides)
+        eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
 
 def test_eval_flags_still_beat_the_run_section(tmp_path: Path) -> None:
@@ -5349,13 +5356,13 @@ def test_eval_flags_still_beat_the_run_section(tmp_path: Path) -> None:
         + "benchmark:\n  run:\n    tasks: locomo-refined\n    unit_concurrency: 6\n    seed: 7\n",
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(
         ["--config", str(path), "--tasks", "ama-bench", "--unit-concurrency", "2", "--seed", "99"]
     )
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.tasks == ("ama-bench",)
     assert arguments.unit_concurrency == 2
@@ -5368,11 +5375,11 @@ def test_eval_defaults_survive_an_empty_run_section(tmp_path: Path) -> None:
     path.write_text(
         "embedding: {provider: openai}\n" + "generation:\n  provider: openai\n", encoding="utf-8"
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path), "--tasks", "locomo-refined"])
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.limit is None
     assert arguments.offset == 0
@@ -5405,11 +5412,11 @@ def test_eval_run_section_carries_per_task_path_overrides(tmp_path: Path) -> Non
         + f"benchmark:\n  run:\n    tasks: locomo-refined\n    task_data:\n      locomo-refined: {dataset}\n",
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path)])
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.dataset_overrides == {"locomo-refined": dataset}
 
@@ -5426,12 +5433,12 @@ def test_eval_run_section_run_id_is_validated_like_the_flag(tmp_path: Path) -> N
         + 'benchmark:\n  run:\n    tasks: locomo-refined\n    run_id: "../../../escaped"\n',
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path)])
 
     with pytest.raises(SystemExit):
-        eval_config_module._arguments(parser, parsed, overrides=overrides)
+        eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
 
 def test_eval_run_section_accepts_a_well_formed_run_id(tmp_path: Path) -> None:
@@ -5441,11 +5448,11 @@ def test_eval_run_section_accepts_a_well_formed_run_id(tmp_path: Path) -> None:
         + "benchmark:\n  run:\n    tasks: locomo-refined\n    run_id: sweep-2026.09\n",
         encoding="utf-8",
     )
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path)])
 
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
     assert arguments.run_id == "sweep-2026.09"
     assert arguments.output_path.name == "sweep-2026.09"
@@ -5467,12 +5474,12 @@ def test_eval_run_section_reports_bad_values_as_usage_errors(body: str, tmp_path
     """
     path = tmp_path / "eval.yaml"
     path.write_text("embedding: {provider: openai}\n" + body, encoding="utf-8")
-    _, overrides = _load_memory_config(path)
-    parser = eval_config_module._build_parser("eval")
+    _, overrides = load_memory_config(path)
+    parser = eval_config_module.build_parser("eval")
     parsed = parser.parse_args(["--config", str(path)])
 
     with pytest.raises(SystemExit):
-        eval_config_module._arguments(parser, parsed, overrides=overrides)
+        eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
 
 
 def _emit_from_every_source() -> None:
@@ -5491,7 +5498,7 @@ def test_configure_logging_keeps_dependency_info_out_of_the_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Only SenseMem is verbose at INFO; a dependency has to reach WARNING to be heard."""
-    eval_console_module._configure_logging("INFO")
+    eval_console_module.configure_logging("INFO")
     # What import funasr does at module scope. It must not lift anything back up.
     logging.basicConfig(level=logging.INFO)
     _emit_from_every_source()
@@ -5506,7 +5513,7 @@ def test_configure_logging_opens_the_whole_process_for_debug(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """--verbosity DEBUG is the one setting that asks for everyone else's detail too."""
-    eval_console_module._configure_logging("DEBUG")
+    eval_console_module.configure_logging("DEBUG")
     _emit_from_every_source()
 
     assert [line.split(": ", 1)[0] for line in capsys.readouterr().err.splitlines()] == [
@@ -5535,9 +5542,9 @@ def test_configure_logging_still_filters_while_a_bar_is_live(
 
     terminal = Terminal()
     monkeypatch.setattr(sys, "stderr", terminal)
-    eval_console_module._configure_logging("INFO")
+    eval_console_module.configure_logging("INFO")
 
-    with eval_console_module._progress("running fixture", "sample", total=4) as report:
+    with eval_console_module.progress_reporter("running fixture", "sample", total=4) as report:
         _emit_from_every_source()
         report(1, 4)
 
@@ -5552,7 +5559,7 @@ def test_configure_logging_silences_sensemem_too_at_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A raised floor applies to the harness as well, not just to its dependencies."""
-    eval_console_module._configure_logging("ERROR")
+    eval_console_module.configure_logging("ERROR")
     _emit_from_every_source()
     logging.getLogger("sensemem.benchmarks.eval").error("run failed")
 
@@ -5570,19 +5577,19 @@ def test_configure_logging_turns_down_a_dependency_that_owns_its_handler(
     the threshold has to be there before that happens. A caller who set one explicitly keeps it.
     """
     monkeypatch.delenv("MODELSCOPE_LOG_LEVEL", raising=False)
-    eval_console_module._configure_logging("INFO")
+    eval_console_module.configure_logging("INFO")
     assert os.environ["MODELSCOPE_LOG_LEVEL"] == str(logging.WARNING)
 
     monkeypatch.delenv("MODELSCOPE_LOG_LEVEL")
-    eval_console_module._configure_logging("DEBUG")
+    eval_console_module.configure_logging("DEBUG")
     assert os.environ["MODELSCOPE_LOG_LEVEL"] == str(logging.DEBUG)
 
     monkeypatch.setenv("MODELSCOPE_LOG_LEVEL", "40")
-    eval_console_module._configure_logging("INFO")
+    eval_console_module.configure_logging("INFO")
     assert os.environ["MODELSCOPE_LOG_LEVEL"] == "40"
 
 
-def _streaming_arguments(output_path: Path, **overrides: object) -> eval_config_module._Arguments:
+def _streaming_arguments(output_path: Path, **overrides: object) -> eval_config_module.Arguments:
     values: dict[str, object] = {
         "arms": ("sensemem",),
         "benchmarks_root": output_path.parent / "corpus",
@@ -5611,7 +5618,7 @@ def _streaming_arguments(output_path: Path, **overrides: object) -> eval_config_
         "use_cache": None,
     }
     values.update(overrides)
-    return cast(eval_config_module._Arguments, SimpleNamespace(**values))
+    return cast(eval_config_module.Arguments, SimpleNamespace(**values))
 
 
 async def _completion(
@@ -5628,8 +5635,8 @@ async def _completion(
     return await completed(task, samples)
 
 
-def _streaming_judge() -> eval_config_module._JudgeConfig:
-    return eval_config_module._JudgeConfig("judge", "http://judge.invalid", api_key="test")
+def _streaming_judge() -> eval_config_module.JudgeConfig:
+    return eval_config_module.JudgeConfig("judge", "http://judge.invalid", api_key="test")
 
 
 def _streaming_task(name: str) -> tuple[LoadedTask, SampleResult]:
@@ -5678,12 +5685,12 @@ def test_each_task_lands_in_the_crash_copy_before_the_run_ends(
     first, first_sample = _streaming_task("atm-bench")
     second, second_sample = _streaming_task("locomo-refined")
     arguments = _streaming_arguments(tmp_path / "output")
-    partial = arguments.output_path / eval_config_module._PARTIAL_SAMPLES_FILE
+    partial = arguments.output_path / eval_config_module.PARTIAL_SAMPLES_FILE
     telemetry = EvaluationTelemetry()
     try:
         completed = eval_module._task_completion(
             arguments,
-            judge_config=eval_config_module._JudgeConfig("judge", "http://judge.invalid"),
+            judge_config=eval_config_module.JudgeConfig("judge", "http://judge.invalid"),
             batch_sizes={"atm-bench": 1, "locomo-refined": 1},
             telemetry=telemetry,
             memory_config=None,
@@ -5721,13 +5728,13 @@ def test_stream_results_judges_one_task_before_printing_it(
         def __exit__(self, *_args: object) -> None:
             measurement_events.append("exit")
 
-    original_table = eval_console_module._table
+    original_table = eval_console_module.render_summary_table
 
     def table(results: dict[str, object]) -> str:
         assert measurement_events == ["enter"]
         return original_table(results)
 
-    monkeypatch.setattr(eval_module, "_table", table)
+    monkeypatch.setattr(eval_module, "render_summary_table", table)
 
     async def judge(answered: SampleResult, plan: object, **_kwargs: object) -> SampleResult:
         assert plan is not None
@@ -5773,7 +5780,7 @@ def test_the_crash_copy_survives_a_judging_failure(
     async def unavailable(*_args: object, **_kwargs: object) -> tuple[SampleResult, ...]:
         raise RuntimeError("official LLM scorers require sensemem[openai]")
 
-    monkeypatch.setattr(eval_module, "_apply_judges", unavailable)
+    monkeypatch.setattr(eval_module, "apply_judges", unavailable)
     telemetry = EvaluationTelemetry()
     try:
         completed = eval_module._task_completion(
@@ -5789,30 +5796,30 @@ def test_the_crash_copy_survives_a_judging_failure(
     finally:
         telemetry.close()
 
-    partial = arguments.output_path / eval_config_module._PARTIAL_SAMPLES_FILE
+    partial = arguments.output_path / eval_config_module.PARTIAL_SAMPLES_FILE
     assert json.loads(partial.read_bytes())["prediction"] == "Ada"
 
 
 def test_a_rerun_does_not_silently_discard_a_leftover_crash_copy(tmp_path: Path) -> None:
     """The retry after a crash is exactly when the recovery file must not be deleted."""
-    (tmp_path / eval_config_module._PARTIAL_SAMPLES_FILE).write_bytes(b"{}\n")
+    (tmp_path / eval_config_module.PARTIAL_SAMPLES_FILE).write_bytes(b"{}\n")
 
-    with pytest.raises(FileExistsError, match=eval_config_module._PARTIAL_SAMPLES_FILE):
-        eval_config_module._require_output(tmp_path, overwrite=False)
+    with pytest.raises(FileExistsError, match=eval_config_module.PARTIAL_SAMPLES_FILE):
+        eval_config_module.require_output(tmp_path, overwrite=False)
 
     # --overwrite remains the one way through, as it is for every other artifact.
-    eval_config_module._require_output(tmp_path, overwrite=True)
+    eval_config_module.require_output(tmp_path, overwrite=True)
 
 
 def test_resume_is_not_blocked_by_the_crash_copy_of_the_run_it_continues(tmp_path: Path) -> None:
     """--resume names an interrupted run, so that run's crash copy cannot be what refuses it."""
-    (tmp_path / eval_config_module._PARTIAL_SAMPLES_FILE).write_bytes(b"{}\n")
-    eval_config_module._require_output(tmp_path, overwrite=False, resume=True)
+    (tmp_path / eval_config_module.PARTIAL_SAMPLES_FILE).write_bytes(b"{}\n")
+    eval_config_module.require_output(tmp_path, overwrite=False, resume=True)
 
     # A finished run is not one to resume, so its real artifacts still need --overwrite.
-    (tmp_path / eval_config_module._RESULTS_FILE).write_bytes(b"{}\n")
-    with pytest.raises(FileExistsError, match=eval_config_module._RESULTS_FILE):
-        eval_config_module._require_output(tmp_path, overwrite=False, resume=True)
+    (tmp_path / eval_config_module.RESULTS_FILE).write_bytes(b"{}\n")
+    with pytest.raises(FileExistsError, match=eval_config_module.RESULTS_FILE):
+        eval_config_module.require_output(tmp_path, overwrite=False, resume=True)
 
 
 def test_final_judging_skips_answers_already_judged_while_streaming(
@@ -5830,7 +5837,7 @@ def test_final_judging_skips_answers_already_judged_while_streaming(
 
     def apply(**overrides: object) -> tuple[SampleResult, ...]:
         return asyncio.run(
-            eval_judge_module._apply_judges(
+            eval_judge_module.apply_judges(
                 (task,),
                 (sample,),
                 arguments=arguments,
@@ -5855,11 +5862,11 @@ def test_final_judging_skips_answers_already_judged_while_streaming(
 def test_the_crash_copy_is_removed_once_the_real_artifacts_land(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
-    partial = output / eval_config_module._PARTIAL_SAMPLES_FILE
+    partial = output / eval_config_module.PARTIAL_SAMPLES_FILE
     partial.write_bytes(b'{"sample_id": "atm-bench/unit/q"}\n')
     _, sample = _streaming_task("atm-bench")
 
-    eval_artifacts_module._write_artifacts(
+    eval_artifacts_module.write_artifacts(
         _streaming_arguments(output, overwrite=True),
         (sample,),
         {"run_id": "run", "tasks": []},
@@ -5906,7 +5913,7 @@ def test_run_arms_hands_every_task_to_the_completion_callback(tmp_path: Path) ->
             eval_module._run_arms(
                 (first, second),
                 arguments,
-                arms=(eval_arms_module._Arm("sensemem"),),
+                arms=(eval_arms_module.Arm("sensemem"),),
                 batch_sizes={"atm-bench": 1, "locomo-refined": 1},
                 memory_factory=cast(
                     MemoryFactory,
@@ -5988,7 +5995,7 @@ async def test_retry_transient_waits_out_provider_outages_only(
             raise ModelError("reset", reason="connection_failed", stage="generate")
         return "answered"
 
-    assert await eval_results_module._retry_transient(flaky) == "answered"
+    assert await eval_results_module.retry_transient(flaky) == "answered"
     assert calls == 3
     assert elapsed == 2.0
 
@@ -5999,7 +6006,7 @@ async def test_retry_transient_waits_out_provider_outages_only(
 
     calls = 0
     with pytest.raises(ModelError, match="bad request"):
-        await eval_results_module._retry_transient(rejected)
+        await eval_results_module.retry_transient(rejected)
     assert calls == 1
 
     async def outage() -> str:
@@ -6007,7 +6014,7 @@ async def test_retry_transient_waits_out_provider_outages_only(
 
     started = elapsed
     with pytest.raises(ModelError, match="still down"):
-        await eval_results_module._retry_transient(outage)
+        await eval_results_module.retry_transient(outage)
     assert elapsed - started == 10.0
 
     # The adapter classifies a gateway's aborted JSON generation as provider_unavailable.
@@ -6021,15 +6028,13 @@ async def test_retry_transient_waits_out_provider_outages_only(
             raise _aborted_json_generation()
         return "answered"
 
-    assert await eval_results_module._retry_transient(aborted_generation) == "answered"
+    assert await eval_results_module.retry_transient(aborted_generation) == "answered"
     assert calls == 2
 
 
-class _AbortedJsonGeneration(Exception):
-    """The SDK's 400 as the eval sees it: a status code and the provider's parsed body."""
-
-    status_code = 400
-    body: ClassVar[dict[str, object]] = {
+def _aborted_json_generation() -> ModelError:
+    request = httpx.Request("POST", "https://provider.example.test/v1/chat/completions")
+    body = {
         "message": (
             "<400> InternalError.Algo.InvalidParameter: Model output became abnormal while "
             "generating a JSON response for response_format. The generation was aborted because "
@@ -6038,29 +6043,30 @@ class _AbortedJsonGeneration(Exception):
         ),
         "type": "invalid_request_error",
     }
-
-
-def _aborted_json_generation() -> ModelError:
     error = ModelError("generation request failed", reason="provider_unavailable", stage="generate")
-    error.__cause__ = _AbortedJsonGeneration()
+    error.__cause__ = APIStatusError(
+        "aborted json generation",
+        response=httpx.Response(400, request=request),
+        body=body,
+    )
     return error
 
 
 def test_failure_detail_keeps_the_provider_message_for_the_next_diagnosis() -> None:
     # Provider details remain available in explicitly requested benchmark diagnostics.
-    detail = eval_results_module._failure_detail(_aborted_json_generation())
+    detail = eval_results_module.failure_detail(_aborted_json_generation())
     assert detail.reason == "provider_unavailable"
     assert detail.message is not None
     assert detail.message.startswith("<400> InternalError.Algo.InvalidParameter")
     assert detail.json()["message"] == detail.message
 
     # Without a parsed provider body the failure's own text is kept, bounded and one-line.
-    plain = eval_results_module._failure_detail(RuntimeError("boom\n" + "x" * 900))
+    plain = eval_results_module.failure_detail(RuntimeError("boom\n" + "x" * 900))
     assert plain.message is not None
     assert plain.message.startswith("boom x")
     assert len(plain.message) == eval_results_module._FAILURE_MESSAGE_CHARS
-    assert eval_results_module._restored_failure({**detail.json(), "message": None}).message is None
-    assert eval_results_module._restored_failure(dict(detail.json())) == detail
+    assert eval_results_module.restored_failure({**detail.json(), "message": None}).message is None
+    assert eval_results_module.restored_failure(dict(detail.json())) == detail
 
 
 @pytest.mark.parametrize(
@@ -6075,8 +6081,8 @@ def test_failure_detail_keeps_the_provider_message_for_the_next_diagnosis() -> N
 def test_search_replay_cli_overrides_configuration(
     configured: bool | None, flags: list[str], expected: bool
 ) -> None:
-    parser = eval_config_module._build_parser(None)
+    parser = eval_config_module.build_parser(None)
     parsed = parser.parse_args(["--tasks", "locomo-refined", *flags])
     overrides = HarnessOverrides.model_validate({"run": {"search_replay": configured}})
-    arguments = eval_config_module._arguments(parser, parsed, overrides=overrides)
+    arguments = eval_config_module.resolve_arguments(parser, parsed, overrides=overrides)
     assert arguments.search_replay is expected

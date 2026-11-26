@@ -105,7 +105,7 @@ async def test_real_sdk_chunks_share_the_model_budget_and_checkpoint_only_comple
 ) -> None:
     backend = _BlockingEmbedder()
     run = BenchmarkRun(tmp_path / "runs", "fixture", "concurrent")
-    checkpoint = eval_ingest_module._IngestCheckpoint(run, "unit", "fixture")
+    checkpoint = eval_ingest_module.IngestCheckpoint(run, "unit", "fixture")
     receipts = []
 
     def observe(count: int) -> None:
@@ -120,7 +120,7 @@ async def test_real_sdk_chunks_share_the_model_budget_and_checkpoint_only_comple
         )
     ) as memory:
         pending = asyncio.create_task(
-            eval_ingest_module._ingest(
+            eval_ingest_module.ingest(
                 memory,
                 _task(tmp_path).units[0].memories,
                 batch_size=1,
@@ -149,7 +149,7 @@ async def test_cancel_waits_for_real_sdk_writes_then_records_the_completed_wave(
 ) -> None:
     backend = _BlockingEmbedder()
     run = BenchmarkRun(tmp_path / "runs", "fixture", "cancelled")
-    checkpoint = eval_ingest_module._IngestCheckpoint(run, "unit", "fixture")
+    checkpoint = eval_ingest_module.IngestCheckpoint(run, "unit", "fixture")
 
     async def ingest() -> None:
         async with AsyncMemory(
@@ -159,7 +159,7 @@ async def test_cancel_waits_for_real_sdk_writes_then_records_the_completed_wave(
                 settings=MemorySettings(index_quantization=IndexQuantization.NONE),
             )
         ) as memory:
-            await eval_ingest_module._ingest(
+            await eval_ingest_module.ingest(
                 memory,
                 _task(tmp_path).units[0].memories,
                 batch_size=1,
@@ -214,7 +214,7 @@ async def test_later_chunk_failures_are_released_only_with_their_own_prefix() ->
             raise ValueError("fixture bad item")
 
     pending = asyncio.create_task(
-        eval_ingest_module._ingest(
+        eval_ingest_module.ingest(
             cast(AsyncMemory, Store()),
             (
                 MemoryItem("good", ("good",), occurred_at=DAY),
@@ -273,34 +273,34 @@ async def test_fatal_chunk_waits_for_siblings_and_stops_receipts_at_the_failed_p
 
 
 def test_ingest_concurrency_defaults_yaml_override_and_cache_identity(tmp_path: Path) -> None:
-    parser = eval_config._build_parser("eval")
-    base = eval_config._arguments(parser, parser.parse_args(["--tasks", "mem-gallery"]))
+    parser = eval_config.build_parser("eval")
+    base = eval_config.resolve_arguments(parser, parser.parse_args(["--tasks", "mem-gallery"]))
     assert base.ingest_concurrency == 1
     overrides = HarnessOverrides.model_validate({"run": {"ingest_concurrency": 4}})
-    configured = eval_config._arguments(
+    configured = eval_config.resolve_arguments(
         parser, parser.parse_args(["--tasks", "mem-gallery"]), overrides=overrides
     )
     assert configured.ingest_concurrency == 4
-    explicit = eval_config._arguments(
+    explicit = eval_config.resolve_arguments(
         parser,
         parser.parse_args(["--tasks", "mem-gallery", "--ingest-concurrency", "2"]),
         overrides=overrides,
     )
     assert explicit.ingest_concurrency == 2
     altered = replace(base, ingest_concurrency=4)
-    assert eval_inputs_module._cache_namespace(
+    assert eval_inputs_module.cache_namespace(
         base, ModelConfig(), {}
-    ) != eval_inputs_module._cache_namespace(altered, ModelConfig(), {})
-    assert eval_inputs_module._ingest_digest(
+    ) != eval_inputs_module.cache_namespace(altered, ModelConfig(), {})
+    assert eval_inputs_module.ingest_digest(
         _task(tmp_path), base, None
-    ) != eval_inputs_module._ingest_digest(_task(tmp_path), altered, None)
+    ) != eval_inputs_module.ingest_digest(_task(tmp_path), altered, None)
 
 
 @pytest.mark.parametrize("extra", [["--ingest", "capture"], ["--deliberate"]])
 def test_parallel_ingest_rejects_stateful_modes(extra: list[str]) -> None:
-    parser = eval_config._build_parser("eval")
+    parser = eval_config.build_parser("eval")
     with pytest.raises(SystemExit) as caught:
-        eval_config._arguments(
+        eval_config.resolve_arguments(
             parser,
             parser.parse_args(["--tasks", "mem-gallery", "--ingest-concurrency", "2", *extra]),
         )
@@ -480,7 +480,7 @@ async def test_real_sdk_reverse_delay_preserves_sqlite_order_for_overlapping_clo
         )
     ) as memory:
         pending = asyncio.create_task(
-            eval_ingest_module._ingest(
+            eval_ingest_module.ingest(
                 memory,
                 items,
                 batch_size=4,

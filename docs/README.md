@@ -13,7 +13,6 @@ Build agents that remember across sessions and use the right evidence for the cu
 
 | I want to… | Read |
 | --- | --- |
-| Track what changed across sessions and verify sources | [Best practices](best-practices.md) |
 | Replay timed audio/video, form events, and play recalled media | [Best practices notebook](../examples/best_practices.ipynb) |
 | Give an agent useful context within a prompt budget | [Context compilation](context-compilation.md) |
 | Remember events, preferences, and changing facts | [Memory types, time, and decay](memory-types-time-and-decay.md) · [Typed memory](typed-memory.md) |

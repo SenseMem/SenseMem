@@ -62,21 +62,21 @@ from sensemem.benchmarks import eval_results as eval_results_module
 from sensemem.benchmarks import eval_runner as eval_runner_module
 from sensemem.benchmarks import eval_samples as eval_samples_module
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from sensemem.benchmarks.eval_answers import _answer_many
+from sensemem.benchmarks.eval_answers import answer_many
 from sensemem.benchmarks.eval_arms import (
     PRODUCT_ARM,
-    _Arm,
+    Arm,
 )
 from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
 from sensemem.benchmarks.eval_config import RETRIEVAL_CANDIDATE_LIMIT
-from sensemem.benchmarks.eval_inputs import _full_context
-from sensemem.benchmarks.eval_metrics import _metrics
+from sensemem.benchmarks.eval_inputs import full_context
+from sensemem.benchmarks.eval_metrics import compute_task_metrics
 from sensemem.benchmarks.eval_options import EvaluationOptions
-from sensemem.benchmarks.eval_report import _with_grounding_loss
+from sensemem.benchmarks.eval_report import with_grounding_loss
 from sensemem.benchmarks.eval_results import DEFAULT_ARM, SampleResult
 from sensemem.benchmarks.eval_runner import run_loaded_task
 from sensemem.benchmarks.eval_runtime import MemoryFactory
-from sensemem.benchmarks.eval_samples import _sample
+from sensemem.benchmarks.eval_samples import build_sample_result
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ANSWER_SPAN,
     BENCHMARK_SAMPLE,
@@ -258,13 +258,13 @@ def _outcome(
     memory: object,
     question: EvalQuestion,
     *,
-    arm: _Arm,
+    arm: Arm,
     task_name: str = "atm-bench",
     context: str = "",
     answer_policy: AnswerPolicy | None = None,
-) -> eval_results_module._AnswerOutcome:
+) -> eval_results_module.AnswerOutcome:
     answered = asyncio.run(
-        _answer_many(
+        answer_many(
             cast(AsyncMemory, memory),
             (question,),
             options=EvaluationOptions(
@@ -288,7 +288,7 @@ def test_retrieval_recall_scores_the_full_ranked_list_not_the_answer_hits() -> N
     task, unit, question = _task()
 
     outcome = _outcome(memory, question, arm=PRODUCT_ARM)
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -315,7 +315,7 @@ def test_successful_empty_retrieval_diagnostic_scores_zero_recall() -> None:
     task, unit, question = _task()
 
     outcome = _outcome(memory, question, arm=PRODUCT_ARM)
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -348,12 +348,12 @@ def test_retrieval_candidates_are_not_fetched_without_gold_to_score() -> None:
     assert memory.search_limits == []
     assert memory.asked == 1
     assert outcome.ranked_source_ids == ()
-    assert retrieval_gold_ids("atm-bench", question.metadata) == ()
+    assert retrieval_gold_ids(question.metadata) == ()
 
 
 def test_blind_arm_never_reads_memory_and_keeps_query_media(tmp_path: Path) -> None:
     generator = _RecordingGenerator()
-    arm = _Arm("blind", generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm("blind", generator=cast(eval_arms_module.BaselineGenerator, generator))
     _, _, question = _task()
     query_image = tmp_path / "query.png"
     query_image.write_bytes(b"query")
@@ -370,7 +370,7 @@ def test_blind_arm_never_reads_memory_and_keeps_query_media(tmp_path: Path) -> N
 
 def test_full_context_arm_stuffs_the_corpus_instead_of_retrieving() -> None:
     generator = _RecordingGenerator()
-    arm = _Arm("full-context", generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm("full-context", generator=cast(eval_arms_module.BaselineGenerator, generator))
     _, _, question = _task()
 
     outcome = _outcome(_ForbiddenMemory(), question, arm=arm, context="Ada signed the contract")
@@ -387,8 +387,8 @@ def test_full_context_respects_its_stated_budget_and_skips_media() -> None:
         MemoryItem("s4", ("c" * 10,)),
     )
 
-    assert _full_context(items, 25) == f"{'a' * 10}\n\n{'b' * 10}"
-    assert _full_context(items, 100) == f"{'a' * 10}\n\n{'b' * 10}\n\n{'c' * 10}"
+    assert full_context(items, 25) == f"{'a' * 10}\n\n{'b' * 10}"
+    assert full_context(items, 100) == f"{'a' * 10}\n\n{'b' * 10}\n\n{'c' * 10}"
 
 
 def test_full_context_counts_separators_and_still_considers_later_items() -> None:
@@ -398,8 +398,8 @@ def test_full_context_counts_separators_and_still_considers_later_items() -> Non
         MemoryItem("later", ("c" * 8,)),
     )
 
-    assert _full_context(items, 20) == "aaaaaaaaaa\n\ncccccccc"
-    assert len(_full_context(items, 20)) == 20
+    assert full_context(items, 20) == "aaaaaaaaaa\n\ncccccccc"
+    assert len(full_context(items, 20)) == 20
 
 
 @pytest.mark.parametrize("arm_name", ("blind", "full-context", "compile"))
@@ -417,12 +417,12 @@ def test_baseline_arms_request_the_task_answer_policy(
     arm_name: str, task_name: str, override: AnswerPolicy | None, expected: str, tmp_path: Path
 ) -> None:
     generator = _RecordingGenerator()
-    arm = _Arm(arm_name, generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm(arm_name, generator=cast(eval_arms_module.BaselineGenerator, generator))
 
-    async def run() -> eval_results_module._AnswerOutcome:
+    async def run() -> eval_results_module.AnswerOutcome:
         async with AsyncMemory(Memory(tmp_path, embedder=_TinyEmbedder())) as memory:
             await memory.add("Ada signed the contract")
-            outcomes = await _answer_many(
+            outcomes = await answer_many(
                 memory,
                 (_question(),),
                 options=EvaluationOptions(
@@ -454,12 +454,12 @@ def test_baseline_refusals_are_decoded_and_counted(
     arm_name: str, reply: str, refusal: str | None, expected: str, tmp_path: Path
 ) -> None:
     generator = _RecordingGenerator(reply)
-    arm = _Arm(arm_name, generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm(arm_name, generator=cast(eval_arms_module.BaselineGenerator, generator))
 
-    async def run() -> eval_results_module._AnswerOutcome:
+    async def run() -> eval_results_module.AnswerOutcome:
         async with AsyncMemory(Memory(tmp_path, embedder=_TinyEmbedder())) as memory:
             await memory.add("Ada signed the contract")
-            outcomes = await _answer_many(
+            outcomes = await answer_many(
                 memory,
                 (replace(_question(), refusal=refusal),),
                 options=EvaluationOptions(request_concurrency=1, recall_limit=20),
@@ -481,15 +481,15 @@ def test_baseline_refusals_are_decoded_and_counted(
 @pytest.mark.parametrize("arm_name", ("blind", "full-context", "compile"))
 def test_baseline_samples_record_the_policy_that_generated_the_answer(arm_name: str) -> None:
     task, unit, question = _task("memlens-32k")
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
-        eval_results_module._AnswerOutcome("Ada", 1.0, 0.0, (), ()),
+        eval_results_module.AnswerOutcome("Ada", 1.0, 0.0, (), ()),
         ingest_failures=0,
         predict_only=True,
         log_samples=False,
-        arm=_Arm(arm_name),
+        arm=Arm(arm_name),
         answer_policy="best_effort",
     )
 
@@ -502,7 +502,7 @@ def test_baseline_best_effort_keeps_the_answer_and_reports_uncertainty(arm_name:
     outcome = _outcome(
         _ForbiddenMemory(),
         _question(),
-        arm=_Arm(arm_name, generator=cast(eval_arms_module._BaselineGenerator, generator)),
+        arm=Arm(arm_name, generator=cast(eval_arms_module.BaselineGenerator, generator)),
         answer_policy="best_effort",
     )
 
@@ -516,11 +516,11 @@ def test_random_arm_shuffles_the_same_pool_and_scores_retrieval_only() -> None:
     ranked = (*ranked, _hit("gold-1", 0.1))
     memory = _RankedMemory(ranked, ())
     task, unit, question = _task()
-    arm = _Arm("random", seed=7)
+    arm = Arm("random", seed=7)
 
     outcome = _outcome(memory, question, arm=arm)
     repeat = _outcome(_RankedMemory(ranked, ()), question, arm=arm)
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -557,11 +557,11 @@ def test_random_arm_does_not_report_an_answer_latency() -> None:
     telemetry = EvaluationTelemetry()
     try:
         outcome = asyncio.run(
-            _answer_many(
+            answer_many(
                 cast(AsyncMemory, memory),
                 (question,),
                 options=EvaluationOptions(request_concurrency=1, recall_limit=20),
-                arm=_Arm("random", seed=7),
+                arm=Arm("random", seed=7),
                 task_name="atm-bench",
                 unit_id="unit",
                 tracer=telemetry.tracer,
@@ -595,7 +595,7 @@ async def test_caller_answer_clock_includes_request_admission() -> None:
     telemetry = EvaluationTelemetry()
     try:
         pending = asyncio.create_task(
-            _answer_many(
+            answer_many(
                 cast(AsyncMemory, Memory()),
                 (
                     EvalQuestion("first", ("first",), references=("A",)),
@@ -645,7 +645,7 @@ async def test_product_ranking_is_captured_without_a_scoring_search() -> None:
     questions = tuple(_question(f"q{index}", evidence_ids=["gold-1"]) for index in range(3))
     telemetry = EvaluationTelemetry()
     try:
-        outcomes = await _answer_many(
+        outcomes = await answer_many(
             cast(AsyncMemory, Memory()),
             questions,
             options=EvaluationOptions(request_concurrency=1, recall_limit=20),
@@ -661,7 +661,7 @@ async def test_product_ranking_is_captured_without_a_scoring_search() -> None:
     assert all(not isinstance(outcome, BaseException) for outcome in outcomes)
     assert answered == 3
     assert all(
-        isinstance(outcome, eval_results_module._AnswerOutcome)
+        isinstance(outcome, eval_results_module.AnswerOutcome)
         and outcome.ranked_source_ids_complete
         for outcome in outcomes
     )
@@ -691,9 +691,7 @@ def test_blind_only_run_answers_every_question_without_ingesting(tmp_path: Path)
                 options=EvaluationOptions(
                     batch_size=4, unit_concurrency=1, request_concurrency=1, recall_limit=5
                 ),
-                arms=(
-                    _Arm("blind", generator=cast(eval_arms_module._BaselineGenerator, generator)),
-                ),
+                arms=(Arm("blind", generator=cast(eval_arms_module.BaselineGenerator, generator)),),
                 tracer=telemetry.tracer,
             )
         )
@@ -792,7 +790,7 @@ async def test_cached_product_arm_does_not_force_ingest_for_a_pending_blind_arm(
         response_cache=cast(ResponseCache, Cache()),
         arms=(
             PRODUCT_ARM,
-            _Arm("blind", generator=cast(eval_arms_module._BaselineGenerator, generator)),
+            Arm("blind", generator=cast(eval_arms_module.BaselineGenerator, generator)),
         ),
     )
 
@@ -842,8 +840,8 @@ def test_every_arm_answers_the_same_questions_against_one_ingest(tmp_path: Path)
             ),
             arms=(
                 PRODUCT_ARM,
-                _Arm("blind", generator=cast(eval_arms_module._BaselineGenerator, generator)),
-                _Arm("random", seed=3),
+                Arm("blind", generator=cast(eval_arms_module.BaselineGenerator, generator)),
+                Arm("random", seed=3),
             ),
         )
     )
@@ -863,16 +861,16 @@ def test_every_arm_answers_the_same_questions_against_one_ingest(tmp_path: Path)
 def test_compile_arm_answers_from_a_rendered_bundle_via_the_public_sdk(tmp_path: Path) -> None:
     """The compile arm against a real, isolated AsyncMemory -- the public SDK, no doubles."""
     generator = _RecordingGenerator("Ada")
-    arm = _Arm("compile", generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm("compile", generator=cast(eval_arms_module.BaselineGenerator, generator))
     _, _, question = _task()
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(tmp_path, embedder=_TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
         ) as memory:
             await memory.add("Ada signed the contract")
             await memory.add("a lunch invitation")
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(
@@ -909,15 +907,15 @@ def test_the_product_arm_answers_a_compile_surface_task_from_the_compiled_bundle
     plus the generator standing in for the host assistant -- under the assistant prompt, not the
     baseline's "answer only, guess" one -- and never reaches Memory.ask."""
     generator = _RecordingGenerator("a post in your voice")
-    arm = _Arm(DEFAULT_ARM, generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm(DEFAULT_ARM, generator=cast(eval_arms_module.BaselineGenerator, generator))
     _, _, question = _task(labelled=False)
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(tmp_path, embedder=_TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
         ) as memory:
             await memory.add("Ada signed the contract")
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(
@@ -939,13 +937,13 @@ def test_the_product_arm_answers_a_compile_surface_task_from_the_compiled_bundle
     _, rendered = generator.calls[0]
     assert rendered is not None and rendered.startswith("# Context: who signed it?")
     assert (
-        generator.media_calls[0]["system_prompt"] == baseline_prompts._COMPILE_SURFACE_SYSTEM_PROMPT
+        generator.media_calls[0]["system_prompt"] == baseline_prompts.COMPILE_SURFACE_SYSTEM_PROMPT
     )
     # No ask request was made, so the row records no policy; and with no ranked list to
     # observe the row is not flagged as a missing retrieval diagnostic.
     assert outcome.retrieval_diagnostic_error is None
     task, unit, _ = _task("personamem-v3", labelled=False)
-    row = _sample(
+    row = build_sample_result(
         task, unit, question, outcome, ingest_failures=0, predict_only=True, log_samples=False
     )
     assert row.answer_policy is None
@@ -956,7 +954,7 @@ def test_the_product_arm_keeps_asking_on_an_ask_surface_task_even_with_a_generat
     """A multi-task run lends the product arm a generator for its compile-surface task; that
     must not turn its other tasks into a full-context baseline."""
     generator = _RecordingGenerator()
-    arm = _Arm(DEFAULT_ARM, generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm(DEFAULT_ARM, generator=cast(eval_arms_module.BaselineGenerator, generator))
     memory = _RankedMemory((), ())
     _, _, question = _task(labelled=False)
 
@@ -970,21 +968,19 @@ def test_the_product_arm_keeps_asking_on_an_ask_surface_task_even_with_a_generat
 def test_the_generator_is_built_for_the_product_arm_only_when_a_task_needs_the_compile_surface() -> (
     None
 ):
-    assert eval_arms_module._generator_arms(("sensemem",), ("locomo-refined",)) == frozenset()
-    assert eval_arms_module._generator_arms(("sensemem",), ("personamem-v3",)) == {"sensemem"}
-    assert eval_arms_module._generator_arms(("sensemem", "blind"), ("locomo-refined",)) == {"blind"}
-    assert eval_arms_module._generator_arms(("compile", "random"), ("personamem-v3",)) == {
-        "compile"
-    }
+    assert eval_arms_module.generator_arms(("sensemem",), ("locomo-refined",)) == frozenset()
+    assert eval_arms_module.generator_arms(("sensemem",), ("personamem-v3",)) == {"sensemem"}
+    assert eval_arms_module.generator_arms(("sensemem", "blind"), ("locomo-refined",)) == {"blind"}
+    assert eval_arms_module.generator_arms(("compile", "random"), ("personamem-v3",)) == {"compile"}
 
 
 def test_compile_arm_records_partial_sources_separately_from_full_evidence(
     tmp_path: Path,
 ) -> None:
     generator = _RecordingGenerator("Ada")
-    arm = _Arm(
+    arm = Arm(
         "compile",
-        generator=cast(eval_arms_module._BaselineGenerator, generator),
+        generator=cast(eval_arms_module.BaselineGenerator, generator),
         allow_partial_sources=True,
     )
     task, unit, question = _task()
@@ -996,7 +992,7 @@ def test_compile_arm_records_partial_sources_separately_from_full_evidence(
         + " Later text may qualify that statement."
     )
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(
                 tmp_path,
@@ -1005,7 +1001,7 @@ def test_compile_arm_records_partial_sources_separately_from_full_evidence(
             )
         ) as memory:
             source = await memory.add(source_text)
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(
@@ -1018,7 +1014,7 @@ def test_compile_arm_records_partial_sources_separately_from_full_evidence(
                 unit_id="unit",
             )
             outcome = answered[0]
-            if isinstance(outcome, eval_results_module._AnswerOutcome):
+            if isinstance(outcome, eval_results_module.AnswerOutcome):
                 assert outcome.excerpt_source_ids == (source.id,)
             return outcome
 
@@ -1032,7 +1028,7 @@ def test_compile_arm_records_partial_sources_separately_from_full_evidence(
     assert generator.calls[0][1] is not None
     assert "partial source" in generator.calls[0][1]
 
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -1050,10 +1046,10 @@ def test_compile_arm_records_partial_sources_separately_from_full_evidence(
 
 def test_compile_arm_counts_a_text_only_projection_without_full_evidence(tmp_path: Path) -> None:
     generator = _RecordingGenerator("Ada")
-    arm = _Arm("compile", generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm("compile", generator=cast(eval_arms_module.BaselineGenerator, generator))
     _task_value, _unit, question = _task()
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(
                 tmp_path,
@@ -1069,7 +1065,7 @@ def test_compile_arm_counts_a_text_only_projection_without_full_evidence(tmp_pat
                 )
             )
             return (
-                await _answer_many(
+                await answer_many(
                     memory,
                     (question,),
                     options=EvaluationOptions(request_concurrency=1, recall_limit=20),
@@ -1090,17 +1086,17 @@ def test_compile_arm_counts_a_text_only_projection_without_full_evidence(tmp_pat
 
 def test_compile_arm_records_media_projection_without_full_source_credit(tmp_path: Path) -> None:
     generator = _RecordingGenerator("The text says Ada signed it; the video was not supplied.")
-    arm = _Arm("compile", generator=cast(eval_arms_module._BaselineGenerator, generator))
+    arm = Arm("compile", generator=cast(eval_arms_module.BaselineGenerator, generator))
     task, unit, question = _task()
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(tmp_path, embedder=_TinyEmbedder(), settings=MemorySettings(minimum_relevance=0))
         ) as memory:
             source = await memory.add(
                 ("Ada signed the contract.", Blob(b"native video fixture", "video/mp4"))
             )
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(
@@ -1113,7 +1109,7 @@ def test_compile_arm_records_media_projection_without_full_source_credit(tmp_pat
                 unit_id="unit",
             )
             outcome = answered[0]
-            if isinstance(outcome, eval_results_module._AnswerOutcome):
+            if isinstance(outcome, eval_results_module.AnswerOutcome):
                 assert outcome.projection_source_ids == (source.id,)
             return outcome
 
@@ -1125,7 +1121,7 @@ def test_compile_arm_records_media_projection_without_full_source_credit(tmp_pat
     assert generator.calls[0][1] is not None
     assert "native media omitted" in generator.calls[0][1]
     assert generator.media_calls[0]["evidence_hits"] == ()
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -1176,7 +1172,7 @@ def test_compile_arm_sends_query_and_evidence_images_on_the_final_provider_wire(
         metadata={},
         source_question="Which robot is shown?",
     )
-    generator = eval_arms_module._BaselineGenerator(
+    generator = eval_arms_module.BaselineGenerator(
         ModelConfig(
             generation_model="gpt-5-mini",
             generation_base_url="http://generate/v1",
@@ -1187,14 +1183,14 @@ def test_compile_arm_sends_query_and_evidence_images_on_the_final_provider_wire(
         gen_kwargs="",
     )
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(Memory(tmp_path / "store", embedder=_TinyEmbedder())) as memory:
             await memory.add(
                 ("The evidence shows a robot.", evidence_image),
                 occurred_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
                 metadata={"source_id": "turn-1"},
             )
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(
@@ -1202,7 +1198,7 @@ def test_compile_arm_sends_query_and_evidence_images_on_the_final_provider_wire(
                     recall_limit=20,
                     compile_budget=ContextBudget(max_items=5, max_chars=16_000),
                 ),
-                arm=_Arm("compile", generator=generator),
+                arm=Arm("compile", generator=generator),
                 task_name="mem-gallery",
                 unit_id="gallery",
             )
@@ -1301,9 +1297,9 @@ def test_ingest_capture_produces_real_capture_settle_spans_for_the_compile_arm(
                         ingest_mode="capture",
                     ),
                     arms=(
-                        _Arm(
+                        Arm(
                             "compile",
-                            generator=cast(eval_arms_module._BaselineGenerator, generator),
+                            generator=cast(eval_arms_module.BaselineGenerator, generator),
                         ),
                     ),
                     tracer=telemetry.tracer,
@@ -1368,18 +1364,18 @@ def _sample_with(
 )
 def test_invented_metrics_are_never_stamped_official(metric: str, expected: bool) -> None:
     task, _, _ = _task()
-    # _metrics reads recall_limit for the retrieval cutoffs and blind for the
+    # compute_task_metrics reads recall_limit for the retrieval cutoffs and blind for the
     # controls block; both arrived with the arms merge. _Arguments bounds
     # recall_limit to 1..100, so 10 is a value the real parser would accept.
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             seed=7, bootstrap_samples=20, recall_limit=10, blind=False, offset=0, limit=None
         ),
     )
     sample = _sample_with({metric: 1.0})
 
-    result = _metrics(task, (sample,), arguments)
+    result = compute_task_metrics(task, (sample,), arguments)
     rows = cast(dict[str, dict[str, object]], result["metrics"])
 
     assert metric_is_official("atm-bench", metric, "gpt-5-mini", uses_judge=False) is expected
@@ -1388,18 +1384,18 @@ def test_invented_metrics_are_never_stamped_official(metric: str, expected: bool
 
 def test_a_baseline_arm_never_reports_an_official_metric() -> None:
     task, _, _ = _task()
-    # _metrics reads recall_limit for the retrieval cutoffs and blind for the
+    # compute_task_metrics reads recall_limit for the retrieval cutoffs and blind for the
     # controls block; both arrived with the arms merge. _Arguments bounds
     # recall_limit to 1..100, so 10 is a value the real parser would accept.
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             seed=7, bootstrap_samples=20, recall_limit=10, blind=False, offset=0, limit=None
         ),
     )
     sample = _sample_with({"accuracy": 1.0}, arm="full-context")
 
-    result = _metrics(task, (sample,), arguments, arm="full-context")
+    result = compute_task_metrics(task, (sample,), arguments, arm="full-context")
     rows = cast(dict[str, dict[str, object]], result["metrics"])
 
     assert result["arm"] == "full-context"
@@ -1427,7 +1423,7 @@ def test_budget_loss_is_joined_onto_the_sample_that_lost_it() -> None:
         assert (grounding.dropped_hits, grounding.media_elided_hits) == (4, 1)
         assert telemetry.sample_grounding("atm-bench/unit/q2") is None
 
-        joined = _with_grounding_loss(
+        joined = with_grounding_loss(
             (_sample_with({"accuracy": 1.0}), _sample_with({"accuracy": 1.0}, arm="blind")),
             telemetry,
         )
@@ -1507,7 +1503,7 @@ def test_recall_planning_activation_is_aggregated_per_task_and_stamped_per_sampl
         assert grounding == SampleGrounding(
             0, 0, "set", trace_id=grounding.trace_id, answer_span_id=grounding.answer_span_id
         )
-        joined = _with_grounding_loss(
+        joined = with_grounding_loss(
             (
                 _sample_with({"accuracy": 1.0}),
                 _sample_with({"accuracy": 1.0}, arm="blind"),
@@ -1542,7 +1538,7 @@ def test_answer_span_attributes_name_the_task_and_the_sample() -> None:
 def test_results_report_each_arm_beside_the_product_arm(search_replay: bool) -> None:
     task, _, _ = _task("atm-bench-main", labelled=False)
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             arms=(DEFAULT_ARM, "blind", "random"),
             answer_policy=None,
@@ -1594,10 +1590,10 @@ def test_results_report_each_arm_beside_the_product_arm(search_replay: bool) -> 
         _sample_with({}, arm="random", task="atm-bench-main"),
     )
 
-    results = eval_report_module._results(
+    results = eval_report_module.build_results_document(
         arguments,
         ModelConfig(),
-        eval_config_module._JudgeConfig(model="gpt-5-mini", base_url="http://judge/v1"),
+        eval_config_module.JudgeConfig(model="gpt-5-mini", base_url="http://judge/v1"),
         (task,),
         samples,
         1.0,
@@ -1626,7 +1622,7 @@ def test_results_report_each_arm_beside_the_product_arm(search_replay: bool) -> 
     protocol = cast(dict[str, object], results["measurement_protocol"])
     assert protocol["post_answer_search_replay_in_client_resource_window"] is search_replay
     arms = cast(dict[str, object], results["arms"])
-    table = eval_console_module._table(results)
+    table = eval_console_module.render_summary_table(results)
 
     assert results["schema_version"] == 25
     assert "num_fewshot" not in results
@@ -1672,7 +1668,7 @@ def test_product_budget_provenance_distinguishes_ask_and_compile_tasks(
     stream_answers: bool, expected_concurrency: int
 ) -> None:
     arguments = cast(
-        eval_config_module._Arguments,
+        eval_config_module.Arguments,
         SimpleNamespace(
             recall_limit=20,
             arms=(DEFAULT_ARM,),
@@ -1709,21 +1705,21 @@ def test_answer_retrieval_candidate_limit_matches_budget_policy() -> None:
         settings=MemorySettings(evidence_budget_chars=None),
     )
 
-    assert eval_metrics_module._answer_retrieval_candidate_limit(1, unbudgeted) == 3
-    assert eval_metrics_module._answer_retrieval_candidate_limit(20, unbudgeted) == 60
+    assert eval_metrics_module.answer_retrieval_candidate_limit(1, unbudgeted) == 3
+    assert eval_metrics_module.answer_retrieval_candidate_limit(20, unbudgeted) == 60
     assert (
-        eval_metrics_module._answer_retrieval_candidate_limit(50, unbudgeted)
+        eval_metrics_module.answer_retrieval_candidate_limit(50, unbudgeted)
         == RETRIEVAL_CANDIDATE_LIMIT
     )
     assert (
-        eval_metrics_module._answer_retrieval_candidate_limit(1, budgeted)
+        eval_metrics_module.answer_retrieval_candidate_limit(1, budgeted)
         == RETRIEVAL_CANDIDATE_LIMIT
     )
     # Without a config file the harness builds Memory from the product defaults, which carry a
     # budget, so the mirror has to report the full pool there as well.
     assert MemorySettings().evidence_budget_chars is not None
     assert (
-        eval_metrics_module._answer_retrieval_candidate_limit(1, None) == RETRIEVAL_CANDIDATE_LIMIT
+        eval_metrics_module.answer_retrieval_candidate_limit(1, None) == RETRIEVAL_CANDIDATE_LIMIT
     )
 
 
@@ -1770,7 +1766,7 @@ def test_baseline_generator_uses_the_configured_generation_model(
             return None
 
     monkeypatch.setattr(openai, "AsyncOpenAI", Client)
-    generator = eval_arms_module._BaselineGenerator(
+    generator = eval_arms_module.BaselineGenerator(
         ModelConfig(
             generation_model=model,
             generation_base_url="http://generate/v1",
@@ -1811,7 +1807,7 @@ def test_baseline_generator_uses_the_configured_generation_model(
         generator.answer(
             'Who signed it? Answer with the name in "quotes".',
             injected_context,
-            system_prompt=baseline_prompts._COMPILE_SURFACE_SYSTEM_PROMPT,
+            system_prompt=baseline_prompts.COMPILE_SURFACE_SYSTEM_PROMPT,
         )
     )
     generator._answer_style = "concise"
@@ -1852,7 +1848,7 @@ def test_baseline_generator_uses_the_configured_generation_model(
     )
     compiled_messages = cast(list[dict[str, str]], requests[5]["messages"])
     assert compiled_messages[0]["content"] == (
-        baseline_prompts._COMPILE_SURFACE_SYSTEM_PROMPT + baseline_prompts._CONTEXT_INPUT_PROMPT
+        baseline_prompts.COMPILE_SURFACE_SYSTEM_PROMPT + baseline_prompts._CONTEXT_INPUT_PROMPT
     )
     assert json.loads(compiled_messages[1]["content"]) == {
         "context": injected_context,
@@ -1875,7 +1871,7 @@ def test_baseline_generator_rejects_explicit_unsupported_controls(
 
     monkeypatch.setattr(openai, "AsyncOpenAI", Client)
     with pytest.raises(ValidationError, match="does not support"):
-        eval_arms_module._BaselineGenerator(
+        eval_arms_module.BaselineGenerator(
             ModelConfig(generation_model="gpt-5-mini"),
             seed=11,
             gen_kwargs="",
@@ -1901,7 +1897,7 @@ def test_a_failed_answer_keeps_retrieval_and_scores_the_joint_metrics_zero() -> 
     question = replace(question, metadata={**question.metadata, "qtype": "list_recall"})
     outcome = replace(_outcome(memory, question, arm=PRODUCT_ARM), error=ModelError("boom"))
 
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -1932,7 +1928,7 @@ def test_a_sample_with_no_ranked_list_carries_no_retrieval_metrics() -> None:
         ranked_source_ids_complete=False,
     )
 
-    sample = _sample(
+    sample = build_sample_result(
         task,
         unit,
         question,
@@ -1968,8 +1964,8 @@ def test_a_replayed_answer_still_carries_the_ranked_list_it_was_scored_from(
 
     cache = ResponseCache(tmp_path / "responses", "run-a", "namespace")
     try:
-        eval_samples_module._cache_outcome(cache, task, unit, question, outcome, 0)
-        replayed = eval_samples_module._cached_results(
+        eval_samples_module.cache_outcome(cache, task, unit, question, outcome, 0)
+        replayed = eval_samples_module.cached_results(
             cache, task, unit, predict_only=False, log_samples=False
         )
     finally:
@@ -2045,7 +2041,7 @@ def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path
     borrowed = eval_backends_module._BorrowedGenerationBackend(Answerer())
     _, _, question = _task()
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(
                 tmp_path,
@@ -2055,7 +2051,7 @@ def test_the_task_policy_reaches_the_lent_answerer_through_the_real_harness_path
             )
         ) as memory:
             await memory.add("Ada signed the contract")
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(
@@ -2162,7 +2158,7 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
     _, _, question = _task()
     telemetry = EvaluationTelemetry()
 
-    async def run() -> eval_results_module._AnswerOutcome | BaseException:
+    async def run() -> eval_results_module.AnswerOutcome | BaseException:
         async with AsyncMemory(
             Memory(
                 tmp_path,
@@ -2173,7 +2169,7 @@ def test_the_planner_runs_once_per_question_through_the_real_harness_path(
             )
         ) as memory:
             await memory.add("Ada signed the contract")
-            answered = await _answer_many(
+            answered = await answer_many(
                 memory,
                 (question,),
                 options=EvaluationOptions(request_concurrency=1, recall_limit=5),

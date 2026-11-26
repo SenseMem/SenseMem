@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import httpx
-from huggingface_hub import snapshot_download
+import huggingface_hub
 
 from sensemem.benchmarks.task_catalog import TaskSpec
 
@@ -165,7 +165,7 @@ def extract_tar(
 
 def _snapshot(repository: str, revision: str, patterns: Sequence[str], destination: Path) -> None:
     def fetch() -> None:
-        snapshot_download(
+        huggingface_hub.snapshot_download(
             repo_id=repository,
             repo_type="dataset",
             revision=revision,

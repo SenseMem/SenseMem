@@ -76,27 +76,27 @@ def test_baseline_system_builder_respects_literal_override() -> None:
     ("prompt", "digest"),
     [
         (
-            judge_prompts._LOCOMO_PROMPT,
+            judge_prompts.LOCOMO_PROMPT,
             "899d035bd61813bc718812b2997f5908111c63ccd2ed76533e65f5dc3ca337a4",
         ),
         (
-            judge_prompts._M3_PROMPT,
+            judge_prompts.M3_PROMPT,
             "88543b6433f3d46c3cd8621b6e0837b8a8c406310510279d87021c283a13acaa",
         ),
         (
-            judge_prompts._EGOTEMPO_PROMPT,
+            judge_prompts.EGOTEMPO_PROMPT,
             "99da958bd7467147196f781982eb5b0e14f17864df8fc1bcadf620d3f8310fd8",
         ),
         (
-            judge_prompts._MM_LIFELONG_SYSTEM,
+            judge_prompts.MM_LIFELONG_SYSTEM,
             "effeeba5b3200fbae47699b5652e04afa2451337e61f9b5dc1e850ff37d3c231",
         ),
         (
-            judge_prompts._ATM_PROMPT,
+            judge_prompts.ATM_PROMPT,
             "d5669b9effea50bad2abbed3e141a4710a1731d1cccc93c211a06560448a2210",
         ),
         (
-            judge_prompts._GALLERY_PROMPT,
+            judge_prompts.GALLERY_PROMPT,
             "d2efdbd896f38e77644522d1c773e52d6921c24b72f17df376a5dc7d918de734",
         ),
     ],

@@ -150,7 +150,6 @@ Choose model backends in [configuration](configuration.md), and use the [deploym
 | Goal | Guide |
 | --- | --- |
 | Understand records, evidence, and model routing | [Core concepts](concepts.md) |
-| Track changes across sessions and verify sources | [Best practices](best-practices.md) |
 | Configure models and optional formation | [Configuration](configuration.md) |
 | Use the complete API | [SDK reference](api/python-sdk.md) |
 | Capture live audio, vision, or interaction | [Streaming and interaction memory](omni-streaming-and-interaction-memory.md) |

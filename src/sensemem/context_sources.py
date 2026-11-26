@@ -15,7 +15,7 @@ from sensemem.exceptions import ValidationError
 
 
 class ContextSupplementProvider(Protocol):
-    def __call__(self, query: ContentInput) -> Awaitable[Sequence[ContextSupplement]]: ...
+    def __call__(self, query: ContentInput, /) -> Awaitable[Sequence[ContextSupplement]]: ...
 
 
 @dataclass(frozen=True, slots=True)

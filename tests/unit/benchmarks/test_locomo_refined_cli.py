@@ -117,7 +117,7 @@ async def test_environment_generation_controls_reach_the_configured_backend(
 ) -> None:
     _FakeAsyncMemory.reset()
     _FakePool.instances = []
-    monkeypatch.setattr(locomo_refined_cli, "_BackendPool", _FakePool)
+    monkeypatch.setattr(locomo_refined_cli, "BackendPool", _FakePool)
     monkeypatch.setenv("SENSEMEM_GENERATION_MODEL", "configured-model")
     monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "fixture-environment-key")
     arguments = _arguments(tmp_path)
@@ -138,7 +138,7 @@ async def test_parallel_conversations_use_distinct_closed_physical_memories(
 ) -> None:
     _FakeAsyncMemory.reset()
     _FakePool.instances = []
-    monkeypatch.setattr(locomo_refined_cli, "_BackendPool", _FakePool)
+    monkeypatch.setattr(locomo_refined_cli, "BackendPool", _FakePool)
     arguments = _arguments(tmp_path, unit_concurrency=3)
     conversations = tuple(_conversation(f"sample-{index}") for index in range(6))
     run = BenchmarkRun(arguments.data_root, "locomo-refined", arguments.run_id)
@@ -174,7 +174,7 @@ async def test_unit_failures_and_cancellation_propagate_after_closing_memory(
 ) -> None:
     _FakeAsyncMemory.reset()
     _FakePool.instances = []
-    monkeypatch.setattr(locomo_refined_cli, "_BackendPool", _FakePool)
+    monkeypatch.setattr(locomo_refined_cli, "BackendPool", _FakePool)
 
     async def fail(
         memory: AsyncMemory,

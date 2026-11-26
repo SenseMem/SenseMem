@@ -687,32 +687,24 @@ def test_formation_proposal_rejects_empty_or_duplicate_witnesses(
 
 
 @pytest.mark.parametrize("mode", ("foreign", "missing_primary"))
-def test_invalid_explicit_batch_witnesses_leave_valid_proposals_intact(
-    tmp_path: Path, mode: str
-) -> None:
+def test_invalid_explicit_batch_witnesses_abort_derived_commit(tmp_path: Path, mode: str) -> None:
     class InvalidWitnessFormer(PreferenceFormer):
         def form(
             self, inputs: Sequence[FormationInput]
         ) -> tuple[tuple[FormationProposal, ...], ...]:
             assert len(inputs) == 2
+            evidence_ids = (
+                ("foreign", inputs[0].memory_id) if mode == "foreign" else (inputs[1].memory_id,)
+            )
             return tuple(
                 (
                     FormationProposal(
                         kind=RecordKind.EVENT,
                         content="bad",
-                        evidence_ids=(
-                            ("foreign", source.memory_id)
-                            if mode == "foreign"
-                            else (inputs[1 - index].memory_id,)
-                        ),
-                    ),
-                    FormationProposal(
-                        kind=RecordKind.EVENT,
-                        content=f"Event from {source.content.text}",
-                        evidence_ids=(source.memory_id,),
+                        evidence_ids=evidence_ids,
                     ),
                 )
-                for index, source in enumerate(inputs)
+                for _input in inputs
             )
 
     with Memory(
@@ -721,14 +713,13 @@ def test_invalid_explicit_batch_witnesses_leave_valid_proposals_intact(
         former=InvalidWitnessFormer(),
         settings=MemorySettings(minimum_relevance=0),
     ) as memory:
-        sources = memory.add_many(("first source", "second source"))
-        events = {
-            item.content: item.context.evidence_ids
-            for item in memory.list().items
-            if item.context is not None and item.context.kind is RecordKind.EVENT
-        }
-        assert events == {f"Event from {record.content}": (record.id,) for record in sources}
-        assert memory.pending_captures() == ()
+        with pytest.raises(ModelError) as failure:
+            memory.add_many(("first source", "second source"))
+        assert failure.value.reason == "response_invalid"
+        assert all(
+            hit.context is None or hit.context.kind is RecordKind.OBSERVATION
+            for hit in memory.list().items
+        )
 
 
 def _formed(

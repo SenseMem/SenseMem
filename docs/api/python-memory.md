@@ -267,9 +267,8 @@ the model span; reasoning before visible text still contributes first-token late
 
 Only one answer is delivered. Replaceable planned rounds buffer until selected; structured drafts
 buffer until validation/rendering. First planning gets no initial evidence; later abstained rounds
-may receive a bounded attempt note, with excerpts when query expansion is enabled. Both policies
-can replan within `recall_rounds` after a usable plan produces an abstention. Each predicate
-attempt reads its own set.
+may receive a bounded attempt note/excerpts. Best-effort or strict-with-expansion can replan within
+`recall_rounds`, while non-abstention ends the operation. Predicates do not accumulate complete sets.
 
 `AsyncMemory.ask_stream` returns an async generator. One reusable worker executes its entire stream;
 eight are available per `Memory` across wrappers/REST. Overflow raises retryable `capacity_exceeded`

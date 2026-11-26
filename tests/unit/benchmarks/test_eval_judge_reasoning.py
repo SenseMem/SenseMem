@@ -17,7 +17,7 @@ from opentelemetry import trace
 
 from sensemem.benchmarks import eval_judge
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask
-from sensemem.benchmarks.eval_config import _Arguments, _JudgeConfig
+from sensemem.benchmarks.eval_config import Arguments, JudgeConfig
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.official_scorers import JudgePlan, judge_failure_scores, judge_plan
 from sensemem.benchmarks.task_catalog import TaskSpec
@@ -77,7 +77,7 @@ async def _judge(client: AsyncOpenAI, model: str, *, plan: JudgePlan | None = No
         client=client,
         cache=None,
         semaphore=asyncio.Semaphore(1),
-        config=_JudgeConfig(model, "http://judge.invalid/v1"),
+        config=JudgeConfig(model, "http://judge.invalid/v1"),
         log_samples=False,
         tracer=trace.get_tracer(__name__),
     )
@@ -131,7 +131,7 @@ async def test_longmemeval_v2_uses_official_medium_reasoning(model: str) -> None
             client=client,
             cache=None,
             semaphore=asyncio.Semaphore(1),
-            config=_JudgeConfig(model, "http://judge.invalid/v1"),
+            config=JudgeConfig(model, "http://judge.invalid/v1"),
             log_samples=False,
             tracer=trace.get_tracer(__name__),
         )
@@ -235,13 +235,13 @@ async def test_saved_judge_error_retries_judge_and_preserves_local_metrics(
         metrics={"f1": 0.75, "bleu_1": 1.0, "retrieval_recall@10": 0.5},
     )
     arguments = cast(
-        _Arguments, SimpleNamespace(quiet=True, use_cache=None, run_id="replay", log_samples=False)
+        Arguments, SimpleNamespace(quiet=True, use_cache=None, run_id="replay", log_samples=False)
     )
-    (result,) = await eval_judge._apply_judges(
+    (result,) = await eval_judge.apply_judges(
         (task,),
         (sample,),
         arguments=arguments,
-        config=_JudgeConfig("gpt-5-mini", "http://judge.invalid/v1", api_key="test"),
+        config=JudgeConfig("gpt-5-mini", "http://judge.invalid/v1", api_key="test"),
     )
     assert len(requests) == 1
     assert result.prediction == sample.prediction
