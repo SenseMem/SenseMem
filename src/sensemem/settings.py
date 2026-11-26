@@ -8,6 +8,7 @@ from typing import Annotated
 from pydantic import Field
 
 from sensemem.control_values import RetentionPolicy
+from sensemem.recall import RECALL_MAX_QUERIES
 from sensemem.types import IndexQuantization, RetrievalMode
 
 _StrictBool = Annotated[bool, Field(strict=True)]
@@ -50,7 +51,7 @@ class MemorySettings:
     # Default recall programs reuse the original question's ranking.
     recall_query_expansion: _StrictBool = False
     # One shared search budget across recall steps and abstention-triggered answer retries.
-    recall_max_queries: Annotated[int, Field(strict=True, ge=1, le=32)] = 6
+    recall_max_queries: Annotated[int, Field(strict=True, ge=1, le=RECALL_MAX_QUERIES)] = 6
     # Describe query images transiently for text retrieval, retaining their native image keys.
     query_vision: _StrictBool = False
     # How many characters of evidence a set, sequence or entity plan may add to the ranked

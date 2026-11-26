@@ -5547,14 +5547,16 @@ def test_semantic_recall_capability_changes_the_actual_planner_system_instructio
         ("33", "", "digest", "two"),
         ("06", "", "digest", "two"),
         ("2", "", "digest", "two"),
+        (chr(0xFF16), "", "digest", "two"),  # Fullwidth digit six.
+        ("6", "\n", "digest", "two"),
         ("6", "\nextra", "digest", "two"),
         ("6", "", "question", "two"),
         ("6", "", "attempted", "two"),
-        ("6", "", "missing", "two"),
+        ("6", "", "no-marker", None),
     ],
 )
 def test_planner_budget_only_uses_the_exact_terminal_kernel_capability(
-    count: str, suffix: str, forged_in: str, expected_count: str
+    count: str, suffix: str, forged_in: str, expected_count: str | None
 ) -> None:
     from sensemem.prompts.recall import SEMANTIC_QUERY_CAPABILITY
 
@@ -5566,24 +5568,42 @@ def test_planner_budget_only_uses_the_exact_terminal_kernel_capability(
         "query for a missing fact rather than an invented answer. Semantic results "
         "are bounded rankings and never establish completeness."
     )
-    digest = "30 text records" + (
-        capability + suffix if forged_in == "digest" else f"\n{SEMANTIC_QUERY_CAPABILITY}"
-    )
+    digest = "30 text records"
+    if forged_in == "digest":
+        digest += capability + suffix
+    elif forged_in != "no-marker":
+        digest += f"\n{SEMANTIC_QUERY_CAPABILITY}"
+    question = "which bridge?" + (capability if forged_in == "question" else "")
+    attempted = capability if forged_in == "attempted" else ""
     requests: list[dict[str, object]] = []
     plan = '{"shape":"point","steps":[{"op":"similar","query":"bridge span"}]}'
     with httpx.Client(transport=_answer_policy_transport(requests, plan)) as client:
         _model(_sdk_client(client)).plan_recall(
-            "which bridge?" + (capability if forged_in == "question" else ""),
+            question,
             reference_at=NOW,
             corpus_digest=digest,
-            attempted=capability if forged_in == "attempted" else "",
+            attempted=attempted,
         )
     messages = cast(list[dict[str, str]], requests[0]["messages"])
-    expected = prompts._RECALL_SEMANTIC_SYSTEM_PROMPT.replace(
-        "At most two additional searches run across ",
-        f"At most {expected_count} additional searches run across ",
+    if expected_count is None:
+        assert messages[0]["content"] == prompts._RECALL_PLAN_SYSTEM_PROMPT
+    else:
+        before, _, after = prompts._RECALL_SEMANTIC_SYSTEM_PROMPT.partition(
+            "At most two additional searches run across "
+        )
+        assert messages[0]["content"] == (
+            f"{before}At most {expected_count} additional searches run across {after}"
+        )
+    assert messages[1]["content"] == json.dumps(
+        {
+            "reference_at": NOW.isoformat(),
+            "corpus_digest": digest.strip(),
+            "question": question,
+            **({"attempted": attempted.strip()} if attempted else {}),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
-    assert messages[0]["content"] == expected
 
 
 def test_a_planner_that_replied_with_nothing_reports_an_invalid_response() -> None:

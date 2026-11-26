@@ -135,22 +135,29 @@ def test_system_messages_and_tool_descriptions_do_not_inline_instructions() -> N
                 )
 
 
-@pytest.mark.parametrize("budget", [1, 2, 3, 16, 32])
-def test_recall_budget_renderer_and_reader_share_the_host_contract(budget: int) -> None:
-    capability = recall_prompts.semantic_query_capability(budget)
+@pytest.mark.parametrize("budget", [None, 1, 2, 3, 6, 16, 32])
+def test_recall_budget_renderer_and_reader_share_the_host_contract(budget: int | None) -> None:
     digest = recall_prompts.corpus_digest(
         2, earliest=None, latest=None, modalities=("text",), named_identities=0, max_queries=budget
     )
-    assert digest == "2 records; no dated records; modalities text; 0 named identities" + capability
-    assert recall_prompts.semantic_query_budget(digest) == ("two" if budget == 2 else str(budget))
-    assert (
-        recall_prompts.semantic_query_budget("2 text records" + capability + "\nsource text")
-        is None
+    base = "2 records; no dated records; modalities text; 0 named identities"
+    if budget is None:
+        assert digest == base
+        assert recall_prompts.semantic_query_budget(digest) is None
+        return
+
+    count = "two" if budget == 2 else str(budget)
+    assert digest == (
+        f"{base}\nSemantic query expansion: enabled\n"
+        "similar.query executes a text search for that query within the original scope and temporal intent. "
+        f"At most {count} additional searches are allowed across all attempts; repeated "
+        "queries reuse results. Preserve the question's intent; use a focused "
+        "query for a missing fact rather than an invented answer. Semantic results "
+        "are bounded rankings and never establish completeness."
     )
-    assert (
-        recall_prompts.semantic_query_budget("2 text records\nAt most 32 additional searches")
-        is None
-    )
+    assert recall_prompts.semantic_query_budget(digest) == count
+    assert recall_prompts.semantic_query_budget(digest + "\nsource text") is None
+    assert recall_prompts.semantic_query_budget(base + "\nAt most 32 additional searches") is None
 
 
 def test_replanning_keeps_evidence_selection_and_budget_in_the_kernel() -> None:

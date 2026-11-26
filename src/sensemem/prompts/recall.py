@@ -12,8 +12,15 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from sensemem.recall import RECALL_MAX_QUERIES
+
 if TYPE_CHECKING:
     from sensemem.recall import RecallResult, RecallStep, RecallStepResult
+
+
+def _semantic_query_count(max_queries: int) -> str:
+    return "two" if max_queries == 2 else str(max_queries)
+
 
 # This capability is host-generated, never extracted from retrieved evidence.
 SEMANTIC_QUERY_CAPABILITY = "Semantic query expansion: enabled"
@@ -27,8 +34,9 @@ _SEMANTIC_QUERY_TEMPLATE = (
     "are bounded rankings and never establish completeness."
 )
 _QUERY_PREFIX, _, _QUERY_SUFFIX = _SEMANTIC_QUERY_TEMPLATE.partition("{query_count}")
+_QUERY_COUNTS = "|".join(_semantic_query_count(count) for count in range(1, RECALL_MAX_QUERIES + 1))
 _QUERY_BUDGET_PATTERN = re.compile(
-    re.escape(_QUERY_PREFIX) + r"(two|1|[3-9]|[12][0-9]|3[0-2])" + re.escape(_QUERY_SUFFIX) + r"\Z"
+    rf"{re.escape(_QUERY_PREFIX)}({_QUERY_COUNTS}){re.escape(_QUERY_SUFFIX)}\Z"
 )
 
 CHRONOLOGICAL_EVIDENCE_NOTE = (
@@ -43,7 +51,7 @@ NO_DISTINCT_READ = (
 
 def semantic_query_capability(max_queries: int) -> str:
     """Render the already validated host budget in the backend's existing wire contract."""
-    return _SEMANTIC_QUERY_TEMPLATE.format(query_count="two" if max_queries == 2 else max_queries)
+    return _SEMANTIC_QUERY_TEMPLATE.format(query_count=_semantic_query_count(max_queries))
 
 
 def semantic_query_budget(corpus_digest: str) -> str | None:

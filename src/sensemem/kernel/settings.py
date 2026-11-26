@@ -15,7 +15,7 @@ from sensemem.kernel.validation import (
     validated_decay_half_life,
     validated_retrieval_mode,
 )
-from sensemem.recall import RECALL_MAX_ROWS
+from sensemem.recall import RECALL_MAX_QUERIES, RECALL_MAX_ROWS
 from sensemem.settings import MemorySettings
 from sensemem.types import IndexQuantization, RetrievalMode
 
@@ -113,8 +113,8 @@ def resolve_settings(config: MemorySettings | None) -> ResolvedSettings:
     )
     if not isinstance(settings.retention, RetentionPolicy):
         raise ValidationError("retention must be a RetentionPolicy value")
-    if settings.recall_max_queries > 32:
-        raise ValidationError("recall_max_queries must be at most 32")
+    if settings.recall_max_queries > RECALL_MAX_QUERIES:
+        raise ValidationError(f"recall_max_queries must be at most {RECALL_MAX_QUERIES}")
     return settings
 
 

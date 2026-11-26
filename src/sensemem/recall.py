@@ -29,6 +29,8 @@ from sensemem.types import MemoryCategory, Modality
 RECALL_MAX_ROWS = 500
 # A match term longer than this is a paragraph rather than a recall predicate.
 RECALL_MAX_TERM_CHARS = 200
+# One ask may spend at most this many additional searches across all attempts.
+RECALL_MAX_QUERIES = 32
 
 RecallShape = Literal["point", "set", "sequence", "entity", "composite"]
 RecallOp = Literal["similar", "match", "window", "neighbors", "entity"]
