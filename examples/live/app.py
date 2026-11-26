@@ -22,6 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, mod
 from pydantic import ValidationError as PydanticValidationError
 from starlette.types import Scope
 
+from examples.live import prompts as demo_prompts
 from examples.live.capture import EventCapture
 from examples.live.dialogue import DialogueInput, capture_dialogue
 from examples.live.events import open_event_memory
@@ -51,7 +52,6 @@ from sensemem import (
     StreamCommit,
     ValidationError,
 )
-from sensemem.prompts import demo as demo_prompts
 
 MemoryFactory = Callable[[MemorySpec], tuple[AsyncMemory, EventSegmentationBackend]]
 

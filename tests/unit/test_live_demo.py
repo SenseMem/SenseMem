@@ -42,7 +42,6 @@ from sensemem import (
     StorageError,
 )
 from sensemem.configuration import OpenAIGenerationConfig
-from sensemem.prompts import demo as demo_prompts
 
 
 @pytest.fixture(autouse=True)
@@ -278,6 +277,7 @@ def test_stream_capture_settle_recall_and_replay_share_one_owner(tmp_path: Path)
 
 
 def test_s2s_configuration_exposes_native_audio_context_and_tool_contract(tmp_path: Path) -> None:
+    from examples.live import prompts as demo_prompts
     from examples.live.app import create_app
 
     with TestClient(

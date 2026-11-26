@@ -35,7 +35,6 @@ from sensemem import (
     ValidationError,
 )
 from sensemem.models.openai_completion import OpenAICompletion
-from sensemem.prompts import demo as demo_prompts
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
 NATIVE_MODALITIES = frozenset({Modality.TEXT, Modality.IMAGE, Modality.AUDIO, Modality.VIDEO})
@@ -162,6 +161,7 @@ async def test_review_embeds_only_recall_key_and_keeps_every_original_for_genera
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from examples.live import events
+    from examples.live import prompts as demo_prompts
 
     class OrdinaryPolicy(DefaultQueryPolicy):
         def __init__(self) -> None:

@@ -12,9 +12,9 @@ from uuid import uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 
+from examples.live import prompts as demo_prompts
 from examples.live.memories import MemoryCard, memory_cards
 from sensemem import AsyncMemory, MemoryNotFoundError, MemoryRecord, ModelError, SenseMemError
-from sensemem.prompts import demo as demo_prompts
 
 Publisher = Callable[[dict[str, object]], Awaitable[None]]
 
