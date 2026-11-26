@@ -55,6 +55,7 @@ from sensemem import (
 )
 
 MAX_DIALOGUE_BYTES = 20 * 1024 * 1024
+MAX_REVALIDATION_ATTEMPTS = 3
 SSE_KEEPALIVE_SECONDS = 15
 GRACEFUL_SHUTDOWN_SECONDS = 5
 DEFAULT_LIVE_HOST = "127.0.0.1"
@@ -312,23 +313,26 @@ class LiveRuntime:
     async def _revalidate_review(self, sources: Sequence[MemoryRecord | SearchHit]) -> int | None:
         """Allow unrelated writes while rejecting changed or withdrawn actual evidence."""
         memory = await self.open_memory()
-        revision = self.memory_revision
-        for source in sources:
-            try:
-                current = await memory.get(source.id)
-            except MemoryNotFoundError:
-                return None
-            if (
-                current.forgotten_at is not None
-                or (
-                    current.context is not None
-                    and (not current.context.visible or current.context.retired_at is not None)
-                )
-                or not current.content.startswith(source.content)
-                or any(asset not in current.assets for asset in source.assets)
-            ):
-                return None
-        return revision if revision == self.memory_revision else None
+        for _ in range(MAX_REVALIDATION_ATTEMPTS):
+            revision = self.memory_revision
+            for source in sources:
+                try:
+                    current = await memory.get(source.id)
+                except MemoryNotFoundError:
+                    return None
+                if (
+                    current.forgotten_at is not None
+                    or (
+                        current.context is not None
+                        and (not current.context.visible or current.context.retired_at is not None)
+                    )
+                    or not current.content.startswith(source.content)
+                    or any(asset not in current.assets for asset in source.assets)
+                ):
+                    return None
+            if revision == self.memory_revision:
+                return revision
+        return None
 
     async def open_memory(self) -> AsyncMemory:
         """Open the shared memory and its deferred-work loop once."""
