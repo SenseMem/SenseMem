@@ -72,7 +72,11 @@ async def _first_chunk_or_disconnect(
 
 
 def _discard_future_result(
-    future: asyncio.Future[AnswerChunk | _StreamExhausted] | asyncio.Future[AnswerResult | None],
+    future: (
+        asyncio.Future[AnswerChunk | _StreamExhausted]
+        | asyncio.Future[AnswerResult | None]
+        | asyncio.Future[None]
+    ),
 ) -> None:
     with suppress(BaseException):
         future.result()
