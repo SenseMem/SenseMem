@@ -100,23 +100,23 @@ class ContextSupplement:
 class ContextBudget:
     """The size, type, confidence, and freshness bounds one context compilation may spend.
 
-    `max_chars` bounds the rendered evidence, the same quantity `ContextBundle.chars` reports:
-    the four-line header, each section heading, each memory's rendered line with its `- [id]`
+    max_chars bounds the rendered evidence, the same quantity ContextBundle.chars reports:
+    the four-line header, each section heading, each memory's rendered line with its - [id]
     frame and confidence suffix, a text-equivalent price per grounded media part, and each
-    `NamedActor` or `ProvisionalActor` line. A bundle that carries no compilation diagnostics
-    therefore satisfies `len(bundle.render()) <= max_chars`; only the `## Conflicts`,
-    `## Unknowns`, and `Omitted:` blocks are appended outside it, because they explain the
+    NamedActor or ProvisionalActor line. A bundle that carries no compilation diagnostics
+    therefore satisfies len(bundle.render()) <= max_chars; only the ## Conflicts,
+    ## Unknowns, and Omitted: blocks are appended outside it, because they explain the
     bundle rather than ground it and suppressing them to fit a budget would make a thin bundle
     look like an empty store. An actor line is priced and fit in after the ranked hits it
     depends on, the same as any other line the compiler grounds -- dropped, not given away for
-    free, when what is left of `max_chars` cannot buy it. Because the header is inside the bound
-    and is written whether or not anything else fits, a `max_chars` the header alone overruns has
-    no bundle that satisfies it: compilation refuses it with `ValidationError` naming the floor,
+    free, when what is left of max_chars cannot buy it. Because the header is inside the bound
+    and is written whether or not anything else fits, a max_chars the header alone overruns has
+    no bundle that satisfies it: compilation refuses it with ValidationError naming the floor,
     rather than returning a bundle over the limit it was given. The floor moves with the goal,
     which the header repeats.
 
-    `max_media_items` bounds grounded media parts instead of their price: `0` compiles a
-    text-only bundle, and `None` lets `max_chars` alone decide. The default `max_chars` buys the
+    max_media_items bounds grounded media parts instead of their price: 0 compiles a
+    text-only bundle, and None lets max_chars alone decide. The default max_chars buys the
     most expensive single grounded part -- a video part is priced at 12 000 characters -- and
     still leaves room for its record text and a cheaper second part, so a default compilation
     can reach a media memory at all.
@@ -171,7 +171,7 @@ class ContextBudget:
     def document(self) -> dict[str, object]:
         """Return the JSON-ready bound document every surface reads and writes.
 
-        `freshness` is a timedelta; JSON carries the same bound as `freshness_seconds`, which is
+        freshness is a timedelta; JSON carries the same bound as freshness_seconds, which is
         the one rename between this projection and the dataclass.
         """
         return {
@@ -196,9 +196,9 @@ class ContextBudget:
 class ContextConflict:
     """Two or more candidates in one lineage that disagree on the same value.
 
-    The compiler reports a disagreement and never resolves it. `values` and `memory_ids` are
+    The compiler reports a disagreement and never resolves it. values and memory_ids are
     aligned: each value is paired with the highest-ranked candidate that asserts it, whether or
-    not the budget included that memory; `render()` marks the ones it did not.
+    not the budget included that memory; render() marks the ones it did not.
     """
 
     lineage_id: str
@@ -219,7 +219,7 @@ class ProvisionalActor:
     A stranger in the room is not a stranger missing from context. This carries the identity
     and the included memories that observed them, and nothing else: there is no name to carry,
     which is the whole point. It is not a hit and occupies no item slot, but its rendered line
-    is charged against `ContextBudget.max_chars` like every other line the compiler grounds.
+    is charged against ContextBudget.max_chars like every other line the compiler grounds.
     """
 
     identity_id: str
@@ -244,12 +244,12 @@ class NamedActor:
     A memory carries an identity edge two ways -- its own semantic assertion may be bound to
     an identity, or its media asset may have recognized one -- and either can point to
     somebody already named without that naming assertion ranking into the bundle. This
-    reports the name anyway. `memory_ids` are the included evidence memories whose identity
+    reports the name anyway. memory_ids are the included evidence memories whose identity
     edge resolved here, never the naming assertion's own memory: that memory renders as its
     own actors hit when it is itself included, so reporting it again here would list the same
-    person twice. `naming_assertion_id` is that assertion's memory id, kept for provenance
-    even though it may not be in the bundle. Like a `ProvisionalActor`, its rendered line is
-    charged against `ContextBudget.max_chars`.
+    person twice. naming_assertion_id is that assertion's memory id, kept for provenance
+    even though it may not be in the bundle. Like a ProvisionalActor, its rendered line is
+    charged against ContextBudget.max_chars.
     """
 
     identity_id: str
@@ -298,26 +298,26 @@ class AffectCue(SearchHit):
     """One affect hit in a compiled bundle, carrying the evidence the cue hangs on.
 
     An affect entry asserts something about how somebody felt, so a reader has to be able to
-    tell a model's inference from a person's own statement. `context.basis`, `confidence`,
-    `cue_modality`, `valence`, and `arousal` already carry that, and `render()` prints all five
+    tell a model's inference from a person's own statement. context.basis, confidence,
+    cue_modality, valence, and arousal already carry that, and render() prints all five
     on the line rather than leaving them to a caller who may never look.
 
-    The observations the cue cites are its own `context.evidence_ids`, which every transport
-    already carries. `event_ids` are the active `EVENT` records formed from at least one of
+    The observations the cue cites are its own context.evidence_ids, which every transport
+    already carries. event_ids are the active EVENT records formed from at least one of
     those same observations: **co-occurrence inside one capture, never an attributed cause**.
     Nothing here says the event caused the feeling, or even that the cue is about the event;
     both were derived from the same thing somebody observed. Only the IDs are carried, so the
-    hop grounds nothing and buys no item slot: no event is fetched, `get()` reads an event's text
+    hop grounds nothing and buys no item slot: no event is fetched, get() reads an event's text
     when a caller decides it wants it, and an event the ranking already bought appears in
-    `episodes` on its own merit. The IDs the line does print are charged like any other rendered
-    characters, so `ContextBundle.chars` still bounds `render()`. At most eight events are
+    episodes on its own merit. The IDs the line does print are charged like any other rendered
+    characters, so ContextBundle.chars still bounds render(). At most eight events are
     carried, so one cue's hop is bounded however many events one capture formed.
     """
 
     event_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        # `slots=True` rebuilds the class, so the zero-argument `super()` cell would name the
+        # slots=True rebuilds the class, so the zero-argument super() cell would name the
         # pre-rebuild class. The base validation is called explicitly for that reason.
         SearchHit.__post_init__(self)
         object.__setattr__(
@@ -524,7 +524,7 @@ class ContextCitation:
     """A decoded memory citation with the exact presentation's delivery limits.
 
     Constructing this value does not prove that its source or selector was emitted by SenseMem;
-    callers validate model aliases through `ContextPresentation.resolve_citation()`.
+    callers validate model aliases through ContextPresentation.resolve_citation().
     """
 
     memory_id: str
@@ -603,9 +603,9 @@ ContextProofScoring: TypeAlias = Literal["capture_groups", "independent_pair"]
 class ContextProofNode:
     """One complete AND assessment, or a capture leaf, in a delivery certificate.
 
-    Assessments come from SQLite, not from the flattened ``evidence_ids`` union. Confidence
-    is the assessment's score; a leaf's ``capture_id`` identifies shared capture provenance.
-    ``source_group_id`` retains the store's group across unselected OR alternatives.
+    Assessments come from SQLite, not from the flattened evidence_ids union. Confidence
+    is the assessment's score; a leaf's capture_id identifies shared capture provenance.
+    source_group_id retains the store's group across unselected OR alternatives.
     """
 
     memory_id: str

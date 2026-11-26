@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.identity import IdentityProfile, PerceptionResult
+from sensemem.memory import Memory
 from sensemem.models.base import SpeechBackend, TranscriptionBackend
 from sensemem.prompts import tools as tool_prompts
 from sensemem.records import SearchHit
 from sensemem.tools import RegisteredTool, Tool
-
-if TYPE_CHECKING:
-    from sensemem.memory import Memory
 
 
 class _Arguments(BaseModel):

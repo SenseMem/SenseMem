@@ -27,15 +27,15 @@ from sensemem.types import AbstentionReason, MemoryCategory, Modality
 class MemoryRecord:
     """One stored memory.
 
-    `content` is the caller's text followed by any text the configured models derived from the
+    content is the caller's text followed by any text the configured models derived from the
     media. Derived sections are appended, never substituted: what the caller supplied stays
     byte-identical at the front, and each derived section is introduced by its own marker line --
-    `[transcript:<asset_id>]`, `[visual description:<asset_id>]`, `[facts:<asset_id>]`, or
-    `[speech identities:<asset_id>]`, or `[model interpretation: not original evidence]` -- so a
+    [transcript:<asset_id>], [visual description:<asset_id>], [facts:<asset_id>], or
+    [speech identities:<asset_id>], or [model interpretation: not original evidence] -- so a
     reader can tell interpretation from evidence and which asset it came from when applicable.
-    `add` derives before its first write and `settle` derives after
-    `capture` already committed, so the same record shape results either way; the raw media is
-    never rewritten and stays in `assets` under its content address.
+    add derives before its first write and settle derives after
+    capture already committed, so the same record shape results either way; the raw media is
+    never rewritten and stays in assets under its content address.
     """
 
     id: str
@@ -48,7 +48,7 @@ class MemoryRecord:
     modality: Modality = Modality.TEXT
     memory_type: MemoryCategory = MemoryCategory.SEMANTIC
     context: RecordSemantics | None = None
-    # The symbolic place this was captured in, as supplied on `ObservationContext`. Read-back
+    # The symbolic place this was captured in, as supplied on ObservationContext. Read-back
     # matters because the label is equality-matched: an application cannot notice it wrote
     # "the kitchen" where "kitchen" was meant unless it can see what was stored.
     place_id: str | None = None
@@ -150,11 +150,11 @@ class SearchHit:
 class PendingCapture:
     """One record whose deferred work is not finished, and why it is still waiting.
 
-    `Memory.pending_captures` returns these. `awaiting` is the stage the record is stopped at:
-    `"enrichment"` has no vectors and is invisible to `search`, while `"formation"` is already
-    embedded, indexed, and searchable and owes only the formation `add` holds a row for between
+    Memory.pending_captures returns these. awaiting is the stage the record is stopped at:
+    "enrichment" has no vectors and is invisible to search, while "formation" is already
+    embedded, indexed, and searchable and owes only the formation add holds a row for between
     its commit and its model call. A memory ID that is absent from the result is not pending: it
-    is either settled or unknown, and `get` distinguishes the two. `attempts` and `last_error` are
+    is either settled or unknown, and get distinguishes the two. attempts and last_error are
     the failure state a poisoned record accumulates, so an operator can see the reason without
     opening SQLite.
     """
@@ -201,10 +201,10 @@ class RetrievalCandidateTrace:
     """Effective score components and final disposition for one considered parent memory.
 
     Dense values can come from an unquantized ANN hit or from exact persisted-vector scoring
-    for quantized candidates and lexical-only parents. ``index_ids`` are the candidates that
+    for quantized candidates and lexical-only parents. index_ids are the candidates that
     admitted the parent; they neither identify the admitting route nor list every persisted
-    part used by exact scoring. ``reranking_score`` is an optional raw query-document logit;
-    it can change ``rank`` without changing the bounded ``final_score`` or relevance gate.
+    part used by exact scoring. reranking_score is an optional raw query-document logit;
+    it can change rank without changing the bounded final_score or relevance gate.
     """
 
     memory_id: str | None
@@ -344,10 +344,10 @@ class AnswerResult:
 class AnswerChunk:
     """One streamed answer delta, or the terminal chunk carrying the grounded result.
 
-    Exactly one field is populated. A delta carries `text` and no `result`; the single terminal
-    chunk carries `result` and no `text`. `"".join(chunk.text for chunk in stream)` therefore
+    Exactly one field is populated. A delta carries text and no result; the single terminal
+    chunk carries result and no text. "".join(chunk.text for chunk in stream) therefore
     reconstructs the answer, and a caller that only wants the grounded outcome can wait for the
-    chunk whose `result` is set.
+    chunk whose result is set.
     """
 
     text: str = ""

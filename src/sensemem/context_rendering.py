@@ -28,7 +28,7 @@ from sensemem.records import SearchHit
 
 
 def render_context(bundle: ContextBundle) -> str:
-    """Return the bundle as deterministic sectioned text carrying `[id]` provenance."""
+    """Return the bundle as deterministic sectioned text carrying [id] provenance."""
     included_ids = {hit.id for hit in bundle.hits}
     return context_prompts.render_bundle(
         goal=bundle.goal,
@@ -61,7 +61,7 @@ def compact_context(bundle: ContextBundle) -> ContextPresentation:
 
     Only identifier fields held structurally by the formatter are aliased. Stored content,
     the goal, conflict values, and diagnostic prose are never searched or rewritten. The
-    existing `render()`, `hits`, and transport document remain the stable-ID presentation.
+    existing render(), hits, and transport document remain the stable-ID presentation.
     """
     symbols = _context_symbols(bundle)
     text = _compact_context_text(bundle, symbols)
@@ -464,9 +464,9 @@ def _render_projection_line(projection: ContextProjection, source: str) -> str:
 
 
 def render_hit_line(hit: SearchHit) -> str:
-    """Return the one line `render()` writes for this hit.
+    """Return the one line render() writes for this hit.
 
-    The compiler charges its length against `ContextBudget.max_chars`, so the price and the text
+    The compiler charges its length against ContextBudget.max_chars, so the price and the text
     come from the same function and cannot drift.
     """
     confidence = 1.0 if hit.context is None else hit.context.confidence
@@ -588,7 +588,7 @@ def _id_list(memory_ids: Sequence[str]) -> str:
 def _validity(hit: SearchHit) -> str:
     """Render a typed memory's world-validity bounds inline, so a stale fact reads as stale.
 
-    `RecordSemantics` refuses an end without a start, so the only open form is an open-ended one.
+    RecordSemantics refuses an end without a start, so the only open form is an open-ended one.
     """
     context = hit.context
     if context is None or context.valid_from is None:

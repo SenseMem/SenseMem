@@ -32,7 +32,7 @@ def request_json(
         with urlopen(request, timeout=timeout) as response:
             return _response_document(response.read())
     except HTTPError as error:
-        # An error response is still an open response: `HTTPError` wraps the body file, so leaving
+        # An error response is still an open response: HTTPError wraps the body file, so leaving
         # it unclosed leaks the socket and raises in the deallocator.
         try:
             envelope = _response_document(error.read())

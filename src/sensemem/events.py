@@ -54,7 +54,7 @@ class EventSegment:
     """One event assessment ending at an exclusive observation offset.
 
     The first event starts at zero; subsequent events start at their predecessor's end.
-    Only ``complete=True`` establishes finality. A final ``complete=False`` item summarizes
+    Only complete=True establishes finality. A final complete=False item summarizes
     the entire unfinished suffix for the next assessment; its text remains model interpretation.
     """
 

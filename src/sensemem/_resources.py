@@ -36,7 +36,7 @@ def present_resources(*resources: Closable | None) -> tuple[Closable, ...]:
 
 
 def close_quietly(*resources: Closable | None) -> None:
-    """Close each distinct present resource once, swallowing whatever `close()` raises."""
+    """Close each distinct present resource once, swallowing whatever close() raises."""
     for resource in unique_resources(present_resources(*resources)):
         with suppress(Exception):
             resource.close()

@@ -12,6 +12,8 @@ from typing import Annotated, ParamSpec, TypeVar, cast
 from uuid import uuid4
 
 from mcp.server import MCPServer
+
+# MCP 2 exposes its default OTel middleware and trace extractor only from private _otel modules.
 from mcp.server._otel import OpenTelemetryMiddleware
 from mcp.server.context import CallNext, HandlerResult, ServerMiddleware, ServerRequestContext
 from mcp.server.mcpserver.exceptions import ToolError
@@ -26,7 +28,6 @@ from pydantic import (
     StringConstraints,
 )
 
-from sensemem import Memory
 from sensemem._capacity import Capacity
 from sensemem.api.content import (
     Content,
@@ -61,16 +62,17 @@ from sensemem.exceptions import SenseMemError, StorageError
 from sensemem.identity import (
     PerceptionKind,
 )
+from sensemem.memory import Memory
 from sensemem.prompts import mcp as prompts
 from sensemem.spatial import ObservationContext, RetrievalScope
 from sensemem.types import AnswerPolicy, MemoryCategory
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 _MCP_TOTAL = "sensemem.transport.server_total_ms"
 _Identifier = Annotated[str, StringConstraints(min_length=1, pattern=r"^\S(?:.*\S)?$")]
 _Cursor = Annotated[str, StringConstraints(min_length=1)]
 # The advertised tool defaults are read from the SDK value, so the prose and the schema cannot
-# drift from `ContextBudget`.
+# drift from ContextBudget.
 _BUDGET = ContextBudget()
 _READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 _NON_IDEMPOTENT_WRITE = ToolAnnotations(
@@ -85,8 +87,8 @@ _IDEMPOTENT_WRITE = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
-# Reinforcement accumulates: each call raises `access_count` and moves the ranking factor, so a
-# repeated call is not the same as one call and the honest hint is `idempotent_hint=False`.
+# Reinforcement accumulates: each call raises access_count and moves the ranking factor, so a
+# repeated call is not the same as one call and the honest hint is idempotent_hint=False.
 _COUNTED_WRITE = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
@@ -153,7 +155,7 @@ def _error_codes(root: type[SenseMemError]) -> frozenset[str]:
 
 
 # Derived rather than listed. A hand-maintained set silently loses every new exception class to the
-# middleware's `validation_error` overwrite, which is how `model_output_truncated` was destroyed.
+# middleware's validation_error overwrite, which is how model_output_truncated was destroyed.
 _STABLE_ERROR_CODES = _error_codes(SenseMemError) | {"internal_error"}
 
 _P = ParamSpec("_P")
@@ -169,9 +171,9 @@ def build_mcp_server(
     tracer: Tracer | None = None,
     deliberate_every: float | None = None,
 ) -> MCPServer[None]:
-    """Expose the typed agent tool surface without taking ownership of ``memory``.
+    """Expose the typed agent tool surface without taking ownership of memory.
 
-    Every tool is one call on the injected ``Memory``: the embodied and identity tools are
+    Every tool is one call on the injected Memory: the embodied and identity tools are
     reachable here for the same reason the common-path tools are, because this server runs in the
     process that holds it.
 
@@ -180,19 +182,19 @@ def build_mcp_server(
     registering it, because a tool an agent cannot see is better than one it must be trusted not
     to call, and the server instructions say which groups are missing.
 
-    - ``identity_operations``: naming, reading, unlinking and erasing a person.
-    - ``embodied_operations``: ``perceive_memory``. Recognition keeps face and voice identities
+    - identity_operations: naming, reading, unlinking and erasing a person.
+    - embodied_operations: perceive_memory. Recognition keeps face and voice identities
       separate. Only a host-authored SDK operation may confirm a binding.
-    - ``write_operations``: ``add_memory``, ``delete_memory`` and ``reinforce_memories``.
+    - write_operations: add_memory, delete_memory and reinforce_memories.
 
-    With all three False the surface is exactly the five read tools -- ``search_memories``,
-    ``ask_memory``, ``compile_context``, ``get_memory`` and ``list_memories`` -- which is
+    With all three False the surface is exactly the five read tools -- search_memories,
+    ask_memory, compile_context, get_memory and list_memories -- which is
     recall and compile alone.
 
-    ``deliberate_every`` is the same opt-in slow loop ``create_app`` takes, off by default: a
-    number of seconds after which this process runs ``consolidate()`` on the memory it serves, in
-    the server lifespan. No tool reaches the control plane, and one physical ``data_dir`` has one
-    live owner, so without it an MCP-only deployment records ``QUERY_FAILURE`` signals that
+    deliberate_every is the same opt-in slow loop create_app takes, off by default: a
+    number of seconds after which this process runs consolidate() on the memory it serves, in
+    the server lifespan. No tool reaches the control plane, and one physical data_dir has one
+    live owner, so without it an MCP-only deployment records QUERY_FAILURE signals that
     nothing ever reads. It is refused when no consolidation backend is configured, or when the
     interval is not a positive number of seconds.
     """
@@ -201,9 +203,9 @@ def build_mcp_server(
         "sensemem",
         title="SenseMem Memory",
         description=prompts.SERVER_DESCRIPTION,
-        # Read once here because MCP fixes `instructions` at construction: an agent learns the
+        # Read once here because MCP fixes instructions at construction: an agent learns the
         # configured composition when it connects instead of spending a tool call or discovering
-        # a missing backend by failing. `/healthz` reports the same view per request, so a
+        # a missing backend by failing. /healthz reports the same view per request, so a
         # composition swapped behind a long-lived server stays visible there.
         instructions=_instructions(
             memory.capabilities,
@@ -310,7 +312,7 @@ def build_mcp_server(
         )
         return AnswerResponse.model_validate(result)
 
-    # The same annotation `search_memories` carries, because it is the same side effect: the
+    # The same annotation search_memories carries, because it is the same side effect: the
     # shared retrieval path may cache a transcript for spoken query media. Compiling stores no
     # memory, but it is not read-only, so the honest hint is the one search already publishes.
     @server.tool(description=prompts.COMPILE_CONTEXT_DESCRIPTION, annotations=_NON_IDEMPOTENT_WRITE)
@@ -396,9 +398,9 @@ def _register_write_tools(server: MCPServer[None], memory: Memory, *, enabled: b
 
     Adding a record, deleting one, and moving the ranker are the three tools whose purpose is a
     durable change. A host that wants an agent to consume context and nothing else builds the
-    server with `write_operations=False`. `ask_memory` stays: it is a recall surface, and the
+    server with write_operations=False. ask_memory stays: it is a recall surface, and the
     reinforcement it records for the memories its answer cited is the owner's
-    `reinforce_on_answer` setting rather than a capability this switch grants.
+    reinforce_on_answer setting rather than a capability this switch grants.
     """
     if not enabled:
         return
@@ -494,9 +496,9 @@ def _register_identity_tools(
 
     Naming a person, splitting a wrong merge and erasing them are host authority, and every one
     of them is recorded in the operation log: naming and splitting are reversible through
-    `rollback()`, and erasure leaves an irreversible row so the request stays auditable.
+    rollback(), and erasure leaves an irreversible row so the request stays auditable.
     Reading who somebody is changes nothing and logs nothing. A host that does not want an agent
-    holding that authority builds the server with `identity_operations=False`, and then these
+    holding that authority builds the server with identity_operations=False, and then these
     four tools are never registered at all -- an agent cannot call a tool it cannot see, which
     is stronger than trusting it not to.
     """
@@ -614,7 +616,7 @@ async def _strict_tool_arguments(
         and result.get("isError") is True
     ):
         # A tool body signals failure by raising, and the MCP runtime prefixes that message with
-        # "Error executing tool <name>: ". Re-emit the envelope on its own so one bare `json.loads`
+        # "Error executing tool <name>: ". Re-emit the envelope on its own so one bare json.loads
         # of the text works for every failure, including the recoverable ones an agent parses to
         # decide whether to retry.
         envelope = _stable_envelope(result)
@@ -667,12 +669,12 @@ def _request_telemetry(tracer: Tracer) -> ServerMiddleware[None]:
     return cast(ServerMiddleware[None], observe)
 
 
-# Which of `MemoryCapabilities.operations` one of the thirteen tools can actually reach, mirroring
-# `app._ROUTED_OPERATIONS`. Consolidation, cognitive forgetting and rollback stay with the owning
-# process (`docs/context-os.md`), so the greeting's prose and its JSON must agree that there is no
-# `consolidate` here; `perceive` reaches a tool only when the host opts in, and so do
-# `formation` and `describe_vision`, which run on the write path alone -- a read-only server has
-# no tool that forms, and none that captions a frame. `transcribe` stays unconditional: a read
+# Which of MemoryCapabilities.operations one of the thirteen tools can actually reach, mirroring
+# app._ROUTED_OPERATIONS. Consolidation, cognitive forgetting and rollback stay with the owning
+# process (docs/architecture.md), so the greeting's prose and its JSON must agree that there is no
+# consolidate here; perceive reaches a tool only when the host opts in, and so do
+# formation and describe_vision, which run on the write path alone -- a read-only server has
+# no tool that forms, and none that captions a frame. transcribe stays unconditional: a read
 # tool transcribes the audio a caller asks its question with.
 _TOOLED_OPERATIONS = frozenset({"ask", "transcribe"})
 _EMBODIED_TOOLED_OPERATIONS = frozenset({"perceive"})
@@ -688,11 +690,11 @@ def _instructions(
 ) -> str:
     """Render the declared capability view an agent reads when it connects.
 
-    The document is `MemoryCapabilities.document()` -- the same object `/healthz` serves and
-    `sensemem doctor` prints -- rather than a prose subset that used to omit every model
+    The document is MemoryCapabilities.document() -- the same object /healthz serves and
+    sensemem doctor prints -- rather than a prose subset that used to omit every model
     identity and every non-embedding modality set, narrowed to the operations this server's tools
-    serve so `operations` cannot name one an agent will not find. MCP fixes `instructions` at
-    construction, so this is a snapshot of the composition the server was built with; `/healthz`
+    serve so operations cannot name one an agent will not find. MCP fixes instructions at
+    construction, so this is a snapshot of the composition the server was built with; /healthz
     is the live one.
     """
     served = (
@@ -729,9 +731,8 @@ def _tool_error(error: Exception) -> dict[str, object]:
         "the memory operation failed unexpectedly",
         reason="unexpected",
     )
-    _LOGGER.error(
-        "unhandled MCP tool error (%s)",
-        type(error).__name__,
+    LOGGER.error(
+        f"unhandled MCP tool error ({type(error).__name__})",
         extra={"trace_id": envelope["trace_id"]},
     )
     return envelope

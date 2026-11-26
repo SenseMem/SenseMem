@@ -1,9 +1,9 @@
 """The periodic control-plane loop a serving process runs on the memory it serves.
 
-`consolidation_candidates()` is the only reader of the `QUERY_FAILURE` rows a failed recall
-writes, and one physical `data_dir` has one live owner, so a REST-only or MCP-only deployment
+consolidation_candidates() is the only reader of the QUERY_FAILURE rows a failed recall
+writes, and one physical data_dir has one live owner, so a REST-only or MCP-only deployment
 collects that signal and drops it unless the serving process weighs it itself. This module holds
-no transport import so that `app.py` and `mcp.py` share one loop instead of running two.
+no transport import so that app.py and mcp.py share one loop instead of running two.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from typing import Protocol, runtime_checkable
 
@@ -19,7 +19,11 @@ from sensemem.capabilities import MemoryCapabilities
 from sensemem.control_values import ConsolidationReport
 from sensemem.exceptions import SenseMemError, ValidationError
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
+
+
+class _LifespanFactory(Protocol):
+    def __call__(self, served: object, /) -> AbstractAsyncContextManager[None]: ...
 
 
 @runtime_checkable
@@ -46,8 +50,8 @@ class _Deliberating(Protocol):
 def deliberation_lifespan(
     memory: object,
     every_seconds: float,
-) -> Callable[[object], AbstractAsyncContextManager[None]]:
-    """Run `consolidate_pending()` on an interval for as long as the surface is serving.
+) -> _LifespanFactory:
+    """Run consolidate_pending() on an interval for as long as the surface is serving.
 
     The returned value is a lifespan: FastAPI and MCP both take one, and both ignore what it is
     handed, so the same factory serves either.
@@ -72,9 +76,9 @@ def deliberation_lifespan(
         try:
             yield
         finally:
-            # A round already inside `to_thread` runs to completion -- a worker thread is not
+            # A round already inside to_thread runs to completion -- a worker thread is not
             # cancellable -- so shutdown asks the loop to stop and waits for it. Cancelling
-            # raised into the `await` instead: the thread still ran to the end and still applied
+            # raised into the await instead: the thread still ran to the end and still applied
             # its operations, but the task was gone before the line that reports them, so a pass
             # that changed the store on the way out was never accounted for anywhere.
             stop.set()
@@ -96,23 +100,17 @@ async def _deliberate_periodically(
         if stop.is_set():
             return
         try:
-            # Off the event loop: `consolidate_pending()` makes synchronous model calls, and the
+            # Off the event loop: consolidate_pending() makes synchronous model calls, and the
             # requests this process also serves run in the same loop.
             report = await asyncio.to_thread(memory.consolidate_pending)
         except Exception as error:
             # Exception chains can contain provider bodies even when the outer error is safe.
             # Keep them out of every log level; model spans carry safe request identifiers.
             reason = error.reason if isinstance(error, SenseMemError) else None
-            _LOGGER.warning(
-                "periodic deliberation failed: %s%s",
-                type(error).__name__,
-                "" if reason is None else f" ({reason})",
-            )
+            suffix = "" if reason is None else f" ({reason})"
+            LOGGER.warning(f"periodic deliberation failed: {type(error).__name__}{suffix}")
             continue
-        _LOGGER.info(
-            "deliberation: rounds=%d weighed=%d applied=%d rejected=%d",
-            report.rounds,
-            report.weighed,
-            report.applied,
-            len(report.rejected),
+        LOGGER.info(
+            f"deliberation: rounds={report.rounds} weighed={report.weighed} "
+            f"applied={report.applied} rejected={len(report.rejected)}"
         )

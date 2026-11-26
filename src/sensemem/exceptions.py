@@ -22,8 +22,8 @@ RETRYABLE_REASONS: frozenset[str] = frozenset(
 class SenseMemError(Exception):
     """Base class for failures callers may handle.
 
-    ``code`` is the stable outer taxonomy. ``reason`` narrows it to a closed sub-vocabulary,
-    ``stage`` names the pipeline stage that failed, and ``subject`` carries the asset ID, memory ID,
+    code is the stable outer taxonomy. reason narrows it to a closed sub-vocabulary,
+    stage names the pipeline stage that failed, and subject carries the asset ID, memory ID,
     or batch position the failure is about. All three are optional, so an unclassified raise site
     keeps working unchanged.
     """
@@ -45,7 +45,7 @@ class SenseMemError(Exception):
 
     @property
     def retryable(self) -> bool:
-        """Whether an identical retry can succeed; a lookup on ``reason``, never a judgement."""
+        """Whether an identical retry can succeed; a lookup on reason, never a judgement."""
         return self.reason in RETRYABLE_REASONS
 
 

@@ -55,7 +55,7 @@ class EmbeddingRoute:
 class MemoryCapabilities:
     """What one composition can actually do, declared by its backends rather than inferred.
 
-    Routing is by declared capability, so this is the same information `Memory` routes on. It is
+    Routing is by declared capability, so this is the same information Memory routes on. It is
     published because a caller and an agent both need to know which modalities an operation will
     accept before sending one, and because the embedding identity is what decides whether stored
     vectors and a new backend belong to the same space.
@@ -80,7 +80,7 @@ class MemoryCapabilities:
     face_model: str | None = None
     formation_model: str | None = None
     consolidation_model: str | None = None
-    # A `TranscriptionBackend` yields text; only a `SpeechBackend` resolves speakers, and the two
+    # A TranscriptionBackend yields text; only a SpeechBackend resolves speakers, and the two
     # occupy the same slot, so whether speech perception will work is not visible from the modalities.
     speaker_recognition: bool = False
 
@@ -176,7 +176,7 @@ class MemoryCapabilities:
         """Optional operations this composition can serve, named by the backend each needs.
 
         The mapping from an operation to its backend was prose in three reference pages, so a
-        caller had to know that `ask` needs generation and `consolidate` needs a consolidation
+        caller had to know that ask needs generation and consolidate needs a consolidation
         backend. It is derived, never declared: the backends above are the only source.
         """
         available = {
@@ -193,16 +193,16 @@ class MemoryCapabilities:
     def document(self, *, served: frozenset[str] | None = None) -> dict[str, object]:
         """Return the JSON-ready capability document every surface publishes.
 
-        REST serves it from `/healthz`, the MCP server embeds it in its instructions, and
-        `sensemem doctor` prints it, so the three cannot describe the same composition
+        REST serves it from /healthz, the MCP server embeds it in its instructions, and
+        sensemem doctor prints it, so the three cannot describe the same composition
         differently -- beyond the one narrowing below. Modality sets and operation names are
         sorted so the document is stable.
 
-        `served` names the operations the publishing surface can actually route to, and
-        `operations` is intersected with it. The backends are declared the same way everywhere,
+        served names the operations the publishing surface can actually route to, and
+        operations is intersected with it. The backends are declared the same way everywhere,
         but the control plane is SDK-only by design, so a network surface that published the
-        whole derivation would tell an agent it has a `consolidate` it cannot find. The SDK and
-        `sensemem doctor` pass nothing and publish the derivation itself.
+        whole derivation would tell an agent it has a consolidate it cannot find. The SDK and
+        sensemem doctor pass nothing and publish the derivation itself.
         """
         values: dict[str, object] = {
             declared.name: (

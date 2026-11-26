@@ -1,11 +1,10 @@
-"""Thin synchronous FastAPI adapter for one local ``Memory`` instance."""
+"""Thin synchronous FastAPI adapter for one local Memory instance."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import (
     AsyncIterator,
-    Callable,
     Generator,
     Mapping,
     Sequence,
@@ -21,6 +20,7 @@ from fastapi import Path as PathParameter
 from fastapi.responses import StreamingResponse
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, StatusCode, Tracer
+from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from sensemem._capacity import Capacity
@@ -58,10 +58,10 @@ from sensemem.api.responses import (
     SearchResponse,
     SettleResponse,
     UnlinkResponse,
-    _bundle_response,
     _capabilities_response,
-    _export_response,
     _operation_response,
+    bundle_response,
+    export_response,
 )
 from sensemem.api.schemas import (
     AnswerRequest,
@@ -77,8 +77,8 @@ from sensemem.api.schemas import (
     SettleRequest,
 )
 from sensemem.api.streaming import (
-    _STREAM_EXHAUSTED,
-    _AnswerStreamingResponse,
+    STREAM_EXHAUSTED,
+    AnswerStreamingResponse,
     _first_chunk_or_disconnect,
 )
 from sensemem.capabilities import MemoryCapabilities
@@ -114,6 +114,10 @@ _MemoryId = Annotated[str, PathParameter(min_length=1)]
 _HTTP_TTFH = "sensemem.transport.server_time_to_headers_ms"
 _HTTP_TTFB = "sensemem.transport.server_time_to_first_body_byte_ms"
 _HTTP_TOTAL = "sensemem.transport.server_total_ms"
+
+
+class _MemoryAccessor(Protocol):
+    def __call__(self) -> _Memory: ...
 
 
 class _Memory(Protocol):
@@ -314,7 +318,7 @@ class _RequestCapacity:
 
 
 class _RequestBodyLimit:
-    """Bound `/v1` request bodies before framework parsing."""
+    """Bound /v1 request bodies before framework parsing."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -357,7 +361,7 @@ class _RequestBodyLimit:
 
 
 class _RequestTelemetry:
-    """Measure the server side of one `/v1` request, including streamed delivery."""
+    """Measure the server side of one /v1 request, including streamed delivery."""
 
     def __init__(self, app: ASGIApp, *, tracer: Tracer) -> None:
         self.app = app
@@ -413,18 +417,18 @@ class _RequestTelemetry:
                 raise
             finally:
                 route = scope.get("route")
-                route_path = getattr(route, "path", None)
-                if isinstance(route_path, str):
-                    span.set_attribute("http.route", route_path)
+                if isinstance(route, Route):
+                    span.set_attribute("http.route", route.path)
                 span.set_attribute(_HTTP_TOTAL, (perf_counter_ns() - started) / 1_000_000)
                 span.set_attribute("http.response.body.size", response_bytes)
                 span.set_attribute("sensemem.transport.response_started", response_started)
 
 
-# Which of `MemoryCapabilities.operations` a `/v1` route can actually reach. Consolidation --
+# Which of MemoryCapabilities.operations a /v1 route can actually reach. Consolidation --
 # like cognitive forgetting and operation rollback, which are not derived capabilities at all --
-# has no route by design (`docs/context-os.md`), so `/healthz` must not advertise it; `perceive` reaches `perceiveMemory` only when the host opts in. An operation
-# added to the derivation stays unadvertised here until it is given a route.
+# has no route by design (docs/architecture.md), so /healthz must not advertise it; perceive
+# reaches perceiveMemory only when the host opts in. An operation added to the derivation stays
+# unadvertised here until it is given a route.
 _ROUTED_OPERATIONS = frozenset({"ask", "transcribe", "describe_vision", "formation"})
 _EMBODIED_ROUTED_OPERATIONS = frozenset({"perceive"})
 
@@ -439,16 +443,16 @@ def create_app(
 ) -> FastAPI:
     """Create an unauthenticated API over one caller-owned memory instance.
 
-    ``identity_operations`` and ``embodied_operations`` mirror the same-named switches on
-    ``build_mcp_server``. Both default to off: REST is a network surface, and naming, erasing,
+    identity_operations and embodied_operations mirror the same-named switches on
+    build_mcp_server. Both default to off: REST is a network surface, and naming, erasing,
     or analyzing a person is host authority that no route grants unless the host opts in. When a
     switch is off the routes it gates are never registered, so a caller gets 404 rather than 403 --
     it cannot discover through the error what an enabled deployment would offer.
 
-    ``deliberate_every`` is a number of seconds after which this process runs ``consolidate()``
+    deliberate_every is a number of seconds after which this process runs consolidate()
     on the memory it serves, off by default. The control plane stays SDK-only -- no route and no
-    tool exposes it -- but the signals the routes write, above all the ``QUERY_FAILURE`` rows a
-    failed ``search``, ``ask``, or ``compile`` records, can only be consumed by the process that
+    tool exposes it -- but the signals the routes write, above all the QUERY_FAILURE rows a
+    failed search, ask, or compile records, can only be consumed by the process that
     owns the directory. Without this a REST-only or MCP-only deployment collects them and drops
     them. It is refused when no consolidation backend is configured, because the loop would then
     raise on every round.
@@ -521,7 +525,7 @@ def _v1_router(  # noqa: C901 - one literal public route registry
     embodied_operations: bool,
     stream_workers: StreamWorkers,
 ) -> APIRouter:
-    """Register every `/v1` route against one caller-owned memory instance."""
+    """Register every /v1 route against one caller-owned memory instance."""
 
     def current_service() -> _Memory:
         return memory
@@ -693,10 +697,10 @@ def _v1_router(  # noqa: C901 - one literal public route registry
         except BaseException:
             worker.shutdown(wait=False)
             raise
-        if first is _STREAM_EXHAUSTED:
+        if first is STREAM_EXHAUSTED:
             worker.shutdown(wait=False)
             raise RuntimeError("answer stream ended without a terminal result")
-        return _AnswerStreamingResponse(
+        return AnswerStreamingResponse(
             first,
             chunks,
             worker=worker,
@@ -724,7 +728,7 @@ def _v1_router(  # noqa: C901 - one literal public route registry
 
 def _add_gated_routes(
     router: APIRouter,
-    current_service: Callable[[], _Memory],
+    current_service: _MemoryAccessor,
     *,
     identity_operations: bool,
     embodied_operations: bool,
@@ -732,7 +736,7 @@ def _add_gated_routes(
     standard_errors: dict[int | str, dict[str, object]],
     not_found_errors: dict[int | str, dict[str, object]],
 ) -> None:
-    """Register the opt-in identity and embodied routes, split out to keep `_v1_router` readable."""
+    """Register the opt-in identity and embodied routes, split out to keep _v1_router readable."""
     if embodied_operations:
         embodied_errors = error_responses(
             *standard_statuses,
@@ -752,12 +756,12 @@ def _add_gated_routes(
 
 def _add_capture_routes(
     router: APIRouter,
-    current_service: Callable[[], _Memory],
+    current_service: _MemoryAccessor,
     *,
     model_errors: dict[int | str, dict[str, object]],
     standard_errors: dict[int | str, dict[str, object]],
 ) -> None:
-    """Register the fast-capture plane: `capture`, `settle`, and `pending_captures`.
+    """Register the fast-capture plane: capture, settle, and pending_captures.
 
     These are always on, unlike the identity and embodied routes below: they are ordinary
     application operations on the caller's own records, not administrative authority over a
@@ -818,11 +822,11 @@ def _add_capture_routes(
 
 def _add_embodied_routes(
     router: APIRouter,
-    current_service: Callable[[], _Memory],
+    current_service: _MemoryAccessor,
     *,
     responses: dict[int | str, dict[str, object]],
 ) -> None:
-    """Register source-local multimodal perception, gated by `embodied_operations`."""
+    """Register source-local multimodal perception, gated by embodied_operations."""
 
     @router.post(
         "/perception",
@@ -837,14 +841,14 @@ def _add_embodied_routes(
 
 def _add_identity_routes(
     router: APIRouter,
-    current_service: Callable[[], _Memory],
+    current_service: _MemoryAccessor,
     *,
     not_found_errors: dict[int | str, dict[str, object]],
     standard_errors: dict[int | str, dict[str, object]],
 ) -> None:
     """Register naming, reading, unlinking, and erasing identities.
 
-    Gated by the host's `identity_operations`: naming and erasing a person is host authority,
+    Gated by the host's identity_operations: naming and erasing a person is host authority,
     exercised through the caller, exactly as it is on MCP.
     """
 
@@ -924,7 +928,7 @@ def _add_identity_routes(
         identity_id: Annotated[str | None, Query(min_length=1)] = None,
         memory_ids: Annotated[list[str] | None, Query(min_length=1, max_length=100)] = None,
     ) -> ExportResponse:
-        return _export_response(
+        return export_response(
             current_service().export(identity_id=identity_id, memory_ids=memory_ids)
         )
 
@@ -942,11 +946,11 @@ def _add_identity_routes(
 
 def _add_context_route(
     router: APIRouter,
-    current_service: Callable[[], _Memory],
+    current_service: _MemoryAccessor,
     *,
     responses: dict[int | str, dict[str, object]],
 ) -> None:
-    """Register the compiler route, split out only to keep `_v1_router` readable."""
+    """Register the compiler route, split out only to keep _v1_router readable."""
 
     @router.post(
         "/context",
@@ -955,7 +959,7 @@ def _add_context_route(
         responses=responses,
     )
     def compile_context(request: ContextRequest) -> ContextBundleResponse:
-        return _bundle_response(
+        return bundle_response(
             current_service().compile(
                 content_input(request.goal),
                 budget=context_budget(request.budget),

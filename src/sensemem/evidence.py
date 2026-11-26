@@ -8,8 +8,8 @@ unbounded provenance graph into the model's answer context.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
-from typing import TypeAlias, cast
+from collections.abc import Mapping, Sequence
+from typing import Protocol, TypeAlias
 from unicodedata import normalize
 
 from sensemem.records import SearchHit
@@ -18,6 +18,10 @@ from sensemem.types import EvidenceBasis, RecordKind
 
 _MAX_EXACT_OMITTED_SOURCES = 64
 AffectLinkKey: TypeAlias = tuple[str, str, str | None, str | None]
+
+
+class _SourceLabeler(Protocol):
+    def __call__(self, source_id: str) -> str: ...
 
 
 def evidence_aliases(hits: Sequence[SearchHit]) -> dict[str, str]:
@@ -185,12 +189,12 @@ def answer_constraint_payloads(
                 )
             ):
                 continue
-            cast(list[object], candidate.setdefault("competing_evidence_labels", [])).append(
-                previous["evidence_label"]
-            )
-            cast(list[object], previous.setdefault("competing_evidence_labels", [])).append(
-                candidate["evidence_label"]
-            )
+            candidate_labels = candidate.setdefault("competing_evidence_labels", [])
+            assert isinstance(candidate_labels, list)
+            candidate_labels.append(previous["evidence_label"])
+            previous_labels = previous.setdefault("competing_evidence_labels", [])
+            assert isinstance(previous_labels, list)
+            previous_labels.append(candidate["evidence_label"])
         group.append((context, candidate))
     return [candidate for _context, candidate in selected]
 
@@ -253,7 +257,7 @@ def answer_evidence_payloads(
 def _affect_payload(
     context: RecordSemantics,
     selected: Mapping[str, str],
-    source_label: Callable[[str], str],
+    source_label: _SourceLabeler,
 ) -> dict[str, object]:
     """Alias attribution endpoints and reporting witnesses without claiming omitted content."""
     details: dict[str, object] = {}
@@ -339,7 +343,7 @@ def _context_payload(context: RecordSemantics) -> dict[str, object]:
 def _source_payload(
     context: RecordSemantics,
     selected: Mapping[str, str],
-    source_label: Callable[[str], str],
+    source_label: _SourceLabeler,
     *,
     exact_sources: bool,
     omitted_count: int,
@@ -370,7 +374,7 @@ def _source_payload(
 def _support_payload(
     evidence_ids: Sequence[str],
     selected: Mapping[str, str],
-    source_label: Callable[[str], str],
+    source_label: _SourceLabeler,
     *,
     exact_sources: bool,
     omitted_count: int,

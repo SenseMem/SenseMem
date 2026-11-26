@@ -27,7 +27,7 @@ from sensemem.tools import ToolRegistry
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MemoryPlugins:
-    """Capability objects, validated at assembly and owned and closed by ``Memory``."""
+    """Capability objects, validated at assembly and owned and closed by Memory."""
 
     embedder: EmbeddingBackend
     answerer: GenerationBackend | None = None

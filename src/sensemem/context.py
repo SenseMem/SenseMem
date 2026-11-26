@@ -1,4 +1,4 @@
-"""Pure context selection behind `Memory.compile`.
+"""Pure context selection behind Memory.compile.
 
 The compiler selects and structures already-retrieved evidence. It calls no model, resolves no
 conflict, and writes nothing itself: every value here is a deterministic function of the ranked
@@ -8,12 +8,12 @@ Authoritative visibility and scope were applied by the retrieval path that produ
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 from time import perf_counter
 from types import MappingProxyType
-from typing import TypeAlias, cast
+from typing import Protocol, TypeAlias
 
 from sensemem.context_bundle import ContextBundle
 from sensemem.context_rendering import (
@@ -53,7 +53,7 @@ from sensemem.records import SearchHit
 from sensemem.types import CATEGORY_BY_KIND, MemoryCategory, Modality, RecordKind
 
 # One (identity_id, name, naming_assertion_id) edge a memory carries to a currently named
-# identity. `naming_assertion_id` is `None` only when a caller cannot cite it cheaply.
+# identity. naming_assertion_id is None only when a caller cannot cite it cheaply.
 NamedActorLink: TypeAlias = tuple[str, str, str | None]
 
 # Text-equivalent cost of one grounded media part, at the usual four characters per token. The
@@ -69,7 +69,7 @@ _ASSET_EVIDENCE_CHARS: Mapping[Modality, int] = MappingProxyType(
     }
 )
 _DEFAULT_ASSET_EVIDENCE_CHARS = 4_000
-# Bundle sections, keyed by the `ContextBundle` field they fill.
+# Bundle sections, keyed by the ContextBundle field they fill.
 _SECTIONS: tuple[str, ...] = (
     "actors",
     "relationships",
@@ -99,8 +99,8 @@ _TYPE_SECTIONS: Mapping[MemoryCategory, str] = MappingProxyType(
 )
 # Which memory types can reach each section at all. A kind-keyed section is fed by whatever type
 # a formed record of that kind is stored as, a type-keyed one by its own type. This is what lets a
-# `memory_types` filter name the sections it emptied instead of only the types it dropped: kind
-# `affect` is stored `episodic`, so a `{semantic}` request cannot fill `affect` however it ranks.
+# memory_types filter name the sections it emptied instead of only the types it dropped: kind
+# affect is stored episodic, so a {semantic} request cannot fill affect however it ranks.
 _SECTION_MEMORY_TYPES: Mapping[str, frozenset[MemoryCategory]] = MappingProxyType(
     {
         name: frozenset(
@@ -115,21 +115,24 @@ _SECTION_MEMORY_TYPES: Mapping[str, frozenset[MemoryCategory]] = MappingProxyTyp
     }
 )
 # Why a candidate the retrieval kernel returned never became a bundle line. Reported as counts
-# under `unknowns` so a caller reading a thin bundle knows which bound produced it.
+# under unknowns so a caller reading a thin bundle knows which bound produced it.
 _EXCLUSION_REASONS = ("memory_types", "min_confidence", "freshness")
 # One asserted value: the value, the memory asserting it, and that memory's subject and predicate.
 _Claim: TypeAlias = tuple[str, str, str | None, str | None]
+
+
 # Resolves affect memory IDs to the event IDs their own observations also formed. The compiler
 # calls it once, for the affect entries the budget actually bought, and never past the deadline.
-_CoDerivedEventResolver: TypeAlias = Callable[[Sequence[str]], Mapping[str, Sequence[str]]]
+class _CoDerivedEventResolver(Protocol):
+    def __call__(self, memory_ids: Sequence[str]) -> Mapping[str, Sequence[str]]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class EvidenceClosure:
     """One ranked assertion and every scoped record required to support it.
 
-    This remains an internal compiler value.  `anchor` has its retrieval score; dependencies
-    use zero because they were not query-ranked.  Selection admits `members` atomically.
+    This remains an internal compiler value.  anchor has its retrieval score; dependencies
+    use zero because they were not query-ranked.  Selection admits members atomically.
     """
 
     anchor: SearchHit
@@ -149,7 +152,7 @@ def evidence_cost(hit: SearchHit) -> int:
 
 
 def _asset_cost(hit: SearchHit) -> int:
-    # `AssetRef.modality` is optional on the public type; an unresolved asset is charged the
+    # AssetRef.modality is optional on the public type; an unresolved asset is charged the
     # default rather than being treated as free.
     return sum(
         _DEFAULT_ASSET_EVIDENCE_CHARS
@@ -162,9 +165,9 @@ def _asset_cost(hit: SearchHit) -> int:
 def bundle_cost(hit: SearchHit) -> int:
     """Return what one hit costs a bundle: its rendered line plus its media parts.
 
-    The rendered line, not the record text: the `- [id]` frame and the confidence suffix are
-    characters the consumer pays for, so charging only `len(content)` would hand a caller a
-    budget that `render()` overruns. Media parts are charged their text equivalent, which is far
+    The rendered line, not the record text: the - [id] frame and the confidence suffix are
+    characters the consumer pays for, so charging only len(content) would hand a caller a
+    budget that render() overruns. Media parts are charged their text equivalent, which is far
     more than the zero characters they render as, so the number is an upper bound on the text.
     """
     return len(render_hit_line(hit)) + 1 + _asset_cost(hit)
@@ -208,7 +211,7 @@ def _text_projection(hit: SearchHit) -> ContextProjection | None:
 
 
 def named_actor_cost(actor: NamedActor) -> int:
-    """Return what one named-actor line costs, priced exactly as `render_named_actor_line`
+    """Return what one named-actor line costs, priced exactly as render_named_actor_line
     renders it, so the price and the text can never drift apart.
     """
     return len(render_named_actor_line(actor)) + 1
@@ -216,7 +219,7 @@ def named_actor_cost(actor: NamedActor) -> int:
 
 def provisional_actor_cost(actor: ProvisionalActor) -> int:
     """Return what one provisional-actor line costs, priced exactly as
-    `render_provisional_actor_line` renders it.
+    render_provisional_actor_line renders it.
     """
     return len(render_provisional_actor_line(actor)) + 1
 
@@ -233,12 +236,12 @@ def _frame_cost(
     budget: ContextBudget,
     proof_scoring: ContextProofScoring = "independent_pair",
 ) -> int:
-    """Return an upper bound on the fixed header `render()` writes above the first section."""
+    """Return an upper bound on the fixed header render() writes above the first section."""
     return (
         len(f"# Context: {goal}")
         + len(context_prompts.CONTEXT_READING_GUIDE)
         + len(f"Reference time: {reference_at.isoformat()}")
-        # `chars` cannot have more digits than `max_chars`, nor `included` than `max_items`.
+        # chars cannot have more digits than max_chars, nor included than max_items.
         + len(
             f"Budget: {budget.max_chars}/{budget.max_chars} chars,"
             f" {budget.max_items}/{budget.max_items} items"
@@ -253,7 +256,7 @@ def _frame_cost(
 
 
 def _heading_cost(section: str) -> int:
-    """Return what one section heading costs: a blank line, `## `, the name, two newlines."""
+    """Return what one section heading costs: a blank line, ## , the name, two newlines."""
     return len(section) + 5
 
 
@@ -323,26 +326,26 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
 ) -> ContextBundle:
     """Partition, filter, and budget ranked hits into one bundle.
 
-    `started_at` is a `time.perf_counter()` reading taken before retrieval, so `budget
-    .max_latency_ms` bounds the whole compilation rather than this function. `unknowns` carries
+    started_at is a time.perf_counter() reading taken before retrieval, so budget
+    .max_latency_ms bounds the whole compilation rather than this function. unknowns carries
     what the caller already knows and the compiler cannot see, such as an empty spatial scope.
-    `candidate_limit` is the depth retrieval was asked to rank, so a bundle that lost evidence
+    candidate_limit is the depth retrieval was asked to rank, so a bundle that lost evidence
     and filled that window can say the ranking may continue past it.
 
-    `provisional` maps a memory ID to the recognized people it observed whom no visible naming
+    provisional maps a memory ID to the recognized people it observed whom no visible naming
     assertion names. The kernel resolves that, deterministically, before calling; the compiler
     only keeps the entries whose evidence actually made it into the bundle, so the bundle never
     reports a person the reader cannot see the evidence for.
 
-    `named` maps a memory ID to the identities its identity edge resolves to that a currently
-    visible naming assertion names -- the positive counterpart of `provisional`, resolved the
-    same way by the kernel before calling. An identity `named` reports is never also reported
-    as provisional, even if a stale `provisional` entry still names it. Both a named and a
-    provisional actor render a line, and that line is priced and fit into whatever `max_chars`
+    named maps a memory ID to the identities its identity edge resolves to that a currently
+    visible naming assertion names -- the positive counterpart of provisional, resolved the
+    same way by the kernel before calling. An identity named reports is never also reported
+    as provisional, even if a stale provisional entry still names it. Both a named and a
+    provisional actor render a line, and that line is priced and fit into whatever max_chars
     has left after the ranked hits: it is included when it fits and dropped, not appended for
     free, when it does not.
 
-    `resolve_co_derived_event_ids` resolves affect memory IDs to the event IDs formed from the same
+    resolve_co_derived_event_ids resolves affect memory IDs to the event IDs formed from the same
     observations, under the same visibility the hits were hydrated with. It is called once, with
     the affect entries the budget actually bought, and not at all once the deadline has passed:
     the hop is optional enrichment, like conflict detection. The edge is co-occurrence inside
@@ -386,8 +389,8 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
         )
     overhead = _frame_cost(goal, reference_at, budget, proof_scoring)
     if overhead > budget.max_chars:
-        # `max_chars` bounds the header too, so a budget it alone overruns has no bundle that
-        # satisfies it: `_select` would buy nothing and the four framing lines would still be
+        # max_chars bounds the header too, so a budget it alone overruns has no bundle that
+        # satisfies it: _select would buy nothing and the four framing lines would still be
         # rendered over the limit. Refused rather than returned oversized, because a caller
         # sizing a model window is better served by being told the floor than by a bundle that
         # quietly breaks it. The floor moves with the goal, which the header repeats.
@@ -404,10 +407,10 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
     # ContextBudget whose public positive-item constraint would be false.
     remaining_items = budget.max_items - len(selected_supplements)
     selection_budget = replace(budget, max_items=max(1, remaining_items))
-    # An affect entry becomes an `AffectCue`: the same hit, plus the events its evidence also
+    # An affect entry becomes an AffectCue: the same hit, plus the events its evidence also
     # formed. The conversion happens before the pricing, not after it, because a cue renders its
     # basis, cue modality, valence, arousal, and evidence IDs on the line: pricing the plain hit
-    # and rendering the cue is what let a bundle overrun the `max_chars` it reported.
+    # and rendering the cue is what let a bundle overrun the max_chars it reported.
     candidates = [_affect_cue(hit, ()) if _section(hit) == "affect" else hit for hit in candidates]
     excerpt_candidates = {
         candidate.id: excerpt
@@ -450,7 +453,7 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
     )
     if peer_withheld:
         # Fail-closed is the rule; failing silently is not. The anchor is in no section, not in
-        # `omitted`, and not in the caller's unknowns, so it has to be named here.
+        # omitted, and not in the caller's unknowns, so it has to be named here.
         unknowns = (
             *unknowns,
             ContextUnknown(
@@ -484,7 +487,7 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
     if resolve_co_derived_event_ids is not None and not skipped and sections["affect"]:
         hops = resolve_co_derived_event_ids(tuple(hit.id for hit in sections["affect"]))
     if hops:
-        # A resolved hop lengthens a line `_select` has already priced, so selection runs again
+        # A resolved hop lengthens a line _select has already priced, so selection runs again
         # over the cues it will render. An affect entry the second pass buys instead carries no
         # hop, the same as one resolved to nothing: the hop is enrichment, and the read it costs
         # stays bounded by what the first pass bought.
@@ -556,10 +559,10 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
                 detail=context_prompts.AFFECT_DEADLINE,
             ),
         )
-    affect = cast(tuple[AffectCue, ...], sections["affect"])
-    # Rank order, not section order: `_lineage_conflict` pairs each value with the highest-ranked
+    affect = tuple(entry for entry in sections["affect"] if isinstance(entry, AffectCue))
+    # Rank order, not section order: _lineage_conflict pairs each value with the highest-ranked
     # memory asserting it, so a lineage whose claims land in different sections must still be read
-    # by score. `ContextBundle.hits` sorts the same way.
+    # by score. ContextBundle.hits sorts the same way.
     included = tuple(
         sorted(
             (hit for name in _SECTIONS for hit in sections[name]),
@@ -614,10 +617,10 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
         )
     occurred_from, occurred_until = _occurred_range(selected_evidence)
     elapsed_ms = _elapsed_ms(started_at)
-    # Actor lines are priced and fit in after the ranked hits, into whatever `_select` left of
-    # `max_chars`: `_bundle_chars` already bounds that at or below `max_chars`, so this can
+    # Actor lines are priced and fit in after the ranked hits, into whatever _select left of
+    # max_chars: _bundle_chars already bounds that at or below max_chars, so this can
     # never push the total over it. A named identity is never also reported provisional, even
-    # if a stale `provisional` entry still names it.
+    # if a stale provisional entry still names it.
     base_chars = _bundle_chars(
         overhead, sections, (*selected_excerpts, *selected_projections), selected_proofs
     )
@@ -634,11 +637,11 @@ def compile_context(  # noqa: C901 - filters, closed selection, and deadlines sh
         *named_actors,
         *provisional_actors,
     )
-    # `render()` writes `## Actors` as soon as the section holds anything, so a bundle whose
-    # typed `ENTITY` hits left it empty owes that heading the moment a synthesized actor fills
-    # it. `_bundle_chars` prices only the sections `_select` filled, so it is charged here or
+    # render() writes ## Actors as soon as the section holds anything, so a bundle whose
+    # typed ENTITY hits left it empty owes that heading the moment a synthesized actor fills
+    # it. _bundle_chars prices only the sections _select filled, so it is charged here or
     # nowhere -- and reserved before the fit, so the heading cannot push the total past
-    # `max_chars` either.
+    # max_chars either.
     actors_heading = _heading_cost("actors") if actor_candidates and not sections["actors"] else 0
     fitted_actors, actor_chars, actor_excluded = _fit_actors(
         actor_candidates,
@@ -706,7 +709,7 @@ def _past_deadline(budget: ContextBudget, started_at: float) -> bool:
 
 
 def _rejection(hit: SearchHit, budget: ContextBudget, reference_at: datetime) -> str | None:
-    """Return which budget bound excludes this hit, or `None` when it is a candidate."""
+    """Return which budget bound excludes this hit, or None when it is a candidate."""
     if budget.memory_types is not None and hit.memory_type not in budget.memory_types:
         return "memory_types"
     # A record with no typed context is evidence in its own right, not a low-confidence inference.
@@ -999,9 +1002,9 @@ def _select_closures(
 def _affect_cue(hit: SearchHit, event_ids: Sequence[str]) -> AffectCue:
     """Return one affect hit as the evidence-first entry the bundle publishes.
 
-    The cue's own evidence stays where retrieval hydrated it, on `context.evidence_ids`, so the
-    entry cannot disagree with itself. The resolver returns `event_ids` already deduplicated and
-    ordered; at most `_MAX_CUE_IDS` are kept, so one capture that formed many events cannot
+    The cue's own evidence stays where retrieval hydrated it, on context.evidence_ids, so the
+    entry cannot disagree with itself. The resolver returns event_ids already deduplicated and
+    ordered; at most _MAX_CUE_IDS are kept, so one capture that formed many events cannot
     grow a line the budget never charged for.
     """
     return AffectCue(
@@ -1016,7 +1019,7 @@ def _bundle_chars(
     partial_sources: Sequence[ContextExcerpt | ContextProjection] = (),
     proofs: Sequence[ContextProof] = (),
 ) -> int:
-    """Return what this bundle charged against `max_chars`, priced exactly as `_select` did."""
+    """Return what this bundle charged against max_chars, priced exactly as _select did."""
     excerpts = tuple(source for source in partial_sources if isinstance(source, ContextExcerpt))
     projections = tuple(
         source for source in partial_sources if isinstance(source, ContextProjection)
@@ -1130,15 +1133,15 @@ def _section_empty(
     excerpts: Sequence[ContextExcerpt],
     projections: Sequence[ContextProjection],
 ) -> tuple[ContextUnknown, ...]:
-    """Name each section a `memory_types` request left empty, and why it is empty.
+    """Name each section a memory_types request left empty, and why it is empty.
 
     Only a request that named types gets these: without one an empty section means the store
     holds nothing for it, which is not a statement about this request. With one, an empty
     section is either a section the filter can never fill -- its records carry a type the
     request excluded -- or one the filter admits and no record of that type reached the bundle
-    at all (`feeds.isdisjoint(present)`). The second variant is deliberately narrower than "this
-    section is empty": a kind-keyed section (`actors`, `scene`, `affect`, `traits`) that is empty
-    while a *different* section already carries a record of the same underlying `MemoryCategory`
+    at all (feeds.isdisjoint(present)). The second variant is deliberately narrower than "this
+    section is empty": a kind-keyed section (actors, scene, affect, traits) that is empty
+    while a *different* section already carries a record of the same underlying MemoryCategory
     stays silent, because flagging it would be noise in most bundles -- the type was not missing,
     it just formed into another kind.
     """
@@ -1242,8 +1245,8 @@ def _provisional_actors(
 
     These are appended to the ranked actors rather than competing with them for an item slot:
     an unnamed person earned no hit slot, and dropping them would leave an agent unable to say
-    that somebody it does not recognize is in the room. `exclude` drops an identity `named`
-    already reported, so a stale `provisional` entry can never list the same identity twice.
+    that somebody it does not recognize is in the room. exclude drops an identity named
+    already reported, so a stale provisional entry can never list the same identity twice.
     """
     if not provisional:
         return ()
@@ -1269,7 +1272,7 @@ def _named_actors(
     """Name every identity the included evidence's identity edge names, in identity order.
 
     Aggregated across every included memory that carries the edge, the same way
-    `_provisional_actors` aggregates an unnamed person's observing memories, and dropped
+    _provisional_actors aggregates an unnamed person's observing memories, and dropped
     entirely when the evidence that carried the edge did not make it into the bundle.
     """
     if not named:
@@ -1304,9 +1307,9 @@ def _fit_actors(
     candidates: Sequence[NamedActor | ProvisionalActor],
     remaining: int,
 ) -> tuple[tuple[NamedActor | ProvisionalActor, ...], int, int]:
-    """Fit actor lines into what is left of `max_chars` after the ranked hits.
+    """Fit actor lines into what is left of max_chars after the ranked hits.
 
-    Priced and greedy exactly like `_select` prices a hit: one oversized entry does not close
+    Priced and greedy exactly like _select prices a hit: one oversized entry does not close
     the bundle to the rest, so a cheaper actor can still fit. Returns the entries that fit,
     what they cost, and how many did not fit.
     """

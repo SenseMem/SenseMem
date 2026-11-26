@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import Lock
+from typing import Protocol
 
 from opentelemetry import trace
 from opentelemetry.trace import Span, StatusCode, Tracer
@@ -41,11 +42,11 @@ EMBEDDING_TASK = "sensemem.embedding.task"
 ASYNC_QUEUE_TIME = "sensemem.async.queue_time_ms"
 CAPTURE_SETTLED = "sensemem.capture.records_settled"
 CAPTURE_FAILED = "sensemem.capture.records_failed"
-# The capture-to-searchable interval `docs/context-os.md` requires measured separately from the
+# The capture-to-searchable interval docs/architecture.md requires measured separately from the
 # capture acknowledgement and from settle duration. Reported as the batch maximum: one span
 # attribute answers "how stale was the oldest record this pass made searchable".
 CAPTURE_TIME_TO_SEARCHABLE = "sensemem.capture.max_time_to_searchable_ms"
-# What one `sensemem.recall` stage actually planned and read. Every planning failure resolves
+# What one sensemem.recall stage actually planned and read. Every planning failure resolves
 # to the same fallback plan on purpose, so a result document reporting only scores cannot tell
 # "planning is off" from "planning ran and decided nothing": these say which, per question.
 RECALL_SHAPE = "sensemem.recall.shape"
@@ -67,7 +68,7 @@ RECALL_QUERY_OMITTED = "sensemem.recall.query_omitted"
 # Evidence expansion reports which structural edge linked the rows it added and which edge was
 # dropped for selecting too much of the corpus. Two expansions of the same size are different
 # claims about the store when one came from a capture and the other from a place.
-# `rows` is what the edges found; `already_ranked` is how many of those the ranking also proposed.
+# rows is what the edges found; already_ranked is how many of those the ranking also proposed.
 # Filtering on the second was measured harmful -- the pool is deeper than the window, so a row the
 # ranking proposed is not a row the window will hold -- but the count still says whether a corpus's
 # captures track its ranking.
@@ -250,16 +251,22 @@ _CURRENT_OPERATION_USAGE: ContextVar[_OperationUsage | None] = ContextVar(
 _CURRENT_FORMATION_REFUSALS: ContextVar[_FormationRefusals | None] = ContextVar(
     "sensemem_formation_refusals", default=None
 )
-_RETRIEVAL_OBSERVER: ContextVar[Callable[[object], None] | None] = ContextVar(
+
+
+class _PayloadObserver(Protocol):
+    def __call__(self, value: object) -> None: ...
+
+
+_RETRIEVAL_OBSERVER: ContextVar[_PayloadObserver | None] = ContextVar(
     "sensemem_retrieval_observer", default=None
 )
-_GENERATION_OBSERVER: ContextVar[Callable[[object], None] | None] = ContextVar(
+_GENERATION_OBSERVER: ContextVar[_PayloadObserver | None] = ContextVar(
     "sensemem_generation_observer", default=None
 )
 
 
 @contextmanager
-def _observe_generation_inputs(observer: Callable[[object], None]) -> Iterator[None]:
+def _observe_generation_inputs(observer: _PayloadObserver) -> Iterator[None]:
     """Observe the evidence passed to the answerer, before its own packing or filtering."""
     token = _GENERATION_OBSERVER.set(observer)
     try:
@@ -275,7 +282,7 @@ def _record_generation_inputs(hits: object) -> None:
 
 
 @contextmanager
-def _observe_retrieval_results(observer: Callable[[object], None]) -> Iterator[None]:
+def _observe_retrieval_results(observer: _PayloadObserver) -> Iterator[None]:
     """Let an in-process benchmark observe the ranked list an answer already computed."""
     token = _RETRIEVAL_OBSERVER.set(observer)
     try:
@@ -418,7 +425,7 @@ def mark_model_requests(count: int, *, token_usage_expected: int | None = None) 
 def record_formation_refusals(count: int) -> None:
     """Add one formation pass's refused proposals to the current operation's total.
 
-    Called even at zero, because one operation forms many records: `settle` runs a pass per
+    Called even at zero, because one operation forms many records: settle runs a pass per
     captured row, and publishing per pass let the last row overwrite what the first one lost.
     """
     refusals = _CURRENT_FORMATION_REFUSALS.get()
