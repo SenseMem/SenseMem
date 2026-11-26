@@ -1,18 +1,39 @@
-# Configuration examples
+# Example catalog
 
-Choose a configuration for your evaluation, connect its model services, and run it with
-`sensemem-bench eval --config`. The catalog below lists each example's purpose and prerequisites.
-
-Run repository commands from the repository root with the locked environment in
+Replay and recall real audio and video with the Python SDK, or choose a configuration for an
+evaluation. Run commands from the repository root with the locked environment in
 [Contributing](../../CONTRIBUTING.md#setup).
 
-For SDK recipes with real public media, open the
-[best practices notebook](../../examples/best_practices.ipynb), fill in its API key and model
-settings, and execute the cells from the beginning. The notebook directly runs concurrent
-audio/video replay, semantic event formation, time-filtered recall, and playback of the
-original evidence. It uses the bundled [audio and video](../../examples/media/README.md).
+## Replay and recall media in a notebook
 
-## Choose an example
+The [best practices notebook](../../examples/best_practices.ipynb) uses the bundled
+[audio and video](../../examples/media/README.md) to demonstrate concurrent replay, semantic
+event formation, time-filtered recall, and playback of the original evidence. It needs the
+`local` and `openai` extras, Jupyter, and `ffmpeg` on `PATH` for event playback.
+
+Set `OPENAI_API_KEY` and `OPENAI_BASE_URL` (the provider's OpenAI-compatible `/v1` endpoint)
+in the process that launches Jupyter. You can copy [`.env.example`](../../.env.example) to a
+local `.env`, set both values, and load that file explicitly when launching Jupyter:
+
+```bash
+uv run --locked --default-index https://pypi.org/simple --extra local --extra openai \
+  --with jupyterlab --env-file .env jupyter lab examples/best_practices.ipynb
+```
+
+If you export the variables in your shell, omit `--env-file .env`. Never put a real API key
+in a notebook cell. Set `MODEL` in the first configuration cell to your deployed generation
+model (the example uses `qwen3.8-omni-flash`). The endpoint must accept audio and video inputs
+and structured responses for event segmentation; adjust provider-specific `extra_body` settings
+if needed. The `embedding` block separately selects the local `google/embeddinggemma-2` model.
+See [model setup](../configuration/models.md#embeddinggemma-2) for its requirements.
+
+Run the cells in order with `examples/` as the kernel's working directory so `media/` resolves.
+Searches run against a fresh temporary store; the notebook reports empty results rather than
+assuming a model will always find media or form events.
+
+## Choose an evaluation configuration
+
+Connect the model services for your chosen example and run it with `sensemem-bench eval --config`.
 
 | File | Purpose | Prerequisites |
 | --- | --- | --- |

@@ -13,7 +13,9 @@ MP4 contains 640-pixel H.264 video and AAC audio; its matching WAV provides sync
 padded to fill its input interval. These are fixed-time transport windows; the model forms
 semantic events when the notebook runs.
 
-Open the [best practices notebook](../best_practices.ipynb), fill in its API key and model
-settings, and execute it from the beginning. It replays the timestamped audio/video windows,
-displays the events formed by the model, and plays matching original media retrieved through
-`read_asset()` directly in the notebook. Event boundaries and query results come from that run.
+Follow the [notebook setup](../../docs/examples/README.md#replay-and-recall-media-in-a-notebook)
+to set `OPENAI_API_KEY` and `OPENAI_BASE_URL` in the kernel's environment and choose the model
+in the [best practices notebook](../best_practices.ipynb). Run the cells from the beginning to
+replay the timestamped audio/video windows, display any events formed by the model, and play
+matching original media retrieved through `read_asset()`. Event boundaries and query results
+come from that run.
