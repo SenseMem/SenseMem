@@ -123,6 +123,8 @@ operations(*, limit: int = 100) -> tuple[MemoryOperationRecord, ...]
 
 Lists the append-only operation log newest first. See [operation values](python-values.md#control-operations).
 
+The local log stores ID collections as JSON arrays of strings, `linked` and `superseded` effects as arrays of two-element arrays (two memory IDs for links; memory ID and positive integer version for supersessions), and clause snapshots with a boolean `previous_active` and positive integer `applied_version`. Invalid values raise `StorageError` when listing operations or rolling back the affected operation.
+
 ## record_outcome
 
 ```text

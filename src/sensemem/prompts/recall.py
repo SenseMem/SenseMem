@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from sensemem.recall import RecallResult, RecallStep, RecallStepResult
+from sensemem.settings import MAX_RECALL_QUERIES
 
 # This capability is host-generated, never extracted from retrieved evidence.
 SEMANTIC_QUERY_CAPABILITY = "Semantic query expansion: enabled"
@@ -25,8 +26,11 @@ _SEMANTIC_QUERY_TEMPLATE = (
     "are bounded rankings and never establish completeness."
 )
 _QUERY_PREFIX, _, _QUERY_SUFFIX = _SEMANTIC_QUERY_TEMPLATE.partition("{query_count}")
+_VALID_QUERY_COUNTS = "|".join(
+    "two" if count == 2 else str(count) for count in range(1, MAX_RECALL_QUERIES + 1)
+)
 _QUERY_BUDGET_PATTERN = re.compile(
-    re.escape(_QUERY_PREFIX) + r"(two|1|[3-9]|[12][0-9]|3[0-2])" + re.escape(_QUERY_SUFFIX) + r"\Z"
+    re.escape(_QUERY_PREFIX) + f"({_VALID_QUERY_COUNTS})" + re.escape(_QUERY_SUFFIX) + r"\Z"
 )
 
 CHRONOLOGICAL_EVIDENCE_NOTE = (

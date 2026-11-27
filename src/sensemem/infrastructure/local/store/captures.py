@@ -174,25 +174,19 @@ class CaptureQueue:
         memory_id: str,
         error: str,
         *,
-        enqueued_at: datetime | None = None,
+        enqueued_at: datetime,
     ) -> bool:
-        """Count one failed settlement and store its reason, leaving the row queued."""
+        """Count a failed settlement only while the version it processed is queued."""
         require_identifier(memory_id, "memory_id")
-        if enqueued_at is not None:
-            require_aware(enqueued_at, "enqueued_at")
-        version = "" if enqueued_at is None else "AND enqueued_at = ?"
+        require_aware(enqueued_at, "enqueued_at")
         with self._connections.transaction() as connection:
             updated = connection.execute(
-                f"""
+                """
                 UPDATE capture_queue
                 SET attempts = attempts + 1, last_error = ?
-                WHERE memory_id = ? {version}
+                WHERE memory_id = ? AND enqueued_at = ?
                 """,
-                (
-                    error.strip() or None,
-                    memory_id,
-                    *(() if enqueued_at is None else (datetime_text(enqueued_at),)),
-                ),
+                (error.strip() or None, memory_id, datetime_text(enqueued_at)),
             ).rowcount
         return bool(updated)
 

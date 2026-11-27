@@ -643,7 +643,10 @@ def test_failed_capture_retention_is_not_starved_by_unattempted_captures(tmp_pat
     with _memory(tmp_path, retention=RetentionPolicy(capture_failure_days=_AGED)) as memory:
         unattempted = tuple(memory.capture(f"unattempted {index}").id for index in range(1000))
         failed = memory.capture("failed after the first queue page")
-        memory._store.captures.record_capture_failure(failed.id, "model unavailable")
+        (pending,) = memory.pending_captures(memory_ids=(failed.id,))
+        assert memory._store.captures.record_capture_failure(
+            failed.id, "model unavailable", enqueued_at=pending.enqueued_at
+        )
 
         assert memory.apply_retention(dry_run=True).capture_memory_ids == (failed.id,)
         assert memory.pending_captures(memory_ids=(failed.id,))
