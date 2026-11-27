@@ -10,7 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import httpx2 as httpx
 import openai
@@ -19,6 +19,7 @@ from _feature_support import TinyEmbedder
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import SecretStr
 from pydantic import ValidationError as PydanticValidationError
 
 import sensemem.configuration as configuration
@@ -198,7 +199,7 @@ def test_declarative_config_does_not_coerce_boolean_or_numeric_fields(
 @pytest.mark.parametrize(
     "base_url",
     (
-        "xyrobot-embed.xyrobot.com",
+        "embed.example.test",
         "/v1",
         "ftp://models.example.test/v1",
         "http://example.com:bad/v1",
@@ -238,7 +239,7 @@ def test_declarative_memory_settings_validate_every_range() -> None:
 
 def test_local_policy_defaults_stay_pinned_to_their_recorded_provenance() -> None:
     # Every default here is public contract, and two of them are calibration constants whose
-    # provenance is recorded next to the field in `plugins.py`. Asserting the whole value means a
+    # provenance is recorded next to the field in plugins.py. Asserting the whole value means a
     # silent change to any single default fails here rather than only in a benchmark months later.
     defaults = MemorySettings()
 
@@ -257,7 +258,7 @@ def test_local_policy_defaults_stay_pinned_to_their_recorded_provenance() -> Non
         face_margin=0.05,
     )
     # The kernel and the declarative path must read the same defaults; a divergence would make
-    # `Memory(...)` and `Memory.from_config({})` two different products.
+    # Memory(...) and Memory.from_config({}) two different products.
     assert (
         MemorySpec.model_validate({"embedding": {"provider": "openai"}}).settings
         == MemorySettings()
@@ -270,7 +271,7 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
 ) -> None:
     built: list[dict[str, object]] = []
 
-    # Stands in for `OpenAICompletion`, which is one object implementing every completion role.
+    # Stands in for OpenAICompletion, which is one object implementing every completion role.
     class _Models(TinyEmbedder):
         generation_capabilities = frozenset({Modality.TEXT})
         formation_capabilities = frozenset({Modality.TEXT})
@@ -312,7 +313,7 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
     finally:
         with_generation.close()
 
-    # Asking for one reaches `MemoryPlugins.former`, through its own build, with its own knobs.
+    # Asking for one reaches MemoryPlugins.former, through its own build, with its own knobs.
     built.clear()
     composition = configuration.build_memory_composition(
         {**base, "formation": {"provider": "openai", "model": "gpt-5", "temperature": 0.0}}
@@ -332,11 +333,11 @@ def test_a_former_is_declaratively_reachable_but_never_implicit(
         "generation_store": False,
         "generation_temperature": 0.0,
     }
-    # `video_limit` shapes an answer, not a formation proposal, so it is not part of this slot.
+    # video_limit shapes an answer, not a formation proposal, so it is not part of this slot.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
         MemorySpec.model_validate({**base, "formation": {"provider": "openai", "video_limit": 4}})
-    # The declarative name for the describer slot is `vision`, matching `generation` and
-    # `formation`; the plugin field name is not a configuration key.
+    # The declarative name for the describer slot is vision, matching generation and
+    # formation; the plugin field name is not a configuration key.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
         MemorySpec.model_validate({**base, "vision_describer": {"provider": "openai"}})
 
@@ -382,7 +383,7 @@ _LOCAL_FORMATION_REPLY = json.dumps(
 def _local_openai_server(reply: str) -> Iterator[tuple[str, list[dict[str, object]]]]:
     """Serve the slice of chat completions a former needs, over a real localhost socket.
 
-    A local llama.cpp, vLLM, or Ollama endpoint is reached through `base_url` and nothing else, so
+    A local llama.cpp, vLLM, or Ollama endpoint is reached through base_url and nothing else, so
     a stub that replaced the SDK client would prove only that the configuration field parses. This
     is the smallest thing that proves the wire path: stdlib server, no network, no model.
     """
@@ -434,9 +435,9 @@ def test_a_local_openai_compatible_server_fills_the_former_slot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The bundled former inherits `base_url` from the shared OpenAI connection fields, so an
-    # OpenAI-compatible local server already satisfies `FormationBackend` with no new adapter and
-    # no new dependency. Two servers, because `generation` and `formation` are separate slots over
+    # The bundled former inherits base_url from the shared OpenAI connection fields, so an
+    # OpenAI-compatible local server already satisfies FormationBackend with no new adapter and
+    # no new dependency. Two servers, because generation and formation are separate slots over
     # separate clients: the write-path call must land on the former's endpoint only.
     monkeypatch.setenv("OPENAI_API_KEY", "a-local-server-ignores-this")
     with (
@@ -507,7 +508,7 @@ def test_a_local_former_still_needs_a_credential_in_the_environment(
 ) -> None:
     # Declarative configuration deliberately has no credential field, so the official SDK's own
     # environment lookup applies even to an endpoint that authenticates nobody: a local deployment
-    # must still export a placeholder key. That cost is documented in docs/configuration.md rather
+    # must still export a placeholder key. That cost is documented in docs/configuration/ rather
     # than worked around here, because a credential inside configuration data is the worse trade.
     for name in ("OPENAI_API_KEY", "OPENAI_ADMIN_KEY"):
         monkeypatch.delenv(name, raising=False)
@@ -623,7 +624,7 @@ def test_builtin_openai_embedding_config_maps_friendly_names_to_the_sdk_adapter(
     monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIEmbeddingConfig(
         provider="openai",
-        model="tencent/WeMM-Embedding-2B",
+        model="fixture-embedding-model",
         dimension=2048,
         modalities=frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
         request_format="messages",
@@ -635,7 +636,7 @@ def test_builtin_openai_embedding_config_maps_friendly_names_to_the_sdk_adapter(
     assert captured == {
         "base_url": "http://localhost:8000/v1",
         "timeout": 600.0,
-        "embedding_model": "tencent/WeMM-Embedding-2B",
+        "embedding_model": "fixture-embedding-model",
         "embedding_dimension": 2048,
         "embedding_capabilities": frozenset({Modality.TEXT, Modality.IMAGE, Modality.VIDEO}),
         "embedding_request_format": "messages",
@@ -657,7 +658,7 @@ def test_declarative_openai_embedding_defaults_stay_text_and_input_shaped() -> N
 def test_embeddinggemma2_vllm_config_embeds_documents_and_queries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requests: list[dict[str, Any]] = []
+    requests: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         assert request.url == "http://127.0.0.1:8000/v1/embeddings"
@@ -674,7 +675,7 @@ def test_embeddinggemma2_vllm_config_embeds_documents_and_queries(
         monkeypatch.setattr(
             recipes_module,
             "_openai_client",
-            lambda **values: openai.OpenAI(http_client=http_client, **cast(Any, values)),
+            lambda **values: openai.OpenAI(http_client=http_client, **values),
         )
         with Memory.from_config(
             {
@@ -695,10 +696,13 @@ def test_embeddinggemma2_vllm_config_embeds_documents_and_queries(
 
     assert hits[0].id == record.id
     assert len(requests) == 2
-    assert requests[0]["messages"][0]["content"] == [
+    first_messages = requests[0]["messages"]
+    second_messages = requests[1]["messages"]
+    assert isinstance(first_messages, list) and isinstance(second_messages, list)
+    assert first_messages[0]["content"] == [
         {"type": "text", "text": "title: none | text: Ada prefers tea."}
     ]
-    assert requests[1]["messages"][0]["content"] == [
+    assert second_messages[0]["content"] == [
         {"type": "text", "text": "task: search result | query: Ada's preferred drink"}
     ]
 
@@ -742,7 +746,7 @@ def test_builtin_openai_formation_config_maps_friendly_names_to_the_sdk_adapter(
 
     assert configuration._build_formation(spec) is marker
     # The bundled adapter derives its formation contract from the generation controls, and
-    # `video_limit` is answer-only, so it must not appear here.
+    # video_limit is answer-only, so it must not appear here.
     assert captured == {
         "base_url": "http://localhost:11434/v1",
         "generation_model": "gpt-5-mini",
@@ -809,9 +813,9 @@ def _formation_stub(monkeypatch: pytest.MonkeyPatch) -> _FormingEmbedder:
 def test_declarative_formation_slot_reaches_the_write_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`former` had no declarative provider, so every `from_config` deployment and every
+    """former had no declarative provider, so every from_config deployment and every
     benchmark run produced zero derived memories. Closing the slot is only worth anything if a
-    JSON config actually installs the backend and `add` actually calls it."""
+    JSON config actually installs the backend and add actually calls it."""
     backend = _formation_stub(monkeypatch)
 
     with Memory.from_config(
@@ -1048,7 +1052,7 @@ def test_declarative_generation_slot_carries_every_control_through_the_real_fact
                     ]
                 },
             )
-        # `ask` answers over the streaming path, so the same wiring has to hold for deltas.
+        # ask answers over the streaming path, so the same wiring has to hold for deltas.
         chunk = {
             "id": "chatcmpl-test",
             "object": "chat.completion.chunk",
@@ -1101,10 +1105,10 @@ def _openai_slot_stub(
     monkeypatch: pytest.MonkeyPatch,
     http_client: httpx.Client,
 ) -> None:
-    """Route the embedding slot to `TinyEmbedder` and every completion slot to the real adapter.
+    """Route the embedding slot to TinyEmbedder and every completion slot to the real adapter.
 
-    The point of this test is the wiring, so the describer has to be the bundled `OpenAICompletion`
-    that `build_memory_composition` really builds; only its HTTP transport is faked.
+    The point of this test is the wiring, so the describer has to be the bundled OpenAICompletion
+    that build_memory_composition really builds; only its HTTP transport is faked.
     """
 
     def build(_backend_type: object, **values: object) -> object:
@@ -1117,7 +1121,7 @@ def _openai_slot_stub(
                 http_client=http_client,
                 max_retries=0,
             ),
-            **cast(Any, values),
+            **values,  # type: ignore[arg-type]
         )
 
     monkeypatch.setattr(recipes_module, "_owned_openai", build)
@@ -1127,9 +1131,9 @@ def test_declarative_vision_slot_captions_an_image_into_the_lexical_document(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """An image-only memory used to be stored with an empty full-text document, because the
-    derived-text write path existed with nothing able to feed it: `VisionDescriptionBackend` had
+    derived-text write path existed with nothing able to feed it: VisionDescriptionBackend had
     no bundled implementation and therefore no declarative key. This asserts the whole chain --
-    a `vision` block builds a describer, `add` calls it, the caption lands in the document BM25
+    a vision block builds a describer, add calls it, the caption lands in the document BM25
     actually matches on, and the write-path tokens are reported under their own model module so a
     run can tell captioning cost from answering cost.
     """
@@ -1184,7 +1188,7 @@ def test_declarative_vision_slot_captions_an_image_into_the_lexical_document(
     assert picture.assets[0].id not in serialized
     assert str(tmp_path) not in serialized
 
-    # `token_usage.by_module` is what the benchmark harness aggregates, so description tokens are
+    # token_usage.by_module is what the benchmark harness aggregates, so description tokens are
     # separable from answer tokens without a schema change.
     vision_spans = [
         span
@@ -1202,7 +1206,7 @@ def test_the_vision_slot_stays_off_unless_it_is_configured(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Describing is a model call per visual on the write path, so a composition that omits the
-    slot must stay byte-for-byte what it is today -- including one that configures `generation`,
+    slot must stay byte-for-byte what it is today -- including one that configures generation,
     which must never opt a deployment into spending on writes."""
     calls: list[object] = []
 
@@ -1249,7 +1253,7 @@ def test_the_vision_slot_accepts_only_visual_modalities(tmp_path: Path) -> None:
                 {**base, "vision": {"provider": "openai", "modalities": modalities}}
             )
 
-    # `video_limit` shapes an answer, not a caption, so it is not part of this slot either.
+    # video_limit shapes an answer, not a caption, so it is not part of this slot either.
     with pytest.raises(PydanticValidationError, match="extra_forbidden"):
         MemorySpec.model_validate({**base, "vision": {"provider": "openai", "video_limit": 4}})
 
@@ -1267,7 +1271,7 @@ def test_the_vision_slot_accepts_only_visual_modalities(tmp_path: Path) -> None:
 def test_the_vision_slot_forwards_its_own_transport_controls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`max_retries` and `timeout` have to reach the describer's client, not just validate.
+    """max_retries and timeout have to reach the describer's client, not just validate.
 
     The describer's fail-open is what keeps a throttled endpoint from losing memories, and it is
     also what makes a throttled ingest lose every caption in the burst instead of failing loudly.
@@ -1284,10 +1288,10 @@ def test_the_vision_slot_forwards_its_own_transport_controls(
     monkeypatch.setattr(recipes_module, "_owned_openai", build)
     spec = configuration.OpenAIVisionConfig(
         provider="openai",
-        model="qwen3.8-27b",
+        model="fixture-vision-model",
         modalities=frozenset({Modality.IMAGE, Modality.VIDEO}),
         base_url="https://example.invalid/api/v1",
-        api_key=cast(Any, "caption-key"),
+        api_key=SecretStr("caption-key"),
         timeout=300,
         max_retries=5,
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -1299,7 +1303,7 @@ def test_the_vision_slot_forwards_its_own_transport_controls(
         "api_key": "caption-key",
         "timeout": 300.0,
         "max_retries": 5,
-        "generation_model": "qwen3.8-27b",
+        "generation_model": "fixture-vision-model",
         "generation_capabilities": frozenset({Modality.IMAGE, Modality.VIDEO}),
         "generation_response_format": "json_schema",
         "generation_store": False,
@@ -1312,8 +1316,8 @@ def test_a_failing_describer_never_fails_the_write_it_was_decorating(
 ) -> None:
     """The caller handed us an observation to store; losing the caption must not lose the memory.
 
-    Both `describe` attempts return HTTP 200 with malformed JSON, which is what the round's
-    endpoint did on 3 of 24 single-image calls. Before the fail-open this raised out of `add`,
+    Both describe attempts return HTTP 200 with malformed JSON, which is what the round's
+    endpoint did on 3 of 24 single-image calls. Before the fail-open this raised out of add,
     and an ingesting harness reported the whole batch as unwritten memories -- a far larger loss
     than the empty document a missing caption leaves behind.
     """

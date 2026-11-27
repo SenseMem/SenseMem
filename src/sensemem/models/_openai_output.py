@@ -25,7 +25,7 @@ from sensemem.exceptions import ModelError, ModelOutputTruncatedError, Validatio
 from sensemem.identity import IdentityClaim
 from sensemem.models._answer_output import parse_answer_draft, render_answer_draft
 from sensemem.models._evidence_operations import EVIDENCE_OPERATION_TOOL_NAME
-from sensemem.models._openai_telemetry import _EvidenceOperationRejection, _member
+from sensemem.models._openai_telemetry import EvidenceOperationRejection, _member
 from sensemem.models.base import FormationInput
 from sensemem.perception import SpeakerName, VisualDescription
 from sensemem.prompts import generation as prompts
@@ -77,7 +77,7 @@ _CLAIM_FIELDS = frozenset({"identity_id", "name", "relationship"})
 _MAX_CONSOLIDATION_OPERATIONS = 16
 
 
-_TRUNCATED_ANSWER_ERROR = (
+TRUNCATED_ANSWER_ERROR = (
     "generation stopped at the output token limit; raise generation_max_tokens or lower the "
     "answer limit"
 )
@@ -89,9 +89,7 @@ class _InvalidStructuredResponse(ModelError):
     _cleanup_failed = False
 
 
-def _invalid_json_response(
-    subject: str, stage: str, detail: str = ""
-) -> _InvalidStructuredResponse:
+def invalid_json_response(subject: str, stage: str, detail: str = "") -> _InvalidStructuredResponse:
     return _InvalidStructuredResponse(
         f"{subject} response was invalid{detail}",
         reason="response_invalid",
@@ -100,71 +98,74 @@ def _invalid_json_response(
 
 
 def _invalid_consolidation_response(detail: str = "") -> ModelError:
-    return _invalid_json_response("consolidation", "consolidate", detail)
+    return invalid_json_response("consolidation", "consolidate", detail)
 
 
 def _invalid_formation_response() -> ModelError:
-    return _invalid_json_response("formation", "form")
+    return invalid_json_response("formation", "form")
 
 
-def _model_refused(subject: str, stage: str) -> ModelError:
+def model_refused(subject: str, stage: str) -> ModelError:
     return ModelError(f"{subject} was refused by the model", reason="model_refused", stage=stage)
 
 
-def _record_finish_reason(finish_reason: object) -> None:
+def record_finish_reason(finish_reason: object) -> None:
     """Record the provider stop reason so truncation is countable instead of inferred."""
     if isinstance(finish_reason, str) and finish_reason:
         trace.get_current_span().set_attribute(GEN_AI_FINISH_REASONS, (finish_reason,))
 
 
+def _single_choice(
+    response: object, *, invalid_error: ModelError
+) -> tuple[object, object, object, object, object]:
+    """Extract the single index-0 choice fields once at the untrusted provider boundary."""
+    choices = _member(response, "choices")
+    if not isinstance(choices, list) or len(choices) != 1 or _member(choices[0], "index") != 0:
+        raise invalid_error
+    choice = choices[0]
+    finish_reason = _member(choice, "finish_reason")
+    message = _member(choice, "message")
+    return (
+        finish_reason,
+        _member(message, "refusal"),
+        _member(message, "content"),
+        _member(message, "tool_calls"),
+        choice,
+    )
+
+
 def _json_completion_text(response: object, *, subject: str, stage: str) -> str:
     """Return the single JSON-object completion's text, or fail the way its caller reports."""
-    choices = getattr(response, "choices", None)
-    if (
-        not isinstance(choices, list)
-        or len(choices) != 1
-        or getattr(choices[0], "index", None) != 0
-    ):
-        raise _invalid_json_response(subject, stage)
-    finish_reason = getattr(choices[0], "finish_reason", None)
-    _record_finish_reason(finish_reason)
-    message = getattr(choices[0], "message", None)
-    if getattr(message, "refusal", None) or finish_reason == "content_filter":
-        raise _model_refused(subject, stage)
+    finish_reason, refusal, content, _tool_calls, _choice = _single_choice(
+        response, invalid_error=invalid_json_response(subject, stage)
+    )
+    record_finish_reason(finish_reason)
+    if refusal or finish_reason == "content_filter":
+        raise model_refused(subject, stage)
     if finish_reason == "length":
         raise ModelOutputTruncatedError(
             f"{subject} stopped at the output token limit; raise generation_max_tokens",
             stage=stage,
         )
-    content = getattr(message, "content", None)
     if finish_reason != "stop" or not isinstance(content, str) or not content.strip():
-        raise _invalid_json_response(subject, stage)
+        raise invalid_json_response(subject, stage)
     return content.strip()
 
 
-def _answer_text(response: object) -> str:
-    choices = getattr(response, "choices", None)
-    if (
-        not isinstance(choices, list)
-        or len(choices) != 1
-        or getattr(choices[0], "index", None) != 0
-    ):
-        raise ModelError(
-            "generation response was invalid", reason="response_invalid", stage="generate"
-        )
-    finish_reason = getattr(choices[0], "finish_reason", None)
-    _record_finish_reason(finish_reason)
-    if getattr(getattr(choices[0], "message", None), "refusal", None):
-        raise _model_refused("generation", "generate")
+def answer_text(response: object) -> str:
+    invalid = ModelError(
+        "generation response was invalid", reason="response_invalid", stage="generate"
+    )
+    finish_reason, refusal, answer, _tool_calls, _choice = _single_choice(
+        response, invalid_error=invalid
+    )
+    record_finish_reason(finish_reason)
+    if refusal or finish_reason == "content_filter":
+        raise model_refused("generation", "generate")
     if finish_reason == "length":
-        raise ModelOutputTruncatedError(_TRUNCATED_ANSWER_ERROR, stage="generate")
-    if finish_reason == "content_filter":
-        raise _model_refused("generation", "generate")
-    answer = getattr(getattr(choices[0], "message", None), "content", None)
+        raise ModelOutputTruncatedError(TRUNCATED_ANSWER_ERROR, stage="generate")
     if finish_reason != "stop" or not isinstance(answer, str) or not answer.strip():
-        raise ModelError(
-            "generation response was invalid", reason="response_invalid", stage="generate"
-        )
+        raise invalid
     return answer.strip()
 
 
@@ -173,25 +174,16 @@ def _evidence_operation_response(  # noqa: C901 - preserve ordered native protoc
     *,
     tools_allowed: bool,
     hits: Sequence[SearchHit],
-) -> tuple[str | None, str | None, _EvidenceOperationRejection | None]:
+) -> tuple[str | None, str | None, EvidenceOperationRejection | None]:
     """Admit ordinary text or return native arguments with the first protocol rejection."""
-    choices = getattr(response, "choices", None)
-    if (
-        not isinstance(choices, list)
-        or len(choices) != 1
-        or getattr(choices[0], "index", None) != 0
-    ):
-        raise ModelError(
-            "generation response was invalid", reason="response_invalid", stage="generate"
-        )
-    choice = choices[0]
-    message = getattr(choice, "message", None)
-    reason = getattr(choice, "finish_reason", None)
-    if getattr(message, "refusal", None) or reason in {"length", "content_filter"}:
-        _answer_text(response)
-    calls = getattr(message, "tool_calls", None)
+    invalid = ModelError(
+        "generation response was invalid", reason="response_invalid", stage="generate"
+    )
+    reason, refusal, _content, calls, _choice = _single_choice(response, invalid_error=invalid)
+    if refusal or reason in {"length", "content_filter"}:
+        answer_text(response)
     if not calls:
-        answer = _answer_text(response)
+        answer = answer_text(response)
         if tools_allowed:
             labels = "|".join(re.escape(label) for label in evidence_aliases(hits).values())
             item = rf"(?:{labels}|\"(?:{labels})\"|'(?:{labels})')"
@@ -213,7 +205,7 @@ def _evidence_operation_response(  # noqa: C901 - preserve ordered native protoc
         else None
     )
     arguments = _member(function, "arguments")
-    rejection: _EvidenceOperationRejection | None = None
+    rejection: EvidenceOperationRejection | None = None
     if reason != "tool_calls":
         rejection = "protocol_finish"
     elif not tools_allowed or not isinstance(calls, list | tuple):
@@ -244,33 +236,36 @@ def _require_no_evidence_operation_text(answer: str) -> None:
         )
 
 
-def _evidence_operation_recovery_answer(response: object) -> str:
+def evidence_operation_recovery_answer(response: object) -> str:
     """Accept recovery text only, rejecting protocol imitations before native calls."""
-    answer = _answer_text(response)
-    choice = cast(list[object], getattr(response, "choices", None))[0]
+    invalid = ModelError(
+        "generation response was invalid", reason="response_invalid", stage="generate"
+    )
+    _reason, _refusal, _content, tool_calls, _choice = _single_choice(
+        response, invalid_error=invalid
+    )
+    answer = answer_text(response)
     _require_no_evidence_operation_text(answer)
-    if getattr(getattr(choice, "message", None), "tool_calls", None):
-        raise ModelError(
-            "generation response was invalid", reason="response_invalid", stage="generate"
-        )
+    if tool_calls:
+        raise invalid
     return answer
 
 
-def _event_segments(content: str, count: int) -> tuple[EventSegment, ...]:
+def event_segments(content: str, count: int) -> tuple[EventSegment, ...]:
     try:
         payload = json.loads(content)
     except (json.JSONDecodeError, RecursionError):
-        raise _invalid_json_response("event segmentation", "segment_events") from None
+        raise invalid_json_response("event segmentation", "segment_events") from None
     if not isinstance(payload, dict) or set(payload) != {"events"}:
-        raise _invalid_json_response("event segmentation", "segment_events")
+        raise invalid_json_response("event segmentation", "segment_events")
     events = payload["events"]
     if not isinstance(events, list) or len(events) > count:
-        raise _invalid_json_response("event segmentation", "segment_events")
+        raise invalid_json_response("event segmentation", "segment_events")
     result = []
     previous = 0
     for event in events:
         if not isinstance(event, dict) or set(event) != {"end_chunk", "summary", "complete"}:
-            raise _invalid_json_response("event segmentation", "segment_events")
+            raise invalid_json_response("event segmentation", "segment_events")
         end, summary, complete = event["end_chunk"], event["summary"], event["complete"]
         if (
             isinstance(end, bool)
@@ -281,11 +276,11 @@ def _event_segments(content: str, count: int) -> tuple[EventSegment, ...]:
             or not isinstance(complete, bool)
             or (not complete and (event is not events[-1] or end != count))
         ):
-            raise _invalid_json_response("event segmentation", "segment_events")
+            raise invalid_json_response("event segmentation", "segment_events")
         try:
             result.append(EventSegment(end_chunk=end, summary=summary, complete=complete))
         except ValidationError:
-            raise _invalid_json_response("event segmentation", "segment_events") from None
+            raise invalid_json_response("event segmentation", "segment_events") from None
         previous = end
     return tuple(result)
 
@@ -338,7 +333,7 @@ def _formation_results(  # noqa: C901 - validates the strict batch witness envel
             )
         }
         # A malformed proposal is one derived opinion the model expressed badly. It must not cost
-        # the caller the observation it was derived from: `add` has already committed that source
+        # the caller the observation it was derived from: add has already committed that source
         # by the time formation runs, so raising here fails a write that in fact succeeded, and
         # the retry re-runs formation and fails again -- the memory could never be added at all.
         # Structural damage to the envelope still raises below; only individual proposals are
@@ -659,19 +654,19 @@ def _cited_ids(value: object, evidence: Sequence[MemoryRecord]) -> tuple[str, ..
     return tuple(resolved)
 
 
-def _vision_captions(content: str, count: int) -> tuple[str, ...]:
+def vision_captions(content: str, count: int) -> tuple[str, ...]:
     """Accept only one non-empty caption per visual, in order, and nothing else."""
     try:
         payload = json.loads(content)
     except (json.JSONDecodeError, RecursionError):
-        raise _invalid_json_response("vision description", "describe") from None
+        raise invalid_json_response("vision description", "describe") from None
     values = payload.get("descriptions") if isinstance(payload, Mapping) else None
     if (
         not isinstance(values, list)
         or len(values) != count
         or any(not isinstance(value, str) or not value.strip() for value in values)
     ):
-        raise _invalid_json_response("vision description", "describe")
+        raise invalid_json_response("vision description", "describe")
     return tuple(_caption_lines(cast(str, value)) for value in values)
 
 
@@ -834,10 +829,10 @@ def _answer_result(
             abstention_reason=reason,
         )
     return AnswerResult(
-        # The marker is an instrument, not a sentence. Callers read `answer` to show or speak it,
-        # so a refusal reports the prose it reported before the marker existed; `abstained` and
-        # `abstention_reason` carry the machine-readable signal. Streaming yields raw deltas and
-        # so still surfaces the token -- a consumer that streams should render on `abstained`.
+        # The marker is an instrument, not a sentence. Callers read answer to show or speak it,
+        # so a refusal reports the prose it reported before the marker existed; abstained and
+        # abstention_reason carry the machine-readable signal. Streaming yields raw deltas and
+        # so still surfaces the token -- a consumer that streams should render on abstained.
         answer=prompts.UNKNOWN_ANSWER if reason is not None and _marker_in(answer) else answer,
         hits=hits,
         abstained=reason is not None,
@@ -850,10 +845,10 @@ def _forced_abstention(
     retrieved: Sequence[SearchHit],
     grounded: Sequence[SearchHit],
 ) -> AbstentionReason | None:
-    """Report the insufficiency a `best_effort` guess was made under.
+    """Report the insufficiency a best_effort guess was made under.
 
-    Under `strict` an ungrounded question never reaches the model, so the reason is returned
-    before the call. Under `best_effort` the model answers anyway, and the reason is known here
+    Under strict an ungrounded question never reaches the model, so the reason is returned
+    before the call. Under best_effort the model answers anyway, and the reason is known here
     from the same two sequences rather than from whether the model remembered its marker.
     """
     if answer_policy == "strict" or grounded:
@@ -886,7 +881,7 @@ def _abstention_reason(answer: str) -> AbstentionReason | None:
 
     The bracketed marker counts anywhere, because the brackets are what make it a machine token
     rather than a word. The bare token counts only as the entire answer: evidence itself can
-    contain `insufficient_evidence` -- a runbook sentence, a logged status -- and quoting it in a
+    contain insufficient_evidence -- a runbook sentence, a logged status -- and quoting it in a
     real answer must not read as a refusal. The English sentinel is still honored for a model that
     ignores the marker, but only anchored at the start: a hedge inside a real answer is not a
     refusal, and over-reporting would corrupt the meter as badly as the exact-equality check it

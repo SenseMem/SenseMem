@@ -31,8 +31,8 @@ IDENTITY_MEMORY_SQL = """
 # The same membership asked the other way round -- which memories one identity is in -- resolved
 # once from three bound copies of the canonical ID. Correlating the projection statement against
 # the row being filtered instead made SQLite re-run its three-branch UNION for every candidate
-# `memory_records` row, and for every embedding in the store on a merge. The two directions are
-# one membership rule; `test_identity_membership_sql_agrees_in_both_directions` pins that.
+# memory_records row, and for every embedding in the store on a merge. The two directions are
+# one membership rule; test_identity_membership_sql_agrees_in_both_directions pins that.
 IDENTITY_MEMORIES_SQL = """
     SELECT ms.memory_id AS memory_id
     FROM memory_semantics AS ms

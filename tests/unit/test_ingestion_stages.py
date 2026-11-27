@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 from _feature_support import TinyEmbedder
-from test_formation_history import HistoryFormer
+from fixtures.formation import HistoryFormer
 
 from sensemem import (
     Blob,
@@ -173,7 +173,6 @@ def test_stage_failure_is_safe_and_does_not_commit_batch(tmp_path: Path, failure
 
 def test_failed_settlement_keeps_capture_retryable(tmp_path: Path) -> None:
     def fail(input: ModelInput) -> StageResult:
-        del input
         raise RuntimeError("private provider body")
 
     stage = RecordingStage(fail)

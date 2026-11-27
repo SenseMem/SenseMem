@@ -76,18 +76,18 @@ class RecallReads:
         """Return every active memory whose content contains the terms, oldest first.
 
         This is the exhaustive counterpart to search: the answer is defined by the predicate and
-        not by a relevance order, so a caller can say "these are all of them" up to `max_rows`.
-        Matching is an NFKC case-folded substring over `content`, which already carries
+        not by a relevance order, so a caller can say "these are all of them" up to max_rows.
+        Matching is an NFKC case-folded substring over content, which already carries
         transcripts, visual descriptions and speech prose, so a media memory is reachable by the
         words its own record holds. No terms means the predicate is the time window alone.
 
-        Valid time, known time, visibility, place and identity are applied before `max_rows`.
+        Valid time, known time, visibility, place and identity are applied before max_rows.
         The temporal predicate is shared with authoritative hydration. Metric scope remains a
-        hydration filter, so `RecallRead.selected` still distinguishes truncation from an empty
+        hydration filter, so RecallRead.selected still distinguishes truncation from an empty
         result when that filter drops selected rows.
 
-        `entity_id` is an additional named-person predicate. It intersects the caller's
-        `identity_id` scope before the row bound; a record can belong to both people.
+        entity_id is an additional named-person predicate. It intersects the caller's
+        identity_id scope before the row bound; a record can belong to both people.
         """
         folded = recall_terms(terms)
         require_recall_window(occurred_from, occurred_until)
@@ -137,8 +137,8 @@ class RecallReads:
         """Return every active memory whose event time overlaps the window, oldest first.
 
         The window is half-open, start inclusive, and it is required: a window primitive with no
-        bounds is the whole store, which is `list_memories`. A memory with no `occurred_at` is
-        placed by its `created_at`, the same substitution the answer prompt describes, so a
+        bounds is the whole store, which is list_memories. A memory with no occurred_at is
+        placed by its created_at, the same substitution the answer prompt describes, so a
         corpus that never states event times still has a timeline.
         """
         if occurred_from is None or occurred_until is None:
@@ -174,8 +174,8 @@ class RecallReads:
     ) -> RecallRead:
         """Return the active memories adjacent to the anchors in corpus order, oldest first.
 
-        Corpus order is `(effective event time, rowid)`. `memory_records` is a rowid table and
-        every adapter writes one turn per `add`, in turn order, so the rowid breaks ties between
+        Corpus order is (effective event time, rowid). memory_records is a rowid table and
+        every adapter writes one turn per add, in turn order, so the rowid breaks ties between
         records that share a timestamp by the order they arrived -- which is what "what did I say
         just before that" asks for. The anchors themselves are not returned: the step that found
         them already holds them.
@@ -187,7 +187,7 @@ class RecallReads:
         if not anchors:
             return RecallRead()
         # ponytail: two statements per anchor, each an index-less ordered scan bounded by
-        # `before`/`after`. Anchors are bounded by the caller's plan; if a plan ever wants
+        # before/after. Anchors are bounded by the caller's plan; if a plan ever wants
         # hundreds, a single window-function query over the whole ordered set is the upgrade.
         found: list[tuple[str, int, str]] = []
         with self._connections.read_transaction() as connection:
@@ -256,16 +256,16 @@ class RecallReads:
 
         The link is a column the kernel wrote -- the capture an observation was committed under,
         a recognized person, a symbolic place, a claim's lineage, an evidence edge -- so this
-        read costs one query per edge and no model call. It is the counterpart to `neighbor_
-        memories`: that one follows corpus order, which every corpus has and which therefore says
+        read costs one query per edge and no model call. It is the counterpart to neighbor_
+        memories: that one follows corpus order, which every corpus has and which therefore says
         nothing about a record beyond when it arrived; this one follows the structure the store
         actually knows about the records.
 
-        The anchors are excluded, because the step that found them already holds them. `ceiling`
+        The anchors are excluded, because the step that found them already holds them. ceiling
         drops an edge that links to more records than it allows, per edge and not per read, and
-        names it in `dropped`: an edge that selects the corpus carries no information about the
+        names it in dropped: an edge that selects the corpus carries no information about the
         question, and gating the edges together would let one such edge discard a selective one
-        beside it. Scope and hydration are `read_memories`', exactly as every other recall read.
+        beside it. Scope and hydration are read_memories', exactly as every other recall read.
         """
         anchors = tuple(dict.fromkeys(memory_ids))
         for memory_id in anchors:
@@ -305,7 +305,7 @@ class RecallReads:
             )
         selected = ordered[:max_rows]
         # Counted over the rows this read returns, not over what the edges linked to. Scope,
-        # corpus order and `max_rows` all drop rows between the two, and the caller states the
+        # corpus order and max_rows all drop rows between the two, and the caller states the
         # attribution to a reader: an edge whose rows all fell out must not be named as the
         # reason a row is there.
         counts = {

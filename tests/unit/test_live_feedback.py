@@ -7,11 +7,15 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING, Self, cast
+from typing import Self, cast
 
 import pytest
 from _feature_support import TinyEmbedder
 
+from examples.live import feedback as module
+from examples.live.feedback import MemoryFeedback
+from examples.live.memories import memory_cards
+from examples.live.recall import LiveRecall
 from sensemem import (
     AbstentionReason,
     AnswerPolicy,
@@ -31,9 +35,6 @@ from sensemem import (
     RecordKind,
     SearchHit,
 )
-
-if TYPE_CHECKING:
-    from examples.live.feedback import MemoryFeedback
 
 SOURCE = "live:" + "a" * 32
 NOW = datetime(2026, 11, 17, tzinfo=timezone.utc)
@@ -81,11 +82,6 @@ class Reviewer:
         self.release.set()
 
 
-@pytest.fixture(autouse=True)
-def example_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
-
-
 @pytest.fixture
 async def memory(tmp_path: Path) -> AsyncIterator[tuple[AsyncMemory, Reviewer]]:
     reviewer = Reviewer()
@@ -110,7 +106,6 @@ async def event(
     revision: int = 0,
     kind: str = "sensory_recall",
 ) -> dict[str, object]:
-    from examples.live.memories import memory_cards
 
     return {
         "type": kind,
@@ -130,8 +125,6 @@ async def drain(feedback: MemoryFeedback) -> None:
 async def test_review_is_nonblocking_coalesces_pending_and_preserves_original_media(
     memory: tuple[AsyncMemory, Reviewer],
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
-    from examples.live.recall import LiveRecall
 
     store, reviewer = memory
     original = b"original video packets, including the microphone"
@@ -170,7 +163,7 @@ async def test_review_is_nonblocking_coalesces_pending_and_preserves_original_me
         assert results[0]["facts"] == [
             {
                 "memory_id": first.id,
-                "text": "历史记录原片复核(模型): 钥匙放在蓝色盒子里。",
+                "text": "History record source review (model): 钥匙放在蓝色盒子里。",
                 "occurred_at": NOW.isoformat(),
                 "verification": "source_review",
                 "asset_ids": [first.assets[0].id],
@@ -186,7 +179,6 @@ async def test_review_is_nonblocking_coalesces_pending_and_preserves_original_me
 async def test_slow_original_review_gets_delivery_ttl_without_redating_the_source(
     memory: tuple[AsyncMemory, Reviewer], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live import feedback as module
 
     store, reviewer = memory
     record = await store.add(
@@ -227,7 +219,6 @@ async def test_slow_original_review_gets_delivery_ttl_without_redating_the_sourc
 async def test_new_revision_drops_old_review_and_accepts_only_current_source(
     memory: tuple[AsyncMemory, Reviewer],
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
 
     store, reviewer = memory
     first = await store.add(("old summary", Blob(b"old original", "audio/wav")))
@@ -254,7 +245,7 @@ async def test_new_revision_drops_old_review_and_accepts_only_current_source(
         assert published[0]["facts"] == [
             {
                 "memory_id": latest.id,
-                "text": "历史记录文本/未核实: new authoritative record",
+                "text": "History record text/unverified: new authoritative record",
                 "occurred_at": None,
                 "verification": "record_text",
                 "asset_ids": [],
@@ -268,7 +259,6 @@ async def test_new_revision_drops_old_review_and_accepts_only_current_source(
 async def test_forgetting_during_review_withdraws_fact_without_host_revision_hook(
     memory: tuple[AsyncMemory, Reviewer],
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
 
     store, reviewer = memory
     record = await store.add(("unverified summary", Blob(b"historical video", "video/mp4")))
@@ -296,7 +286,6 @@ async def test_forgetting_during_review_withdraws_fact_without_host_revision_hoo
 async def test_pending_and_current_agent_outputs_cannot_feed_back_as_external_facts(
     memory: tuple[AsyncMemory, Reviewer],
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
 
     store, reviewer = memory
     pending = await store.capture("still awaiting native settlement")
@@ -325,7 +314,7 @@ async def test_pending_and_current_agent_outputs_cannot_feed_back_as_external_fa
         assert published[-1]["facts"] == [
             {
                 "memory_id": prior_reply.id,
-                "text": "Agent记录文本/未核实: I suggested bringing a notebook.",
+                "text": "Agent record text/unverified: I suggested bringing a notebook.",
                 "occurred_at": None,
                 "verification": "record_text",
                 "asset_ids": [],
@@ -339,7 +328,6 @@ async def test_pending_and_current_agent_outputs_cannot_feed_back_as_external_fa
 async def test_native_hidden_and_retired_state_overrides_stale_visible_hit_cards(
     memory: tuple[AsyncMemory, Reviewer],
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
 
     store, reviewer = memory
     source = await store.add("A single patient conversation.")
@@ -381,7 +369,6 @@ async def test_native_hidden_and_retired_state_overrides_stale_visible_hit_cards
 async def test_feedback_bounds_text_and_records_without_promoting_excerpts_to_verified_facts(
     memory: tuple[AsyncMemory, Reviewer],
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
 
     store, reviewer = memory
     records = tuple(
@@ -402,7 +389,7 @@ async def test_feedback_bounds_text_and_records_without_promoting_excerpts_to_ve
         for fact in facts:
             text = fact["text"]
             assert isinstance(text, str)
-            assert text.startswith("历史记录文本/未核实: ") and text.endswith("…")
+            assert text.startswith("History record text/unverified: ") and text.endswith("…")
             total += len(text)
             assert fact["verification"] == "record_text"
             assert fact["asset_ids"] == []
@@ -416,7 +403,6 @@ async def test_feedback_bounds_text_and_records_without_promoting_excerpts_to_ve
 async def test_empty_abstained_and_failed_reviews_have_explicit_safe_outcomes(
     memory: tuple[AsyncMemory, Reviewer], outcome: str
 ) -> None:
-    from examples.live.feedback import MemoryFeedback
 
     store, reviewer = memory
     record = await store.add(("unverified synopsis", Blob(b"original source", "video/mp4")))

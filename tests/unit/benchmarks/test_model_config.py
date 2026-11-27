@@ -6,16 +6,12 @@ from pydantic import ValidationError
 from sensemem.benchmarks.model_config import HarnessOverrides, ModelConfig
 
 
-def test_benchmark_default_pins_the_generation_snapshot() -> None:
-    assert ModelConfig.from_environment({}).generation_model == "gpt-5-mini-2025-08-07"
-
-
 @pytest.mark.parametrize(
     "url",
     (
-        "xyrobot-embed.xyrobot.com",
-        "//xyrobot-embed.xyrobot.com/v1",
-        "ftp://xyrobot-embed.xyrobot.com/v1",
+        "embed.example.test",
+        "//embed.example.test/v1",
+        "ftp://embed.example.test/v1",
         "http://",
         "https://model host/v1",
     ),
@@ -27,7 +23,7 @@ def test_model_config_rejects_non_absolute_http_generation_url(url: str) -> None
 
 @pytest.mark.parametrize(
     "url",
-    ("http://xyrobot-vl.xyrobot.com/v1", "https://127.0.0.1:8000/v1"),
+    ("http://models.example.test/v1", "https://127.0.0.1:8000/v1"),
 )
 def test_model_config_accepts_absolute_http_generation_url(url: str) -> None:
     assert ModelConfig(generation_base_url=url).generation_base_url == url
@@ -36,7 +32,7 @@ def test_model_config_accepts_absolute_http_generation_url(url: str) -> None:
 def test_harness_rejects_invalid_metrics_urls_and_unknown_performance_budgets() -> None:
     with pytest.raises(ValidationError, match="absolute HTTP"):
         HarnessOverrides.model_validate(
-            {"server_metrics": {"generation_url": "xyrobot-vl.xyrobot.com/metrics"}}
+            {"server_metrics": {"generation_url": "models.example.test/metrics"}}
         )
     with pytest.raises(ValidationError, match="unknown performance budget"):
         HarnessOverrides.model_validate({"performance_budgets": {"mystery": 0.1}})

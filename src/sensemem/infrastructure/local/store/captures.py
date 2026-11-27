@@ -28,7 +28,7 @@ from sensemem.records import PendingCapture
 
 
 class CaptureQueue:
-    """Rows that owe a later `settle()`."""
+    """Rows that owe a later settle()."""
 
     def __init__(
         self,
@@ -174,25 +174,19 @@ class CaptureQueue:
         memory_id: str,
         error: str,
         *,
-        enqueued_at: datetime | None = None,
+        enqueued_at: datetime,
     ) -> bool:
-        """Count one failed settlement and store its reason, leaving the row queued."""
+        """Count a failed settlement only while the version it processed is queued."""
         require_identifier(memory_id, "memory_id")
-        if enqueued_at is not None:
-            require_aware(enqueued_at, "enqueued_at")
-        version = "" if enqueued_at is None else "AND enqueued_at = ?"
+        require_aware(enqueued_at, "enqueued_at")
         with self._connections.transaction() as connection:
             updated = connection.execute(
-                f"""
+                """
                 UPDATE capture_queue
                 SET attempts = attempts + 1, last_error = ?
-                WHERE memory_id = ? {version}
+                WHERE memory_id = ? AND enqueued_at = ?
                 """,
-                (
-                    error.strip() or None,
-                    memory_id,
-                    *(() if enqueued_at is None else (datetime_text(enqueued_at),)),
-                ),
+                (error.strip() or None, memory_id, datetime_text(enqueued_at)),
             ).rowcount
         return bool(updated)
 
@@ -228,10 +222,10 @@ class CaptureQueue:
     ) -> tuple[PendingCapture, ...]:
         """Return queued captures in enqueue order, optionally restricted or attempt-capped.
 
-        `max_attempts` excludes rows that already failed that many times. They stay queued and
+        max_attempts excludes rows that already failed that many times. They stay queued and
         stay visible, so one poisoned record cannot block every record enqueued after it.
 
-        `awaiting` is read from the vectors themselves: a row whose part-0 embedding exists is
+        awaiting is read from the vectors themselves: a row whose part-0 embedding exists is
         already searchable and owes formation only, which is the same test settlement applies
         before deciding whether to re-run the model stages.
         """
@@ -302,7 +296,7 @@ class CaptureQueue:
                     ).fetchall()
                 )
         # Each chunk is only oldest-first within itself, so the chunks are merged rather than
-        # concatenated: stopping at the first `limit` rows would starve ids past the 900th
+        # concatenated: stopping at the first limit rows would starve ids past the 900th
         # forever, however long they had been queued.
         queued.sort(key=lambda row: (row.enqueued_at, row.memory_id))
         return tuple(queued[:limit])

@@ -7,9 +7,8 @@ from pathlib import Path
 from threading import Event
 
 import pytest
-from test_automatic_routing import ALL, Answerer, Describer, Embedder, Transcriber
-from test_capability_composition import RecordingAnswerer
-from test_memory_api import _FakeSpeech
+from fixtures.control import FakeSpeech as _FakeSpeech
+from fixtures.routing import ALL, Answerer, Describer, Embedder, RecordingAnswerer, Transcriber
 
 from sensemem import (
     AssetRef,

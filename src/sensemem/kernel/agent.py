@@ -12,7 +12,7 @@ from sensemem.tools import ToolRegistry
 class AgentRunner:
     """Run optional tool reasoning without storage authority or resource ownership.
 
-    The caller owns both ``backend`` and ``tools``. A registry may therefore be shared with
+    The caller owns both backend and tools. A registry may therefore be shared with
     a fixed pipeline or Memory without this runner closing it or any nested model twice.
     """
 

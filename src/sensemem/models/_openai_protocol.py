@@ -6,13 +6,13 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from re import fullmatch
-from typing import Literal, cast
+from typing import Literal
 
 from sensemem._validation import nonempty_text
 from sensemem.exceptions import ModelError, ValidationError
-from sensemem.models._openai_media import _image_transport_recipe
+from sensemem.models._openai_media import image_transport_recipe
 from sensemem.models._openai_schemas import SchemaName, response_schema
-from sensemem.models._openai_telemetry import _member, _record_provider_request_id
+from sensemem.models._openai_telemetry import _member, record_provider_request_id
 from sensemem.prompts import generation as prompts
 from sensemem.types import Modality
 
@@ -21,8 +21,8 @@ def reasoning_model(model: str) -> bool:
     if model.startswith("gpt-5-chat"):
         return False
     return (
-        model in {"gpt-5", "gpt-6"}
-        or model.startswith(("gpt-5-", "gpt-5.", "gpt-6-", "gpt-6."))
+        model == "gpt-5"
+        or model.startswith(("gpt-5-", "gpt-5."))
         or any(model == family or model.startswith(f"{family}-") for family in ("o1", "o3", "o4"))
     )
 
@@ -36,8 +36,6 @@ def sampling_supported(model: str, extra_body: Mapping[str, object] | None) -> b
         model == family or model.startswith(f"{family}-")
         for family in ("gpt-5", "gpt-5-mini", "gpt-5-nano", "o1", "o3", "o4")
     )
-    if model.startswith(("gpt-6-astra", "gpt-6.1-sol")):
-        return False
     default = "none" if fullmatch(r"gpt-5\.[12](?:-\d{4}-\d{2}-\d{2})?", model) else None
     return not original and (extra_body or {}).get("reasoning_effort", default) == "none"
 
@@ -84,7 +82,7 @@ def output_limit_parameter(model: str) -> str:
     return "max_completion_tokens" if reasoning_model(model) else "max_tokens"
 
 
-_VISION_SEED = 0
+VISION_SEED = 0
 
 
 _QUOTA_ERRORS = frozenset(
@@ -101,10 +99,10 @@ _QUOTA_ERRORS = frozenset(
 _SAFETY_ERRORS = frozenset({"content_policy_violation", "content_filter"})
 
 
-def _schema_recipe(name: SchemaName) -> str:
+def schema_recipe(name: SchemaName) -> str:
     recipe: dict[str, object] = {
         "schema": response_schema(name),
-        "instruction": prompts._STRICT_JSON_INSTRUCTION,
+        "instruction": prompts.STRICT_JSON_INSTRUCTION,
     }
     if name == "formation":
         # The schema varies with each request; persist the strategy rather than one batch.
@@ -118,13 +116,15 @@ def _text_sequence(value: object, name: str) -> tuple[str, ...]:
         return ()
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValidationError(f"{name} must be a sequence of non-empty strings")
-    values = tuple(value)
-    if any(not isinstance(item, str) or not item.strip() for item in values):
-        raise ValidationError(f"{name} must be a sequence of non-empty strings")
-    return tuple(cast(str, item).strip() for item in values)
+    result: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValidationError(f"{name} must be a sequence of non-empty strings")
+        result.append(entry.strip())
+    return tuple(result)
 
 
-def _transcription_context(
+def transcription_context(
     prompt: object,
     keywords: object,
     languages: object,
@@ -139,7 +139,7 @@ def _transcription_context(
     return normalized_prompt, normalized_keywords, normalized_languages
 
 
-def _default_transcription_space(
+def default_transcription_space(
     model: str,
     *,
     prompt: str | None,
@@ -160,7 +160,7 @@ def _default_transcription_space(
     return f"{model}:asr-v1:{digest}"
 
 
-def _default_vision_space(
+def default_vision_space(
     model: str,
     *,
     capabilities: frozenset[Modality],
@@ -183,7 +183,7 @@ def _default_vision_space(
             "source_capture_metadata": "exif-gps-time-v1",
             **({"video_frames": video_frames} if video_frames != 4 else {}),
             **(
-                {"image_transport": _image_transport_recipe(image_max_pixels)}
+                {"image_transport": image_transport_recipe(image_max_pixels)}
                 if image_max_pixels is not None
                 else {}
             ),
@@ -197,7 +197,7 @@ def _default_vision_space(
     return f"{model}:sensemem-vision-v2:{digest}"
 
 
-def _default_reasoning_recipe(
+def default_reasoning_recipe(
     model: str,
     *,
     prompt: str,
@@ -211,7 +211,7 @@ def _default_reasoning_recipe(
 ) -> str:
     """Identify every control that changes what this reasoning call proposes.
 
-    `version` is bumped by hand when a prompt edit is meant to be a new recipe. The digest below
+    version is bumped by hand when a prompt edit is meant to be a new recipe. The digest below
     already changes with the prompt, so the bump is a marker for the reader, not the mechanism.
     """
     payload = json.dumps(
@@ -233,7 +233,7 @@ def _default_reasoning_recipe(
     return f"{model}:{version}:{digest}"
 
 
-def _default_formation_space(
+def default_formation_space(
     model: str,
     *,
     capabilities: frozenset[Modality],
@@ -243,7 +243,7 @@ def _default_formation_space(
     extra_body: Mapping[str, object] | None,
     image_max_pixels: int | None = None,
 ) -> str:
-    recipe = _default_reasoning_recipe(
+    recipe = default_reasoning_recipe(
         model,
         prompt=prompts._FORMATION_SYSTEM_PROMPT,
         label="formation",
@@ -253,15 +253,15 @@ def _default_formation_space(
         max_tokens=max_tokens,
         extra_body=extra_body,
     )
-    return (
-        recipe if image_max_pixels is None else recipe + _image_transport_recipe(image_max_pixels)
-    )
+    return recipe if image_max_pixels is None else recipe + image_transport_recipe(image_max_pixels)
 
 
-def _embedding_format(value: object) -> Literal["input", "messages"]:
-    if not isinstance(value, str) or value not in ("input", "messages"):
-        raise ValidationError("embedding_request_format must be 'input' or 'messages'")
-    return cast(Literal["input", "messages"], value)
+def embedding_format(value: object) -> Literal["input", "messages"]:
+    if value == "input":
+        return "input"
+    if value == "messages":
+        return "messages"
+    raise ValidationError("embedding_request_format must be 'input' or 'messages'")
 
 
 def _provider_reason(error: Exception) -> str | None:
@@ -269,22 +269,18 @@ def _provider_reason(error: Exception) -> str | None:
 
     An unrecognized failure stays unclassified rather than being guessed into a retryable reason.
     """
-    _record_provider_request_id(error)
+    record_provider_request_id(error)
     import httpx2
     import openai
 
-    # An SSE error arrives after HTTP 200; the SDK raises APIError without a status subclass.
-    # TokenHub documents 502001 as a retryable upstream service failure.
-    if isinstance(error, openai.APIError) and error.code in ("502001", 502001):
-        return "provider_unavailable"
     if isinstance(error, openai.RateLimitError):
         # The SDK raises this for every 429, exhausted billing included, and an agent that retries
-        # exhausted billing never stops. ``APIError.code`` is the SDK's own parsed error body, so
+        # exhausted billing never stops. APIError.code is the SDK's own parsed error body, so
         # the permanent case is separated by the provider's code rather than by its message.
         return "quota_exhausted" if error.code in _QUOTA_ERRORS else "rate_limited"
     if _is_safety_rejection(error):
         return "model_refused"
-    if _is_context_length_rejection(error):
+    if is_context_length_rejection(error):
         return "context_length_exceeded"
     if _is_generation_abort_rejection(error):
         return "provider_unavailable"
@@ -292,7 +288,7 @@ def _provider_reason(error: Exception) -> str | None:
     # as APIStatusError rather than BadRequestError; status is authoritative in either form.
     if isinstance(error, openai.APIStatusError) and error.status_code == 413:
         return "payload_too_large"
-    # ``APITimeoutError`` subclasses ``APIConnectionError``, so the narrower class is checked first.
+    # APITimeoutError subclasses APIConnectionError, so the narrower class is checked first.
     for provider_error, reason in (
         (openai.AuthenticationError, "auth_failed"),
         (openai.APITimeoutError, "timeout"),
@@ -339,7 +335,7 @@ def _is_safety_rejection(error: Exception) -> bool:
     )
 
 
-def _is_context_length_rejection(error: BaseException | None) -> bool:
+def is_context_length_rejection(error: BaseException | None) -> bool:
     """Prefer the provider's context error code over compatible-server message fallback.
 
     Compatible endpoints with no semantic code declare a maximum model or context length;
@@ -359,14 +355,14 @@ def _is_context_length_rejection(error: BaseException | None) -> bool:
     )
 
 
-def _rejected_media_modality(error: Exception) -> Modality | None:
+def rejected_media_modality(error: Exception) -> Modality | None:
     """Allow technical duration fallback only; never retry a content-safety refusal."""
     import openai
 
     if (
         not isinstance(error, openai.BadRequestError)
         or error.code not in (None, 400, "400")
-        or _is_context_length_rejection(error)
+        or is_context_length_rejection(error)
         or _provider_reason(error) == "model_refused"
     ):
         return None
@@ -384,7 +380,7 @@ def _rejected_media_modality(error: Exception) -> Modality | None:
     return None
 
 
-def _require_capabilities(
+def require_capabilities(
     operation: str,
     required: frozenset[Modality],
     supported: frozenset[Modality],

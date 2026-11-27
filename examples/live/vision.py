@@ -315,7 +315,7 @@ class LiveVision:
             frame, camera_epoch = self.latest, self.camera_epoch
             revision = self.memory_revision
             parts: list[str | Blob] = [
-                self.state.user_text or "与刚刚听到或看到的内容有关的过去经历"
+                self.state.user_text or "Past experiences related to what was just heard or seen"
             ]
             times: list[datetime] = []
             if frame is not None:

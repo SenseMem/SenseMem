@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from threading import Event
-from typing import Any
 
 import httpx2 as httpx
 import pytest
@@ -196,7 +195,7 @@ def test_original_metadata_survives_resized_transport_without_mutating_source(
     asset = _photo(tmp_path)
     assert asset.path is not None
     original = asset.path.read_bytes()
-    seen: list[dict[str, Any]] = []
+    seen: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -233,9 +232,13 @@ def test_original_metadata_survives_resized_transport_without_mutating_source(
                 model.answer(ModelInput(text="Where was this captured?"), (_hit(asset),)).answer
                 == "observed"
             )
+    messages = seen[0]["messages"]
+    assert isinstance(messages, list)
+    user_content = messages[1]["content"]
+    assert isinstance(user_content, list)
     blocks = [
         json.loads(p["text"])
-        for p in seen[0]["messages"][1]["content"]
+        for p in user_content
         if p["type"] == "text" and p["text"].startswith("{")
     ]
     if operation == "describe":

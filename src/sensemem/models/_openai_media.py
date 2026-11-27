@@ -45,7 +45,7 @@ _ASR_SAMPLE_RATE = 16_000
 
 _WAV_TYPE = "audio/wav"
 
-_GENERATION_MODALITY_BY_PART_TYPE = {
+GENERATION_MODALITY_BY_PART_TYPE = {
     "image_url": Modality.IMAGE,
     "video_url": Modality.VIDEO,
     "input_audio": Modality.AUDIO,
@@ -53,7 +53,7 @@ _GENERATION_MODALITY_BY_PART_TYPE = {
 
 
 @contextmanager
-def _transcription_file(
+def transcription_file(
     asset: AssetRef,
     modality: Modality,
     media_type: str,
@@ -71,13 +71,13 @@ def _transcription_file(
 def _demuxed_audio(path: Path) -> BytesIO | None:
     """Return a video's complete audio track as 16 kHz mono WAV, or None when it has none.
 
-    `/v1/audio/transcriptions` accepts flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav and webm, while
+    /v1/audio/transcriptions accepts flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav and webm, while
     SenseMem also ingests .mkv, .mov, .avi and .ogv, so forwarding the container would have the
     provider reject every video format it does not list, and even for .mp4 it would spend the
     request size limit on frames the endpoint discards. Only the audio stream is read, so the
     sparse-video-track interleaving limit that applies when muxing does not arise here.
 
-    Unlike `_video_frame_urls`, a failure here cannot fall back to the provider: with the frames
+    Unlike _video_frame_urls, a failure here cannot fall back to the provider: with the frames
     the provider still receives the media, whereas skipping this demux would drop the speech
     silently. So this raises, and one missing decoder fails the write before inference.
     """
@@ -114,7 +114,7 @@ def _demuxed_audio(path: Path) -> BytesIO | None:
     return encoded
 
 
-def _vision_asset_parts(
+def vision_asset_parts(
     asset: AssetRef,
     cache: dict[str, str],
     *,
@@ -138,40 +138,35 @@ def _vision_asset_parts(
     return tuple({"type": "image_url", "image_url": {"url": frame}} for frame in frames)
 
 
-def _has_video(inputs: Sequence[ModelInput]) -> bool:
+def has_video(inputs: Sequence[ModelInput]) -> bool:
     return any(asset.modality is Modality.VIDEO for value in inputs for asset in value.assets)
 
 
-def _generation_modalities(
+def generation_modalities(
     content: str | Sequence[Mapping[str, object]],
 ) -> frozenset[Modality]:
     modalities = {Modality.TEXT}
     if not isinstance(content, str):
         modalities.update(
-            _GENERATION_MODALITY_BY_PART_TYPE[kind]
+            GENERATION_MODALITY_BY_PART_TYPE[kind]
             for part in content
             if isinstance((kind := part.get("type")), str)
-            and kind in _GENERATION_MODALITY_BY_PART_TYPE
+            and kind in GENERATION_MODALITY_BY_PART_TYPE
         )
     return frozenset(modalities)
 
 
-def _media_labels(question: ModelInput, hits: Sequence[SearchHit]) -> dict[str, str]:
-    """Number each distinct media asset in order of first appearance: `attachment 1`, `attachment 2`.
+def media_labels(question: ModelInput, hits: Sequence[SearchHit]) -> dict[str, str]:
+    """Number each distinct media asset in order of first appearance: attachment 1, attachment 2.
 
     The label is what the request text uses to say which attached media belongs to which memory,
     and which memories share one. It replaces the asset ID -- a content hash -- that used to sit
-    there under the key `assets`, because a reader asked for "the image ids" took those hashes to
-    be the answer: on ATM-Bench-Hard, 2 of 12 list questions whose retrieval was otherwise
-    complete were answered with asset hashes instead of the identifiers in `metadata`. A hash
-    identifies nothing to the caller and is not an identifier the reader should ever repeat. The
-    label deliberately does not name the media kind: labelled `image 1`, the same reader answered
-    "image 1, image 2" to the same question, because the words matched the ones it was asked for.
-    `_answer_parts` writes the same label as a text part right before the asset's media parts,
-    which is what makes the number mean something when a video arrives as several stills. Both
-    consumers call this function on the same question and hits rather than sharing a mapping:
-    it is deterministic, so they agree by construction, and neither signature can be handed a
-    mapping built from something else.
+    there under the key assets, so a reader asked for image identifiers does not repeat content
+    hashes instead of metadata identifiers. The label deliberately omits the media kind so it is
+    not confused with domain identifiers. _answer_parts writes the same label as a text part right
+    before the asset's media parts, which makes the number clear when a video arrives as several
+    stills. Both consumers call this function on the same question and hits rather than sharing a
+    mapping, so they agree by construction.
     """
     labels: dict[str, str] = {}
     for asset in (*question.assets, *(asset for hit in hits for asset in hit.assets)):
@@ -180,7 +175,7 @@ def _media_labels(question: ModelInput, hits: Sequence[SearchHit]) -> dict[str, 
     return labels
 
 
-def _transport_label(
+def transport_label(
     label: str,
     sampled: Sequence[Mapping[str, object]] | None,
     modality: Modality | None,
@@ -200,7 +195,7 @@ def _source_capture_metadata(
 ) -> dict[str, dict[str, object]]:
     """Expose only whitelisted metadata from integrity-checked original image bytes."""
     capture: dict[str, dict[str, object]] = {}
-    for asset in _require_consistent_assets(assets):
+    for asset in require_consistent_assets(assets):
         if asset.modality is not Modality.IMAGE:
             continue
         _modality, _media_type, path = resolved_asset(asset)
@@ -232,10 +227,10 @@ def _source_capture_metadata(
 
 def _require_inline_size(assets: Sequence[AssetRef]) -> None:
     """Bound the base64 a request will carry, checking every asset is present and unchanged."""
-    _require_verified_inline_size(_require_asset_integrity(assets))
+    require_verified_inline_size(_require_asset_integrity(assets))
 
 
-def _require_verified_inline_size(
+def require_verified_inline_size(
     assets: Sequence[tuple[AssetRef, int]],
 ) -> None:
     size = 0
@@ -278,7 +273,7 @@ def _require_asset_integrity(
     return tuple(verified)
 
 
-def _image_transport_recipe(max_pixels: int) -> str:
+def image_transport_recipe(max_pixels: int) -> str:
     return f":image-rgb-jpeg85-s2-lanczos-v1:{max_pixels}:{_MAX_INLINE_MODEL_ITEM_BYTES}"
 
 
@@ -291,13 +286,13 @@ def _image_transport_parts(
     if max_pixels is None:
         return {}
     parts: dict[str, tuple[dict[str, object], ...]] = {}
-    for asset in _require_consistent_assets(assets):
+    for asset in require_consistent_assets(assets):
         if asset.modality is not Modality.IMAGE:
             continue
         url = _bounded_image_url(asset, max_pixels, capture_metadata=capture_metadata)
         if url is not None:
             parts[asset.id] = ({"type": "image_url", "image_url": {"url": url}},)
-            _require_inline_media_parts(tuple(part for group in parts.values() for part in group))
+            require_inline_media_parts(tuple(part for group in parts.values() for part in group))
     return parts
 
 
@@ -376,7 +371,7 @@ def _bounded_image_url(  # noqa: C901 - reuse source headers while bounding imag
     )
 
 
-def _embedding_video_sampling(
+def embedding_video_sampling(
     assets: Sequence[AssetRef],
     *,
     image_parts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
@@ -389,7 +384,7 @@ def _embedding_video_sampling(
         and _inline_item_size(asset, size) > _MAX_INLINE_MODEL_ITEM_BYTES
     )
     # Sampling is a property of the source, never of the batch it happens to share.
-    _require_verified_inline_size(
+    require_verified_inline_size(
         tuple(
             value
             for value in verified
@@ -400,7 +395,7 @@ def _embedding_video_sampling(
     return sampled
 
 
-def _require_inline_media_parts(parts: Sequence[Mapping[str, object]]) -> None:
+def require_inline_media_parts(parts: Sequence[Mapping[str, object]]) -> None:
     total = 0
     for part in parts:
         kind = part.get("type")
@@ -425,7 +420,7 @@ def _require_inline_media_parts(parts: Sequence[Mapping[str, object]]) -> None:
 
 
 def _encoded_size(size: int) -> int:
-    """Return the base64 length the request carries for a media file of ``size`` bytes."""
+    """Return the base64 length the request carries for a media file of size bytes."""
     return (size + 2) // 3 * 4
 
 
@@ -433,7 +428,7 @@ def _inline_item_size(asset: AssetRef, size: int) -> int:
     return len(f"data:{asset.media_type};base64,".encode()) + _encoded_size(size)
 
 
-def _require_consistent_assets(assets: Sequence[AssetRef]) -> tuple[AssetRef, ...]:
+def require_consistent_assets(assets: Sequence[AssetRef]) -> tuple[AssetRef, ...]:
     unique: dict[str, AssetRef] = {}
     for asset in assets:
         existing = unique.setdefault(asset.id, asset)
@@ -483,8 +478,7 @@ def _fit_grounding_media(  # noqa: C901 - price one request while retaining sour
         prepare(asset, required=True)
     seen = {asset.id for asset in question.assets}
     used = sum(
-        _transport_size(asset, sampled_parts)
-        for asset in _require_consistent_assets(question.assets)
+        transport_size(asset, sampled_parts) for asset in require_consistent_assets(question.assets)
     )
     videos = 0
     selected = []
@@ -503,7 +497,7 @@ def _fit_grounding_media(  # noqa: C901 - price one request while retaining sour
             if not prepare(asset):
                 continue
             size = cast(int, asset.size_bytes)
-            encoded_size = _transport_size(asset, sampled_parts)
+            encoded_size = transport_size(asset, sampled_parts)
             if (
                 asset.id not in sampled_parts
                 and _inline_item_size(asset, size) > _MAX_INLINE_MODEL_ITEM_BYTES
@@ -530,12 +524,12 @@ def _fit_grounding_media(  # noqa: C901 - price one request while retaining sour
     return retain_source_complete_hits(selected, hits)
 
 
-def _transport_size(
+def transport_size(
     asset: AssetRef,
     sampled_parts: Mapping[str, tuple[dict[str, object], ...]] | None,
 ) -> int:
     if sampled_parts is not None and asset.id in sampled_parts:
-        return _image_parts_size(sampled_parts[asset.id])
+        return image_parts_size(sampled_parts[asset.id])
     return _encoded_size(cast(int, asset.size_bytes))
 
 
@@ -555,7 +549,7 @@ def _oversized_video_parts(
         {"type": "image_url", "image_url": {"url": frame}} for frame in frames
     )
     try:
-        _require_inline_media_parts(parts)
+        require_inline_media_parts(parts)
     except ModelError:
         return None
     return parts
@@ -721,7 +715,7 @@ def _qwen_video_url(asset: AssetRef) -> str:  # noqa: C901 - keep packet ownersh
         ) from None
 
 
-def _generation_asset_parts(
+def generation_asset_parts(
     asset: AssetRef,
     cache: dict[str, str],
     minimum_video_seconds: float | None,
@@ -742,7 +736,7 @@ def _generation_asset_parts(
     return (_generation_asset_part(asset, cache, audio_data_url=audio_data_url),)
 
 
-def _image_parts_size(parts: Sequence[Mapping[str, object]]) -> int:
+def image_parts_size(parts: Sequence[Mapping[str, object]]) -> int:
     return sum(
         len(cast(Mapping[str, str], part["image_url"])["url"].partition(",")[2].encode())
         for part in parts
@@ -759,9 +753,13 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
     """Decode ordered JPEG stills, optionally only for a video under a provider limit."""
     try:
         import av
-
+    except ImportError:
+        return None
+    try:
         _modality, _media_type, path = resolved_asset(asset)
         with av.open(str(path)) as container:
+            if not container.streams.video:
+                return None
             stream = container.streams.video[0]
             duration = container_duration_seconds(container, stream)
             if duration is None:
@@ -818,7 +816,7 @@ def _video_frame_urls(  # noqa: C901 - bounded ordered sampling in one decode pa
                 return None
             sampled.extend(last_url for _ in range(remaining))
             return tuple(sampled)
-    except Exception:
+    except (ImportError, av.FFmpegError, OSError, ValueError):
         # PyAV/Pillow are optional; decode failures preserve the existing provider fallback path.
         return None
 

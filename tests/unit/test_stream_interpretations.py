@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from _feature_support import TinyEmbedder
 from fastapi.testclient import TestClient
-from test_formation_history import HistoryFormer
+from fixtures.formation import HistoryFormer
 
 from sensemem import Blob, ContentPart, Memory, MemorySettings, ModelInput, StreamInput
 from sensemem.api.app import create_app

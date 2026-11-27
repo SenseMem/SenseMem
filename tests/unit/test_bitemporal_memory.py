@@ -638,7 +638,7 @@ def test_valid_at_keeps_records_without_typed_validity(tmp_path: Path) -> None:
     ) as memory:
         observation = memory.add("undated raw observation")
 
-        # An observation declares no validity interval, so no `valid_at` can refute it. Dropping
+        # An observation declares no validity interval, so no valid_at can refute it. Dropping
         # it would turn every historical question into a silent empty answer.
         hits = memory.search(
             "undated raw observation",

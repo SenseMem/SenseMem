@@ -26,12 +26,12 @@ from sensemem.identity import (
 from sensemem.spatial import ObservationContext, RetrievalScope
 from sensemem.types import AnswerPolicy, MemoryCategory
 
-# The same identifier inside a request body, where `PathParameter` does not apply. Constrained
+# The same identifier inside a request body, where PathParameter does not apply. Constrained
 # here rather than only in the SDK so a malformed ID fails validation on every route alike.
 _BodyMemoryId = Annotated[str, StringConstraints(min_length=1, pattern=r"^\S(?:.*\S)?$")]
 # A bounded plain string for person-facing text -- a name or relationship label -- the same shape
-# the MCP `register_identity` tool's `name`/`relationship` arguments use. Named separately from
-# `_BodyMemoryId` so a future ID-specific tightening of that type cannot silently start rejecting
+# the MCP register_identity tool's name/relationship arguments use. Named separately from
+# _BodyMemoryId so a future ID-specific tightening of that type cannot silently start rejecting
 # names too.
 _PersonText = _BodyMemoryId
 
@@ -85,8 +85,8 @@ class AnswerRequest(StrictModel):
     memory_type: MemoryCategory | None = None
     reference_at: AwareDatetime | None = None
     scope: RetrievalScope | None = None
-    # Abstention is the caller's policy, not the server's: `best_effort` commits to the most
-    # likely answer and still reports `abstained`. The default keeps the refusal behaviour.
+    # Abstention is the caller's policy, not the server's: best_effort commits to the most
+    # likely answer and still reports abstained. The default keeps the refusal behaviour.
     answer_policy: AnswerPolicy = "strict"
 
 

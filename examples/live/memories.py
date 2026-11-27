@@ -390,7 +390,9 @@ def memory_router(
             raise HTTPException(409, "This memory is not a current, editable interpretation.")
         confirmation = content is None
         source = await memory.capture(
-            f"用户确认这条记忆仍然准确\n{target.content}" if content is None else content,
+            f"User confirmed this memory is still accurate\n{target.content}"
+            if content is None
+            else content,
             occurred_at=datetime.now(timezone.utc),
             context=ObservationContext(
                 basis=EvidenceBasis.RESPONSE_FEEDBACK
@@ -405,9 +407,9 @@ def memory_router(
                     intent=MemoryIntent.REINFORCE if confirmation else MemoryIntent.CORRECT,
                     target_ids=(memory_id,),
                     evidence_ids=(source.id,),
-                    rationale="用户在 Demo 中确认这条记忆。"
+                    rationale="User confirmed this memory in the demo."
                     if confirmation
-                    else "用户在 Demo 中提交了更正。原始经历保留。",
+                    else "User submitted a correction in the demo. Original experience retained.",
                 )
             )
         finally:

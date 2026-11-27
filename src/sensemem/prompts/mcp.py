@@ -63,7 +63,7 @@ def budget_description(*, max_chars: int, max_items: int) -> str:
         " `freshness_seconds` keeps only memories anchored within that many seconds of the reference"
         " clock; `max_latency_ms` is a deadline after which optional work is skipped rather than a"
         " timeout that aborts, and the bundle reports `elapsed_ms` and `deadline_exceeded`. Null uses"
-        # Read off `ContextBudget` rather than written out: the prose said 6,000 characters long after
+        # Read off ContextBudget rather than written out: the prose said 6,000 characters long after
         # the default became 16,000, and an agent budgets against what this sentence claims.
         f" the defaults, which are {max_chars:,} characters and {max_items} items"
         " with no deadline."

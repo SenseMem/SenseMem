@@ -15,12 +15,19 @@ from pathlib import Path
 from threading import Barrier, Event, Lock
 from time import sleep
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
 import sensemem.benchmarks.eval_adapters as eval_adapters
-from sensemem import EmbeddingBackend, MemoryPlugins, MemorySettings, MemorySpec, Modality
+from sensemem import (
+    EmbeddingBackend,
+    MemoryPlugins,
+    MemorySettings,
+    MemorySpec,
+    Modality,
+    VisionDescriptionBackend,
+)
 from sensemem._telemetry import MODEL_MODULE, SPAN_KIND, mark_model_requests, model_span
 from sensemem.benchmarks import eval_arms as eval_arms_module
 from sensemem.benchmarks import eval_backends as eval_backends_module
@@ -32,13 +39,15 @@ from sensemem.benchmarks.download import _snapshot, acquire_media
 from sensemem.benchmarks.eval_adapters import (
     EvalQuestion,
     EvalUnit,
+    LoadedTask,
     MediaResolver,
     MemoryItem,
+    _atm,
     load_task,
 )
 from sensemem.benchmarks.eval_cache import CachedAnswer, DescriptionCache, ResponseCache, _answer
 from sensemem.benchmarks.eval_evidence import EvidenceInterval
-from sensemem.benchmarks.eval_inputs import _cache_task
+from sensemem.benchmarks.eval_inputs import cache_task
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_TASK,
     BENCHMARK_TASK_SPAN,
@@ -213,7 +222,7 @@ def test_m3_manifest_reuses_one_lazy_nested_media_index(
         nonlocal scans
         if path == media.resolve():
             scans += 1
-            sleep(0.02)
+            sleep(0)
         return original_rglob(path, pattern)
 
     monkeypatch.setattr(Path, "rglob", rglob)
@@ -356,7 +365,7 @@ def test_atm_raw_media_filename_supplies_capture_time(tmp_path: Path, stem: str)
         spec.adapter_version for name, spec in TASKS.items() if name.startswith("atm-bench-")
     } == {ATM_BENCH_ADAPTER_VERSION}
     assert ATM_BENCH_ADAPTER_VERSION == "atm_bench_official_v4"
-    assert _cache_task(task) == (
+    assert cache_task(task) == (
         f"atm-bench-main:{ATM_BENCH_ADAPTER_VERSION}:{task.evaluation_sha256}"
     )
     email = next(item for item in task.units[0].memories if item.source_id.startswith("email"))
@@ -366,7 +375,6 @@ def test_atm_raw_media_filename_supplies_capture_time(tmp_path: Path, stem: str)
 
 
 def test_atm_query_does_not_expose_answer_type_or_labels(tmp_path: Path) -> None:
-    from sensemem.benchmarks.eval_adapters import MediaResolver, _atm
 
     question = "When is the pickup scheduled?"
     dataset = tmp_path / "questions.json"
@@ -464,9 +472,14 @@ def test_response_cache_publishes_writes_before_close_and_persists_them(tmp_path
 
 def test_response_cache_write_uses_the_selected_arm_namespace() -> None:
     calls: list[tuple[str, str, str, CachedAnswer]] = []
-    cache = SimpleNamespace(put=lambda *values: calls.append(cast(Any, values)))
+
+    class _Cache:
+        def put(self, namespace: str, unit_id: str, question_id: str, answer: CachedAnswer) -> None:
+            calls.append((namespace, unit_id, question_id, answer))
+
+    cache = _Cache()
     task = cast(
-        Any,
+        LoadedTask,
         SimpleNamespace(
             spec=SimpleNamespace(name="fixture", adapter_version="v1"),
             evaluation_sha256="e" * 64,
@@ -477,16 +490,16 @@ def test_response_cache_write_uses_the_selected_arm_namespace() -> None:
         (),
         (EvalQuestion("question", ("Question?",), references=("Answer",)),),
     )
-    outcome = eval_results_module._AnswerOutcome("Answer", 1.0, 0.5, (), ())
+    outcome = eval_results_module.AnswerOutcome("Answer", 1.0, 0.5, (), ())
 
-    eval_samples_module._cache_outcome(
-        cast(Any, cache),
+    eval_samples_module.cache_outcome(
+        cast(ResponseCache, cache),
         task,
         unit,
         unit.questions[0],
         outcome,
         0,
-        arm=eval_arms_module._Arm("blind"),
+        arm=eval_arms_module.Arm("blind"),
     )
 
     assert calls[0][0] == f"blind:fixture:v1:{'e' * 64}"
@@ -507,7 +520,7 @@ def test_response_cache_write_uses_the_selected_arm_namespace() -> None:
 )
 def test_response_cache_requires_current_answer_fields(missing: str) -> None:
     payload = asdict(CachedAnswer("answer", 0.5, ()))
-    del payload[missing]
+    payload.pop(missing)
     with pytest.raises(ValueError, match="current answer fields"):
         _answer(json.dumps(payload))
 
@@ -528,7 +541,7 @@ def test_lifelong_preparation_builds_one_ordered_segment_timeline(
     def announce(message: str) -> None:
         assert callback_lock.acquire(blocking=False)
         try:
-            sleep(0.02)
+            sleep(0)
             announcements.append(message)
         finally:
             callback_lock.release()
@@ -732,7 +745,7 @@ def test_single_boundary_segmentation_avoids_the_segment_muxer(
     monkeypatch.setattr("sensemem.benchmarks.prepare_media._run_ffmpeg", run)
 
     # Asked for one whole clip, ffmpeg must write one named output. Handing this to the segment
-    # muxer without `-segment_times` makes it split at every keyframe instead, which turned one
+    # muxer without -segment_times makes it split at every keyframe instead, which turned one
     # 30 s clip into 13 + 17 frames and failed the write.
     prepared = _segment_video(source, (30.0,), tmp_path / "cache", None)
 
@@ -1095,7 +1108,9 @@ def test_a_cached_description_is_reused_instead_of_described_again(tmp_path: Pat
     backend = _CountingDescriber()
     cache = DescriptionCache(tmp_path / "descriptions.db", backend.vision_model)
     try:
-        describer = eval_backends_module._CachedVisionDescriber(cast(Any, backend), cache)
+        describer = eval_backends_module._CachedVisionDescriber(
+            cast(VisionDescriptionBackend, backend), cache
+        )
 
         first = describer.describe((first_input,))
         # A partially cached batch still costs exactly one request, for the misses only.
@@ -1119,7 +1134,9 @@ def test_description_cache_tracks_only_actual_model_misses(tmp_path: Path) -> No
     cache = DescriptionCache(tmp_path / "descriptions.db", backend.vision_model)
     telemetry = EvaluationTelemetry()
     try:
-        describer = eval_backends_module._CachedVisionDescriber(cast(Any, backend), cache)
+        describer = eval_backends_module._CachedVisionDescriber(
+            cast(VisionDescriptionBackend, backend), cache
+        )
         assert describer.describe((first_input,)) == ("caption for aaaa",)
         with telemetry.tracer.start_as_current_span(
             BENCHMARK_TASK_SPAN,
@@ -1170,7 +1187,7 @@ def test_description_cache_tracks_only_actual_model_misses(tmp_path: Path) -> No
 def test_a_description_cache_is_shared_across_unit_worker_threads(tmp_path: Path) -> None:
     """One cache serves every unit worker of a run, so it must accept calls from any thread.
 
-    `_BackendPool` opens the cache once, on the thread that builds the pool, and each unit then
+    _BackendPool opens the cache once, on the thread that builds the pool, and each unit then
     ingests on a worker thread. A connection bound to its creating thread raised on every worker
     call; the write path counts that as a failed description batch and fails open, so two whole
     vision arms built caption-less libraries while every other counter read as healthy.
@@ -1196,9 +1213,9 @@ def test_a_description_cache_survives_the_process_that_wrote_it(tmp_path: Path) 
     first_backend = _CountingDescriber()
     cache = DescriptionCache(tmp_path / "descriptions.db", first_backend.vision_model)
     try:
-        eval_backends_module._CachedVisionDescriber(cast(Any, first_backend), cache).describe(
-            (value,)
-        )
+        eval_backends_module._CachedVisionDescriber(
+            cast(VisionDescriptionBackend, first_backend), cache
+        ).describe((value,))
     finally:
         cache.close()
 
@@ -1206,7 +1223,7 @@ def test_a_description_cache_survives_the_process_that_wrote_it(tmp_path: Path) 
     reopened = DescriptionCache(tmp_path / "descriptions.db", second_backend.vision_model)
     try:
         repeated = eval_backends_module._CachedVisionDescriber(
-            cast(Any, second_backend), reopened
+            cast(VisionDescriptionBackend, second_backend), reopened
         ).describe((value,))
     finally:
         reopened.close()
@@ -1225,7 +1242,7 @@ def test_two_describer_models_do_not_share_one_cached_caption(tmp_path: Path) ->
     first = DescriptionCache(tmp_path / "descriptions.db", "caption-model")
     try:
         original = eval_backends_module._CachedVisionDescriber(
-            cast(Any, first_backend), first
+            cast(VisionDescriptionBackend, first_backend), first
         ).describe((value,))
     finally:
         first.close()
@@ -1234,7 +1251,7 @@ def test_two_describer_models_do_not_share_one_cached_caption(tmp_path: Path) ->
     second = DescriptionCache(tmp_path / "descriptions.db", "other-caption-model")
     try:
         described = eval_backends_module._CachedVisionDescriber(
-            cast(Any, second_backend), second
+            cast(VisionDescriptionBackend, second_backend), second
         ).describe((value,))
     finally:
         second.close()
@@ -1248,7 +1265,7 @@ def test_the_description_cache_is_opened_only_for_a_configured_vision_slot(
     tmp_path: Path,
 ) -> None:
     arguments = cast(
-        Any,
+        eval_config_module.Arguments,
         SimpleNamespace(
             data_root=tmp_path,
             use_cache=tmp_path / "cache" / "run.db",
@@ -1261,16 +1278,17 @@ def test_the_description_cache_is_opened_only_for_a_configured_vision_slot(
         {"data_dir": tmp_path, "embedding": embedding, "vision": {"provider": "openai"}}
     )
 
-    assert eval_config_module._description_cache_path(arguments, None) is None
-    assert eval_config_module._description_cache_path(arguments, without) is None
+    assert eval_config_module.description_cache_path(arguments, None) is None
+    assert eval_config_module.description_cache_path(arguments, without) is None
     # Shared across units in this run, but a later repeat must execute the same model workload.
-    assert eval_config_module._description_cache_path(arguments, described) == (
+    assert eval_config_module.description_cache_path(arguments, described) == (
         tmp_path / "cache" / "run-one" / "descriptions.db"
     )
     no_response_cache = cast(
-        Any, SimpleNamespace(data_root=tmp_path, use_cache=None, run_id="run-two")
+        eval_config_module.Arguments,
+        SimpleNamespace(data_root=tmp_path, use_cache=None, run_id="run-two"),
     )
-    assert eval_config_module._description_cache_path(no_response_cache, described) == (
+    assert eval_config_module.description_cache_path(no_response_cache, described) == (
         tmp_path / "cache" / "run-two" / "descriptions.db"
     )
 
@@ -1282,12 +1300,12 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
 
     Prompt, seed, temperature, and token cap are all in the space. Keyed on the model, editing
     the prompt and rerunning would serve every caption from the old prompt while persisting it
-    into `visual_descriptions` under the new space, so the change would measure a no-op.
+    into visual_descriptions under the new space, so the change would measure a no-op.
     """
     value = _description_input(tmp_path, "e" * 64)
     cache_path = tmp_path / "cache" / "descriptions.db"
 
-    def pool(describer: _CountingDescriber) -> eval_backends_module._BackendPool:
+    def pool(describer: _CountingDescriber) -> eval_backends_module.BackendPool:
         resolved = SimpleNamespace(
             plugins=MemoryPlugins(
                 embedder=cast(
@@ -1302,7 +1320,7 @@ def test_a_prompt_change_at_one_model_does_not_replay_the_old_captions(
         monkeypatch.setattr(
             eval_backends_module, "build_memory_composition", lambda _config: resolved
         )
-        return eval_backends_module._BackendPool(
+        return eval_backends_module.BackendPool(
             ModelConfig(),
             memory_config=MemorySpec.model_validate({"embedding": {"provider": "openai"}}),
             description_cache=cache_path,

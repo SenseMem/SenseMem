@@ -15,10 +15,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache, partial
-from typing import cast
 
 from sensemem.exceptions import ModelError, SenseMemError, ValidationError
-from sensemem.infrastructure.local.store import IndexCandidate, StoredMemory
+from sensemem.infrastructure.local.store.rows import IndexCandidate, StoredMemory
 from sensemem.infrastructure.local.zvec_index import IndexHit
 from sensemem.kernel.temporal import overlaps_temporal_range
 from sensemem.ranking_policy import (
@@ -90,15 +89,15 @@ _LEXICAL_NOISE_TERMS = frozenset(
 _LEXICAL_TERM = re.compile(r"\w+")
 
 
-# Runs `\w+` cannot split into words, because they are written without spaces and no segmenter is
+# Runs \w+ cannot split into words, because they are written without spaces and no segmenter is
 # available here. What follows is adjacent-character bigram splitting, which is script-agnostic,
 # so no Japanese text is handed to a Chinese segmenter by being listed here.
 #
-# This is deliberately narrower than `_ngram_text` in the Zvec index, which strips only Latin
+# This is deliberately narrower than _ngram_text in the Zvec index, which strips only Latin
 # words and bigrams whatever is left. The two answer different questions. The index asks what a
-# query could possibly match; this one asks which runs `\w+` fails to split at all, and
+# query could possibly match; this one asks which runs \w+ fails to split at all, and
 # bigramming a script it already splits would only dilute the word terms the coverage ratio is
-# tuned on. Korean is excluded for that reason: it is space-delimited, so `\w+` yields eojeol.
+# tuned on. Korean is excluded for that reason: it is space-delimited, so \w+ yields eojeol.
 #
 # ponytail: an enumerated list of unspaced scripts, and a script missing from it silently gets
 # one useless whole-run term -- which is how Thai went unretrievable. Inverting it to enumerate
@@ -123,14 +122,14 @@ _UNSEGMENTED_RUN = re.compile(
 
 
 # What the index's ngram tokenizer treats as a token boundary: it is configured with
-# `token_chars` of letter and digit, so everything else separates rather than disappears.
+# token_chars of letter and digit, so everything else separates rather than disappears.
 # Thai and Lao write their vowels and tones as combining marks, which are neither, so a bigram
 # must not be formed across one -- measured against the index, "ยว" matches and the pair that
 # spans the mark before it does not.
 _TOKEN_BREAK = re.compile(r"[\W_]")
 
 
-# The Chinese counterpart of `_LEXICAL_NOISE_TERMS`: particles, copulas, prepositions,
+# The Chinese counterpart of _LEXICAL_NOISE_TERMS: particles, copulas, prepositions,
 # conjunctions, pronouns, and interrogatives. Stripping them matters more than it does in
 # English, because every one of them otherwise carries IDF weight into the coverage ratio that
 # performs cross-route fusion, and a question is mostly these characters. Negation characters
@@ -265,7 +264,7 @@ def extend_hydration_traces(
             continue
         dense_hit = dense_by_id.get(index_id)
         lexical_hit = lexical_by_id.get(index_id)
-        dense_hit_confidence = None if dense_hit is None else cast(float, dense_hit.confidence)
+        dense_hit_confidence = None if dense_hit is None else dense_hit.confidence
         target.append(
             RetrievalCandidateTrace(
                 memory_id=None,
@@ -459,8 +458,9 @@ def parent_index_signals(
             dense_relevance[memory_id] = max(
                 dense_relevance.get(memory_id, 0.0), dense_hit.relevance
             )
+            assert dense_hit.confidence is not None
             dense_confidence[memory_id] = max(
-                dense_confidence.get(memory_id, 0.0), cast(float, dense_hit.confidence)
+                dense_confidence.get(memory_id, 0.0), dense_hit.confidence
             )
             current = winning_dense.get(memory_id)
             candidate = (dense_hit.relevance, embedding_id)
@@ -708,11 +708,11 @@ def _lexical_terms_cached(value: str) -> frozenset[str]:
 
 
 def _lexical_terms_uncached(value: str) -> frozenset[str]:
-    """Split text into words, plus adjacent-character bigrams for runs `\\w+` cannot split.
+    """Split text into words, plus adjacent-character bigrams for runs \\w+ cannot split.
 
-    `\\w+` matches an entire unspaced run as one token. That token is by construction the rarest
+    \\w+ matches an entire unspaced run as one token. That token is by construction the rarest
     term in any corpus, so it took the largest IDF weight into the coverage ratio and could never
-    match anything, which put `LEXICAL_FULL_COVERAGE` — the one term that actually fuses the
+    match anything, which put LEXICAL_FULL_COVERAGE — the one term that actually fuses the
     dense and full-text routes — permanently out of reach for every multi-character Chinese
     query. Runs are therefore removed before word splitting rather than left alongside their
     parts, and re-emitted as bigrams: the dependency-free stand-in for a segmenter, and the
@@ -720,13 +720,13 @@ def _lexical_terms_uncached(value: str) -> frozenset[str]:
     appear somewhere.
 
     Bigrams only, and not the single characters as well. Emitting both made the term count a
-    property of the language rather than of the question -- eleven terms for `爱丽丝面包店`
-    against three for the `Alice bakery Tuesday` it translates -- which moved
-    `LEXICAL_FULL_COVERAGE` out of reach for Chinese at a length it stayed reachable for
-    English. A lone single-character run therefore yields no term at all, and `search` drops the
+    property of the language rather than of the question -- eleven terms for 爱丽丝面包店
+    against three for the Alice bakery Tuesday it translates -- which moved
+    LEXICAL_FULL_COVERAGE out of reach for Chinese at a length it stayed reachable for
+    English. A lone single-character run therefore yields no term at all, and search drops the
     lexical route for such a query. The stemmed full-text field would in fact match it, because
-    the `standard` tokenizer splits Han per character, but a single character is too weak a term
-    to rank on: it would return `lexical_match` with a coverage of zero, contributing candidates
+    the standard tokenizer splits Han per character, but a single character is too weak a term
+    to rank on: it would return lexical_match with a coverage of zero, contributing candidates
     and no ranking signal, and the dense route still answers the query.
     """
     normalized = unicodedata.normalize("NFKC", value).casefold()
@@ -742,7 +742,7 @@ def _lexical_terms_uncached(value: str) -> frozenset[str]:
 def lexical_query_terms(value: str) -> frozenset[str]:
     """Query terms with the scaffolding dropped, so coverage measures the distinctive ones.
 
-    A bigram is scaffolding only when both of its characters are, so `什么` goes and `的饮`
+    A bigram is scaffolding only when both of its characters are, so 什么 goes and 的饮
     stays; otherwise a question's function words would keep full coverage unreachable through
     the bigrams they appear in.
     """
@@ -761,7 +761,7 @@ def temporal_relevance(
 ) -> float:
     """Boost a memory that overlaps the asked time range; leave every other memory alone.
 
-    The factor used to decay from the ceiling to `RANK_FLOOR` with distance from the range, and to
+    The factor used to decay from the ceiling to RANK_FLOOR with distance from the range, and to
     hand the floor to a memory with no event time at all. Replayed on the validation libraries
     that penalty never recovered a gold memory and only reordered: making the factor additive --
     ceiling on overlap, neutral otherwise -- won or tied on every paired question of 810 across

@@ -1,6 +1,6 @@
-"""`sensemem-bench eval --deliberate`: the harness actually running the loop it configured.
+"""sensemem-bench eval --deliberate: the harness actually running the loop it configured.
 
-A configuration file's `consolidation` section already built a consolidator, registered it for
+A configuration file's consolidation section already built a consolidator, registered it for
 close, and never called it. These pin the flag that calls it, where in the unit lifecycle it
 runs, and what the run report then says about it.
 """
@@ -93,7 +93,6 @@ class _Memory:
         reference_at: datetime | None = None,
         answer_policy: AnswerPolicy = "strict",
     ) -> AnswerResult:
-        del reference_at, limit, answer_policy
         self.events.append(f"ask:{question}")
         return AnswerResult("A")
 

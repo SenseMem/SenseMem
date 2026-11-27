@@ -161,9 +161,9 @@ def test_other_models_keep_opus_and_qwen_reuses_wire_cache(
     assert _wire(asset, cache) == first
 
 
-@pytest.mark.parametrize("model_name", ("qwen3.8-omni-flash", "qwen/qwen3.8-omni-flash", "other"))
-def test_event_segmentation_normalizes_only_qwen_wire_audio(
-    tmp_path: Path, model_name: str
+@pytest.mark.parametrize("audio_data_url", (True, False))
+def test_event_segmentation_normalizes_wire_audio_when_audio_data_url_enabled(
+    tmp_path: Path, audio_data_url: bool
 ) -> None:
     asset = _clip(tmp_path)
     assert asset.path is not None
@@ -175,13 +175,13 @@ def test_event_segmentation_normalizes_only_qwen_wire_audio(
 
     def respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert body["model"] == model_name
+        assert body["model"] == "answer-model"
         parts = body["messages"][1]["content"]
         assert [part["type"] for part in parts] == ["text", "text", "video_url"]
         assert json.loads(parts[1]["text"])["occurred_at"] == started.isoformat()
         data = base64.b64decode(parts[2]["video_url"]["url"].partition(",")[2])
         assert _video_packets(data) == _video_packets(original)
-        assert _sound(data)[0] == ("opus" if model_name == "other" else "aac")
+        assert _sound(data)[0] == ("aac" if audio_data_url else "opus")
         return httpx.Response(
             200,
             json={
@@ -198,8 +198,9 @@ def test_event_segmentation_normalizes_only_qwen_wire_audio(
     with httpx.Client(transport=httpx.MockTransport(respond)) as transport:
         model = OpenAICompletion(
             OpenAI(api_key="local-fixture", http_client=transport, max_retries=0),
-            generation_model=model_name,
+            generation_model="answer-model",
             generation_capabilities=frozenset({Modality.VIDEO}),
+            generation_audio_data_url=audio_data_url,
         )
         assert model.segment_events((observation,), end_of_stream=True) == ()
     assert asset.path.read_bytes() == original

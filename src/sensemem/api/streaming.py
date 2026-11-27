@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from collections.abc import AsyncGenerator, Awaitable, Generator
 from concurrent.futures import Executor
 from contextlib import suppress
 from contextvars import Context
-from typing import TypeVar, cast
+from typing import Protocol
 
 from fastapi import Request
 from fastapi.responses import StreamingResponse
@@ -21,8 +21,16 @@ from sensemem.api.responses import AnswerResponse
 from sensemem.kernel.execution import StreamWorker
 from sensemem.records import AnswerChunk, AnswerResult
 
-_STREAM_EXHAUSTED = object()
-_FutureResult = TypeVar("_FutureResult")
+
+class _StreamExhausted:
+    pass
+
+
+class _CloseStream(Protocol):
+    def __call__(self) -> Awaitable[None]: ...
+
+
+STREAM_EXHAUSTED = _StreamExhausted()
 
 
 async def _first_chunk_or_disconnect(
@@ -31,7 +39,7 @@ async def _first_chunk_or_disconnect(
     connection: Request,
     worker: Executor,
     context: Context,
-) -> object:
+) -> AnswerChunk | _StreamExhausted:
     loop = asyncio.get_running_loop()
 
     async def wait_for_disconnect() -> None:
@@ -39,7 +47,7 @@ async def _first_chunk_or_disconnect(
             pass
 
     pending_chunk = loop.run_in_executor(
-        worker, context.run, lambda: next(stream, _STREAM_EXHAUSTED)
+        worker, context.run, lambda: next(stream, STREAM_EXHAUSTED)
     )
     disconnected = asyncio.create_task(wait_for_disconnect())
     try:
@@ -63,33 +71,38 @@ async def _first_chunk_or_disconnect(
             await disconnected
 
 
-def _discard_future_result(future: asyncio.Future[_FutureResult]) -> None:
+def _discard_future_result(
+    future: (
+        asyncio.Future[AnswerChunk | _StreamExhausted]
+        | asyncio.Future[AnswerResult | None]
+        | asyncio.Future[None]
+    ),
+) -> None:
     with suppress(BaseException):
         future.result()
 
 
 async def _answer_events(
-    first: object,
+    first: AnswerChunk | _StreamExhausted,
     rest: Generator[AnswerChunk, None, AnswerResult],
     *,
     worker: Executor,
     context: Context,
-    close: Callable[[], Awaitable[None]],
+    close: _CloseStream,
 ) -> AsyncGenerator[bytes, None]:
     loop = asyncio.get_running_loop()
-    chunk = first
+    chunk: AnswerChunk | _StreamExhausted = first
 
     try:
-        while chunk is not _STREAM_EXHAUSTED:
-            answer_chunk = cast(AnswerChunk, chunk)
-            terminal = answer_chunk.result is not None
+        while not isinstance(chunk, _StreamExhausted):
+            terminal = chunk.result is not None
             if terminal:
                 await close()
-            yield _answer_event(answer_chunk)
+            yield _answer_event(chunk)
             if terminal:
                 return
             chunk = await loop.run_in_executor(
-                worker, context.run, lambda: next(rest, _STREAM_EXHAUSTED)
+                worker, context.run, lambda: next(rest, STREAM_EXHAUSTED)
             )
         raise RuntimeError("answer stream ended without a terminal result")
     except Exception as error:
@@ -98,12 +111,12 @@ async def _answer_events(
         yield _sse_event("error", json.loads(bytes(response.body)))
 
 
-class _AnswerStreamingResponse(StreamingResponse):
+class AnswerStreamingResponse(StreamingResponse):
     """Own the prefetched synchronous stream for the complete ASGI send lifecycle."""
 
     def __init__(
         self,
-        first: object,
+        first: AnswerChunk | _StreamExhausted,
         rest: Generator[AnswerChunk, None, AnswerResult],
         *,
         worker: Executor,
@@ -126,8 +139,8 @@ class _AnswerStreamingResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            # Starlette sends `http.response.start` before it enters the body iterator. Closing only
-            # in `_answer_events` therefore leaks the already-prefetched Memory operation whenever
+            # Starlette sends http.response.start before it enters the body iterator. Closing only
+            # in _answer_events therefore leaks the already-prefetched Memory operation whenever
             # headers or the first body frame cannot be sent.
             try:
                 await self._events.aclose()

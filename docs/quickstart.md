@@ -1,7 +1,6 @@
 # Quick start
 
-Give an agent its first persistent memory. This guide stores a fact, retrieves it, and reopens the
-same store. It then adds grounded answers, event time, and an image observation.
+Give an agent its first persistent memory. This guide stores a fact, retrieves it, and reopens the same store. It then adds grounded answers, event time, and an image observation.
 
 The first example runs locally without a database service or model API key.
 
@@ -19,9 +18,7 @@ With pip:
 pip install "sensemem[local]"
 ```
 
-Use `uv init` first if you are starting in an empty directory. For a repository checkout, follow
-[Contributing](../CONTRIBUTING.md#setup). Runtime requirements and other integrations are listed
-in [installation](configuration.md#1-install-only-the-surfaces-you-use).
+Use `uv init` first if you are starting in an empty directory. For a repository checkout, follow [Contributing](../CONTRIBUTING.md#setup). Runtime requirements and other integrations are listed in [installation](configuration.md#1-install-only-the-surfaces-you-use).
 
 ## 2. Store and retrieve a memory
 
@@ -56,8 +53,7 @@ The first run downloads the embedding model. The output is:
 The spare key is in the blue toolbox.
 ```
 
-`add()` returns a durable, searchable record. `search()` returns ranked evidence in
-`SearchResult.hits`. The context manager closes model and storage resources when the block ends.
+`add()` returns a durable, searchable record. `search()` returns ranked evidence in `SearchResult.hits`. The context manager closes model and storage resources when the block ends.
 
 ### Reopen the same memory
 
@@ -69,18 +65,13 @@ with Memory.from_config(config) as memory:
     print(recovered.content)
 ```
 
-It prints the same fact from the persisted store. Repeating an add with identical canonical content,
-metadata, time, type, and context returns the existing record. SQLite retains records and
-embeddings, and a missing search index rebuilds from those embeddings.
+It prints the same fact from the persisted store. Repeating an add with identical canonical content, metadata, time, type, and context returns the existing record. SQLite retains records and embeddings, and a missing search index rebuilds from those embeddings.
 
-In your application, handle empty `hits` as a normal outcome. The default relevance gate excludes
-weak candidates; `limit=1` also enables the top-two ambiguity check. Use
-[retrieval diagnostics](troubleshooting.md#search-returns-no-hits) to tune a larger corpus.
+In your application, handle empty `hits` as a normal outcome. The default relevance gate excludes weak candidates; `limit=1` also enables the top-two ambiguity check. Use [retrieval diagnostics](troubleshooting.md#search-returns-no-hits) to tune a larger corpus.
 
 ## 3. Add grounded answers
 
-A generation backend lets `ask()` turn retrieved evidence into an answer. Install the integration
-alongside the local embedder and set its credential:
+A generation backend lets `ask()` turn retrieved evidence into an answer. Install the integration alongside the local embedder and set its credential:
 
 ```bash
 uv add "sensemem[local,openai]"
@@ -105,17 +96,13 @@ with Memory.from_config(answer_config) as memory:
         print("Evidence:", [hit.id for hit in result.hits])
 ```
 
-`AnswerResult` keeps the answer and its evidence together. Your application can display the
-supporting records and handle insufficient evidence explicitly. With this configuration, storage
-and embedding stay local; the question and retrieved evidence go to the generation endpoint.
+`AnswerResult` keeps the answer and its evidence together. Your application can display the supporting records and handle insufficient evidence explicitly. With this configuration, storage and embedding stay local; the question and retrieved evidence go to the generation endpoint.
 
-To build your own agent prompt instead, use [context compilation](context-compilation.md).
-It produces a structured, budgeted bundle without a generation model.
+To build your own agent prompt instead, use [context compilation](context-compilation.md). It produces a structured, budgeted bundle without a generation model.
 
 ## 4. Remember an event
 
-Attach a memory role and event time when the application needs to recall what happened when.
-The following snippets reuse `config` from step 2.
+Attach a memory role and event time when the application needs to recall what happened when. The following snippets reuse `config` from step 2.
 
 ```python
 from datetime import datetime, timezone
@@ -134,9 +121,7 @@ with Memory.from_config(config) as memory:
     ).hits
 ```
 
-Use semantic memories for facts, episodic memories for events, and procedural memories for
-instructions. [Memory types, time, and decay](memory-types-time-and-decay.md) covers event
-intervals, historical validity, spatial scope, and ranking.
+Use semantic memories for facts, episodic memories for events, and procedural memories for instructions. [Memory types, time, and decay](memory-types-time-and-decay.md) covers event intervals, historical validity, spatial scope, and ranking.
 
 ## 5. Add an image to the same observation
 
@@ -152,24 +137,18 @@ with Memory.from_config(config) as memory:
     print(record.modality, record.assets)
 ```
 
-The ordered text and image share one memory ID, and SenseMem retains an immutable copy of the
-original image. The same content contract accepts audio, video, inline `Blob` bytes, and existing
-`AssetRef` values when the configured backends support them.
+The ordered text and image share one memory ID, and SenseMem retains an immutable copy of the original image. The same content contract accepts audio, video, inline `Blob` bytes, and existing `AssetRef` values when the configured backends support them.
 
 ## Prepare your application
 
-Keep one live owner per physical `data_dir`; use distinct directories for independent memory
-domains. Keep the embedding space, dimension, and precision compatible when reopening a store.
-For remote media, download and validate it in the host before passing bytes or a local path.
+Keep one live owner per physical `data_dir`; use distinct directories for independent memory domains. Keep the embedding space, dimension, and precision compatible when reopening a store. For remote media, download and validate it in the host before passing bytes or a local path.
 
-Choose model backends in [configuration](configuration.md), and use the
-[deployment guide](deployment.md) to select process and network boundaries.
+Choose model backends in [configuration](configuration.md), and use the [deployment guide](deployment.md) to select process and network boundaries.
 
 ## Where to go next
 
 | Goal | Guide |
 | --- | --- |
-| Choose capabilities for an application | [Product capabilities](product-capabilities.md) |
 | Understand records, evidence, and model routing | [Core concepts](concepts.md) |
 | Configure models and optional formation | [Configuration](configuration.md) |
 | Use the complete API | [SDK reference](api/python-sdk.md) |

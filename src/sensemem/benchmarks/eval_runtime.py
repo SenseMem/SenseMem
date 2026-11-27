@@ -14,33 +14,33 @@ from sensemem import (
     AsyncMemory,
 )
 from sensemem.benchmarks.eval_results import (
-    _Retried,
+    Retried,
 )
 
 EVAL_RUNNER_VERSION = "sensemem_eval_official_v28"
 
 
-_SDK_STREAM_LIMIT = 8
+SDK_STREAM_LIMIT = 8
 
 
-_SDK_OPERATION_LIMIT = 28
+SDK_OPERATION_LIMIT = 28
 
 
-class _MemoryContext(Protocol):
+class MemoryContext(Protocol):
     async def __aenter__(self) -> AsyncMemory: ...
 
     async def __aexit__(self, *_error: object) -> None: ...
 
 
-MemoryFactory = Callable[[Path], _MemoryContext]
+MemoryFactory = Callable[[Path], MemoryContext]
 
 
-_SearchReplay = Callable[[], Awaitable[None]]
+SearchReplay = Callable[[], Awaitable[None]]
 
 
-async def _model_operation(
-    semaphore: asyncio.Semaphore | None, operation: Callable[[], Awaitable[_Retried]]
-) -> _Retried:
+async def model_operation(
+    semaphore: asyncio.Semaphore | None, operation: Callable[[], Awaitable[Retried]]
+) -> Retried:
     if semaphore is None:
         return await operation()
     async with semaphore:

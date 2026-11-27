@@ -144,9 +144,9 @@ class OperationLog:
         read back as a question. Rows are interleaved across triggers so a busy trigger cannot
         starve the others out of the window.
 
-        `record_budget` is the configured ceiling on active records; exceeding it derives
-        `PRESSURE` rows. `idle` is the operator declaring an approved window, never the store
-        guessing from a clock, and derives `IDLE` rows for lineages nothing has ever weighed.
+        record_budget is the configured ceiling on active records; exceeding it derives
+        PRESSURE rows. idle is the operator declaring an approved window, never the store
+        guessing from a clock, and derives IDLE rows for lineages nothing has ever weighed.
         """
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
@@ -251,7 +251,7 @@ class OperationLog:
         keep: int,
         context_json: str,
     ) -> None:
-        """Append one empty-recall signal, keeping at most `keep` of them.
+        """Append one empty-recall signal, keeping at most keep of them.
 
         Bounded on write rather than by a sweeper: the table is a signal buffer, so the oldest
         rows falling out is the retention policy, not a loss.
@@ -282,7 +282,7 @@ class OperationLog:
         since: datetime,
         minimum: int,
     ) -> tuple[StoredQueryFailure, ...]:
-        """Return near-equal queries that failed at least `minimum` times since `since`."""
+        """Return near-equal queries that failed at least minimum times since since."""
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         require_aware(since, "since")
@@ -375,7 +375,7 @@ class OperationLog:
     ) -> bool:
         """Record what later evidence said about one logged operation.
 
-        Reports `False` for an unknown operation. The kernel never reads this back into a
+        Reports False for an unknown operation. The kernel never reads this back into a
         decision: it exists so consolidation precision, false retirement, and contradiction
         recovery are derivable from the log.
         """
@@ -406,18 +406,18 @@ class OperationLog:
     ) -> StoredOperation | None:
         """Apply one already-validated operation and its log row in one transaction.
 
-        The caller owns policy; this only executes the supplied effects. It returns `None` when
+        The caller owns policy; this only executes the supplied effects. It returns None when
         the operation key is already applied and not rolled back.
 
-        `require_active` names memories the caller validated and that must still exist and still
+        require_active names memories the caller validated and that must still exist and still
         be un-forgotten here. That check and the all-or-nothing effect check below are what make
         the gap between validation and this transaction safe: a target or source that moved in
-        between raises `StaleOperationError` with nothing written, so the log never claims an
-        effect that did not happen. `require_unretired` is the stricter half of that check, for
-        the callers that need the current version of a record to still stand -- a `REINFORCE`
-        target must not have been corrected in between -- which `require_active` must not check
-        globally, because the host's own `forget()` may forget an already-corrected record.
-        `require_visible` checks cited premises, not reinforcement targets: their latest
+        between raises StaleOperationError with nothing written, so the log never claims an
+        effect that did not happen. require_unretired is the stricter half of that check, for
+        the callers that need the current version of a record to still stand -- a REINFORCE
+        target must not have been corrected in between -- which require_active must not check
+        globally, because the host's own forget() may forget an already-corrected record.
+        require_visible checks cited premises, not reinforcement targets: their latest
         recorded version must remain visible and unretired, and the record un-forgotten.
         """
         for memory_id, source_memory_id in reinforce:
@@ -525,28 +525,28 @@ class OperationLog:
     ) -> tuple[bool, tuple[StoredAsset, ...]]:
         """Apply the caller's reversal and mark one operation rolled back, atomically.
 
-        Returns `(False, ())` when the operation is unknown, already rolled back, or no longer
+        Returns (False, ()) when the operation is unknown, already rolled back, or no longer
         reversible, in which case no reversal is applied. Otherwise the second value lists the
         assets that the deleted records were the last to reference; index cleanup follows through
         the durable outbox.
 
-        `retire_versions` names records whose current version this reversal retires without
+        retire_versions names records whose current version this reversal retires without
         deleting the record, which is what retracting a naming assertion is: the record and its
-        log row stay readable while `restore_versions` brings back what it displaced.
+        log row stay readable while restore_versions brings back what it displaced.
 
-        `require_in_force` names the records this operation put in force. If a later standing
+        require_in_force names the records this operation put in force. If a later standing
         operation has since superseded one of them, reversing this one would restore a version
         beside a newer one and delete a record that newer one supersedes, so the reversal is
         refused instead: operations on one lineage reverse newest first.
 
-        `split_identity` reverses a logged cross-modal merge by restoring that alias as its own
-        identity, and `merge_identities` reverses a logged split by re-merging `(survivor,
-        restored)` back under the survivor. Both are refused -- `(False, ())`, nothing written --
+        split_identity reverses a logged cross-modal merge by restoring that alias as its own
+        identity, and merge_identities reverses a logged split by re-merging (survivor,
+        restored) back under the survivor. Both are refused -- (False, ()), nothing written --
         when the identity graph no longer admits the reversal, which is how identity operations
         on one person also reverse newest first: a later split has already removed the alias a
         merge would need, and an erasure has removed both.
 
-        `require_no_later_dependencies` names deterministic outputs this operation introduced or
+        require_no_later_dependencies names deterministic outputs this operation introduced or
         restated. A later standing log row that cites or changes one makes this operation no
         longer independently reversible.
         """
@@ -659,7 +659,7 @@ class OperationLog:
     ) -> tuple[StoredOperation, ...]:
         """Return logged operations newest first, or the one matching an id or active key.
 
-        `before_operation_id` continues a newest-first scan, which is what lets a caller that
+        before_operation_id continues a newest-first scan, which is what lets a caller that
         must see the whole log -- a data-subject export -- page it instead of truncating it.
         """
         if not 1 <= limit <= 1_000:

@@ -17,7 +17,7 @@ from sensemem.kernel.corroboration import (
 
 _MAX_NODES = 256
 _MAX_MEMBER_ROWS = 4096
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def independent_evidence_enabled(connection: sqlite3.Connection) -> bool:
@@ -44,10 +44,9 @@ def evidence_support(
     support = independent_support(nodes, memory_id)
     result = replace(support, truncated=support.truncated or truncated)
     if result.truncated:
-        _LOGGER.warning(
-            "independent evidence projection for %s reached its resource limit; "
-            "using a support lower bound",
-            memory_id,
+        LOGGER.warning(
+            f"independent evidence projection for {memory_id} reached its resource limit; "
+            "using a support lower bound"
         )
     return result
 

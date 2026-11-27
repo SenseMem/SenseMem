@@ -1,9 +1,9 @@
 """Pure serialization, identity, and record selection for control-plane operations.
 
-Nothing here touches storage or models. `dump_operation` and `load_operation` round-trip one
-`MemoryOperation` through the append-only operation log so a logged operation can be replayed or
-rolled back. `operation_key` derives the idempotency identity the log's unique index enforces; it
-deliberately excludes `rationale`, which is logged but never interpreted, so two proposals that
+Nothing here touches storage or models. dump_operation and load_operation round-trip one
+MemoryOperation through the append-only operation log so a logged operation can be replayed or
+rolled back. operation_key derives the idempotency identity the log's unique index enforces; it
+deliberately excludes rationale, which is logged but never interpreted, so two proposals that
 differ only in their prose stay one operation.
 """
 
@@ -14,7 +14,7 @@ import json
 import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import TypeAdapter
 
@@ -68,10 +68,21 @@ def dump_query_failure(failure: QueryFailure) -> str:
 def load_query_failure(payload: str) -> QueryFailure:
     try:
         value = json.loads(payload)
+        if not isinstance(value, dict):
+            raise ValueError
         scope = value["scope"]
+        raw_operation = value["operation"]
+        if raw_operation == "search":
+            operation: Literal["search", "compile", "ask"] = "search"
+        elif raw_operation == "compile":
+            operation = "compile"
+        elif raw_operation == "ask":
+            operation = "ask"
+        else:
+            raise ValueError
         return QueryFailure(
-            query=value["query"],
-            operation=cast(Literal["search", "compile", "ask"], value["operation"]),
+            query=_require_str(value["query"]),
+            operation=operation,
             memory_types=None
             if value["memory_types"] is None
             else tuple(MemoryCategory(item) for item in value["memory_types"]),
@@ -84,9 +95,9 @@ def load_query_failure(payload: str) -> QueryFailure:
                 valid_at=_decode_optional_datetime(scope["valid_at"]),
                 known_at=_decode_optional_datetime(scope["known_at"]),
                 near=None if scope["near"] is None else _decode_spatial_context(scope["near"]),
-                radius_m=scope["radius_m"],
-                place_id=scope["place_id"],
-                identity_id=scope["identity_id"],
+                radius_m=_optional_float(scope["radius_m"]),
+                place_id=_optional_str(scope["place_id"]),
+                identity_id=_optional_str(scope["identity_id"]),
             ),
         )
     except (KeyError, TypeError, ValueError, ValidationError) as error:
@@ -146,19 +157,47 @@ def load_operation(payload: str) -> MemoryOperation:
         if not isinstance(value, dict):
             raise ValueError
         proposal = value["proposal"]
-        claim = value["claim"]
-        consent = value["consent"]
-        identity = value["identity"]
-        # Constructors own value validation; these casts do not coerce untrusted JSON.
+        raw_claim = value["claim"]
+        raw_consent = value["consent"]
+        raw_identity = value["identity"]
+        if raw_claim is not None and not isinstance(raw_claim, dict):
+            raise ValueError
+        if raw_consent is not None and not isinstance(raw_consent, dict):
+            raise ValueError
+        if raw_identity is not None and not isinstance(raw_identity, dict):
+            raise ValueError
         return MemoryOperation(
-            intent=cast(MemoryIntent, value["intent"]),
-            evidence_ids=tuple(value["evidence_ids"]),
-            target_ids=tuple(value["target_ids"]),
+            intent=MemoryIntent(_require_str(value["intent"])),
+            evidence_ids=_require_str_tuple(value["evidence_ids"]),
+            target_ids=_require_str_tuple(value["target_ids"]),
             proposal=None if proposal is None else _decode_formation_proposal(proposal),
-            claim=None if claim is None else _decode_identity_claim(claim),
-            consent=None if consent is None else _decode_consent_claim(consent),
-            identity=None if identity is None else _decode_identity_change(identity),
-            rationale=cast(str | None, value["rationale"]),
+            claim=(
+                None
+                if raw_claim is None
+                else IdentityClaim(
+                    identity_id=_require_str(raw_claim["identity_id"]),
+                    name=_require_str(raw_claim["name"]),
+                    relationship=_optional_str(raw_claim["relationship"]),
+                )
+            ),
+            consent=(
+                None
+                if raw_consent is None
+                else ConsentClaim(
+                    identity_id=_require_str(raw_consent["identity_id"]),
+                    state=ConsentState(_require_str(raw_consent["state"])),
+                    note=_optional_str(raw_consent["note"]),
+                )
+            ),
+            identity=(
+                None
+                if raw_identity is None
+                else IdentityChange(
+                    identity_id=_require_str(raw_identity["identity_id"]),
+                    moved_ids=_require_str_tuple(raw_identity["moved_ids"]),
+                )
+            ),
+            rationale=_optional_str(value["rationale"]),
         )
     except (
         KeyError,
@@ -214,39 +253,10 @@ def _operation_effect_payload(operation: MemoryOperation) -> dict[str, object]:
     }
 
 
-def _decode_identity_change(value: object) -> IdentityChange:
-    if not isinstance(value, dict):
-        raise ValueError
-    return IdentityChange(
-        identity_id=cast(str, value["identity_id"]),
-        moved_ids=tuple(value["moved_ids"]),
-    )
-
-
-def _decode_consent_claim(value: object) -> ConsentClaim:
-    if not isinstance(value, dict):
-        raise ValueError
-    return ConsentClaim(
-        identity_id=cast(str, value["identity_id"]),
-        state=cast(ConsentState, value["state"]),
-        note=cast(str | None, value["note"]),
-    )
-
-
-def _decode_identity_claim(value: object) -> IdentityClaim:
-    if not isinstance(value, dict):
-        raise ValueError
-    return IdentityClaim(
-        identity_id=cast(str, value["identity_id"]),
-        name=cast(str, value["name"]),
-        relationship=cast(str | None, value["relationship"]),
-    )
-
-
 def proposal_payload(proposal: FormationProposal) -> dict[str, object]:
-    """Return the JSON one formation proposal is logged as, which `_decode_formation_proposal` reads back.
+    """Return the JSON one formation proposal is logged as, which _decode_formation_proposal reads back.
 
-    Shared with the CLI so an operation row it prints stays the shape `load_operation` accepts.
+    Shared with the CLI so an operation row it prints stays the shape load_operation accepts.
     """
     spatial = proposal.spatial
     return {
@@ -306,22 +316,23 @@ def _decode_formation_proposal(value: object) -> FormationProposal:
         raise ValueError
     spatial = value["spatial"]
     evidence_ids = value["evidence_ids"]
+    cue_modality = _optional_str(value["cue_modality"])
     return FormationProposal(
-        kind=cast(RecordKind, value["kind"]),
-        content=cast(str, value["content"]),
-        basis=cast(EvidenceBasis, value["basis"]),
-        subject=cast(str | None, value["subject"]),
-        predicate=cast(str | None, value["predicate"]),
-        value=cast(str | None, value["value"]),
-        confidence=cast(float, value["confidence"]),
+        kind=RecordKind(_require_str(value["kind"])),
+        content=_require_str(value["content"]),
+        basis=EvidenceBasis(_require_str(value["basis"])),
+        subject=_optional_str(value["subject"]),
+        predicate=_optional_str(value["predicate"]),
+        value=_optional_str(value["value"]),
+        confidence=_require_float(value["confidence"]),
         valid_from=_decode_optional_datetime(value["valid_from"]),
         valid_until=_decode_optional_datetime(value["valid_until"]),
         spatial=None if spatial is None else _decode_spatial_context(spatial),
-        cue_modality=cast(Modality | None, value["cue_modality"]),
-        valence=cast(float | None, value["valence"]),
-        arousal=cast(float | None, value["arousal"]),
-        evidence_ids=None if evidence_ids is None else tuple(evidence_ids),
-        local_id=cast(str | None, value["local_id"]),
+        cue_modality=None if cue_modality is None else Modality(cue_modality),
+        valence=_optional_float(value["valence"]),
+        arousal=_optional_float(value["arousal"]),
+        evidence_ids=None if evidence_ids is None else _require_str_tuple(evidence_ids),
+        local_id=_optional_str(value["local_id"]),
         affect_link=(
             None
             if value["affect_link"] is None
@@ -334,19 +345,59 @@ def _decode_formation_proposal(value: object) -> FormationProposal:
 def _decode_spatial_context(value: object) -> SpatialContext:
     if not isinstance(value, dict):
         raise ValueError
-    orientation = value["orientation_xyzw"]
     return SpatialContext(
-        frame_id=cast(str, value["frame_id"]),
-        anchor=cast(SpatialAnchor, value["anchor"]),
-        x=cast(float, value["x"]),
-        y=cast(float, value["y"]),
-        z=cast(float, value["z"]),
-        orientation_xyzw=(
-            None
-            if orientation is None
-            else cast(tuple[float, float, float, float], tuple(orientation))
-        ),
-        position_uncertainty_m=cast(float | None, value["position_uncertainty_m"]),
+        frame_id=_require_str(value["frame_id"]),
+        anchor=SpatialAnchor(_require_str(value["anchor"])),
+        x=_require_float(value["x"]),
+        y=_require_float(value["y"]),
+        z=_require_float(value["z"]),
+        orientation_xyzw=_optional_orientation(value["orientation_xyzw"]),
+        position_uncertainty_m=_optional_float(value["position_uncertainty_m"]),
+    )
+
+
+def _require_str(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError
+    return value
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError
+    return value
+
+
+def _require_float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError
+    return float(value)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    return _require_float(value)
+
+
+def _require_str_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    return tuple(_require_str(entry) for entry in value)
+
+
+def _optional_orientation(value: object) -> tuple[float, float, float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 4:
+        raise ValueError
+    return (
+        _require_float(value[0]),
+        _require_float(value[1]),
+        _require_float(value[2]),
+        _require_float(value[3]),
     )
 
 

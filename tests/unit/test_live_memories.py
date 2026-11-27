@@ -12,6 +12,7 @@ from _feature_support import TinyEmbedder
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from examples.live.memories import memory_cards, memory_router
 from sensemem import (
     AsyncEventStream,
     AsyncMemory,
@@ -29,13 +30,7 @@ from sensemem import (
 )
 
 
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
-
-
 def _client(memory: Memory, changes: list[bool]) -> TestClient:
-    from examples.live.memories import memory_router
 
     app = FastAPI()
     asynchronous = AsyncMemory(memory)
@@ -230,7 +225,6 @@ def test_originals_and_invalid_corrections_do_not_create_unrecorded_edits(tmp_pa
 
 
 def test_cards_retain_inactive_records_and_source_versus_derived_sections(tmp_path: Path) -> None:
-    from examples.live.memories import memory_cards
 
     with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
         source = memory.add("The observed source remains unchanged")
@@ -248,7 +242,6 @@ def test_cards_retain_inactive_records_and_source_versus_derived_sections(tmp_pa
 def test_dialogue_cards_project_existing_metadata_without_rewriting_the_original(
     tmp_path: Path,
 ) -> None:
-    from examples.live.memories import memory_cards
 
     original = "旧版对话记录(内容真实性及实际听到未核实)"
     dialogue = {
@@ -324,7 +317,6 @@ def _event_metadata() -> dict[str, object]:
 def test_derived_cards_keep_their_own_content_instead_of_inherited_source_projections(
     tmp_path: Path, kind: RecordKind
 ) -> None:
-    from examples.live.memories import memory_cards
 
     dialogue = {
         "user": {"item_id": "user-1", "text": "办公室。"},
@@ -366,7 +358,6 @@ def test_derived_cards_keep_their_own_content_instead_of_inherited_source_projec
 def test_summary_comes_from_typed_metadata_and_detail_preserves_original_prose(
     tmp_path: Path,
 ) -> None:
-    from examples.live.memories import memory_cards
 
     raw = '[model interpretation: not original evidence]\n"do not parse this marker as summary"'
     metadata = _event_metadata()
@@ -398,7 +389,6 @@ def test_summary_comes_from_typed_metadata_and_detail_preserves_original_prose(
 def test_invalid_summary_metadata_falls_back_to_untouched_original(
     tmp_path: Path, metadata: object
 ) -> None:
-    from examples.live.memories import memory_cards
 
     with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
         record = memory.add("Original source", metadata={"event_segmentation": metadata})
@@ -413,7 +403,6 @@ def test_invalid_summary_metadata_falls_back_to_untouched_original(
 async def test_native_multipart_summary_is_global_unverified_not_each_clips_claim(
     tmp_path: Path,
 ) -> None:
-    from examples.live.memories import memory_cards
 
     summary = "钥匙从厨房带到工作室并放进了蓝色托盘"
 
@@ -424,7 +413,6 @@ async def test_native_multipart_summary_is_global_unverified_not_each_clips_clai
         def segment_events(
             self, observations: Sequence[EventObservation], *, end_of_stream: bool = False
         ) -> tuple[EventSegment, ...]:
-            del end_of_stream
             return (EventSegment(len(observations), summary, complete=len(observations) == 2),)
 
     start = datetime(2026, 11, 16, 10, tzinfo=timezone.utc)

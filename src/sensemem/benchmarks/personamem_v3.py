@@ -1,12 +1,12 @@
-"""Thin adapter for the official PersonaMem-v3 `backend/{persona_id}/` release.
+"""Thin adapter for the official PersonaMem-v3 backend/{persona_id}/ release.
 
 One persona directory is one retrieval scope: five engagement logs plus a
-calendar modification stream on the memory side, and `test.json` on the
+calendar modification stream on the memory side, and test.json on the
 question side. Every event and every query carries a Unix timestamp, and the
 official protocol masks out any event at or after a query's moment -- so the
 timestamps are load-bearing here, not decoration.
 
-`profile.json` is deliberately not read as memory. It is the scorer-side
+profile.json is deliberately not read as memory. It is the scorer-side
 ground-truth persona, and the released README is explicit that it is "never
 shown to the evaluated agent"; the fields a judge needs travel with each
 query instead.
@@ -26,7 +26,7 @@ from sensemem.benchmarks._contracts import ContractModel, Identifier, NonEmptySt
 from sensemem.benchmarks._official.personamem_v3_tasks import CLUSTER_TASK_TYPES
 
 # The five engagement logs, in the order their events are merged before the
-# chronological sort. `calendar.json` is a modification stream with a
+# chronological sort. calendar.json is a modification stream with a
 # different shape and is read separately.
 PERSONAMEM_V3_APPS: tuple[tuple[str, str], ...] = (
     ("instagram.json", "Instagram"),
@@ -87,8 +87,8 @@ class PersonaMemEvent(ContractModel):
     conversation: tuple[PersonaMemTurn, ...] = ()
     location: str = ""
     # Calendar only: when the appointment is scheduled for, which is a
-    # different moment from `occurred_at` -- that is when the calendar was
-    # edited. `details` carries a removal reason or a rendered field diff.
+    # different moment from occurred_at -- that is when the calendar was
+    # edited. details carries a removal reason or a rendered field diff.
     calendar_entry_id: str = ""
     scheduled_start: AwareDatetime | None = None
     scheduled_end: AwareDatetime | None = None
@@ -106,13 +106,13 @@ class PersonaMemQuery(ContractModel):
     persona_id: Identifier
     task_family: NonEmptyString
     task_type: NonEmptyString
-    # Blank on the alternate row shape described in `_RawQuery`, which
+    # Blank on the alternate row shape described in _RawQuery, which
     # publishes neither.
     query_kind: str = ""
     expected_behavior: str = ""
     timestamp: int
     asked_at: AwareDatetime
-    # A bare `str` guarded below: some queries carry a long scenario body.
+    # A bare str guarded below: some queries carry a long scenario body.
     user_query: str
     prior_conversation: tuple[PersonaMemTurn, ...] = ()
     example_response: str = ""
@@ -120,10 +120,10 @@ class PersonaMemQuery(ContractModel):
     distractor_preferences: tuple[str, ...] = ()
     rubric_tags: tuple[str, ...] = ()
     # Frozen slate for the ranking family. The release names the target
-    # differently per task type -- `held_out_idx` (personalized /
-    # hidden-persona recommendation), `positive_indices` (@ai directive
-    # follow-up), `matching_indices` (lifecycle) -- and names the items that
-    # must stay low either `hard_negative_idxs` or `carveout_indices`. They are
+    # differently per task type -- held_out_idx (personalized /
+    # hidden-persona recommendation), positive_indices (@ai directive
+    # follow-up), matching_indices (lifecycle) -- and names the items that
+    # must stay low either hard_negative_idxs or carveout_indices. They are
     # normalised here so one scorer can read every ranking task.
     candidates: tuple[Mapping[str, object], ...] = ()
     held_out_index: int | None = None
@@ -133,7 +133,7 @@ class PersonaMemQuery(ContractModel):
     cluster_queries: tuple[PersonaMemClusterTurn, ...] = ()
     query_index: int | None = None
     n_allowed_repetitions: int = 2
-    # The published `instance_full` minus its slate and its build-time quality
+    # The published instance_full minus its slate and its build-time quality
     # checks. The official task-specific judges read their evidence straight
     # out of this record, so it is carried verbatim rather than re-modelled.
     judge_evidence: Mapping[str, object] = {}
@@ -193,8 +193,8 @@ class _RawTurn(BaseModel):
 
 
 class _RawDirectMessage(BaseModel):
-    """A direct-message turn, which names its parts `sender`/`text` rather
-    than the `role`/`content` every chat surface uses."""
+    """A direct-message turn, which names its parts sender/text rather
+    than the role/content every chat surface uses."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -243,8 +243,8 @@ class _RawCalendarModification(BaseModel):
     action: str
     entry: _RawCalendarEntry | None = None
     removal_reason: str | None = None
-    # `updated` modifications carry no `entry` at all -- only the entry ID and
-    # a per-field `{"from": ..., "to": ...}` diff.
+    # updated modifications carry no entry at all -- only the entry ID and
+    # a per-field {"from": ..., "to": ...} diff.
     entry_id: str | None = None
     diff: dict[str, object] = Field(default_factory=dict)
 
@@ -278,13 +278,13 @@ class _RawPreference(BaseModel):
 
 
 class _RawQuery(BaseModel):
-    """One `test.json` row, in either shape the release publishes.
+    """One test.json row, in either shape the release publishes.
 
-    Six of the 15,791 rows -- all `over_personalization_sensitive_event`, all
-    on one persona -- use a flattened spelling: `query_text` for the question,
-    `instance_json` holding the instance as a JSON *string* rather than an
-    object, `expected_response_kind` in place of `expected_behavior`, no
-    `query_kind` at all, and semicolon-joined instead of listed rubric tags.
+    Six of the 15,791 rows -- all over_personalization_sensitive_event, all
+    on one persona -- use a flattened spelling: query_text for the question,
+    instance_json holding the instance as a JSON *string* rather than an
+    object, expected_response_kind in place of expected_behavior, no
+    query_kind at all, and semicolon-joined instead of listed rubric tags.
     Rejecting them failed the whole task, so both spellings are accepted.
     """
 
@@ -298,7 +298,7 @@ class _RawQuery(BaseModel):
     expected_response_kind: str | None = None
     ts: int
     # Present-but-null on some rows, absent on the alternate shape; either way
-    # the question is resolved through the fallback chain in `_query`.
+    # the question is resolved through the fallback chain in _query.
     user_query: str | None = None
     query_text: str | None = None
     prior_conversation: list[_RawTurn] | None = None
@@ -306,7 +306,7 @@ class _RawQuery(BaseModel):
     groundtruth_preference: str | None = None
     distractor_preferences: list[_RawPreference] = Field(default_factory=list)
     # Every task family publishes a list here except the sycophancy rows,
-    # which publish the bare tag string `"sycophancy_resistance"`.
+    # which publish the bare tag string "sycophancy_resistance".
     rubric_tags: str | list[str] = Field(default_factory=list)
     instance_full: dict[str, object] | None = None
     instance_json: str | None = None
@@ -365,7 +365,7 @@ def _queries(directory: Path) -> tuple[PersonaMemQuery, ...]:
     return queries
 
 
-# Dropped from `judge_evidence`: the slate (rendered into the question
+# Dropped from judge_evidence: the slate (rendered into the question
 # instead) and the build-time quality checks the release ships alongside each
 # row, none of which any judge reads.
 _EVIDENCE_EXCLUDED = frozenset(
@@ -507,15 +507,15 @@ def _event(raw: _RawEvent, app: str) -> PersonaMemEvent:
 def _calendar_events(path: Path) -> tuple[PersonaMemEvent, ...]:
     """Read the calendar as one event per modification.
 
-    The release stores calendar state as an append-only `added` / `updated` /
-    `removed` stream. Folding it into a snapshot would need a moment to fold
+    The release stores calendar state as an append-only added / updated /
+    removed stream. Folding it into a snapshot would need a moment to fold
     to, and each query has a different one, so each modification is kept as its
     own timestamped memory and the fold falls out of the causal cutoff.
 
     Every part of an entry that describes the appointment is kept. The
     scheduled window is not derivable from the modification's own timestamp --
     an appointment can be booked well before it starts, and the entry's
-    duration appears nowhere else -- and an `updated` modification carries only
+    duration appears nowhere else -- and an updated modification carries only
     a field diff, so rendering just its action word would store a memory with
     no content in it.
     """
@@ -589,7 +589,7 @@ def render_event(event: PersonaMemEvent) -> str:
         header = f"{header} ({event.interaction_type})"
     lines = [header]
     for label, value in (
-        # `content_type` is `image` / `short_video` / `text` on a feed event and
+        # content_type is image / short_video / text on a feed event and
         # the appointment kind on a calendar one; it is parsed for every event,
         # so it is rendered for every event too.
         ("Type", event.content_type),
@@ -629,9 +629,9 @@ def render_event(event: PersonaMemEvent) -> str:
 
 # The only candidate fields a slate ever shows. This is a whitelist rather
 # than a blocklist because the released slates carry scorer-side keys next to
-# the presentable ones: `personalized_recommendation` candidates include
-# `_held_out_persona_item` and `_held_out_category`, the identity of the very
-# item the agent is being asked to find. Upstream strips its own `_origin`
+# the presentable ones: personalized_recommendation candidates include
+# _held_out_persona_item and _held_out_category, the identity of the very
+# item the agent is being asked to find. Upstream strips its own _origin
 # labels for the same reason before it builds a prompt. Anything not named
 # here is not rendered, so a newly-added scorer-side key cannot leak by
 # default -- but a key added *here* would, so add one only after checking what

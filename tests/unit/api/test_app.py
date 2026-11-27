@@ -483,7 +483,6 @@ def test_answer_stream_failure_after_a_delta_ends_with_an_error_event() -> None:
             scope: RetrievalScope | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> Generator[AnswerChunk, None, AnswerResult]:
-            del question, limit, memory_type, reference_at, scope, answer_policy
             yield AnswerChunk(text="partial answer")
             failure = ModelError(
                 "generation request failed", reason="rate_limited", stage="generate"
@@ -531,7 +530,6 @@ async def test_answer_stream_closes_after_the_transport_send_fails(
             scope: RetrievalScope | None = None,
             answer_policy: AnswerPolicy = "strict",
         ) -> Generator[AnswerChunk, None, AnswerResult]:
-            del question, limit, memory_type, reference_at, scope, answer_policy
             result = AnswerResult(answer="answer")
             try:
                 yield AnswerChunk(text="answer")
@@ -826,12 +824,12 @@ def test_memory_routes_are_sync_for_fastapi_threadpool_execution() -> None:
 
 
 def test_the_documented_v1_route_counts_are_the_real_ones() -> None:
-    """`docs/api/rest.md` spells out the always-on and gated `/v1` route counts in prose.
+    """docs/api/rest.md spells out the always-on and gated /v1 route counts in prose.
 
     Parses "fourteen ... or twenty-three when" from the doc and checks each number against the
-    routes `create_app` actually registers, once with both opt-in switches off and once with
+    routes create_app actually registers, once with both opt-in switches off and once with
     both on, so a route added or removed without a doc update fails here. A tiny local map
-    stands in for `test_surface_parity._COUNT_WORDS`: that module has no `__init__.py`, so
+    stands in for test_surface_parity._COUNT_WORDS: that module has no __init__.py, so
     importing it by dotted path here collides with mypy's own file-based module discovery.
     """
     count_words = {14: "fourteen", 23: "twenty-three"}
@@ -1199,7 +1197,7 @@ def test_the_context_route_returns_the_whole_bundle_without_local_asset_paths() 
     # A person the evidence observed whom nobody has named travels beside the ranked hits.
     assert bundle["actors"] == [{"identity_id": "identity_2", "memory_ids": ["memory_2"]}]
     # An affect entry is a hit plus its evidence hop: the events formed from the same
-    # observations the cue itself cites, which travel inside `context`.
+    # observations the cue itself cites, which travel inside context.
     assert [
         (cue["id"], cue["context"]["evidence_ids"], cue["event_ids"]) for cue in bundle["affect"]
     ] == [("memory_3", ["memory_2"], ["memory_9"])]
@@ -1264,9 +1262,9 @@ def test_the_context_route_requires_a_real_boolean_for_partial_sources(value: ob
 def test_the_context_route_reports_a_named_actor_too() -> None:
     """Mirrors the provisional-actor case above for a person a naming assertion already names.
 
-    `actors` is `SearchHitResponse | NamedActorResponse | ProvisionalActorResponse`; only the
-    provisional shape was exercised through this route. A `NamedActorResponse` carries `name`
-    and `naming_assertion_id`, which is what discriminates it from the provisional one.
+    actors is SearchHitResponse | NamedActorResponse | ProvisionalActorResponse; only the
+    provisional shape was exercised through this route. A NamedActorResponse carries name
+    and naming_assertion_id, which is what discriminates it from the provisional one.
     """
     memory = FakeMemory()
     original_compile = memory.compile

@@ -414,7 +414,7 @@ class MediaAnalyses:
     ) -> dict[str, str]:
         """Return the cached caption for every supplied asset described in this vision space.
 
-        Batched because the write path describes a whole `add_many` at once, and an asset with no
+        Batched because the write path describes a whole add_many at once, and an asset with no
         caption in this space is simply absent rather than an error: a miss is the normal state.
         """
         require_identifier(space_id, "vision space_id")
@@ -623,10 +623,10 @@ class MediaAnalyses:
     ) -> tuple[FaceObservation, ...]:
         """Persist detected faces and match them against durable identity exemplars.
 
-        ``preferred_identity`` lets a caller enroll this modality into an identity that lacks it,
+        preferred_identity lets a caller enroll this modality into an identity that lacks it,
         for a single unambiguous observation. The product write path deliberately does not use it:
         adopting an asset's lone voice for its lone face is a cross-modal claim made from one
-        asset, which `Memory` instead routes through corroborated linking so that it is recorded,
+        asset, which Memory instead routes through corroborated linking so that it is recorded,
         observable, and reversible. Pass it only where that claim is already established.
         """
         validated_sha256(asset_id)
@@ -733,9 +733,9 @@ class MediaAnalyses:
 
         Media is the overwhelming majority of storage growth, so retention is a cost and
         privacy mechanism. This is the read half only: it reports what a policy could drop,
-        never drops anything, and includes assets a memory still references -- `memory_assets`
+        never drops anything, and includes assets a memory still references -- memory_assets
         holds those under RESTRICT, so dropping one is a separate decision with its own
-        contract. Use `list_unreferenced_assets` for the already-collectable subset.
+        contract. Use list_unreferenced_assets for the already-collectable subset.
         """
         if not 1 <= limit <= 10_000:
             raise ValueError("limit must be between 1 and 10000")

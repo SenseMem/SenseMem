@@ -9,8 +9,11 @@ import wave
 from pathlib import Path
 from typing import Literal
 
+import av
 import numpy as np
 import pytest
+import torch
+from PIL import Image
 
 from sensemem import (
     AssetRef,
@@ -34,8 +37,6 @@ pytestmark = [
 
 @pytest.fixture
 def media_inputs(tmp_path: Path) -> tuple[ModelInput, ...]:
-    import av
-    from PIL import Image
 
     paths = (tmp_path / "red.png", tmp_path / "tone.wav", tmp_path / "clip.mp4")
     Image.new("RGB", (96, 96), "red").save(paths[0])
@@ -81,7 +82,6 @@ def media_inputs(tmp_path: Path) -> tuple[ModelInput, ...]:
 def test_embeddinggemma2_precision_and_tower_parity(
     tmp_path: Path, media_inputs: tuple[ModelInput, ...]
 ) -> None:
-    import torch
 
     assert torch.cuda.is_available() and torch.cuda.is_bf16_supported(including_emulation=False)
     documents = (

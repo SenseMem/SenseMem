@@ -1,12 +1,8 @@
 # Python control operations
 
-Consolidate evidence, correct claims, forget reversibly, and audit or undo memory changes.
-These methods run in the owning host process, where the application controls inference budgets
-and administrative authority.
+Consolidate evidence, correct claims, forget reversibly, and audit or undo memory changes. These methods run in the owning host process, where the application controls inference budgets and administrative authority.
 
-Start with [memory management](../memory-management.md). See [typed evidence](../typed-memory.md)
-for support semantics and [operation values](python-values.md#control-operations) for fields.
-REST and MCP leave these operations with the owner.
+Start with [memory management](../memory-management.md). See [typed evidence](../typed-memory.md) for support semantics and [operation values](python-values.md#control-operations) for fields. REST and MCP leave these operations with the owner.
 
 | Task | Methods |
 | --- | --- |
@@ -24,32 +20,18 @@ consolidation_candidates(
 ) -> tuple[ConsolidationCandidate, ...]
 ```
 
-Derives due work from committed state without a timer, queue, or consolidation backend.
-Rows interleave triggers; small limits can still favor earlier trigger groups and guarantee no
-bounded waiting time. Query-failure rows cost a query embedding/search; a limit bounds output,
-not scan/history aggregation cost.
+Derives due work from committed state without a timer, queue, or consolidation backend. Rows interleave triggers; `QUERY_FAILURE` rows may embed and search to locate nearby context.
 
 | Trigger | Candidate meaning | `evidence_count` |
 | --- | --- | --- |
-| `EVIDENCE` | New independent support for a derived record; target then sources in `memory_ids` | New links |
+| `EVIDENCE` | New independent support for a derived record (target then sources in `memory_ids`) | New links |
 | `CONTRADICTION` | Different current visible functional values in one lineage | Distinct values |
 | `FEEDBACK` | New explicit/automatic answer reinforcement | Confirmations |
 | `QUERY_FAILURE` | At least two near-equal empty recalls in the configured window | Failures |
 | `PRESSURE` | Least useful records while active count exceeds an explicit budget | Excess records |
 | `IDLE` | Host `idle=True`; never-weighed derived lineage, oldest first | 1 |
 
-Search, abstaining ask, and empty compile record bounded query-failure signals, compared with
-case/accent/punctuation/whitespace normalization. The owner's query text stays within its memory
-domain and `query_failure_history` bound.
-
-A pass marks its evidence weighed even if it applies nothing. Persistent-signal candidates return
-only after newer support/feedback/failure/conflict; pressure and idle are weighed-once without a
-signal timestamp. Rolled-back work becomes due again. Eligibility filtering precedes per-trigger
-limits for evidence/contradiction/feedback/pressure/idle, allowing a finite unchanged backlog to
-advance. Query failure has its own bounded search window. Continuous arrivals can still delay work.
-
-Candidates use retained history/operation marks, so a poll can scan settled records even when its
-result is short. Removing history would lose audit/rollback/weighed information.
+Search, abstaining ask, and empty compile record bounded query-failure signals within `query_failure_history`. A pass marks evidence weighed even if it applies nothing; new signals or rollback make work due again.
 
 ## consolidate
 
@@ -64,41 +46,13 @@ consolidate(
 ) -> ConsolidationReport
 ```
 
-Requires a consolidator. Select evidence by explicit IDs, otherwise active search for query,
-otherwise newest limit active records. Explicit IDs can also show hidden/retired target-only
-assertions; they cannot support proposals. Forgotten records are never shown. Query/default
-windows never widen to hidden targets. A supplied `query_failure` requires the `QUERY_FAILURE`
-trigger and reaches the backend with the failed request's constraints. Candidate callers must
-forward `candidate.query_failure`; `consolidate_pending()` does so automatically.
+Requires a consolidator. Selects evidence from explicit `evidence_ids`, otherwise active search for `query`, otherwise the newest `limit` active records. Explicit IDs may name hidden or retired assertions as target-only records; forgotten records are never shown. A supplied `query_failure` requires `trigger=MemoryTrigger.QUERY_FAILURE` (forwarded automatically by `consolidate_pending()`).
 
-Evidence gather and apply phases use the formation lock; the model round trip releases it.
-Identity commits use that same lock. Every proposal rechecks targets/premises in its own
-transaction; ineligible changes during reasoning refuse it as stale.
+Each proposal rechecks targets and premises in its own SQLite transaction and either commits with one log row or is rejected with a reason in `report.rejected`.
 
-Each proposal either commits fully with one log row or is rejected with a reason. A pass is not
-atomic across proposals: earlier commits remain if later proposals fail. The report carries
-operations, rejected pairs, weighed evidence count, rounds, skipped candidates, and `model_calls`;
-applied is the operation count. `weighed=0` means no backend was reached.
-
-One consolidation's cited set is a joint support clause; separate operations add alternatives.
-Evidence linkage is model-declared provenance, not semantic proof. Intent-specific rules appear
-under apply below.
-
-Model-proposed corrections must cite standing, shown counterevidence disjoint from their targets;
-the citations remain in the operation log and idempotency key. Missing citations are rejected as
-`counterevidence_required`. The apply transaction rechecks those premises. Host-authored
-`apply()` corrections may omit counterevidence because the caller supplies the authority.
-
-Standalone model `FORGET` operations require `trigger=MemoryTrigger.PRESSURE` and an explicit
-`MemorySettings.memory_budget_records`. The SQLite transaction refuses a batch that would leave
-fewer unforgotten records than that budget, including when another operation already relieved
-the pressure; it reports `stale` without partial changes. Other model forgetting is
-`unauthorized`. Manual `forget()` and host-authored `apply()` retain their explicit authority.
-
-Consolidation inputs expose shown source indices and omitted-source counts. A model cannot
-consolidate a derived claim together with only its own sources as if they were independent
-duplicates; that proposal is `dependent_evidence`. This check preserves the sources for later
-correction or genuine new evidence. Host-authored `apply()` may explicitly re-express them.
+- Model corrections require standing, shown counterevidence disjoint from targets (`counterevidence_required` otherwise). Host-authored `apply()` corrections may omit counterevidence.
+- Standalone model `FORGET` operations require `trigger=MemoryTrigger.PRESSURE` and an explicit `MemorySettings.memory_budget_records`, and cannot forget below that budget.
+- Models cannot consolidate a derived claim together with only its own sources (`dependent_evidence`).
 
 ## consolidate_pending
 
@@ -111,10 +65,7 @@ consolidate_pending(
 ) -> ConsolidationReport
 ```
 
-Runs due candidates with each row's trigger, for at most `max_rounds`. `idle=True` admits the host's
-approved idle window. It stops on a zero-yield pass without spinning; no due candidates means no
-backend call. Candidate scheduling arguments belong here, while explicit trigger belongs to
-consolidate. Returns the same `ConsolidationReport`.
+Runs due candidates under each row's trigger for at most `max_rounds`, stopping on a zero-yield pass and calling no backend when no work is due.
 
 ## apply
 
@@ -122,64 +73,31 @@ consolidate. Returns the same `ConsolidationReport`.
 apply(operation: MemoryOperation) -> MemoryOperationRecord
 ```
 
-Applies one host operation without calling a consolidation backend. It can still embed a derived
-record or changed identity projection. Its window is the host's named targets and evidence.
-A refusal raises `ValidationError` with the kernel rejection reason.
+Applies one host operation without calling a consolidation backend. A refusal raises `ValidationError` with the kernel rejection reason.
 
 | Intent | Required checks | Effect and rollback |
 | --- | --- | --- |
-| `REINFORCE` | One unretired derived target; shown, existing, unlinked evidence excluding the target | Add independent support; rollback retires those links |
-| `CONSOLIDATE` | Valid proposal, standing shown sources, targets within its own cited set, supported affect modality/spatial frame | Add joint-supported record, forget named details, apply qualified supersession; rollback reverses those changes |
-| `CORRECT` | Shown existing derived targets; model proposals cite shown counterevidence excluding the target | Retire current versions; rollback adds inverse versions |
-| `FORGET` | Shown existing, not-forgotten targets; model proposals require host-configured record pressure | Set `forgotten_at` within remaining record budget; rollback clears it |
-| `IDENTIFY` | Existing identity present in at least one standing cited speech/face observation | Commit naming assertion and repaint name/transcript projections; rollback restores predecessor |
-| `MERGE` | Explicit host confirmation of complementary voice/face identities; never accepted from a backend | Bind under the host-selected identity; rollback splits and preserves a negative pair |
-| `CONSENT` | Never accepted from a backend: unauthorized | Host statement only; rollback restores predecessor |
+| `REINFORCE` | One unretired derived target; shown, existing, unlinked evidence excluding target | Add independent support; rollback retires those links |
+| `CONSOLIDATE` | Valid proposal, standing shown sources, targets within cited set, supported modality/frame | Add joint-supported record, forget named details, apply supersession; rollback reverses changes |
+| `CORRECT` | Shown existing derived targets (model proposals cite counterevidence) | Retire current versions; rollback adds inverse versions |
+| `FORGET` | Shown existing, not-forgotten targets (model proposals require pressure + budget) | Set `forgotten_at`; rollback clears it |
+| `IDENTIFY` | Existing identity present in at least one standing cited speech/face observation | Commit naming assertion and refresh projections; rollback restores predecessor |
+| `MERGE` | Explicit host confirmation of complementary voice/face identities (never from backend) | Bind under host-selected identity; rollback splits and records negative pair |
+| `CONSENT` | Host statement only (never from backend) | Record consent assertion; rollback restores predecessor |
 
 ### Eligibility and rejection
 
-An already-applied operation with the same payload and recipe is a duplicate while it remains
-standing. Named targets outside the window are `target_not_shown`. Multi-target eligibility is
-all-or-nothing; failures include `unknown_target`, `not_derived`, and `already_forgotten`.
-Transaction rechecks return stale without writes. Hidden unretired reinforcement targets can
-still receive eligible support; hidden/retired cited premises cannot seed a new operation.
-
-`REINFORCE`/`CORRECT`/`FORGET` refuse bound `naming_assertion` and `consent_assertion` targets.
-`IDENTIFY` additionally rejects `unknown_identity` and `identity_not_in_evidence`. Model names carry
-`MODEL_INFERENCE` and require two independent groups; `register_identity` is the immediate
-`USER_STATEMENT` host path.
-
-Model corrections without counterevidence are `counterevidence_required`; unshown premises are
-`evidence_not_shown`, and self-citation is `target_is_evidence`. Host corrections can omit
-counterevidence. Model forgetting requires a `PRESSURE` trigger and explicit record budget;
-the commit rechecks remaining pressure instead of forgetting below that budget. Host-authored
-forgetting retains its explicit authority.
-
-A pass rejects `inconsistent_batch` when one operation retires support another accepted operation
-uses. Self-supporting consolidation or reinforcement is `target_is_evidence`. The kernel never
-repairs a malformed clause by dropping just the bad source.
+Duplicate standing operations are rejected. Multi-target eligibility is all-or-nothing (`target_not_shown`, `unknown_target`, `not_derived`, `already_forgotten`, `stale`). Generic `REINFORCE`/`CORRECT`/`FORGET` refuse protected `naming_assertion` and `consent_assertion` targets. Passes reject `inconsistent_batch` if one operation retires support needed by another, and `target_is_evidence` on self-citation.
 
 ### Lineage and identity effects
 
-Qualified state/user-stated-trait supersession can reach outside the shown window by the kernel's
-own rule; exact version pairs are recorded in superseded for rollback. Kind, subject identity,
-predicate, and spatial frame separate lineages. Registered scalar aliases such as `preferred_drink`,
-`favorite_beverage`, and 喜欢的饮料 share a key; original predicate spelling remains. Unknown
-predicates/compound values keep literal keys. Relations and inferred traits accumulate.
+Qualified state/user-stated-trait supersession records exact version pairs in `superseded` for rollback. Lineages key on kind, subject identity, predicate, and spatial frame; reviewed scalar predicate aliases (such as `preferred_drink` and `favorite_beverage`) share one canonical claim key while preserving original spelling. Consolidation `target_ids` set `forgotten_at` while retaining evidence links and appear in `forgotten_ids`.
 
-Consolidation `target_ids` set `forgotten_at` in the same transaction, retain evidence links, and
-appear as `forgotten_ids` on that operation. This differs from generic `FORGET` and physical deletion.
-
-Identity IDs use `IdentityChange` rather than memory `target_ids`: `MERGE`, unlink's `CORRECT`, and
-erasure's `FORGET` carry identity/moved IDs. A row names memories or one identity, never both.
-Unlink rollback re-merges; identity erasure logs IDs/counts only and cannot reverse.
-[Identity/consent](python-identity.md) owns those authority boundaries.
+Identity operations (`MERGE`, unlink's `CORRECT`, erasure's `FORGET`) use `IdentityChange` rather than memory `target_ids`. See [identity and consent](python-identity.md).
 
 ### Replay
 
-Replay onto a fresh store with the same sources/recipe reproduces operation keys and
-content-addressed derived IDs. `applied_at` is new. Event-derived IDs reproduce only with matching
-source `occurred_at`. A changed derivation recipe intentionally produces different IDs.
+Replaying an operation onto a fresh store with matching sources and recipe reproduces operation keys and content-addressed derived IDs (event-derived IDs also require matching source `occurred_at`).
 
 ## forget
 
@@ -187,11 +105,7 @@ source `occurred_at`. A changed derivation recipe intentionally produces differe
 forget(memory_ids: Sequence[str]) -> MemoryOperationRecord | None
 ```
 
-Host-authorized cognitive forgetting needs no backend/window. Recall omits the record while
-get/list/`forgotten_at` retain audit state. Unknown IDs raise `MemoryNotFoundError`. Empty input,
-already-forgotten targets, protected naming assertions, moved targets, or duplicate operations
-return `None` without changes. All IDs apply or none. Only rollback restores recall; re-add returns
-the same forgotten record. Physical delete instead returns `False` for missing IDs and cannot reverse.
+Host-authorized cognitive forgetting. Recall omits the record while `get()`, `list()`, and `forgotten_at` retain audit state. Unknown IDs raise `MemoryNotFoundError`; empty input, already-forgotten targets, or protected naming assertions return `None` without changes. Only `rollback()` restores recall; physical deletion uses `delete()`.
 
 ## rollback
 
@@ -199,11 +113,7 @@ the same forgotten record. Physical delete instead returns `False` for missing I
 rollback(operation_id: int) -> bool
 ```
 
-Returns `False` for unknown/already-reversed operations, identity erasure, or changes a later
-standing operation depends on. Reverse dependent lineages and namings newest first.
-Clause rollback restores an exact predecessor with an inverse transaction interval, preserving
-unrelated alternatives and refusing to overwrite later clause versions. Historical `known_at`
-continues to expose the support/confidence that stood then. Physical deletion is not an intent.
+Returns `False` for unknown or already-reversed operations, identity erasure, or operations with standing dependents (reverse dependent lineages and namings newest first). Restores exact clause predecessors with inverse transaction intervals so historical `known_at` reads remain intact.
 
 ## operations
 
@@ -211,9 +121,9 @@ continues to expose the support/confidence that stood then. Physical deletion is
 operations(*, limit: int = 100) -> tuple[MemoryOperationRecord, ...]
 ```
 
-Lists the append-only log newest first, including intent, affected IDs, provenance, superseded
-versions, rollback state, and optional outcome. Returned values are defined in
-[the value reference](python-values.md#control-operations).
+Lists the append-only operation log newest first. See [operation values](python-values.md#control-operations).
+
+The local log stores ID collections as JSON arrays of strings, `linked` and `superseded` effects as arrays of two-element arrays (two memory IDs for links; memory ID and positive integer version for supersessions), and clause snapshots with a boolean `previous_active` and positive integer `applied_version`. Invalid values raise `StorageError` when listing operations or rolling back the affected operation.
 
 ## record_outcome
 
@@ -221,7 +131,4 @@ versions, rollback state, and optional outcome. Returned values are defined in
 record_outcome(operation_id: int, outcome: MemoryOutcome, *, note: str | None = None) -> bool
 ```
 
-Records or replaces a later `CONFIRMED`/`REFUTED` assessment and note. Unknown operations return `False`.
-`None` outcome means unassessed, not confirmed. The kernel never uses these labels for decisions;
-recording `REFUTED` does not reverse anything. Use rollback for a change in behavior and retain
-denominators when calculating slow-loop quality.
+Records or replaces a `CONFIRMED` or `REFUTED` assessment and note for measurement without changing policy or rolling back the operation. Unknown operation IDs return `False`.

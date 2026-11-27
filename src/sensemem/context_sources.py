@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Protocol
 
 from sensemem._content import snapshot_content
 from sensemem.content import ContentInput
@@ -13,9 +14,13 @@ from sensemem.context_values import ContextSupplement
 from sensemem.exceptions import ValidationError
 
 
+class ContextSupplementProvider(Protocol):
+    def __call__(self, query: ContentInput, /) -> Awaitable[Sequence[ContextSupplement]]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ContextSourceResult:
-    """Temporary context tied to the input revision returned by ``submit``."""
+    """Temporary context tied to the input revision returned by submit."""
 
     revision: int
     supplements: tuple[ContextSupplement, ...]
@@ -41,7 +46,7 @@ class AsyncContextSource:
 
     def __init__(
         self,
-        provider: Callable[[ContentInput], Awaitable[Sequence[ContextSupplement]]],
+        provider: ContextSupplementProvider,
     ) -> None:
         if not callable(provider):
             raise ValidationError("context provider must be an async callable")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import multiprocessing
 import os
@@ -13,6 +14,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
+from _feature_support import TinyEmbedder
 
 import sensemem.infrastructure.local.store._codec as codec_module
 import sensemem.infrastructure.local.store._identity as identity_module
@@ -22,6 +24,7 @@ from sensemem import (
     FaceAnalysis,
     FaceEmbedding,
     IdentityProfile,
+    Memory,
     RecordKind,
     RecordSemantics,
     SpatialAnchor,
@@ -29,6 +32,7 @@ from sensemem import (
     SpeakerEmbedding,
     SpeechAnalysis,
     SpeechTurn,
+    StorageError,
 )
 from sensemem.infrastructure.local import (
     DataDirectoryInUseError,
@@ -295,7 +299,7 @@ def test_schema_is_local_and_enforces_foreign_keys(tmp_path: Path) -> None:
             store.index.write_embedding(_embedding(memory_id="missing-memory"))
 
 
-@pytest.mark.parametrize("version", [1, 16, 17, 18, 19, 20, SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [1, SCHEMA_VERSION - 1, SCHEMA_VERSION + 1])
 def test_other_schema_versions_are_refused_without_changing_durable_data(
     tmp_path: Path, version: int
 ) -> None:
@@ -575,7 +579,7 @@ def test_media_assets_round_trip_in_order_and_cache_transcript(tmp_path: Path) -
 def test_visual_descriptions_are_keyed_by_asset_and_space(tmp_path: Path) -> None:
     """One caption per (asset content, vision space), so a new recipe cannot serve an old caption.
 
-    `media_assets` enforces `asset_id = sha256`, so this key is the picture's own digest: a second
+    media_assets enforces asset_id = sha256, so this key is the picture's own digest: a second
     memory over the same bytes reads the row the first one wrote.
     """
     first = _asset()
@@ -1242,7 +1246,7 @@ def test_deleting_an_asset_collects_the_anonymous_identities_it_alone_observed(
         identities, exemplars = _identity_rows(store)
 
     # The anonymous identity was a by-product of the deleted recording, so its exemplar goes
-    # with it. The named one is a person the caller asserted; `forget_identity()` erases that.
+    # with it. The named one is a person the caller asserted; forget_identity() erases that.
     assert anonymous not in identities
     assert identities == {named}
     assert exemplars == {(named, "voice")}
@@ -1258,8 +1262,8 @@ def test_an_identity_another_asset_still_observes_survives_the_collection(tmp_pa
         assert _face_identity(store, second, (1.0, 0.0)) == face_id
         assert _voice_identity(store, second, (0.0, 1.0)) == voice_id
 
-        # `face_observations.identity_id` RESTRICTs, so a regression raises here, but
-        # `speech_segments.speaker_id` only SET NULLs, so the speaker has to be read back.
+        # face_observations.identity_id RESTRICTs, so a regression raises here, but
+        # speech_segments.speaker_id only SET NULLs, so the speaker has to be read back.
         _drop_asset(store, "first", first)
         identities, _ = _identity_rows(store)
         faces = store.media.read_faces(second.asset_id, space_id="sface:test")
@@ -1273,7 +1277,7 @@ def test_an_identity_another_asset_still_observes_survives_the_collection(tmp_pa
 def test_collecting_one_asset_leaves_an_unlinked_identity_with_its_templates(
     tmp_path: Path,
 ) -> None:
-    """An identity `unlink_identity()` restored is untouched by an unrelated asset's collection."""
+    """An identity unlink_identity() restored is untouched by an unrelated asset's collection."""
     with LocalStore(tmp_path) as store:
         clip = _video_asset(store, "clip")
         face_id = _face_identity(store, clip, (1.0, 0.0))
@@ -1693,8 +1697,8 @@ def test_valid_at_keeps_records_without_a_declared_validity_interval(tmp_path: P
             active_only=True,
         )
 
-    # A record with no validity interval answers every `valid_at`, and only the typed interval
-    # can refuse one. A record with no pose is at no location, so `near` still drops both.
+    # A record with no validity interval answers every valid_at, and only the typed interval
+    # can refuse one. A record with no pose is at no location, so near still drops both.
     assert [memory.memory_id for memory in unscoped] == ["plain", "typed"]
     assert [memory.memory_id for memory in during] == ["plain", "typed"]
     assert [memory.memory_id for memory in before] == ["plain"]
@@ -1750,7 +1754,7 @@ def _require_context(context: RecordSemantics | None) -> RecordSemantics:
     return context
 
 
-# Every scope axis `read_memories` accepts, plus the requested-ID quirks the count has to
+# Every scope axis read_memories accepts, plus the requested-ID quirks the count has to
 # reproduce: a missing ID contributes nothing and a repeated ID is counted twice.
 _COUNT_SCOPES: tuple[tuple[str, dict[str, object], int], ...] = (
     ("unscoped", {}, 7),
@@ -1796,7 +1800,7 @@ def test_count_memories_matches_the_scoped_hydration_it_replaces(
 ) -> None:
     """The count drives candidate widening, so it has to equal the hydration exactly.
 
-    `expected` is asserted as well as the equality: two implementations that both return
+    expected is asserted as well as the equality: two implementations that both return
     nothing agree on every axis.
     """
     corpus = _count_corpus()
@@ -1821,7 +1825,7 @@ def _naming_assertion(
     basis: EvidenceBasis = EvidenceBasis.USER_STATEMENT,
     evidence_ids: tuple[str, ...] = (),
 ) -> StoredMemory:
-    """One naming assertion, shaped the way `Memory.register_identity` writes it."""
+    """One naming assertion, shaped the way Memory.register_identity writes it."""
     return replace(
         _memory(memory_id, f"{name} is a recognized person", created_at=recorded_at),
         context=RecordSemantics(
@@ -1944,7 +1948,7 @@ def test_reactivated_deterministic_output_is_reindexed_and_retires_on_rollback(
 def test_the_projection_follows_every_visibility_change_of_a_naming_assertion(
     tmp_path: Path,
 ) -> None:
-    """`identities.name` is the name of the currently visible assertion, or nothing.
+    """identities.name is the name of the currently visible assertion, or nothing.
 
     The registry is a projection, so no path that retires, hides or deletes the assertion may
     leave a name standing that nothing asserts -- including the paths that know nothing about
@@ -1955,7 +1959,7 @@ def test_the_projection_follows_every_visibility_change_of_a_naming_assertion(
         voice_id = _voice_identity(store, clip, (1.0, 0.0))
         # The identity row's created_at is real wall-clock time (set when write_speech binds the
         # identity above); recorded_at must stay safely after it, not a fixed calendar moment, or
-        # this fails the `updated_at >= created_at` check once wall-clock time passes it.
+        # this fails the updated_at >= created_at check once wall-clock time passes it.
         recorded_at = datetime.now(timezone.utc) + timedelta(hours=1)
         store.records.write_memories(
             (
@@ -2007,12 +2011,12 @@ def test_the_projection_follows_every_visibility_change_of_a_naming_assertion(
 
 
 def test_a_backdated_forget_does_not_break_the_identity_projection(tmp_path: Path) -> None:
-    """`identities.updated_at` is transaction time, not the caller's semantic time.
+    """identities.updated_at is transaction time, not the caller's semantic time.
 
     A host may forget or retract a record with a timestamp in the past -- backfilling something it
     learned late. The name projection is rewritten in that same transaction, so stamping the
-    caller's time would put the identity row's `updated_at` before its own `created_at` and the
-    CHECK constraint would surface as an `IntegrityError` out of a public store method.
+    caller's time would put the identity row's updated_at before its own created_at and the
+    CHECK constraint would surface as an IntegrityError out of a public store method.
     """
     long_ago = datetime(2020, 1, 1, tzinfo=timezone.utc)
     with LocalStore(tmp_path) as store:
@@ -2196,8 +2200,8 @@ def test_named_actors_resolve_through_semantics_and_assets_but_never_self(
 ) -> None:
     """A memory's own bound assertion and its asset-keyed identity both surface a name.
 
-    `named_actors` is the positive counterpart of `provisional_identities`: it reads the same
-    asset-keyed edge plus the semantic one `RecordSemantics.identity_id` projects, restricted to
+    named_actors is the positive counterpart of provisional_identities: it reads the same
+    asset-keyed edge plus the semantic one RecordSemantics.identity_id projects, restricted to
     identities a naming assertion currently names, and it never reports the naming assertion's
     own memory back to itself.
     """
@@ -2291,7 +2295,7 @@ def test_pending_captures_are_globally_oldest_first_across_id_chunks(tmp_path: P
 
 
 def test_the_current_schema_indexes_recalled_records(tmp_path: Path) -> None:
-    """`_feedback_candidates` polls `last_accessed_at DESC, memory_id` on every candidate sweep."""
+    """_feedback_candidates polls last_accessed_at DESC, memory_id on every candidate sweep."""
     with LocalStore(tmp_path) as store:
         database_path = store.database_path
     with closing(sqlite3.connect(database_path)) as connection:
@@ -2613,7 +2617,7 @@ def test_an_operation_whose_output_was_deleted_can_still_be_rolled_back(
 
         # The deletion already was the complete inverse; the operation must still close.
         assert reverted is True
-        # `read_operations` lists active operations only, so a closed one is gone from it.
+        # read_operations lists active operations only, so a closed one is gone from it.
         assert store.control.read_operations(operation_key="joint-create") == ()
 
 
@@ -2876,6 +2880,65 @@ def test_operation_log_rejects_missing_current_effect_fields(tmp_path: Path, fie
             store.control.read_operations(operation_id=operation.operation_id)
 
 
+@pytest.mark.parametrize(
+    ("field", "effect"),
+    [
+        ("created_ids", [123]),
+        ("changed_ids", "derived"),
+        ("activated_ids", {"derived": True}),
+        ("forgotten_ids", "ab"),
+        ("clause_changes[0].previous_active", "false"),
+        ("linked", {}),
+        ("linked", [["derived"]]),
+        ("linked", [["derived", "source-a", "extra"]]),
+        ("linked", ["ab"]),
+        ("linked", [["derived", 1]]),
+        ("superseded", [["derived", 1, 2]]),
+        ("superseded", [["derived", True]]),
+        ("superseded", [["derived", 1.5]]),
+        ("superseded", [["derived", "1"]]),
+        ("superseded", [["derived", 0]]),
+        ("clause_changes[0].applied_version", True),
+        ("clause_changes[0].applied_version", 1.0),
+        ("clause_changes[0].applied_version", "1"),
+        ("clause_changes[0].applied_version", -1),
+    ],
+)
+def test_operation_log_rejects_invalid_effect_pairs_and_versions(
+    tmp_path: Path, field: str, effect: object
+) -> None:
+    recorded_at = datetime(2026, 9, 8, 13, tzinfo=timezone.utc)
+    members = ("source-a", "source-b")
+    derived = _joint_state_memory("derived", members, confidence=0.7, recorded_at=recorded_at)
+    with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
+        store = memory._store
+        store.records.write_memories((_memory("source-a"), _memory("source-b")))
+        operation = _apply_joint_clause_operation(
+            store,
+            derived,
+            members,
+            confidence=0.7,
+            applied_at=recorded_at + timedelta(minutes=1),
+            key="invalid-operation-effects",
+        )
+        with closing(sqlite3.connect(store.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE memory_operations SET effects_json = json_set(effects_json, ?, json(?)) "
+                "WHERE operation_id = ?",
+                (f"$.{field}", json.dumps(effect), operation.operation_id),
+            )
+
+        with pytest.raises(StoredDataError, match="stored memory operation is invalid"):
+            store.control.read_operations(operation_id=operation.operation_id)
+
+        with pytest.raises(StorageError, match="failed to list memory operations") as exc:
+            memory.operations()
+        assert isinstance(exc.value.__cause__, StoredDataError)
+        with pytest.raises(StorageError, match="failed to read a memory operation") as exc:
+            memory.rollback(operation.operation_id)
+        assert isinstance(exc.value.__cause__, StoredDataError)
+
+
 def test_clause_snapshots_round_trip_and_rollback_preserves_the_version_history(
     tmp_path: Path,
 ) -> None:
@@ -3029,8 +3092,8 @@ def _recall_corpus(store: LocalStore) -> datetime:
 def test_match_memories_returns_every_folded_substring_hit_in_time_order(tmp_path: Path) -> None:
     """The exhaustive counterpart to search: a predicate, an order, and a bound.
 
-    Folding is NFKC casefold on both sides, so `CAIRO` and a full-width spelling reach the same
-    rows SQLite's ASCII-only `lower()` would have split.
+    Folding is NFKC casefold on both sides, so CAIRO and a full-width spelling reach the same
+    rows SQLite's ASCII-only lower() would have split.
     """
     with LocalStore(tmp_path) as store:
         _recall_corpus(store)
@@ -3154,7 +3217,7 @@ def test_memories_in_window_requires_both_bounds_and_places_undated_records(
 
     A window that dropped it would make "everything that happened in September" wrong for a
     corpus that dates some records and not others, and the answer prompt already tells the
-    reader that `created_at` stands in for a missing event time.
+    reader that created_at stands in for a missing event time.
     """
     with LocalStore(tmp_path) as store:
         start = _recall_corpus(store)
@@ -3183,7 +3246,7 @@ def test_neighbor_memories_reads_corpus_order_and_breaks_ties_by_insertion(
 ) -> None:
     """Two turns share a timestamp, so the rowid is what "just before that" means.
 
-    `memory_records` is a rowid table and every adapter writes one turn per `add` in turn order,
+    memory_records is a rowid table and every adapter writes one turn per add in turn order,
     which is the assumption this pins: without the tie-break the pair would come back in an
     order SQLite is free to change.
     """
@@ -3272,11 +3335,11 @@ def test_a_missing_anchor_contributes_nothing_and_an_empty_anchor_set_reads_noth
 
 
 def test_recall_primitives_scope_to_one_identity(tmp_path: Path) -> None:
-    """The identity scope is `read_memories`'s, so `entity` is one clause, not a second rule."""
+    """The identity scope is read_memories's, so entity is one clause, not a second rule."""
     with LocalStore(tmp_path) as store:
         clip = _video_asset(store, "clip")
         voice_id = _voice_identity(store, clip, (1.0, 0.0))
-        # In the past, so the claim is valid now: `active_only` hydration is the authority on
+        # In the past, so the claim is valid now: active_only hydration is the authority on
         # what is current, and a claim that starts in an hour is correctly not in the answer.
         recorded_at = datetime.now(timezone.utc) - timedelta(hours=1)
         store.records.write_memories(
@@ -3303,7 +3366,7 @@ def test_recall_primitives_scope_to_one_identity(tmp_path: Path) -> None:
 def test_a_recall_primitive_reports_what_it_selected_not_what_hydration_kept(
     tmp_path: Path,
 ) -> None:
-    """`max_rows` is applied while IDs are selected; scope is applied while they are hydrated.
+    """max_rows is applied while IDs are selected; scope is applied while they are hydrated.
 
     A caller cannot tell a truncated set from a complete one out of the row count alone, because
     a scope filter shrinks a read that did fill its bound to fewer rows than the bound. The
@@ -3327,7 +3390,7 @@ def test_a_recall_primitive_reports_what_it_selected_not_what_hydration_kept(
 
     assert [memory.memory_id for memory in bounded] == ["turn-1", "turn-3"]
     assert bounded.selected == 2
-    # Every selected row has no pose, so `near` drops all of them -- while the predicate still
+    # Every selected row has no pose, so near drops all of them -- while the predicate still
     # matched more rows than the bound allowed.
     assert nowhere.selected == 2
     assert tuple(nowhere) == ()
@@ -3422,7 +3485,7 @@ def test_write_speech_enrols_only_the_speaker_centroids_a_turn_uses(tmp_path: Pa
 
     Measured on a 12,684-clip ingest: 27,056 of 44,857 identities were never referenced by a
     speech segment, and every one of them sat in the exemplar bank every later asset was matched
-    against. The rule lives here because every speech backend converges on `write_speech`.
+    against. The rule lives here because every speech backend converges on write_speech.
     """
     asset = _asset(b"voice", modality="audio", mime_type="audio/wav", name="voice.wav")
     memory = replace(_memory("voice"), content="", modality="audio", assets=(asset,))

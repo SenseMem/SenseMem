@@ -25,9 +25,12 @@ from sensemem._telemetry import (
 )
 from sensemem.context_values import ContextBudget, ContextUnknown, ContextUnknownKind
 from sensemem.exceptions import ModelError
-from sensemem.infrastructure.local.store import LocalStore, RecallRead, datetime_text
+from sensemem.infrastructure.local.store._codec import datetime_text
+from sensemem.infrastructure.local.store.local_store import LocalStore
+from sensemem.infrastructure.local.store.rows import RecallRead
 from sensemem.kernel import grounding
 from sensemem.kernel.content import PreparedContent
+from sensemem.kernel.contracts import generation_model_name
 from sensemem.kernel.hydration import Hydrator
 from sensemem.kernel.lifecycle import OperationAssets
 from sensemem.kernel.retrieval import RERANK_CANDIDATES, Retrieval
@@ -317,7 +320,7 @@ class RecallReads:
         )
 
     def _memory_type(self, requested: MemoryCategory | None) -> str | None:
-        """The caller's own `memory_type` wins: a plan may not widen the question's scope."""
+        """The caller's own memory_type wins: a plan may not widen the question's scope."""
         chosen = self._context.memory_type or requested
         return None if chosen is None else chosen.value
 
@@ -480,7 +483,7 @@ class Recall(Traced):
     ) -> RecallResult | None:
         """Plan and run this question's reads, or None when planning is off.
 
-        Inside its own stage: the `sensemem.retrieve` leg closes on the ranked hits, and the
+        Inside its own stage: the sensemem.retrieve leg closes on the ranked hits, and the
         planning call and the exhaustive reads happen after it -- a model call and a set of table
         scans that a trace without this span attributes to nothing, leaving the operation's own
         duration as the only evidence they ran at all.
@@ -528,8 +531,8 @@ class Recall(Traced):
 
         Every linked row is offered, including one the ranking also found. Discarding those was
         tried, on the theory that a wider budget reaches them anyway, and it removed the whole
-        benefit: with no character budget the candidate pool is `min(100, limit * 3)` while the
-        window it grounds is `limit`, so a gold row at rank 20 is in the pool and will never be in
+        benefit: with no character budget the candidate pool is min(100, limit * 3) while the
+        window it grounds is limit, so a gold row at rank 20 is in the pool and will never be in
         the window. Gating on pool membership dropped exactly those rows -- complete support fell
         to the narrow window's own 0.7949 on ATM-Bench and the paired comparison went to 117 ties
         -- and kept the rows past rank 36, which are the ones that do not matter.
@@ -537,7 +540,7 @@ class Recall(Traced):
         What the measurement left is a simpler reading of this feature. Expansion does not reach
         evidence the ranking cannot; it reaches further down the same ranking by a different
         selector, and it is worth enabling where that selector is cheaper than cosine depth. The
-        rows a wider window would have contained anyway are removed by `grounding.pack_grounding`'s own
+        rows a wider window would have contained anyway are removed by grounding.pack_grounding's own
         dedup, which is the only place that can know what the window will hold.
         """
         if not hits:
@@ -585,16 +588,16 @@ class Recall(Traced):
         Every way this can go wrong lands on the same fallback -- a backend that cannot plan, a
         planner that fails, an empty completion, a plan the kernel will not run -- so the cost
         of a bad planner is one model call, never a different answer. Model output is data: it
-        reaches `parse_recall_program`, which decides what SenseMem does.
+        reaches parse_recall_program, which decides what SenseMem does.
         """
         planner = self._planner
         if planner is None or not question.strip():
             return fallback_recall_program(question, k=k)
-        model = getattr(planner, "generation_model", None)
+        model = generation_model_name(planner)
         with self._model_trace(
             "generation",
             "plan",
-            model=model if isinstance(model, str) else None,
+            model=model,
             batch_size=1,
             modalities=(Modality.TEXT,),
         ):
@@ -609,7 +612,7 @@ class Recall(Traced):
                 )
             except ModelError:
                 # Planning is not answering. A provider that refused this call has said nothing
-                # about whether it can answer, and the fallback plan is the one `ask` has always
+                # about whether it can answer, and the fallback plan is the one ask has always
                 # run, so the question continues instead of failing on a hint.
                 return fallback_recall_program(question, k=k)
         if payload is None:

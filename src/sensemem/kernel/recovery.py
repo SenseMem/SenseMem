@@ -20,7 +20,7 @@ from sensemem.kernel.runtime import Storage, translate_storage_errors
 from sensemem.kernel.settings import ResolvedSettings
 from sensemem.processing import IngestionStage
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class Recovery:
@@ -99,11 +99,9 @@ class Recovery:
             with translate_storage_errors("checkpoint a missing search index"):
                 queued = self._store.index.queue_all_embeddings()
             if queued:
-                _LOGGER.info(
-                    "rebuilding the search index for %d embeddings (missing=%s, recipe changed=%s)",
-                    queued,
-                    missing,
-                    plan.rebuild_index,
+                LOGGER.info(
+                    f"rebuilding the search index for {queued} embeddings "
+                    f"(missing={missing}, recipe changed={plan.rebuild_index})"
                 )
         space = expected[STORE_METADATA_KEYS["transcription"]]
         return (

@@ -24,6 +24,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+import examples.live.app as live_app
+from examples.live import app as demo
+from examples.live import prompts as demo_prompts
+from examples.live.app import DemoStaticFiles, LiveRuntime, create_app
 from sensemem import (
     AsyncEventStream,
     AsyncMemory,
@@ -42,13 +46,6 @@ from sensemem import (
     StorageError,
 )
 from sensemem.configuration import OpenAIGenerationConfig
-from sensemem.prompts import demo as demo_prompts
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Examples run from the checkout and are deliberately excluded from the wheel.
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 def _config(path: Path) -> MemorySpec:
@@ -184,7 +181,6 @@ class CompletingSegmenter(Segmenter):
 
 
 def test_frontend_assets_revalidate_without_reusing_changed_modules(tmp_path: Path) -> None:
-    from examples.live.app import DemoStaticFiles, create_app
 
     with TestClient(
         create_app(
@@ -218,7 +214,6 @@ def test_frontend_assets_revalidate_without_reusing_changed_modules(tmp_path: Pa
 
 
 def test_stream_capture_settle_recall_and_replay_share_one_owner(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     opened: list[ObservedMemory] = []
     segmenter = CompletingSegmenter()
@@ -278,7 +273,6 @@ def test_stream_capture_settle_recall_and_replay_share_one_owner(tmp_path: Path)
 
 
 def test_s2s_configuration_exposes_native_audio_context_and_tool_contract(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     with TestClient(
         create_app(
@@ -332,7 +326,7 @@ def test_s2s_configuration_exposes_native_audio_context_and_tool_contract(tmp_pa
             "tool_choice": "auto",
             "reasoning": {"effort": "none"},
         }
-        assert config["realtime_model"] == "qwen3.8-omni-flash"
+        assert config["realtime_model"] is None
         assert config["speech_service"] == "speech-to-speech"
         assert config["capabilities"] == {
             "input_audio": True,
@@ -363,7 +357,6 @@ def test_s2s_configuration_exposes_native_audio_context_and_tool_contract(tmp_pa
 def test_local_speech_needs_no_modelbest_key_and_memory_credentials_remain_server_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live.app import create_app
 
     monkeypatch.setenv("SENSEMEM_GENERATION_API_KEY", "fixture-memory-key")
     monkeypatch.setenv("SENSEMEM_GENERATION_BASE_URL", "https://memory.example.test/api/v1")
@@ -396,7 +389,6 @@ def test_local_speech_needs_no_modelbest_key_and_memory_credentials_remain_serve
 def test_call_start_returns_only_source_and_revision_without_reading_a_history_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live.app import create_app
 
     with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
         retained_id = memory.add(
@@ -434,7 +426,6 @@ def test_call_start_returns_only_source_and_revision_without_reading_a_history_s
 
 
 def test_demo_opens_memory_at_startup_and_rejects_invalid_capture(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     opened: list[AsyncMemory] = []
 
@@ -460,7 +451,6 @@ def test_demo_opens_memory_at_startup_and_rejects_invalid_capture(tmp_path: Path
 
 
 def test_demo_refuses_startup_with_an_unsupported_memory_schema(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     with Memory(tmp_path, embedder=TinyEmbedder()) as memory:
         record = memory.add("Retained startup fixture")
@@ -489,7 +479,6 @@ def test_demo_refuses_startup_with_an_unsupported_memory_schema(tmp_path: Path) 
 def test_entrypoint_bounds_connection_shutdown_before_draining_memory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live import app as demo
 
     directory = tmp_path / "memory"
     config_path = tmp_path / "config.json"
@@ -520,7 +509,6 @@ def test_entrypoint_bounds_connection_shutdown_before_draining_memory(
 
 
 def test_empty_media_source_can_finish_without_a_model_call(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     segmenter = Segmenter()
     with TestClient(
@@ -539,7 +527,6 @@ def test_empty_media_source_can_finish_without_a_model_call(tmp_path: Path) -> N
 
 
 def test_model_backlog_does_not_block_stream_acceptance_stop_or_reconnect(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     entered, release = Event(), Event()
     opened: list[ObservedMemory] = []
@@ -602,7 +589,6 @@ def test_model_backlog_does_not_block_stream_acceptance_stop_or_reconnect(tmp_pa
 
 
 async def test_shutdown_finishes_deferred_capture_work(tmp_path: Path) -> None:
-    from examples.live.app import LiveRuntime
 
     runtime = LiveRuntime(
         _config(tmp_path),
@@ -622,7 +608,6 @@ async def test_shutdown_finishes_deferred_capture_work(tmp_path: Path) -> None:
 
 
 def test_failed_processing_is_visible_without_provider_exception_bodies(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     class FailingEmbedder(TinyEmbedder):
         def embed(
@@ -652,7 +637,6 @@ def test_failed_processing_is_visible_without_provider_exception_bodies(tmp_path
 def test_historical_checkpoints_are_untouched_while_new_calls_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from examples.live.app import create_app
 
     recording = _recording()
     with TestClient(
@@ -714,7 +698,6 @@ def test_historical_checkpoints_are_untouched_while_new_calls_commit(
 
 
 def test_incomplete_event_is_retained_after_media_eof(tmp_path: Path) -> None:
-    from examples.live.app import create_app
 
     segmenter = Segmenter()
     with TestClient(
@@ -738,7 +721,6 @@ def test_incomplete_event_is_retained_after_media_eof(tmp_path: Path) -> None:
 def test_native_capacity_failure_is_a_socket_error_and_not_an_acceptance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import examples.live.app as live_app
 
     def bounded_stream(
         memory: AsyncMemory,

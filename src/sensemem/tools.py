@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from threading import RLock
 from types import MappingProxyType
-from typing import Generic, Literal, Protocol, TypeVar, cast, runtime_checkable
+from typing import Generic, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -69,7 +69,9 @@ def _freeze_json_value(value: object) -> object:
 def _freeze_json_object(value: Mapping[str, object]) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise ValidationError("tool values must be JSON objects")
-    return cast(Mapping[str, object], _freeze_json_value(value))
+    if any(not isinstance(key, str) for key in value):
+        raise ValidationError("tool JSON objects require text keys")
+    return MappingProxyType({key: _freeze_json_value(entry) for key, entry in value.items()})
 
 
 def _json_document_value(value: object) -> object:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from typing import TypeVar
 
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
@@ -20,6 +21,14 @@ from sensemem.infrastructure.local.store.rows import (
     StoredOperation,
     require_identifier,
 )
+
+_EffectValue = TypeVar("_EffectValue", str, int, bool)
+
+
+def _effect_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError("logged operation effect IDs must encode an array")
+    return tuple(_effect_value(item, str) for item in value)
 
 
 def active_operation_id(connection: sqlite3.Connection, operation_key: str) -> int | None:
@@ -186,24 +195,24 @@ def operation_from_row(row: sqlite3.Row) -> StoredOperation:
             model_id=optional_row_text(row, "model_id"),
             recipe=optional_row_text(row, "recipe"),
             operation_json=row_text(row, "operation_json"),
-            created_ids=tuple(effects["created_ids"]),
-            changed_ids=tuple(effects["changed_ids"]),
-            activated_ids=tuple(effects["activated_ids"]),
-            forgotten_ids=tuple(effects["forgotten_ids"]),
-            linked=tuple((pair[0], pair[1]) for pair in effects["linked"]),
+            created_ids=_effect_ids(effects["created_ids"]),
+            changed_ids=_effect_ids(effects["changed_ids"]),
+            activated_ids=_effect_ids(effects["activated_ids"]),
+            forgotten_ids=_effect_ids(effects["forgotten_ids"]),
+            linked=_effect_pairs(effects["linked"], str),
             clause_changes=tuple(
                 StoredEvidenceClauseChange(
                     memory_id=change["memory_id"],
                     clause_id=change["clause_id"],
-                    previous_active=change["previous_active"],
+                    previous_active=_effect_value(change["previous_active"], bool),
                     previous_confidence=change["previous_confidence"],
                     applied_confidence=change["applied_confidence"],
                     applied_recorded_at=parse_datetime(change["applied_recorded_at"]),
-                    applied_version=int(change["applied_version"]),
+                    applied_version=_effect_value(change["applied_version"], int),
                 )
                 for change in effects["clause_changes"]
             ),
-            superseded=tuple((pair[0], int(pair[1])) for pair in effects["superseded"]),
+            superseded=_effect_pairs(effects["superseded"], int),
             applied_at=parse_datetime(row_text(row, "applied_at")),
             rolled_back_at=optional_datetime_from_row(row, "rolled_back_at"),
             outcome=optional_row_text(row, "outcome"),
@@ -211,3 +220,22 @@ def operation_from_row(row: sqlite3.Row) -> StoredOperation:
         )
     except (KeyError, TypeError, ValueError) as error:
         raise StoredDataError("stored memory operation is invalid") from error
+
+
+def _effect_pairs(
+    value: object, value_type: type[_EffectValue]
+) -> tuple[tuple[str, _EffectValue], ...]:
+    if not isinstance(value, list):
+        raise ValueError("logged operation effect pairs must encode an array")
+    pairs = []
+    for pair in value:
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError("logged operation effect pair must encode a two-element array")
+        pairs.append((_effect_value(pair[0], str), _effect_value(pair[1], value_type)))
+    return tuple(pairs)
+
+
+def _effect_value(value: object, value_type: type[_EffectValue]) -> _EffectValue:
+    if type(value) is not value_type:
+        raise ValueError(f"logged operation effects must encode {value_type.__name__} values")
+    return value

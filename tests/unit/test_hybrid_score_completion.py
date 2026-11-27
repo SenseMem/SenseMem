@@ -179,7 +179,7 @@ def test_completion_uses_every_parent_part_without_an_additional_model_call(
     assert candidate.dense_relevance == pytest.approx(1.0)
     assert candidate.dense_confidence == pytest.approx(1.0)
     # Candidate provenance remains the lexical index document. The completed score can come from
-    # another persisted part, so `index_ids` must not be interpreted as dense-score provenance.
+    # another persisted part, so index_ids must not be interpreted as dense-score provenance.
     assert candidate.index_ids == (aggregate_id,)
     assert embedder.calls[calls_before:] == [(EmbedTask.QUERY, ("rare",))]
 

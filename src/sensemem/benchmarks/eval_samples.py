@@ -20,18 +20,18 @@ from sensemem.benchmarks.eval_adapters import (
 )
 from sensemem.benchmarks.eval_arms import (
     PRODUCT_ARM,
-    _answers_through_ask,
-    _Arm,
-    _requests_answer_policy,
+    Arm,
+    answers_through_ask,
+    requests_answer_policy,
 )
 from sensemem.benchmarks.eval_cache import CachedAnswer, ResponseCache
 from sensemem.benchmarks.eval_evidence import EvidenceInterval
-from sensemem.benchmarks.eval_inputs import _cache_task, _memory_end
+from sensemem.benchmarks.eval_inputs import cache_task, memory_end
 from sensemem.benchmarks.eval_results import (
+    AnswerOutcome,
     FailureDetail,
     SampleResult,
-    _AnswerOutcome,
-    _failure_detail,
+    failure_detail,
 )
 from sensemem.benchmarks.eval_statistics import parse_choice
 from sensemem.benchmarks.official_scorers import (
@@ -44,12 +44,12 @@ from sensemem.benchmarks.official_scorers import (
 from sensemem.benchmarks.prompts import task_answer_policy
 
 
-def _cached_results(
+def cached_results(
     cache: ResponseCache | None,
     task: LoadedTask,
     unit: EvalUnit,
     *,
-    arm: _Arm = PRODUCT_ARM,
+    arm: Arm = PRODUCT_ARM,
     predict_only: bool,
     log_samples: bool,
     answer_policy: AnswerPolicy | None = None,
@@ -58,9 +58,9 @@ def _cached_results(
         return {}
     results = {}
     for question in unit.questions:
-        answer = cache.get(_cache_task(task, arm), unit.unit_id, question.question_id)
+        answer = cache.get(cache_task(task, arm), unit.unit_id, question.question_id)
         if answer is not None:
-            outcome = _AnswerOutcome(
+            outcome = AnswerOutcome(
                 answer.prediction,
                 0.0,
                 answer.confidence,
@@ -79,7 +79,7 @@ def _cached_results(
                 projection_evidence=answer.projection_evidence,
                 projection_source_ids=tuple(item.memory_id for item in answer.projection_evidence),
             )
-            results[(arm.name, question.question_id)] = _sample(
+            results[(arm.name, question.question_id)] = build_sample_result(
                 task,
                 unit,
                 question,
@@ -93,31 +93,31 @@ def _cached_results(
     return results
 
 
-def _cache_outcome(
+def cache_outcome(
     cache: ResponseCache | None,
     task: LoadedTask,
     unit: EvalUnit,
     question: EvalQuestion,
-    outcome: _AnswerOutcome | BaseException,
+    outcome: AnswerOutcome | BaseException,
     ingest_failures: int,
     *,
-    arm: _Arm = PRODUCT_ARM,
+    arm: Arm = PRODUCT_ARM,
 ) -> None:
     if (
         cache is None
         or ingest_failures
-        or not isinstance(outcome, _AnswerOutcome)
+        or not isinstance(outcome, AnswerOutcome)
         or not outcome.prediction.strip()
         or outcome.retrieval_diagnostic_error is not None
         or (
-            _answers_through_ask(arm, task.spec.name)
-            and retrieval_gold_ids(task.spec.name, question.metadata)
+            answers_through_ask(arm, task.spec.name)
+            and retrieval_gold_ids(question.metadata)
             and not outcome.ranked_source_ids_complete
         )
     ):
         return
     cache.put(
-        _cache_task(task, arm),
+        cache_task(task, arm),
         unit.unit_id,
         question.question_id,
         CachedAnswer(
@@ -143,17 +143,17 @@ def _candidate_count(unit: EvalUnit, question: EvalQuestion) -> int:
     return bisect_right(unit._source_ends, boundary)
 
 
-def _sample(
+def build_sample_result(
     task: LoadedTask,
     unit: EvalUnit,
     question: EvalQuestion,
-    outcome: _AnswerOutcome | BaseException,
+    outcome: AnswerOutcome | BaseException,
     *,
     ingest_failures: int,
     ingest_failure_details: tuple[FailureDetail, ...] = (),
     predict_only: bool,
     log_samples: bool,
-    arm: _Arm = PRODUCT_ARM,
+    arm: Arm = PRODUCT_ARM,
     answer_policy: AnswerPolicy | None = None,
 ) -> SampleResult:
     memory_ids: tuple[str, ...]
@@ -178,7 +178,7 @@ def _sample(
         )
         excerpt_source_ids, excerpt_evidence = (), ()
         projection_source_ids, projection_evidence = (), ()
-        error_detail = _failure_detail(outcome)
+        error_detail = failure_detail(outcome)
         error_code = error_detail.code
         abstained = False
         abstention_reason = None
@@ -195,11 +195,11 @@ def _sample(
         cached = outcome.cached
         ranked_source_ids = outcome.ranked_source_ids
         ranked_source_ids_complete = outcome.ranked_source_ids_complete
-        error_detail = None if outcome.error is None else _failure_detail(outcome.error)
+        error_detail = None if outcome.error is None else failure_detail(outcome.error)
         retrieval_diagnostic_error = (
             None
             if outcome.retrieval_diagnostic_error is None
-            else _failure_detail(outcome.retrieval_diagnostic_error)
+            else failure_detail(outcome.retrieval_diagnostic_error)
         )
         error_code = None if error_detail is None else error_detail.code
         abstained = outcome.abstained
@@ -222,7 +222,7 @@ def _sample(
         retrieval_available=(
             arm.retrieves and ranked_source_ids_complete and retrieval_diagnostic_error is None
         ),
-        # A provider failure produced no answer; `_score` counts it as a wrong one. Transient
+        # A provider failure produced no answer; _score counts it as a wrong one. Transient
         # failures are waited out before they get here, so what remains is the system's loss.
         answer_failed=error_code is not None,
     )
@@ -240,7 +240,7 @@ def _sample(
             "compile_bundle_excerpts": float(len(outcome.excerpt_source_ids)),
             "compile_bundle_projections": float(len(outcome.projection_source_ids)),
         }
-    labelled_sources = set(retrieval_gold_ids(task.spec.name, question.metadata))
+    labelled_sources = set(retrieval_gold_ids(question.metadata))
     return SampleResult(
         task=task.spec.name,
         benchmark=task.spec.benchmark,
@@ -285,7 +285,7 @@ def _sample(
         # Host-assistant compile tasks and the random retrieval control request no policy.
         answer_policy=(
             task_answer_policy(task.spec.name, answer_policy)
-            if _requests_answer_policy(arm, task.spec.name)
+            if requests_answer_policy(arm, task.spec.name)
             else None
         ),
         retrieval_candidates=len(ranked_source_ids),
@@ -299,9 +299,7 @@ def _sample(
                 item.source_id
                 for item in unit.memories
                 if item.source_id in labelled_sources
-                and (
-                    question.cutoff_seconds is None or _memory_end(item) <= question.cutoff_seconds
-                )
+                and (question.cutoff_seconds is None or memory_end(item) <= question.cutoff_seconds)
             )
         ),
         trace_id=None if isinstance(outcome, BaseException) else outcome.trace_id,
@@ -317,7 +315,7 @@ def _score(
     ranked_source_ids: Sequence[str],
     *,
     predict_only: bool,
-    arm: _Arm = PRODUCT_ARM,
+    arm: Arm = PRODUCT_ARM,
     retrieval_available: bool = True,
     answer_failed: bool = False,
 ) -> tuple[Mapping[str, float], float | None, float | None]:
@@ -339,7 +337,7 @@ def _score(
         # A question the system did not answer is a question it got wrong: it scores zero under
         # the task's primary metric, and the separately measured retrieval diagnostic stays.
         # Judge-scored families carry no local answer metric, so the zero is written explicitly
-        # rather than read off the empty prediction, and the derived `joint_*` metrics follow.
+        # rather than read off the empty prediction, and the derived joint_* metrics follow.
         # The earlier rule left it unscored so one failure did not deflate the arms unevenly,
         # at the price of a single residual failure invalidating a task's whole score; the
         # failure is still counted and its provider message kept for diagnosis.
@@ -357,7 +355,7 @@ def _score(
 
 
 def _arm_metrics(
-    metrics: Mapping[str, float], arm: _Arm, *, retrieval_available: bool
+    metrics: Mapping[str, float], arm: Arm, *, retrieval_available: bool
 ) -> dict[str, float]:
     """Keep only the metrics an arm can honestly carry.
 

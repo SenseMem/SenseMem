@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from _event_quality_support import native_observations as native_observations
 from openai import APIError, OpenAI
 from pydantic import TypeAdapter
 from pydantic import ValidationError as SchemaValidationError
-from test_event_segmentation_quality import native_observations as native_observations
 
 from sensemem import Blob, ContextBudget, Memory, Modality, SenseMemError, StreamInput
 from sensemem.models.base import EventObservation

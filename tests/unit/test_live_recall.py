@@ -12,6 +12,7 @@ import pytest
 from _feature_support import TinyEmbedder
 from fastapi import WebSocketDisconnect
 
+from examples.live.recall import LiveRecall, RecallInput
 from sensemem import (
     AsyncMemory,
     AsyncOmniPrefetch,
@@ -70,11 +71,6 @@ class ControlledMemory(AsyncMemory):
         )
         self.completed.put_nowait(result)
         return result
-
-
-@pytest.fixture(autouse=True)
-def example_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
 
 
 @pytest.fixture
@@ -141,7 +137,6 @@ async def _present(result: PrefetchResult) -> dict[str, object]:
 async def test_live_results_arrive_during_partial_speech_and_reuse_exact_final(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     recall = LiveRecall(memory)
     messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -174,7 +169,6 @@ async def test_live_results_arrive_during_partial_speech_and_reuse_exact_final(
 async def test_authoritative_final_background_failure_is_safe_without_a_tool_call(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.fail = "exact final"
     recall = LiveRecall(memory)
@@ -196,7 +190,6 @@ async def test_authoritative_final_background_failure_is_safe_without_a_tool_cal
 async def test_corrected_final_replaces_background_retrieval_without_waiting_for_old_work(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.block = True
     recall = LiveRecall(memory)
@@ -219,7 +212,6 @@ async def test_corrected_final_replaces_background_retrieval_without_waiting_for
 async def test_authoritative_http_transcript_supersedes_a_late_socket_hypothesis(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.block = True
     recall = LiveRecall(memory)
@@ -240,7 +232,6 @@ async def test_authoritative_http_transcript_supersedes_a_late_socket_hypothesis
 async def test_superseded_turn_cannot_replace_the_current_turns_visible_evidence(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.block = True
     recall = LiveRecall(memory)
@@ -266,7 +257,6 @@ async def test_superseded_turn_cannot_replace_the_current_turns_visible_evidence
 async def test_visual_snapshot_keeps_original_media_through_authoritative_final(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     recall = LiveRecall(memory)
     supplied = RecallInput(type="update", turn_id="visual", text="this object", image=PNG)
@@ -286,7 +276,6 @@ async def test_visual_snapshot_keeps_original_media_through_authoritative_final(
 async def test_empty_authoritative_transcript_retracts_partial_evidence(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     recall = LiveRecall(memory)
     messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -302,7 +291,6 @@ async def test_empty_authoritative_transcript_retracts_partial_evidence(
 async def test_socket_disconnect_during_result_delivery_does_not_leak_a_failed_watcher(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     disconnected = asyncio.Event()
 
@@ -323,7 +311,6 @@ async def test_socket_disconnect_during_result_delivery_does_not_leak_a_failed_w
 async def test_memory_change_invalidates_cached_final_and_refreshes_the_same_visual_turn(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     recall = LiveRecall(memory)
     messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -355,7 +342,6 @@ async def test_memory_change_invalidates_cached_final_and_refreshes_the_same_vis
 async def test_memory_settlement_refreshes_exact_final_context_without_an_http_tool(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     recall = LiveRecall(memory)
     messages: asyncio.Queue[dict[str, object]] = asyncio.Queue()
@@ -380,7 +366,6 @@ async def test_memory_settlement_refreshes_exact_final_context_without_an_http_t
 async def test_repeated_memory_changes_coalesce_refresh_and_new_speech_takes_priority(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.block = True
     recall = LiveRecall(memory)
@@ -409,7 +394,6 @@ async def test_repeated_memory_changes_coalesce_refresh_and_new_speech_takes_pri
 async def test_invalidation_drains_old_work_without_delivering_it_to_a_reused_turn_id(
     memory: ControlledMemory,
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.block = True
     recall = LiveRecall(memory)
@@ -435,7 +419,6 @@ async def test_invalidation_drains_old_work_without_delivering_it_to_a_reused_tu
 async def test_invalidation_during_finalization_requests_a_fresh_compile(
     memory: ControlledMemory, failure: bool
 ) -> None:
-    from examples.live.recall import LiveRecall, RecallInput
 
     memory.block = True
     if failure:
@@ -452,7 +435,6 @@ async def test_invalidation_during_finalization_requests_a_fresh_compile(
 
 
 def test_recall_rejects_ambiguous_or_invalid_encoded_images() -> None:
-    from examples.live.recall import RecallInput
 
     for image in ("https://remote.example/frame.png", "data:image/png;base64,!invalid", PNG + "!"):
         with pytest.raises(ValidationError):

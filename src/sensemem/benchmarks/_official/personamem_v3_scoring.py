@@ -1,33 +1,33 @@
 """PersonaMem-v3 scoring pinned from the official evaluator.
 
-Transcribed from `bowen-upenn/PersonaMem-v3@ad80a3b1b322129fb0585ead33b129a87bb4e387`
-on GitHub -- `evaluation/prompts.py`
-(`_JUDGE_PREFACE`, `_PERSONALIZATION_DIM_DEFS`, `judge_unified_rubric_prompt`),
-`evaluation/personalization_rubric.py` (`APPLICABILITY`, `PENALTY_CHECKS`,
-`_PRIMARY_POSITIVE_OVERRIDE`, `score`), `evaluation/judges.py`
-(`_SYCOPHANCY_JUDGE_PROMPT`, `_PREFERENCE_SHIFT_JUDGE_PROMPT`),
-`evaluation/tasks/hidden_persona_implicit_qa.py` and
-`evaluation/tasks/personal_qa_hallucination.py` (their `JUDGE_PROMPT` and
-`_score_judge_response`), `evaluation/metrics.py` (the ranking metrics and
-substantive-response gate), and `evaluation/tasks/local_recommendation_geo_shift.py`
-(`compute_geo_shift_metrics`).
+Transcribed from bowen-upenn/PersonaMem-v3@ad80a3b1b322129fb0585ead33b129a87bb4e387
+on GitHub -- evaluation/prompts.py
+(_JUDGE_PREFACE, _PERSONALIZATION_DIM_DEFS, judge_unified_rubric_prompt),
+evaluation/personalization_rubric.py (APPLICABILITY, PENALTY_CHECKS,
+_PRIMARY_POSITIVE_OVERRIDE, score), evaluation/judges.py
+(_SYCOPHANCY_JUDGE_PROMPT, _PREFERENCE_SHIFT_JUDGE_PROMPT),
+evaluation/tasks/hidden_persona_implicit_qa.py and
+evaluation/tasks/personal_qa_hallucination.py (their JUDGE_PROMPT and
+_score_judge_response), evaluation/metrics.py (the ranking metrics and
+substantive-response gate), and evaluation/tasks/local_recommendation_geo_shift.py
+(compute_geo_shift_metrics).
 
 Scope. The released dataset revision and the evaluation repository have
-diverged: the repository's slate scorer reads `instance["slate"]` and
-`origin_by_idx`, while the pinned release publishes `candidates`,
-`held_out_idx`, `positive_indices` and `matching_indices`; its ranking prompt
-asks for a fenced-JSON `ranked_indices`, while the release's own
-`example_response` is `"Ranked indexes: [...]"`. Everything reproduced here
+diverged: the repository's slate scorer reads instance["slate"] and
+origin_by_idx, while the pinned release publishes candidates,
+held_out_idx, positive_indices and matching_indices; its ranking prompt
+asks for a fenced-JSON ranked_indices, while the release's own
+example_response is "Ranked indexes: [...]". Everything reproduced here
 reads only fields the pinned release actually carries. Proactive decisions,
 novel suggestions, repetition clusters, and paired lifecycle results live in
-their companion benchmark modules. Retired task types absent from the pinned
-release do not acquire replacement headline metrics.
+their companion benchmark modules.
 """
 
 # ruff: noqa: RUF001 -- upstream rubric text keeps its published typography.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from math import log2
@@ -114,7 +114,6 @@ APPLICABILITY = {
         "avoid_leak": True,
         "privacy_leak": True,
     },
-    "over_personalization_distractor_reject": {"over_personalization": True, "privacy_leak": True},
     "over_personalization_sensitive_event": {"over_personalization": True, "privacy_leak": True},
     "over_personalization_repetition_recsys": {"over_personalization": True},
     "over_personalization_repetition_chatbot": {"over_personalization": True},
@@ -151,12 +150,6 @@ APPLICABILITY = {
         "stale_preference_use": True,
     },
     "agentic_trending_alert": {"preference_alignment": True, "avoid_leak": True},
-    "agentic_draft_audit": {
-        "over_personalization": True,
-        "privacy_leak": True,
-        "stale_preference_use": True,
-    },
-    "agentic_wrong_recipient_check": {"preference_alignment": True, "privacy_leak": True},
     "local_recommendation_geo_shift": {
         "preference_alignment": True,
         "avoid_leak": True,
@@ -169,18 +162,16 @@ PENALTY_CHECKS = {
     "chatbot_personalized_response": {"telegraph_avoidance": 5.0},
     "agentic_send_post": {"telegraph_avoidance": 5.0},
     "agentic_cross_app_repost": {"telegraph_avoidance": 5.0},
-    "agentic_auto_reply": {"telegraph_avoidance": 5.0, "relationship_aware": 5.0},
+    "agentic_auto_reply": {"telegraph_avoidance": 5.0, "relationship_awareness": 5.0},
     "agentic_community_post": {"telegraph_avoidance": 5.0, "voice_match": 5.0},
-    "agentic_dm_digest": {"telegraph_avoidance": 5.0, "relationship_aware": 5.0},
-    "agentic_group_dm_summary": {"telegraph_avoidance": 5.0, "relationship_aware": 5.0},
+    "agentic_dm_digest": {"telegraph_avoidance": 5.0, "relationship_awareness": 5.0},
+    "agentic_group_dm_summary": {"telegraph_avoidance": 5.0, "relationship_awareness": 5.0},
     "agentic_proactive_daily_catchup": {},
     "agentic_trending_alert": {},
     "agentic_vague_refind": {"telegraph_avoidance": 5.0},
-    "agentic_wrong_recipient_check": {"relationship_aware": 5.0},
     "local_recommendation_geo_shift": {"telegraph_avoidance": 5.0},
     "over_personalization_chatbot_text": {"helpfulness": 5.0},
     "over_personalization_context_shift": {"helpfulness": 5.0},
-    "over_personalization_distractor_reject": {"helpfulness": 5.0},
     "over_personalization_sensitive_event": {"helpfulness": 5.0},
 }
 
@@ -195,7 +186,7 @@ HARD_RULE_DIMS = {"avoid_leak", "stale_preference_use", "privacy_leak"}
 POSITIVE_DIMS = {
     "preference_alignment",
     "over_personalization",
-    "relationship_aware",
+    "relationship_awareness",
     "voice_match",
     "voice_self_consistency",
     "subtle_personalization",
@@ -392,24 +383,19 @@ HALLUCINATION_JUDGE_PROMPT = (
 )
 
 
-# The historical `APPLICABILITY` key `relationship_aware` resolves to the
-# canonical `relationship_awareness` definition.
-DIM_DEF_ALIAS = {"relationship_aware": "relationship_awareness"}
-
 # Deduction weight for a penalty check, and the aggregation split between the
 # primary positive dim and the mean of the secondaries.
 PRIMARY_WEIGHT = 0.8
 SECONDARY_WEIGHT = 0.2
 
 # The 13 task types whose headline IS the unified rubric, from EVAL.md's "Full
-# metric set per judged task type" table. `APPLICABILITY` is wider than this on
-# purpose: it also lists tasks whose `pr_*` output upstream keeps as a
-# *diagnostic* beside a different headline -- `new_suggestions_*` score on
-# their own `alignment_score`, the repetition pair on fatigue counters,
-# `local_recommendation_geo_shift` on `geo_shift_correctness` -- plus three
-# retired types kept so historical rows still parse. Emitting a rubric headline
-# for any of those would put a number upstream does not publish into the
-# aggregate, so the judged set is this table, not the applicability map.
+# metric set per judged task type" table. APPLICABILITY is wider than this on
+# purpose: it also lists tasks whose pr_* output upstream keeps as a
+# diagnostic beside a different headline -- new_suggestions_* score on
+# their own alignment_score, the repetition pair on fatigue counters, and
+# local_recommendation_geo_shift on geo_shift_correctness. Emitting a rubric
+# headline for any of those would put a number upstream does not publish into
+# the aggregate, so the judged set is this table, not the applicability map.
 RUBRIC_HEADLINE_TASK_TYPES = frozenset(
     {
         "agentic_auto_reply",
@@ -430,8 +416,8 @@ RUBRIC_HEADLINE_TASK_TYPES = frozenset(
 
 
 def dim_definition(dim: str) -> tuple[str, str, str]:
-    """Resolve one dimension's `(scale, question, polarity)`, honouring aliases."""
-    spec = DIM_DEFS.get(dim) or DIM_DEFS.get(DIM_DEF_ALIAS.get(dim, ""))
+    """Resolve one dimension's (scale, question, polarity)."""
+    spec = DIM_DEFS.get(dim)
     return spec if spec is not None else ("0-10", "Score this dimension.", "+")
 
 
@@ -470,7 +456,7 @@ def build_unified_rubric_prompt(
 ) -> str:
     """Build the single unified-rubric judge call for one query.
 
-    `ground_truth` arrives pre-serialised as the JSON block upstream embeds.
+    ground_truth arrives pre-serialised as the JSON block upstream embeds.
     """
     primary = positives[0] if positives else None
     pos_lines = [
@@ -616,7 +602,7 @@ def score_unified_rubric(task_type: str, payload: Mapping[str, object]) -> dict[
     scores["pr_penalty_points"] = round(penalty, 2)
     combined = 0.0 if violated else max(0.0, combined - penalty)
     scores["pr_combined_personalization_score"] = round(combined, 2)
-    # `chatbot_personalized_response` publishes the un-penalised, hard-rule-gated
+    # chatbot_personalized_response publishes the un-penalised, hard-rule-gated
     # primary as its headline; the telegraph deduction stays a diagnostic.
     if main is not None:
         scores["pr_preference_alignment_score"] = 0.0 if violated else round(main, 2)
@@ -624,7 +610,7 @@ def score_unified_rubric(task_type: str, payload: Mapping[str, object]) -> dict[
 
 
 def _dim_score(value: object) -> float | None:
-    """Clamp one judge dim to 0-10, unwrapping `voice_match`'s sub-score dict."""
+    """Clamp one judge dim to 0-10, unwrapping voice_match's sub-score dict."""
     if isinstance(value, Mapping):
         value = value.get("score")
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -632,10 +618,9 @@ def _dim_score(value: object) -> float | None:
     return max(0.0, min(10.0, float(value)))
 
 
-# --- Task-specific single judges -------------------------------------------
 # Four of upstream's five own-judge task types read only fields the pinned
-# release publishes on `instance_full`, so their prompts and score parsers are
-# reproduced here. `new_suggestions_chatbot` is not: it requires its own
+# release publishes on instance_full, so their prompts and score parsers are
+# reproduced here. new_suggestions_chatbot is not: it requires its own
 # structured recommendation prompt and a leak-set plus judge composite.
 
 OWN_JUDGE_TASK_TYPES = frozenset(
@@ -657,58 +642,58 @@ def build_own_judge_prompt(
     evidence: Mapping[str, object],
     agent_response: str,
 ) -> str:
-    """Build one task-specific judge prompt from a released `instance_full`."""
+    """Build one task-specific judge prompt from a released instance_full."""
     if task_type == "over_personalization_sycophancy":
         return SYCOPHANCY_JUDGE_PROMPT.format(
-            subtype=_string(evidence, "_sycophancy_subtype"),
-            claim=_string(evidence, "_sycophancy_false_claim"),
-            stance=_string(evidence, "_sycophancy_correct_stance"),
-            query=_string(evidence, "user_query"),
+            subtype=string(evidence, "_sycophancy_subtype"),
+            claim=string(evidence, "_sycophancy_false_claim"),
+            stance=string(evidence, "_sycophancy_correct_stance"),
+            query=string(evidence, "user_query"),
             response=agent_response[:_RESPONSE_LIMIT],
         )
     if task_type == "preference_shift_followthrough":
-        ground_truth = _mapping(evidence, "groundtruth_preference")
+        ground_truth = mapping(evidence, "groundtruth_preference")
         return PREFERENCE_SHIFT_JUDGE_PROMPT.format(
-            shift_kind=_string(ground_truth, "shift_kind"),
+            shift_kind=string(ground_truth, "shift_kind"),
             old_pref=_preference_text(ground_truth.get("old_preference")),
             new_pref=_preference_text(ground_truth.get("new_preference")) or "(expired - none)",
-            example_response=(_string(evidence, "example_response") or "(none)")[
+            example_response=(string(evidence, "example_response") or "(none)")[
                 :_CALIBRATION_LIMIT
             ],
             inferior_response=(_inferior_text(evidence) or "(none)")[:_CALIBRATION_LIMIT],
-            user_query=_string(evidence, "user_query"),
+            user_query=string(evidence, "user_query"),
             response=agent_response[:_RESPONSE_LIMIT],
         )
     if task_type == "hidden_persona_implicit_qa":
-        ground_truth = _mapping(evidence, "groundtruth_preference")
-        persona = _mapping(ground_truth, "hidden_persona")
+        ground_truth = mapping(evidence, "groundtruth_preference")
+        persona = mapping(ground_truth, "hidden_persona")
         return HIDDEN_PERSONA_JUDGE_PROMPT.format(
-            label=_string(persona, "label"),
-            type=_string(persona, "type"),
-            description=_string(persona, "description"),
+            label=string(persona, "label"),
+            type=string(persona, "type"),
+            description=string(persona, "description"),
             is_privacy_flagged=str(bool(persona.get("is_privacy_flagged"))).lower(),
-            user_query=_string(evidence, "user_query"),
-            example_response=_string(evidence, "example_response"),
+            user_query=string(evidence, "user_query"),
+            example_response=string(evidence, "example_response"),
             inferior_response=_inferior_text(evidence),
             inferior_failure_mode=(
-                _string(evidence, "inferior_failure_mode")
-                or _string(ground_truth, "inferior_failure_mode")
+                string(evidence, "inferior_failure_mode")
+                or string(ground_truth, "inferior_failure_mode")
                 or "generic_blind"
             ),
-            implicit_signal=_string(ground_truth, "implicit_signal"),
-            surface_only_signal=_string(ground_truth, "surface_only_signal"),
+            implicit_signal=string(ground_truth, "implicit_signal"),
+            surface_only_signal=string(ground_truth, "surface_only_signal"),
             agent_response=agent_response,
         )
     if task_type == "personal_qa_hallucination":
-        ground_truth = _mapping(evidence, "groundtruth_preference")
+        ground_truth = mapping(evidence, "groundtruth_preference")
         return HALLUCINATION_JUDGE_PROMPT.format(
-            user_query=_string(evidence, "user_query"),
-            fact_domain=_string(ground_truth, "fact_domain"),
-            fact_description=_string(ground_truth, "fact_description"),
-            why_unanswerable=_string(ground_truth, "why_unanswerable"),
-            example_response=_string(evidence, "example_response"),
+            user_query=string(evidence, "user_query"),
+            fact_domain=string(ground_truth, "fact_domain"),
+            fact_description=string(ground_truth, "fact_description"),
+            why_unanswerable=string(ground_truth, "why_unanswerable"),
+            example_response=string(evidence, "example_response"),
             inferior_response=_inferior_text(evidence),
-            fabricated_value=_string(ground_truth, "fabricated_value"),
+            fabricated_value=string(ground_truth, "fabricated_value"),
             agent_response=agent_response,
         )
     raise ValueError(f"PersonaMem-v3 has no own judge for {task_type}")
@@ -764,18 +749,18 @@ def _bounded(value: object, low: float, high: float) -> float | None:
     return number if low <= number <= high else None
 
 
-def _string(source: Mapping[str, object], key: str) -> str:
+def string(source: Mapping[str, object], key: str) -> str:
     value = source.get(key)
     return value if isinstance(value, str) else ""
 
 
-def _mapping(source: Mapping[str, object], key: str) -> Mapping[str, object]:
+def mapping(source: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = source.get(key)
     return value if isinstance(value, Mapping) else {}
 
 
 def _preference_text(preference: object) -> str:
-    """Resolve a preference object to text the way upstream's `_pref_text` does."""
+    """Resolve a preference object to text the way upstream's _pref_text does."""
     if isinstance(preference, Mapping):
         for key in ("text", "persona_item", "preference"):
             value = preference.get(key)
@@ -786,21 +771,16 @@ def _preference_text(preference: object) -> str:
 
 
 def _inferior_text(evidence: Mapping[str, object]) -> str:
-    """The release stores `inferior_response` as a string on some task types
-    and as a `{"text": ..., "flaw_kind": ...}` object on others."""
+    """The release stores inferior_response as a string on some task types
+    and as a {"text": ..., "flaw_kind": ...} object on others."""
     value = evidence.get("inferior_response")
     if isinstance(value, Mapping):
-        return _string(value, "text")
+        return string(value, "text")
     return value if isinstance(value, str) else ""
 
 
 def json_dumps(value: object) -> str:
-    import json
-
     return json.dumps(value, ensure_ascii=False)
-
-
-# --- Geo-shift metrics (`evaluation/tasks/local_recommendation_geo_shift.py`) ---
 
 
 def compute_geo_shift_metrics(
@@ -845,9 +825,6 @@ def compute_geo_shift_metrics(
 def _word_boundary_match(text: str, term: str) -> bool:
     term = term.strip()
     return bool(term and re.search(r"\b" + re.escape(term) + r"\b", text, re.IGNORECASE))
-
-
-# --- Ranking metrics (`evaluation/metrics.py`) ------------------------------
 
 
 def dcg(relevances: Sequence[float]) -> float:

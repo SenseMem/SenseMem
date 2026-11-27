@@ -195,8 +195,8 @@ class ContextBundle:
         """Return the field-keyed projection REST, MCP, and the CLI each publish.
 
         Values stay as they are declared -- the transports validate them through their own
-        models -- except `budget`, which flattens `freshness` to seconds, and `rendered`, which
-        is `render()` rather than a stored field. Driven by `fields(self)` so a new section
+        models -- except budget, which flattens freshness to seconds, and rendered, which
+        is render() rather than a stored field. Driven by fields(self) so a new section
         reaches all three surfaces instead of being spelled a fourth time in each of them.
         """
         values: dict[str, object] = {

@@ -1,6 +1,6 @@
 """Label-free metamorphic checks for conflict-safe context delivery.
 
-These tests exercise the public ``Memory`` SDK with the real SQLite and Zvec paths.  The model
+These tests exercise the public Memory SDK with the real SQLite and Zvec paths.  The model
 boundaries are deterministic test doubles so a retrieval or compiler change is the only causal
 variable; no benchmark answer or expected label is supplied to ingestion or retrieval.
 """

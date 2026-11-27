@@ -37,11 +37,11 @@ from sensemem import (
 from sensemem._perception_codec import decode_description, encode_description
 from sensemem._telemetry import mark_model_requests, record_unmetered_model_usage
 from sensemem.benchmarks.eval_adapters import MemoryItem
-from sensemem.benchmarks.eval_arms import _media_asset_ref
+from sensemem.benchmarks.eval_arms import media_asset_ref
 from sensemem.benchmarks.eval_cache import DescriptionCache
-from sensemem.benchmarks.eval_config import _MODALITY_BY_SUFFIX
+from sensemem.benchmarks.eval_config import MODALITY_BY_SUFFIX
 from sensemem.benchmarks.model_config import ModelConfig
-from sensemem.benchmarks.prepare_media import _has_audio
+from sensemem.benchmarks.prepare_media import has_audio
 from sensemem.configuration import OpenAIGenerationConfig
 from sensemem.models.base import (
     ConsolidationBackend,
@@ -61,7 +61,7 @@ from sensemem.models.base import (
 )
 from sensemem.perception import SpeechAnalysis, VisualDescription
 
-# Runtime protocols inspect attributes statically, so `__getattr__` cannot expose optional
+# Runtime protocols inspect attributes statically, so __getattr__ cannot expose optional
 # capabilities. Bind only methods the pooled backend actually supports; role-specific wrappers
 # below expose the required members.
 _OPTIONAL_CAPABILITY_METHODS = (
@@ -80,7 +80,7 @@ _OPTIONAL_CAPABILITY_METHODS = (
 
 
 class _BorrowedBackend:
-    """Forward a shared backend while making per-store ``close`` a no-op."""
+    """Forward a shared backend while making per-store close a no-op."""
 
     def __init__(self, backend: object) -> None:
         self._backend = backend
@@ -145,41 +145,49 @@ class _BorrowedToolRegistry(ToolRegistry):
 class _BorrowedEmbeddingBackend(_BorrowedBackend):
     """Expose required members to Python's static runtime-protocol inspection."""
 
+    def __init__(self, backend: EmbeddingBackend) -> None:
+        super().__init__(backend)
+        self._embedder = backend
+
     @property
     def embedding_capabilities(self) -> frozenset[Modality]:
-        return cast(EmbeddingBackend, self._backend).embedding_capabilities
+        return self._embedder.embedding_capabilities
 
     @property
     def embedding_model(self) -> str:
-        return cast(EmbeddingBackend, self._backend).embedding_model
+        return self._embedder.embedding_model
 
     @property
     def embedding_space(self) -> str:
-        return cast(EmbeddingBackend, self._backend).embedding_space
+        return self._embedder.embedding_space
 
     @property
     def embedding_dimension(self) -> int:
-        return cast(EmbeddingBackend, self._backend).embedding_dimension
+        return self._embedder.embedding_dimension
 
     def embed(
         self, inputs: Sequence[ModelInput], task: EmbedTask = EmbedTask.DOCUMENT
     ) -> tuple[tuple[float, ...], ...]:
-        return cast(EmbeddingBackend, self._backend).embed(inputs, task=task)
+        return self._embedder.embed(inputs, task=task)
 
 
 class _BorrowedRerankingBackend(_BorrowedBackend):
     """Preserve the runtime protocol without giving a store ownership of the model."""
 
+    def __init__(self, backend: RerankingBackend) -> None:
+        super().__init__(backend)
+        self._reranker = backend
+
     @property
     def reranking_capabilities(self) -> frozenset[Modality]:
-        return cast(RerankingBackend, self._backend).reranking_capabilities
+        return self._reranker.reranking_capabilities
 
     @property
     def reranking_model(self) -> str:
-        return cast(RerankingBackend, self._backend).reranking_model
+        return self._reranker.reranking_model
 
     def rerank(self, query: ModelInput, documents: Sequence[ModelInput]) -> tuple[float, ...]:
-        return cast(RerankingBackend, self._backend).rerank(query, documents)
+        return self._reranker.rerank(query, documents)
 
 
 class _BorrowedFormationBackend(_BorrowedBackend):
@@ -305,7 +313,7 @@ class _CachedVisionDescriber:
             if key is not None:
                 written.append((key, encode_description(value)))
             described.append(value)
-        # One commit for the batch: the cache is `synchronous=FULL`, so a per-caption write cost
+        # One commit for the batch: the cache is synchronous=FULL, so a per-caption write cost
         # an fsync each.
         self._cache.put_many(written)
         return tuple(described)
@@ -329,9 +337,13 @@ def _description_digest(value: ModelInput) -> str | None:
 class _BorrowedGenerationBackend(_BorrowedBackend):
     """Lend one answerer without transferring ownership to a per-unit memory."""
 
+    def __init__(self, backend: GenerationBackend) -> None:
+        super().__init__(backend)
+        self._generator = backend
+
     @property
     def generation_capabilities(self) -> frozenset[Modality]:
-        return cast(GenerationBackend, self._backend).generation_capabilities
+        return self._generator.generation_capabilities
 
     def answer(
         self,
@@ -341,7 +353,7 @@ class _BorrowedGenerationBackend(_BorrowedBackend):
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        return cast(GenerationBackend, self._backend).answer(
+        return self._generator.answer(
             question, hits, answer_policy=answer_policy, exhaustive=exhaustive
         )
 
@@ -349,24 +361,28 @@ class _BorrowedGenerationBackend(_BorrowedBackend):
 class _BorrowedFaceBackend(_BorrowedBackend):
     """Lend one face analyzer while preserving the runtime-checkable protocol."""
 
+    def __init__(self, backend: FaceBackend) -> None:
+        super().__init__(backend)
+        self._face_analyzer = backend
+
     @property
     def face_capabilities(self) -> frozenset[Modality]:
-        return cast(FaceBackend, self._backend).face_capabilities
+        return self._face_analyzer.face_capabilities
 
     @property
     def face_model(self) -> str:
-        return cast(FaceBackend, self._backend).face_model
+        return self._face_analyzer.face_model
 
     @property
     def face_space(self) -> str:
-        return cast(FaceBackend, self._backend).face_space
+        return self._face_analyzer.face_space
 
     @property
     def face_analysis_space(self) -> str:
-        return cast(FaceBackend, self._backend).face_analysis_space
+        return self._face_analyzer.face_analysis_space
 
     def analyze(self, assets: Sequence[AssetRef]) -> tuple[FaceAnalysis, ...]:
-        return cast(FaceBackend, self._backend).analyze(assets)
+        return self._face_analyzer.analyze(assets)
 
 
 class _BorrowedSpeechBackend(_BorrowedBackend):
@@ -374,16 +390,17 @@ class _BorrowedSpeechBackend(_BorrowedBackend):
 
     The store ingests a chunk as speech, then embedding, then write, so the GPU idles while the
     embedding request is in flight and the network idles while the speech model runs -- measured
-    at about 5 s and 3.7 s of a 10 s batch. `prefetch()` analyses the next chunk's clips on one
+    at about 5 s and 3.7 s of a 10 s batch. prefetch() analyses the next chunk's clips on one
     background thread while the store embeds and writes the current one; the store's own
-    `analyze()` for those clips then finds the result here. Entries are keyed by content digest,
+    analyze() for those clips then finds the result here. Entries are keyed by content digest,
     which is also the store's asset id, so the source clip and the copy the store analyses are
     the same bytes. Only the analysis runs early: the store still writes chunk by chunk, so
     corpus order and every stored row are what they were.
     """
 
-    def __init__(self, backend: object) -> None:
+    def __init__(self, backend: SpeechBackend) -> None:
         super().__init__(backend)
+        self._speech = backend
         self._ahead: dict[str, Future[dict[str, SpeechAnalysis]]] = {}
         self._ahead_lock = Lock()
         # One worker: the speech model serialises on its own lock, and a second thread would
@@ -392,7 +409,7 @@ class _BorrowedSpeechBackend(_BorrowedBackend):
 
     @property
     def transcription_capabilities(self) -> frozenset[Modality]:
-        return cast(SpeechBackend, self._backend).transcription_capabilities
+        return self._speech.transcription_capabilities
 
     def prefetch(self, items: Sequence[MemoryItem]) -> None:
         """Analyse these items' audible media in the background, once per distinct clip."""
@@ -401,12 +418,12 @@ class _BorrowedSpeechBackend(_BorrowedBackend):
             for atom in item.content:
                 if not isinstance(atom, Path):
                     continue
-                modality = _MODALITY_BY_SUFFIX.get(atom.suffix.casefold())
+                modality = MODALITY_BY_SUFFIX.get(atom.suffix.casefold())
                 if modality not in self.transcription_capabilities:
                     continue
-                if modality is Modality.VIDEO and not _has_audio(atom):
+                if modality is Modality.VIDEO and not has_audio(atom):
                     continue
-                refs.append(_media_asset_ref(atom, modality))
+                refs.append(media_asset_ref(atom, modality))
         with self._ahead_lock:
             fresh = tuple({ref.id: ref for ref in refs if ref.id not in self._ahead}.values())
             if not fresh:
@@ -416,22 +433,22 @@ class _BorrowedSpeechBackend(_BorrowedBackend):
                 self._ahead[ref.id] = future
 
     def _analyze_by_id(self, assets: Sequence[AssetRef]) -> dict[str, SpeechAnalysis]:
-        analyses = cast(SpeechBackend, self._backend).analyze(assets)
+        analyses = self._speech.analyze(assets)
         if len(analyses) != len(assets):
             raise RuntimeError("speech backend returned the wrong number of analyses")
         return {asset.id: analysis for asset, analysis in zip(assets, analyses, strict=True)}
 
     @property
     def transcription_model(self) -> str:
-        return cast(SpeechBackend, self._backend).transcription_model
+        return self._speech.transcription_model
 
     @property
     def transcription_space(self) -> str:
-        return cast(SpeechBackend, self._backend).transcription_space
+        return self._speech.transcription_space
 
     def analyze(self, assets: Sequence[AssetRef]) -> tuple[SpeechAnalysis, ...]:
         selected = tuple(
-            asset.modality is not Modality.VIDEO or asset.path is None or _has_audio(asset.path)
+            asset.modality is not Modality.VIDEO or asset.path is None or has_audio(asset.path)
             for asset in assets
         )
         audible = tuple(asset for asset, include in zip(assets, selected, strict=True) if include)
@@ -447,7 +464,7 @@ class _BorrowedSpeechBackend(_BorrowedBackend):
                 ahead[asset_id] = future.result()[asset_id]
         missing = tuple(asset for asset in audible if asset.id not in ahead)
         if missing:
-            generated = cast(SpeechBackend, self._backend).analyze(missing)
+            generated = self._speech.analyze(missing)
         else:
             record_unmetered_model_usage(request_count=0)
             generated = ()
@@ -468,7 +485,7 @@ class _BorrowedSpeechBackend(_BorrowedBackend):
             self._ahead.clear()
 
 
-class _BackendPool:
+class BackendPool:
     """Load model weights once and lend them to every isolated store."""
 
     def __init__(
@@ -487,11 +504,11 @@ class _BackendPool:
                 "benchmark execution requires --config with an explicit embedding section"
             )
         if isinstance(memory_config.generation, OpenAIGenerationConfig):
-            # The harness owns both of these for a run: `--model-args` and the environment
+            # The harness owns both of these for a run: --model-args and the environment
             # name the modalities, and the video floor belongs to the corpus rather than to
             # the endpoint. Injecting them here is what makes the configured path honour
             # them -- the resolved backends are built from this document, so a floor left
-            # only on `ModelConfig` would be reported in the result artifact while short
+            # only on ModelConfig would be reported in the result artifact while short
             # videos still went to the endpoint whole.
             update: dict[str, object] = {"modalities": config.generation_capabilities}
             if config.generation_min_video_seconds is not None:
@@ -502,60 +519,45 @@ class _BackendPool:
         composition = build_memory_composition(memory_config)
         self._composition = composition
         plugins = composition.plugins
-        embedder = cast(EmbeddingBackend, _BorrowedEmbeddingBackend(plugins.embedder))
-        answerer = (
-            None
-            if plugins.answerer is None
-            else cast(GenerationBackend, _BorrowedGenerationBackend(plugins.answerer))
+        embedder: EmbeddingBackend = _BorrowedEmbeddingBackend(plugins.embedder)
+        answerer: GenerationBackend | None = (
+            None if plugins.answerer is None else _BorrowedGenerationBackend(plugins.answerer)
         )
-        reranker = (
-            None
-            if plugins.reranker is None
-            else cast(RerankingBackend, _BorrowedRerankingBackend(plugins.reranker))
+        reranker: RerankingBackend | None = (
+            None if plugins.reranker is None else _BorrowedRerankingBackend(plugins.reranker)
         )
-        transcriber = (
+        transcriber: SpeechBackend | TranscriptionBackend | None = (
             None
             if plugins.transcriber is None
-            else cast(
-                SpeechBackend | TranscriptionBackend,
-                (
-                    _BorrowedSpeechBackend(plugins.transcriber)
-                    if isinstance(plugins.transcriber, SpeechBackend)
-                    else _BorrowedTranscriptionBackend(plugins.transcriber)
-                ),
+            else (
+                _BorrowedSpeechBackend(plugins.transcriber)
+                if isinstance(plugins.transcriber, SpeechBackend)
+                else _BorrowedTranscriptionBackend(plugins.transcriber)
             )
         )
-        face_analyzer = (
-            None
-            if plugins.face_analyzer is None
-            else cast(FaceBackend, _BorrowedFaceBackend(plugins.face_analyzer))
+        face_analyzer: FaceBackend | None = (
+            None if plugins.face_analyzer is None else _BorrowedFaceBackend(plugins.face_analyzer)
         )
-        former = (
-            None
-            if plugins.former is None
-            else cast(FormationBackend, _BorrowedFormationBackend(plugins.former))
+        former: FormationBackend | None = (
+            None if plugins.former is None else _BorrowedFormationBackend(plugins.former)
         )
-        consolidator = (
+        consolidator: ConsolidationBackend | None = (
             None
             if plugins.consolidator is None
-            else cast(ConsolidationBackend, _BorrowedConsolidationBackend(plugins.consolidator))
+            else _BorrowedConsolidationBackend(plugins.consolidator)
         )
+        vision_describer: VisionDescriptionBackend | None
         if plugins.vision_describer is None:
             vision_describer = None
         else:
-            borrowed = cast(
-                VisionDescriptionBackend, _BorrowedVisionDescriber(plugins.vision_describer)
-            )
-            # Opened only when `vision:` is configured, so a run without the slot touches no
+            borrowed: VisionDescriptionBackend = _BorrowedVisionDescriber(plugins.vision_describer)
+            # Opened only when vision: is configured, so a run without the slot touches no
             # cache file at all and behaves exactly as it does today.
             if description_cache is not None:
                 self._description_cache = DescriptionCache(
                     description_cache, plugins.vision_describer.vision_space
                 )
-                borrowed = cast(
-                    VisionDescriptionBackend,
-                    _CachedVisionDescriber(borrowed, self._description_cache),
-                )
+                borrowed = _CachedVisionDescriber(borrowed, self._description_cache)
             vision_describer = borrowed
         self._plugins = replace(
             plugins,

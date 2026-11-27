@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import cast
 
 from opentelemetry.trace import Tracer
 
@@ -16,9 +15,7 @@ from sensemem._telemetry import (
 )
 from sensemem.content import AssetRef, Blob
 from sensemem.exceptions import ModelError, SenseMemError, ValidationError
-from sensemem.infrastructure.local.store import (
-    StoredAsset,
-)
+from sensemem.infrastructure.local.store.rows import StoredAsset
 from sensemem.kernel.content import PreparedContent, asset_content
 from sensemem.kernel.contracts import Backends
 from sensemem.kernel.derived import (
@@ -40,7 +37,7 @@ from sensemem.models.base import ModelInput, VisionAnalysisBackend
 from sensemem.perception import FaceAnalysis, VisualDescription
 from sensemem.types import Modality
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class Vision(Traced):
@@ -121,10 +118,9 @@ class Vision(Traced):
             )
             if required:
                 raise
-            _LOGGER.warning(
-                "vision description failed for %d asset(s); storing them without a caption: %s",
-                len(pending),
-                error.reason,
+            LOGGER.warning(
+                f"vision description failed for {len(pending)} asset(s); "
+                f"storing them without a caption: {error.reason}"
             )
             # Native media or an existing transcript still supplies a usable representation.
             # Leave failed captions uncached so later ingestion can try again.
@@ -161,10 +157,8 @@ class Vision(Traced):
                     tuple(self._hydrator.model_input(asset_content(asset)) for asset in pending)
                 )
             except ModelError as error:
-                _LOGGER.warning(
-                    "query image description failed for %d asset(s): %s",
-                    len(pending),
-                    error.reason,
+                LOGGER.warning(
+                    f"query image description failed for {len(pending)} asset(s): {error.reason}"
                 )
                 descriptions = (error,) * len(pending)
             # Kept separately from write-path descriptions: query pixels and model text must
@@ -198,7 +192,7 @@ class Vision(Traced):
             self._hydrator.model_input(
                 replace(
                     asset_content(asset),
-                    # Whatever this write already knows the clip says, under the same `speaker_N`
+                    # Whatever this write already knows the clip says, under the same speaker_N
                     # labels the index projection prints. A durable fact about a person is in the
                     # words, not the pixels: four stills say two people are at a table, and only
                     # the dialogue says which one is called Lily. Empty for an image and for any
@@ -221,7 +215,7 @@ class Vision(Traced):
     def persist_descriptions(self, operation: OperationAssets) -> None:
         """Cache captions derived in this operation, once their assets are stored.
 
-        Captions are derived before the `media_assets` rows exist -- they can rescue media the
+        Captions are derived before the media_assets rows exist -- they can rescue media the
         embedder cannot take, so they have to precede the write -- which is why they are staged on
         the operation and written here instead of where they are computed. An asset that did not
         reach storage is skipped rather than failing the write: the caption is derived convenience
@@ -251,7 +245,7 @@ class Vision(Traced):
     def describe(self, images: Sequence[Blob]) -> tuple[str, ...]:
         """Caption live frames through the cache the write path fills, not around it.
 
-        A scene the stream describes and a later `add()` of the same frame must not pay two
+        A scene the stream describes and a later add() of the same frame must not pay two
         calls: the endpoint returns a different caption for the same image on every call, so the
         second would also change what the memory's document says. The caption this derives is
         cached when the memory carrying the frame is written -- the row's foreign key is the
@@ -419,7 +413,7 @@ class Vision(Traced):
             "face_recognition",
             model=self._backends.face_model,
             batch_size=len(assets),
-            modalities=(cast(Modality, asset.modality) for asset in assets),
+            modalities=(asset.modality for asset in assets if asset.modality is not None),
         ):
             try:
                 analyses = self._backends.face_analyzer.analyze(assets)

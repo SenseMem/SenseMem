@@ -14,19 +14,18 @@ from pathlib import Path
 from typing import cast
 
 import yaml
-from pydantic import SecretStr
 
 from sensemem import MemorySpec
 from sensemem.benchmarks.artifact_io import encode_jsonl_bytes, replace_artifact_files
 from sensemem.benchmarks.eval_adapters import MediaManifest
 from sensemem.benchmarks.eval_config import (
-    _CONFIG_FILE,
-    _PARTIAL_SAMPLES_FILE,
-    _RESULTS_FILE,
-    _SAMPLES_FILE,
-    _Arguments,
-    _JudgeConfig,
-    _memory_config_payload,
+    CONFIG_FILE,
+    PARTIAL_SAMPLES_FILE,
+    RESULTS_FILE,
+    SAMPLES_FILE,
+    Arguments,
+    JudgeConfig,
+    memory_config_payload,
 )
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.model_config import (
@@ -36,8 +35,8 @@ from sensemem.benchmarks.model_config import (
 )
 
 
-def _write_artifacts(
-    arguments: _Arguments,
+def write_artifacts(
+    arguments: Arguments,
     samples: Sequence[SampleResult],
     results: Mapping[str, object],
     *,
@@ -49,14 +48,14 @@ def _write_artifacts(
     results_bytes = encode_jsonl_bytes((document,))
     arguments.output_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     files = [
-        (arguments.output_path / _SAMPLES_FILE, samples_bytes),
-        (arguments.output_path / _RESULTS_FILE, results_bytes),
+        (arguments.output_path / SAMPLES_FILE, samples_bytes),
+        (arguments.output_path / RESULTS_FILE, results_bytes),
     ]
     if config_bytes is not None:
-        files.append((arguments.output_path / _CONFIG_FILE, config_bytes))
+        files.append((arguments.output_path / CONFIG_FILE, config_bytes))
     replace_artifact_files(files)
     # The real samples file now holds everything the crash copy did.
-    (arguments.output_path / _PARTIAL_SAMPLES_FILE).unlink(missing_ok=True)
+    (arguments.output_path / PARTIAL_SAMPLES_FILE).unlink(missing_ok=True)
 
 
 _SECRET_CONFIG_KEYS = frozenset({"api_key", "authorization", "password", "secret", "token"})
@@ -65,10 +64,10 @@ _SECRET_CONFIG_KEYS = frozenset({"api_key", "authorization", "password", "secret
 _OPAQUE_CONFIG_KEYS = frozenset({"extra_body"})
 
 
-def _config_artifact(
-    arguments: _Arguments,
+def config_artifact(
+    arguments: Arguments,
     config: ModelConfig,
-    judge_config: _JudgeConfig,
+    judge_config: JudgeConfig,
     memory_config: MemorySpec | None,
     download: DownloadSettings,
     server_metrics: ServerMetricsOverrides,
@@ -93,11 +92,11 @@ def _config_artifact(
             },
         }
         if memory_config is None
-        else _memory_config_payload(memory_config)
+        else memory_config_payload(memory_config)
     )
     run = {
         item.name: getattr(arguments, item.name)
-        for item in fields(_Arguments)
+        for item in fields(Arguments)
         # These raw strings either duplicate resolved blocks below or, for judge arguments, may
         # themselves contain an API key. The source config path is provenance, not run behavior.
         if item.name not in {"judge_model_args", "memory_config"}
@@ -154,11 +153,8 @@ def _secret_free_yaml_value(value: object) -> object:
         return [_secret_free_yaml_value(item) for item in sorted(value, key=str)]
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_secret_free_yaml_value(item) for item in value]
-    if isinstance(value, SecretStr):
-        # Defensive fallback for a future credential field whose name is not yet `api_key`.
-        return "<redacted>"
     if isinstance(value, str):
-        # A gateway URL can carry basic-auth userinfo; `base_url` and the raw `--model-args`
+        # A gateway URL can carry basic-auth userinfo; base_url and the raw --model-args
         # string both reach this manifest, so the credential is cut out of the URL itself.
         return _URL_USERINFO.sub("", value)
     return value
@@ -167,7 +163,7 @@ def _secret_free_yaml_value(value: object) -> object:
 _URL_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
 
 
-def _merged_manifest(
+def merged_manifest(
     manifest: MediaManifest | None,
     manifest_directory: Path | None,
     generated: Mapping[str, object],

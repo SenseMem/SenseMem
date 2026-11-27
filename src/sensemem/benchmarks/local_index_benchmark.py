@@ -4,7 +4,7 @@ This is the narrow storage microbenchmark AGENTS.md allows to touch the local ad
 purpose is to measure SQLite and Zvec directly on synthetic vectors. Its numbers are not
 product ingest or search numbers and must not be reported as such - it never embeds, never
 routes a modality, never prepares media, and never grounds an answer. The end-to-end figures
-the design doc asks for come from ``sensemem-bench eval``, which drives the public SDK.
+the design doc asks for come from sensemem-bench eval, which drives the public SDK.
 """
 
 from __future__ import annotations

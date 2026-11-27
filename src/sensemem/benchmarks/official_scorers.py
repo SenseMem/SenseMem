@@ -13,6 +13,13 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Literal, Protocol, cast
 
+import regex  # type: ignore[import-untyped]
+from nltk.stem import PorterStemmer  # type: ignore[import-untyped]
+from nltk.translate.bleu_score import (  # type: ignore[import-untyped]
+    SmoothingFunction,
+    sentence_bleu,
+)
+
 from sensemem.benchmarks._official import ama_scoring, mosaic_scoring
 from sensemem.benchmarks._official import personamem_v3_proactive as pm3_proactive
 from sensemem.benchmarks._official import personamem_v3_scoring as pm3
@@ -23,14 +30,14 @@ from sensemem.benchmarks._official.atm_score import (
 from sensemem.benchmarks._official.atm_score import list_jaccard_score
 from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
 from sensemem.benchmarks._official.judge_prompts import (
-    _ATM_PROMPT,
-    _EGOTEMPO_PROMPT,
-    _GALLERY_PROMPT,
-    _LOCOMO_PROMPT,
-    _M3_PROMPT,
-    _M3_SYSTEM_PROMPT,
-    _MM_LIFELONG_SYSTEM,
-    _MM_LIFELONG_USER_PROMPT,
+    ATM_PROMPT,
+    EGOTEMPO_PROMPT,
+    GALLERY_PROMPT,
+    LOCOMO_PROMPT,
+    M3_PROMPT,
+    M3_SYSTEM_PROMPT,
+    MM_LIFELONG_SYSTEM,
+    MM_LIFELONG_USER_PROMPT,
 )
 from sensemem.benchmarks._official.longmemeval_v2_scoring import (
     SCORER_VERSION as LONGMEMEVAL_V2_SCORER_VERSION,
@@ -52,7 +59,7 @@ from sensemem.benchmarks._official.memlens_prompts import (
 )
 from sensemem.benchmarks._official.memlens_prompts import get_task_key
 from sensemem.benchmarks._official.personamem_v3_prompts import (
-    _C1D_PREF_INVOCATION_JUDGE_PROMPT,
+    C1D_PREF_INVOCATION_JUDGE_PROMPT,
     judge_new_suggestions_chatbot_prompt,
 )
 from sensemem.benchmarks.mosaic import (
@@ -136,12 +143,12 @@ _OFFICIAL_JUDGE_MODELS = {
     "atm-bench": "gpt-5-mini",
     "mem-gallery": "qwen2.5-72b-instruct",
     "longmemeval-v2": "gpt-5.2",
-    # `EVAL.md`: "the judge is a QueryLLM client on Azure gpt-5.5".
+    # EVAL.md: "the judge is a QueryLLM client on Azure gpt-5.5".
     "personamem-v3": "gpt-5.5",
-    # `common_configurations.py` supplies this ID to every released QA script.
+    # common_configurations.py supplies this ID to every released QA script.
 }
 
-# Metrics the pinned upstream protocol reports itself. `metric_is_official` reads this registry
+# Metrics the pinned upstream protocol reports itself. metric_is_official reads this registry
 # positively: a metric absent from its family's entry is a SenseMem diagnostic, never an
 # upstream number. The families that publish no deterministic metric beyond their judge output
 # are still listed, so an empty entry means "judge metrics only" rather than "not yet audited".
@@ -151,17 +158,17 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
     ),
     "ama-bench": frozenset({"accuracy", "llm_judge_score", "exact_match", "token_f1"}),
     "icm-bench": frozenset({"accuracy"}),
-    # `evaluate.py` keeps the F1 and BLEU-1 of the accepted reference beside its judge label.
+    # evaluate.py keeps the F1 and BLEU-1 of the accepted reference beside its judge label.
     "locomo-refined": frozenset({"llm_judge", "token_f1", "bleu_1"}),
     "m3-bench": frozenset({"accuracy"}),
     "videozerobench": frozenset({"accuracy", *VIDEOZERO_METRICS}),
     "egotempo": frozenset({"accuracy", "judge_score_0_5"}),
     "memlens": frozenset({"accuracy"}),
-    # `Ref@300` is MM-Lifelong's own quantized temporal IoU.
+    # Ref@300 is MM-Lifelong's own quantized temporal IoU.
     "mm-lifelong": frozenset({"answer_accuracy", "judge_score_0_5", "ref_at_300"}),
     "supermemory-vqa": frozenset({"qa_accuracy", "answerability"}),
-    # `_official/atm_score.py` publishes `deterministic_accuracy` and `list_jaccard_score`, both
-    # reported here as `accuracy`, plus the open-ended judge. Its retrieval and joint metrics are
+    # _official/atm_score.py publishes deterministic_accuracy and list_jaccard_score, both
+    # reported here as accuracy, plus the open-ended judge. Its retrieval and joint metrics are
     # SenseMem diagnostics and are deliberately absent.
     "atm-bench": frozenset({"accuracy"}),
     "mem-gallery": frozenset(
@@ -178,8 +185,8 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
         }
     ),
     "longmemeval-v2": frozenset({"accuracy"}),
-    # Everything `_official/personamem_v3_scoring.py` emits: the unified rubric's `pr_` dims
-    # (see `_OFFICIAL_METRIC_PREFIXES`), the four task-specific judges' coercions, the ranking
+    # Everything _official/personamem_v3_scoring.py emits: the unified rubric's pr_ dims
+    # (see _OFFICIAL_METRIC_PREFIXES), the four task-specific judges' coercions, the ranking
     # metrics the task runners report, and the 0-100 micro aggregate headline.
     "personamem-v3": frozenset(
         {
@@ -257,7 +264,7 @@ _OFFICIAL_METRICS: dict[str, frozenset[str]] = {
     ),
 }
 
-# One family scores an open dimension vocabulary upstream: `score_unified_rubric` names every
+# One family scores an open dimension vocabulary upstream: score_unified_rubric names every
 # rubric dim it was given, so the prefix it stamps them with is the registry entry.
 _OFFICIAL_METRIC_PREFIXES: dict[str, tuple[str, ...]] = {"personamem-v3": ("pr_",)}
 
@@ -310,7 +317,7 @@ _JUDGE_METRICS = {
 
 # PersonaMem-v3 headline per task type, and the divisor that maps it onto the
 # internal 0-1 row value from which the official micro percentage is computed
-# (`evaluation/task_registry.py: PRIMARY_METRIC`).
+# (evaluation/task_registry.py: PRIMARY_METRIC).
 _PERSONAMEM_HEADLINES: dict[str, tuple[str, float]] = {
     "chatbot_personalized_response": ("pr_preference_alignment_score", 10.0),
     "over_personalization_sycophancy": ("sycophancy_resistance_0_10", 10.0),
@@ -324,16 +331,16 @@ _PERSONAMEM_HEADLINES: dict[str, tuple[str, float]] = {
     "over_personalization_repetition_recsys": ("query_score_0_10", 10.0),
 }
 _PERSONAMEM_RUBRIC_HEADLINE = ("pr_combined_personalization_score", 10.0)
-# `task_registry.PRIMARY_METRIC` -- the column upstream's aggregator reads --
+# task_registry.PRIMARY_METRIC -- the column upstream's aggregator reads --
 # gives all three single-target ranking tasks a graded nDCG@5, chosen over a
 # binary top-1 because the gold is "subtle by design" and nDCG rewards
-# surfacing it high with a smooth position discount. `compute_ranking_metrics`
+# surfacing it high with a smooth position discount. compute_ranking_metrics
 # also reports top-k diagnostics, but those are not the aggregator headline.
 # The shared graded metric uses positive +2, filler +1, and negative -2.
 _PERSONAMEM_RANKING_HEADLINE = ("ndcg_at_5", 1.0)
 
 # Ranks a slate like the other three, but its upstream headline is
-# `lifecycle_score` -- the delta between a paired pre-row's and post-row's
+# lifecycle_score -- the delta between a paired pre-row's and post-row's
 # match rate -- which no single row can carry. It also has 2 to 5 targets per
 # row, so a top-1 recall, which divides by the target count, could never exceed
 # 0.5 there. Phase rows acquire their headline only after lifecycle pairing.
@@ -399,8 +406,6 @@ def judge_model_is_official(task: str, model: str) -> bool:
         return True
     actual_key = _model_key(model)
     expected_key = _model_key(expected)
-    if _family_or_none(task) == "memlens":
-        return actual_key.endswith(expected_key) or "qwen3vl235b" in actual_key
     return actual_key.endswith(expected_key)
 
 
@@ -432,8 +437,8 @@ def metric_is_official(task: str, metric: str, judge_model: str, *, uses_judge: 
     return judge_model_is_official(task, judge_model)
 
 
-# Gold retrieval labels, in the order one question's label is looked up. `evidence_ids` and
-# `clue_ids` name gold sources one by one; `evidence_groups` nests one sequence of source IDs per
+# Gold retrieval labels, in the order one question's label is looked up. evidence_ids and
+# clue_ids name gold sources one by one; evidence_groups nests one sequence of source IDs per
 # gold group, any one of which retrieved counts -- a release that labels the answering session
 # while one memory is one turn (MEMLENS) publishes exactly that.
 GOLD_SOURCE_KEYS = ("evidence_ids", "clue_ids", "evidence_groups")
@@ -460,14 +465,13 @@ def gold_source_groups(metadata: Mapping[str, object], key: str) -> tuple[tuple[
     return tuple(dict.fromkeys(groups))
 
 
-def retrieval_gold_ids(task: str, metadata: Mapping[str, object]) -> tuple[str, ...]:
+def retrieval_gold_ids(metadata: Mapping[str, object]) -> tuple[str, ...]:
     """Return the gold source IDs one question's retrieval diagnostics score against.
 
     Any adapter that labels a question with stored source IDs gets the ranked retrieval query and
     a measured recall, rather than a recall number computed from the generator's citations.
     Groups are flattened: every member is a source the ranked query has to be able to reach.
     """
-    del task
     for key in GOLD_SOURCE_KEYS:
         sources = tuple(
             dict.fromkeys(member for group in gold_source_groups(metadata, key) for member in group)
@@ -648,7 +652,7 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             (
                 JudgeMessage(
                     "user",
-                    _LOCOMO_PROMPT.format(
+                    LOCOMO_PROMPT.format(
                         question=question,
                         gold_answer=reference,
                         generated_answer=normalized,
@@ -703,7 +707,7 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
         )
         return JudgePlan(protocol, "icm", ((JudgeMessage("user", prompt),),), 8192)
     if family == "m3-bench":
-        prompt = _M3_PROMPT.format(
+        prompt = M3_PROMPT.format(
             question=question,
             ground_truth_answer=reference,
             agent_answer=prediction,
@@ -713,14 +717,14 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             "m3",
             (
                 (
-                    JudgeMessage("system", _M3_SYSTEM_PROMPT),
+                    JudgeMessage("system", M3_SYSTEM_PROMPT),
                     JudgeMessage("user", prompt),
                 ),
             ),
             2048,
         )
     if family == "egotempo":
-        prompt = _EGOTEMPO_PROMPT.format(question=question, answer=reference, prediction=prediction)
+        prompt = EGOTEMPO_PROMPT.format(question=question, answer=reference, prediction=prediction)
         return JudgePlan(protocol, "egotempo", ((JudgeMessage("user", prompt),),))
     if family == "memlens":
         question_type = str(metadata.get("question_type", ""))
@@ -744,17 +748,17 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
             {"task_key": task_key},
         )
     if family == "mm-lifelong":
-        user = _MM_LIFELONG_USER_PROMPT.format(
+        user = MM_LIFELONG_USER_PROMPT.format(
             question=question, reference=reference, prediction=prediction
         )
         return JudgePlan(
             protocol,
             "mm_lifelong",
-            ((JudgeMessage("system", _MM_LIFELONG_SYSTEM), JudgeMessage("user", user)),),
+            ((JudgeMessage("system", MM_LIFELONG_SYSTEM), JudgeMessage("user", user)),),
         )
     if family == "atm-bench":
         prompt = (
-            _ATM_PROMPT.replace("{{question}}", question)
+            ATM_PROMPT.replace("{{question}}", question)
             .replace("{{answer}}", reference)
             .replace("{{prediction}}", prediction)
         )
@@ -774,7 +778,7 @@ def judge_plan(  # noqa: C901 - direct task dispatch keeps official protocols au
         return _personamem_plan(protocol, question, metadata, prediction)
     if family == "mem-gallery":
         prompt = (
-            _GALLERY_PROMPT.replace("{{question}}", question)
+            GALLERY_PROMPT.replace("{{question}}", question)
             .replace("{{ground_truth}}", reference)
             .replace("{{model_output}}", prediction)
         )
@@ -889,7 +893,7 @@ def _personamem_metric(task_type: str) -> tuple[str, float] | None:
     map: upstream runs the rubric on several more task types but keeps its
     output as a diagnostic beside a headline it computes a different way (a
     leak-set composite, fatigue counters, a paired-row delta). A task type this
-    returns `None` for is answered and reported without a `personamem_score`,
+    returns None for is answered and reported without a personamem_score,
     so it stays out of the aggregate rather than entering it under a number
     upstream does not publish.
     """
@@ -941,11 +945,11 @@ def _personamem_plan(
                         "user",
                         judge_new_suggestions_chatbot_prompt(
                             prediction,
-                            pm3._string(evidence, "gold_topic"),
+                            pm3.string(evidence, "gold_topic"),
                             pm3_tasks.strings(evidence, "gold_hashtags"),
                             pm3_tasks.strings(evidence, "fatigued_hashtags"),
                             pm3_tasks.strings(evidence, "leak_set_hashtags"),
-                            pm3._string(evidence, "trigger_kind"),
+                            pm3.string(evidence, "trigger_kind"),
                         ),
                     ),
                 ),
@@ -1010,9 +1014,9 @@ def _personamem_cluster_plan(
             continue
         indexes.append(len(slots))
         slots.append(None)
-        prompt = _C1D_PREF_INVOCATION_JUDGE_PROMPT.format(
-            target_pref=pm3._string(evidence, "target_pref")[:200],
-            primary_category=pm3._string(evidence, "primary_category") or "(none)",
+        prompt = C1D_PREF_INVOCATION_JUDGE_PROMPT.format(
+            target_pref=pm3.string(evidence, "target_pref")[:200],
+            primary_category=pm3.string(evidence, "primary_category") or "(none)",
             target_hashtags=", ".join(f"#{tag.lstrip('#')}" for tag in tags[:8]) or "(none)",
             user_query=response["user_query"][:240],
             response=text[:800],
@@ -1179,7 +1183,7 @@ def _personamem_local(  # noqa: C901 - direct dispatch keeps pinned task formula
         scores = pm3_proactive.score(prediction, evidence)
         # The upstream runner's judge-off fallback is a diagnostic; the official
         # headline needs the judge's justification and hard-rule verdicts.
-        del scores["proactive_action_score"]
+        scores.pop("proactive_action_score", None)
         return scores
     if task_type == "local_recommendation_geo_shift":
         evidence = metadata.get("judge_evidence")
@@ -1194,9 +1198,9 @@ def _personamem_local(  # noqa: C901 - direct dispatch keeps pinned task formula
             raise ValueError("PersonaMem-v3 geo-shift response must be text")
         scores = pm3.compute_geo_shift_metrics(
             response,
-            pm3._string(evidence, "current_city"),
-            pm3._string(evidence, "prior_city"),
-            pm3._string(evidence, "current_region"),
+            pm3.string(evidence, "current_city"),
+            pm3.string(evidence, "prior_city"),
+            pm3.string(evidence, "current_region"),
         )
         return _personamem_headline(task_type, scores)
     if task_type not in RANKING_TASK_TYPES:
@@ -1227,7 +1231,7 @@ def _personamem_ranking(prediction: str, metadata: Mapping[str, object]) -> dict
     negatives = {
         index for index in _index_values(metadata, "negative_indexes") if 0 <= index < count
     }
-    # `_graded_ndcg_at_k` defaults the filler grade to +1; only the hidden-persona runner passes
+    # _graded_ndcg_at_k defaults the filler grade to +1; only the hidden-persona runner passes
     # 0 when its slate carries no hard negatives, and the result is clamped to [0, 1].
     filler_gain = 0.0 if task_type == "hidden_persona_recommendation" and not negatives else 1.0
     gains = [
@@ -1262,9 +1266,9 @@ def _personamem_ranking(prediction: str, metadata: Mapping[str, object]) -> dict
 def _parse_ranking(prediction: str, count: int, *, identity_fallback: bool) -> tuple[int, ...]:
     """Read a ranking out of an answer, in either published shape.
 
-    The pinned release's own `example_response` is `Ranked indexes: [...]`; the
+    The pinned release's own example_response is Ranked indexes: [...]; the
     evaluation repository's current prompt asks for a fenced-JSON
-    `ranked_indices`. Both are accepted. The @ai directive runner replaces an
+    ranked_indices. Both are accepted. The @ai directive runner replaces an
     invalid permutation with identity order; the other ranking runners score
     an absent or partial list as returned.
     """
@@ -1364,17 +1368,11 @@ def _bleu_1(
 
 @lru_cache(maxsize=1)
 def _porter() -> _Stemmer:
-    try:
-        from nltk.stem import PorterStemmer  # type: ignore[import-untyped]
-    except ImportError:
-        raise RuntimeError("Mem-Gallery scoring requires sensemem[benchmarks]") from None
     return cast(_Stemmer, PorterStemmer())
 
 
 def _mem_gallery_normalize(value: str) -> str:
     # a93959e1e978/evaluation.py uses regex, whose word boundaries include combining marks.
-    import regex  # type: ignore[import-untyped]
-
     normalized = str(value).lower()
     normalized = regex.sub(r"(?<=\d)\.(?=\d)", "DOTPLACEHOLDER", normalized)
     normalized = normalized.replace("_", "UNDERSCOREPLACEHOLDER")
@@ -1411,13 +1409,6 @@ def _gallery_bleu(
     reference: str,
     weights: tuple[float, float, float, float],
 ) -> float:
-    try:
-        from nltk.translate.bleu_score import (  # type: ignore[import-untyped]
-            SmoothingFunction,
-            sentence_bleu,
-        )
-    except ImportError:
-        raise RuntimeError("Mem-Gallery scoring requires sensemem[benchmarks]") from None
     predicted, expected = _mem_gallery_tokens(prediction), _mem_gallery_tokens(reference)
     if not predicted or not expected:
         return 0.0

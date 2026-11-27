@@ -58,12 +58,13 @@ class OpenAIEmbedder(OpenAIClient):
             or embedding_dimension <= 0
         ):
             raise ValidationError("embedding_dimension must be a positive integer")
-        embedding_request_format = protocol._embedding_format(embedding_request_format)
+        embedding_request_format = protocol.embedding_format(embedding_request_format)
         self._embedding_model = embedding_model
         self._embedding_dimension = embedding_dimension
         self._embedding_request_format = embedding_request_format
         self._embeddinggemma2 = (
-            embedding_model == "google/embeddinggemma-2" and embedding_request_format == "messages"
+            embedding_model == embedding_prompts.EMBEDDINGGEMMA2_MODEL
+            and embedding_request_format == "messages"
         )
         recipe = "messages-ordered-input-v2:" if embedding_request_format == "messages" else ""
         if self._embeddinggemma2:
@@ -74,7 +75,7 @@ class OpenAIEmbedder(OpenAIClient):
             else nonempty_text(embedding_space, "embedding_space")
         )
         if image_max_pixels is not None:
-            self._embedding_space += media._image_transport_recipe(image_max_pixels)
+            self._embedding_space += media.image_transport_recipe(image_max_pixels)
         self._embedding_capabilities = _modalities(embedding_capabilities, "embedding")
 
     @property
@@ -101,7 +102,7 @@ class OpenAIEmbedder(OpenAIClient):
         """Encode one batch with the configured OpenAI-compatible API shape.
 
         The generic OpenAI embeddings contract has no task field. EmbeddingGemma 2 in messages
-        mode selects the checkpoint's retrieval prefix for text using ``task``.
+        mode selects the checkpoint's retrieval prefix for text using task.
         """
         mark_model_requests(0, token_usage_expected=0)
         if isinstance(inputs, (str, bytes)):
@@ -117,7 +118,7 @@ class OpenAIEmbedder(OpenAIClient):
             mark_model_requests(0, token_usage_expected=0)
             return ()
         for value in batch:
-            protocol._require_capabilities(
+            protocol.require_capabilities(
                 "embedding", value.modalities, self.embedding_capabilities
             )
         if self._embeddinggemma2:
@@ -142,9 +143,9 @@ class OpenAIEmbedder(OpenAIClient):
                 for value in batch
             )
         embedding_assets = tuple(asset for value in batch for asset in value.assets)
-        media._require_consistent_assets(embedding_assets)
+        media.require_consistent_assets(embedding_assets)
         image_parts = media._image_transport_parts(embedding_assets, self._image_max_pixels)
-        sampled_assets = media._embedding_video_sampling(embedding_assets, image_parts=image_parts)
+        sampled_assets = media.embedding_video_sampling(embedding_assets, image_parts=image_parts)
 
         client = self._client("embedding")
         request_count = 1
@@ -160,7 +161,7 @@ class OpenAIEmbedder(OpenAIClient):
                 image_parts=image_parts,
             )
             if sampled_assets:
-                telemetry._record_video_sampling(len(sampled_videos))
+                telemetry.record_video_sampling(len(sampled_videos))
         except ModelError as error:
             # A video long enough to overrun the model's context is refused outright, and one
             # refusal would otherwise lose the whole memory. Ordered stills keep the visual
@@ -169,8 +170,8 @@ class OpenAIEmbedder(OpenAIClient):
             # to the refusal that prompted the retry.
             if (
                 sampled_assets
-                or not protocol._is_context_length_rejection(error.__cause__)
-                or not media._has_video(batch)
+                or not protocol.is_context_length_rejection(error.__cause__)
+                or not media.has_video(batch)
             ):
                 raise
             request_count = 2
@@ -179,7 +180,7 @@ class OpenAIEmbedder(OpenAIClient):
             response = self._embedding_response(
                 client, batch, sample_video=True, sampled=sampled, image_parts=image_parts
             )
-            telemetry._record_video_sampling(len(sampled))
+            telemetry.record_video_sampling(len(sampled))
         telemetry._record_openai_usage(
             response,
             input_modalities=frozenset(
@@ -202,7 +203,7 @@ class OpenAIEmbedder(OpenAIClient):
     ) -> object:
         try:
             samples = (
-                requests._embedding_samples(
+                requests.embedding_samples(
                     batch,
                     sample_video=sample_video,
                     sampled=sampled,
@@ -212,7 +213,7 @@ class OpenAIEmbedder(OpenAIClient):
                 if any(value.assets for value in batch)
                 else []
             )
-            media._require_inline_media_parts(
+            media.require_inline_media_parts(
                 tuple(
                     part
                     for sample in samples
@@ -223,7 +224,7 @@ class OpenAIEmbedder(OpenAIClient):
                 from openai.types.create_embedding_response import CreateEmbeddingResponse
 
                 if not samples:
-                    samples = requests._embedding_samples(batch)
+                    samples = requests.embedding_samples(batch)
                 body: dict[str, object] = {
                     "messages": samples[0] if len(samples) == 1 else samples,
                     "model": self.embedding_model,

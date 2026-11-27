@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from sensemem.benchmarks._official.icm_prompt import SEMANTIC_EQUIVALENCE_PROMPT
-from sensemem.benchmarks.download import _extract_tar, acquire_media
+from sensemem.benchmarks.download import acquire_media, extract_tar
 from sensemem.benchmarks.eval_adapters import load_task
-from sensemem.benchmarks.eval_inputs import _prefix_end
+from sensemem.benchmarks.eval_inputs import prefix_end
 from sensemem.benchmarks.icm_bench import ICM_NO_ASR_CLIPS, load_icm_bench
 from sensemem.benchmarks.official_scorers import JudgeMessage, judge_plan, parse_judge_response
 from sensemem.benchmarks.task_catalog import TASKS
@@ -59,8 +59,8 @@ def test_icm_causal_prefix_calibration_and_no_label_leakage(tmp_path: Path) -> N
     _fixture(tmp_path)
     unit = load_task(TASKS["icm-bench"], root=tmp_path, verify_digest=False).units[0]
     assert unit.memories[0].source_id == "clip_000"
-    assert _prefix_end(unit.memories, unit.questions[0].cutoff_seconds) == 2
-    assert _prefix_end(unit.memories, unit.questions[1].cutoff_seconds) == 839
+    assert prefix_end(unit.memories, unit.questions[0].cutoff_seconds) == 2
+    assert prefix_end(unit.memories, unit.questions[1].cutoff_seconds) == 839
     inputs = repr([m.content for m in unit.memories]) + repr([q.content for q in unit.questions])
     assert "Observed speech" in inputs
     assert "SECRET" not in inputs and "FORBIDDEN" not in inputs
@@ -137,7 +137,7 @@ def test_tar_rejects_unsafe_members_before_extracting(
             bad.linkname = "../../outside"
         volume.addfile(bad)
     with pytest.raises(ValueError, match="unsafe"):
-        _extract_tar(archive, announce=None)
+        extract_tar(archive, announce=None)
     assert not (tmp_path / "videos/safe.mp4").exists()
 
 
@@ -147,8 +147,8 @@ def test_tar_extraction_is_resumable(tmp_path: Path) -> None:
         item = tarfile.TarInfo("videos/clip_000.mp4")
         item.size = 4
         volume.addfile(item, io.BytesIO(b"data"))
-    _extract_tar(archive, announce=None)
-    _extract_tar(archive, announce=None)
+    extract_tar(archive, announce=None)
+    extract_tar(archive, announce=None)
     assert (tmp_path / "videos/clip_000.mp4").read_bytes() == b"data"
 
 

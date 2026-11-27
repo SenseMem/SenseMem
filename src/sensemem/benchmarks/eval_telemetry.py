@@ -61,6 +61,7 @@ from sensemem._telemetry import (
     token_modality_attribute,
 )
 from sensemem.benchmarks.eval_environment import nvidia_smi_rows
+from sensemem.benchmarks.eval_results import DEFAULT_ARM
 from sensemem.benchmarks.eval_statistics import percentile
 
 BENCHMARK_TASK = "sensemem.benchmark.task"
@@ -76,23 +77,22 @@ BENCHMARK_JUDGE_SPAN = "sensemem.benchmark.judge"
 BENCHMARK_INGEST_SPAN = "sensemem.benchmark.ingest"
 BENCHMARK_INGEST_ITEMS = "sensemem.benchmark.ingest.items"
 
-# The fast plane's three product operations: `capture()` acknowledges after the SQLite commit,
-# so its own span duration *is* capture-acknowledgement latency; `settle()`'s span duration is the
-# model-dependent formation work one settle() call paid, i.e. formation lag; `compile()`'s span
+# The fast plane's three product operations: capture() acknowledges after the SQLite commit,
+# so its own span duration *is* capture-acknowledgement latency; settle()'s span duration is the
+# model-dependent formation work one settle() call paid, i.e. formation lag; compile()'s span
 # duration is compile latency. None of these run unless the harness actually calls them --
-# `--ingest capture` for the first two, the `compile` answering arm for the third -- so a run that
-# never exercises a path reports nothing under it, as `ASK_RETRIEVAL_SPAN` does.
+# --ingest capture for the first two, the compile answering arm for the third -- so a run that
+# never exercises a path reports nothing under it, as ASK_RETRIEVAL_SPAN does.
 CAPTURE_SPAN = "sensemem.capture"
 SETTLE_SPAN = "sensemem.settle"
 COMPILE_SPAN = "sensemem.compile"
-# Harness-owned spans (like `BENCHMARK_INGEST_SPAN`) that carry a `compile()` bundle's size:
-# `compile()` itself sets no such attribute, so the eval driver tags one stage span per compiled
+# Harness-owned spans (like BENCHMARK_INGEST_SPAN) that carry a compile() bundle's size:
+# compile() itself sets no such attribute, so the eval driver tags one stage span per compiled
 # answer instead of asking product code to carry a benchmark-only measurement.
 BENCHMARK_COMPILE_SPAN = "sensemem.benchmark.compile"
 BENCHMARK_COMPILE_CHARS = "sensemem.benchmark.compile.chars"
 BENCHMARK_COMPILE_ITEMS = "sensemem.benchmark.compile.items"
 BENCHMARK_COMPILE_MEDIA_ITEMS = "sensemem.benchmark.compile.media_items"
-DEFAULT_BENCHMARK_ARM = "sensemem"
 SHARED_BENCHMARK_ARM = "shared"
 PRODUCT_PURPOSE = "product"
 DIAGNOSTIC_PURPOSE = "diagnostic"
@@ -116,7 +116,7 @@ _INPUT_MODALITIES = "sensemem.input.modalities"
 class SampleGrounding:
     """How much retrieved evidence one answer's inline context budget removed.
 
-    `recall_shape` is the shape of the last recall plan this answer ran -- the one it was
+    recall_shape is the shape of the last recall plan this answer ran -- the one it was
     grounded on -- and is None when the run did not plan at all.
     """
 
@@ -596,7 +596,7 @@ class _TaskTelemetry:
     dropped_hits: int = 0
     vision_failed_batches: int = 0
     # Fast-plane and compiler measurements: populated only when the run actually exercises
-    # `capture()`/`settle()` (the `--ingest capture` path) or the `compile` answering arm.
+    # capture()/settle() (the --ingest capture path) or the compile answering arm.
     time_to_searchable_ms: _Samples = field(default_factory=_Samples)
     compile_chars: _Samples = field(default_factory=_Samples)
     compile_items: _Samples = field(default_factory=_Samples)
@@ -604,9 +604,9 @@ class _TaskTelemetry:
     ingest_attempted_items: int = 0
     ingest_successful_items: int = 0
     ingest_error_count: int = 0
-    # Recall-planning activation, populated only when `recall_planning` is on: without it a
+    # Recall-planning activation, populated only when recall_planning is on: without it a
     # result document cannot tell a planner that ran and chose a point plan from a planner that
-    # was never reached, which is exactly how a hidden `plan_recall` capability read.
+    # was never reached, which is exactly how a hidden plan_recall capability read.
     recall_shapes: dict[str, int] = field(default_factory=dict)
     recall_plan_count: int = 0
     recall_fallback_count: int = 0
@@ -1159,7 +1159,7 @@ class EvaluationTelemetry(SpanProcessor):
                 attributes, BENCHMARK_SAMPLE
             )
             if task is not None:
-                selected_arm = arm or DEFAULT_BENCHMARK_ARM
+                selected_arm = arm or DEFAULT_ARM
                 self._tasks.setdefault((task, selected_arm), _TaskTelemetry()).add(span)
             if sample is not None:
                 grounding = self._samples.get(sample, SampleGrounding(0, 0))
@@ -1211,7 +1211,7 @@ class EvaluationTelemetry(SpanProcessor):
         self,
         task: str,
         *,
-        arm: str = DEFAULT_BENCHMARK_ARM,
+        arm: str = DEFAULT_ARM,
         question_count: int,
     ) -> Mapping[str, object]:
         with self._lock:
@@ -1410,9 +1410,9 @@ class _GpuSamples:
 class ResourceSampler:
     """Record client CPU, resident memory, storage growth, and sampled GPU load.
 
-    CPU time and peak resident memory come from ``resource.getrusage``, so they need no
+    CPU time and peak resident memory come from resource.getrusage, so they need no
     sampling. GPU utilization, memory, and power are instantaneous, so one background poll runs
-    only when ``nvidia-smi`` answers at all.
+    only when nvidia-smi answers at all.
     """
 
     def __init__(
@@ -1630,7 +1630,7 @@ def _peak_resident_bytes() -> int:
 def _nvidia_utilization() -> tuple[tuple[int, float, int, float | None], ...]:
     """Return each visible GPU's (index, utilization%, memory bytes, power watts-or-None).
 
-    Power is ``None`` on a card ``nvidia-smi`` cannot meter (reported as ``[N/A]``), which the
+    Power is None on a card nvidia-smi cannot meter (reported as [N/A]), which the
     caller must not turn into a fabricated zero.
     """
     devices = []

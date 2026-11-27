@@ -14,15 +14,18 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, mkdtemp
 from threading import Lock
-from typing import TYPE_CHECKING, TypeAlias, TypeVar
+from typing import TypeAlias, TypeVar
 from urllib.parse import urlparse
 
-from sensemem.benchmarks.download import _extract_tar, acquire_media
-from sensemem.benchmarks.eval_adapters import Limit, MediaManifest, _selected
+from sensemem.benchmarks.download import acquire_media, extract_tar
+from sensemem.benchmarks.egotempo import load_egotempo
+from sensemem.benchmarks.eval_adapters import Limit, MediaManifest, select_slice
+from sensemem.benchmarks.longmemeval_v2 import load_longmemeval_v2_questions
+from sensemem.benchmarks.m3_bench import M3BenchVideo, load_m3_bench
+from sensemem.benchmarks.mosaic import load_mosaic, mosaic_media_path
+from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion, load_supermemory_vqa
 from sensemem.benchmarks.task_catalog import TaskSpec
-
-if TYPE_CHECKING:
-    from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion
+from sensemem.benchmarks.videozerobench import load_videozerobench
 
 _SEGMENT_SECONDS = 30
 _VIDEO_SCALE_FILTER = (
@@ -227,7 +230,7 @@ def _acquire_selected(
             for pattern in patterns:
                 archive = root / source.release / pattern
                 if pattern.endswith(".tar.gz") and archive.is_file():
-                    _extract_tar(
+                    extract_tar(
                         archive,
                         announce=announce,
                         destination=root / source.release / "screenshots",
@@ -245,8 +248,6 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
         return ()
     name = spec.name
     if name == "mosaic":
-        from sensemem.benchmarks.mosaic import load_mosaic, mosaic_media_path
-
         return tuple(
             dict.fromkeys(
                 f"dataset/media/{mosaic_media_path(message.multimodal_content.media_path)}"
@@ -257,9 +258,7 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
             )
         )
     if name.startswith("longmemeval-v2-"):
-        from sensemem.benchmarks.longmemeval_v2 import load_longmemeval_v2_questions
-
-        v2_questions = _selected(load_longmemeval_v2_questions(dataset), limit, offset)
+        v2_questions = select_slice(load_longmemeval_v2_questions(dataset), limit, offset)
         domains = {question.domain for question in v2_questions}
         return (
             *(question.image for question in v2_questions if question.image is not None),
@@ -273,20 +272,16 @@ def _selected_patterns(spec: TaskSpec, dataset: Path, limit: Limit, offset: int)
             ),
         )
     if name in {"m3-bench-robot", "m3-bench-web"}:
-        from sensemem.benchmarks.m3_bench import load_m3_bench
-
         subset = "robot" if name.endswith("robot") else "web"
         return tuple(
             f"videos/{subset}/{_component(video.video_id)}.mp4"
-            for video in _selected(load_m3_bench(dataset), limit, offset)
+            for video in select_slice(load_m3_bench(dataset), limit, offset)
         )
     if name == "egotempo":
-        from sensemem.benchmarks.egotempo import load_egotempo
-
         return tuple(
             f"videos/{clip_id}.mp4"
             for clip_id in dict.fromkeys(
-                question.clip_id for question in _selected(load_egotempo(dataset), limit, offset)
+                question.clip_id for question in select_slice(load_egotempo(dataset), limit, offset)
             )
         )
     if name.startswith("mm-lifelong-"):
@@ -314,7 +309,6 @@ def _m3_manifest(
     unavailable_units: frozenset[str] = frozenset(),
     on_progress: ProgressCallback | None = None,
 ) -> dict[str, list[dict[str, object]]]:
-    from sensemem.benchmarks.m3_bench import M3BenchVideo, load_m3_bench
 
     find_media = _MediaFinder(media_root)
 
@@ -338,7 +332,7 @@ def _m3_manifest(
 
     videos = tuple(
         video
-        for video in _selected(load_m3_bench(dataset), limit, offset)
+        for video in select_slice(load_m3_bench(dataset), limit, offset)
         if video.video_id not in unavailable_units
     )
     return dict(_prepare_many(prepare, videos, on_progress))
@@ -357,22 +351,18 @@ def _video_manifest(
     find_media = _MediaFinder(media_root)
     sources: tuple[tuple[str, Path], ...]
     if task_name == "videozerobench":
-        from sensemem.benchmarks.videozerobench import load_videozerobench
-
         sources = tuple(
             (video_id, find_media(f"{video_id}.mp4"))
             for video_id in dict.fromkeys(
                 question.video_id
-                for question in _selected(load_videozerobench(dataset), limit, offset)
+                for question in select_slice(load_videozerobench(dataset), limit, offset)
             )
         )
     else:
-        from sensemem.benchmarks.egotempo import load_egotempo
-
         sources = tuple(
             (clip_id, find_media(f"{clip_id}.mp4"))
             for clip_id in dict.fromkeys(
-                question.clip_id for question in _selected(load_egotempo(dataset), limit, offset)
+                question.clip_id for question in select_slice(load_egotempo(dataset), limit, offset)
             )
         )
 
@@ -519,12 +509,11 @@ def _supermemory_manifest(
 def _supermemory_questions(
     dataset: Path, limit: Limit, offset: int
 ) -> tuple[SuperMemoryQuestion, ...]:
-    from sensemem.benchmarks.supermemory_vqa import load_supermemory_vqa
 
     questions = tuple(
         question for question in load_supermemory_vqa(dataset) if question.subject == 1
     )
-    return tuple(_selected(questions, limit, offset))
+    return tuple(select_slice(questions, limit, offset))
 
 
 def _supermemory_starts(dataset: Path, subject: int) -> dict[str, float]:
@@ -607,7 +596,6 @@ def _acquire_youtube(
     download: bool,
     announce: Callable[[str], None] | None,
 ) -> Mapping[str, str]:
-    from sensemem.benchmarks.m3_bench import load_m3_bench
 
     videos = {video.video_id: video for video in load_m3_bench(dataset)}
     selected = tuple(_component(PurePosixPath(pattern).stem) for pattern in patterns)
@@ -619,7 +607,7 @@ def _acquire_youtube(
         video_id
         for video_id in selected
         if (destination / f"{video_id}.mp4").is_file()
-        and not _has_audio(destination / f"{video_id}.mp4")
+        and not has_audio(destination / f"{video_id}.mp4")
     )
     if unusable:
         raise RuntimeError(
@@ -709,7 +697,7 @@ def _download_youtube_video(
 
 
 def _valid_youtube_video(target: Path) -> bool:
-    return target.is_file() and bool(target.stat().st_size) and _has_audio(target)
+    return target.is_file() and bool(target.stat().st_size) and has_audio(target)
 
 
 _PERMANENT_YOUTUBE_ERRORS = (
@@ -742,7 +730,6 @@ def _acquire_ego4d(
     download: bool,
     announce: Callable[[str], None] | None,
 ) -> None:
-    from sensemem.benchmarks.egotempo import load_egotempo
 
     questions = {question.clip_id: question for question in load_egotempo(dataset)}
     selected = tuple(_component(PurePosixPath(pattern).stem) for pattern in patterns)
@@ -1209,7 +1196,7 @@ def _youtube_sleep() -> float:
     return seconds
 
 
-def _has_audio(path: Path) -> bool:
+def has_audio(path: Path) -> bool:
     completed = subprocess.run(
         (
             _executable("ffprobe"),

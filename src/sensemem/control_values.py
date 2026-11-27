@@ -53,9 +53,9 @@ class MemoryTrigger(str, Enum):
 class MemoryOutcome(str, Enum):
     """What later evidence said about one already-applied control-plane operation.
 
-    Recorded after the fact by `record_outcome()`, which is what makes the slow loop's quality
-    measurable: consolidation precision and contradiction recovery are `CONFIRMED` rates over
-    `CONSOLIDATE` and `CORRECT` rows, and false retirement is the `REFUTED` rate over rows that
+    Recorded after the fact by record_outcome(), which is what makes the slow loop's quality
+    measurable: consolidation precision and contradiction recovery are CONFIRMED rates over
+    CONSOLIDATE and CORRECT rows, and false retirement is the REFUTED rate over rows that
     forgot something. The kernel never sets it and never reads it back into a decision.
     """
 
@@ -72,11 +72,11 @@ class MemoryOperation:
     target_ids: tuple[str, ...] = ()
     proposal: FormationProposal | None = None
     claim: IdentityClaim | None = None
-    # Set exactly by `CONSENT`, which asserts how one person may be processed rather than
+    # Set exactly by CONSENT, which asserts how one person may be processed rather than
     # moving any person or any memory.
     consent: ConsentClaim | None = None
-    # Set exactly by the three identity-lifecycle intents: a `MERGE`, and a `CORRECT` or
-    # `FORGET` that names a person instead of memories.
+    # Set exactly by the three identity-lifecycle intents: a MERGE, and a CORRECT or
+    # FORGET that names a person instead of memories.
     identity: IdentityChange | None = None
     rationale: str | None = None
 
@@ -144,7 +144,7 @@ class MemoryOperation:
         if self.claim is not None:
             raise ValidationError(f"{self.intent.value} must not carry a claim")
         if self.intent is MemoryIntent.CONSOLIDATE:
-            # `target_ids` on a consolidation is consolidation forgetting: the sources to retire
+            # target_ids on a consolidation is consolidation forgetting: the sources to retire
             # from ordinary recall once the derived record exists. The kernel enforces the
             # containment rule (a target must be one of this proposal's own evidence IDs); the
             # value type only knows that naming a target requires evidence to name it from.
@@ -182,15 +182,15 @@ class MemoryOperationRecord:
     changed_ids: tuple[str, ...] = ()
     # Records this operation moved out of ordinary recall. On a FORGET row that is cognitive
     # forgetting; on a CONSOLIDATE row it is consolidation forgetting, the sources the derived
-    # record replaced. `rollback()` clears exactly these.
+    # record replaced. rollback() clears exactly these.
     forgotten_ids: tuple[str, ...] = ()
-    # `(memory_id, version)` pairs the kernel's own lineage rule superseded while applying this
-    # operation: the records a new `STATE` or user-stated `TRAIT` replaced in its lineage, which
-    # the backend never named and may never have been shown. `rollback()` restores exactly these.
+    # (memory_id, version) pairs the kernel's own lineage rule superseded while applying this
+    # operation: the records a new STATE or user-stated TRAIT replaced in its lineage, which
+    # the backend never named and may never have been shown. rollback() restores exactly these.
     superseded: tuple[tuple[str, int], ...] = ()
     rolled_back_at: datetime | None = None
-    # Post-hoc, written by `record_outcome()` and never by the kernel: what later evidence said
-    # about this operation. `None` means nobody has judged it yet, which is not the same as
+    # Post-hoc, written by record_outcome() and never by the kernel: what later evidence said
+    # about this operation. None means nobody has judged it yet, which is not the same as
     # unrefuted.
     outcome: MemoryOutcome | None = None
     outcome_note: str | None = None
@@ -277,10 +277,10 @@ class QueryFailure:
 class ConsolidationCandidate:
     """One piece of deliberation work the store's own state says is due.
 
-    `memory_ids` is the set to hand straight to `consolidate(evidence_ids=...)`. `evidence_count`
-    is what the trigger counted: new evidence links for `EVIDENCE`, distinct conflicting values
-    for `CONTRADICTION`, recorded confirmations for `FEEDBACK`, recorded recall failures for
-    `QUERY_FAILURE`, and the record count over budget for `PRESSURE`. An `IDLE` row counts one:
+    memory_ids is the set to hand straight to consolidate(evidence_ids=...). evidence_count
+    is what the trigger counted: new evidence links for EVIDENCE, distinct conflicting values
+    for CONTRADICTION, recorded confirmations for FEEDBACK, recorded recall failures for
+    QUERY_FAILURE, and the record count over budget for PRESSURE. An IDLE row counts one:
     the operator opened the window, so the count is the lineage, not a measured signal.
     """
 
@@ -312,9 +312,9 @@ class ConsolidationCandidate:
 class ConsolidationReport:
     """What a bounded consolidation run applied and which proposals the kernel refused.
 
-    `weighed` is how many evidence records the backend was actually shown. Zero means the pass
-    reached no backend at all. `rounds` counts executed passes, `skipped` counts inactive
-    candidate sets, and `model_calls` counts backend round trips. Explicit evidence runs one
+    weighed is how many evidence records the backend was actually shown. Zero means the pass
+    reached no backend at all. rounds counts executed passes, skipped counts inactive
+    candidate sets, and model_calls counts backend round trips. Explicit evidence runs one
     pass; automatic candidate runs aggregate the same values and operation records.
     """
 
@@ -362,10 +362,10 @@ class ExportBundle:
     """Everything one physical memory holds about one data subject, in transferable form.
 
     The right of access, answered from the same authoritative rows every other read uses.
-    `records` carries every version, including the retired and the cognitively forgotten ones,
+    records carries every version, including the retired and the cognitively forgotten ones,
     because a subject asking what is held about them is owed the history rather than the
-    projection; each record's `context.evidence_ids` is the evidence link that record stands on
-    and each record's `assets` are its media by identity, size, and digest. No media bytes are
+    projection; each record's context.evidence_ids is the evidence link that record stands on
+    and each record's assets are its media by identity, size, and digest. No media bytes are
     ever inlined: an export names the assets, and copying them is the host's decision.
     """
 
@@ -388,7 +388,7 @@ class ExportBundle:
 class RetentionPolicy:
     """Declarative maximum ages after which stored material is physically deleted.
 
-    Every field is `None` by default, and `None` means "no policy", not "keep for zero days":
+    Every field is None by default, and None means "no policy", not "keep for zero days":
     physical deletion is the one lifecycle step SenseMem never takes because a clock ticked
     and nobody said so. Ages are in days and are measured from the material's own recorded
     time, not from the last time it was read, so a policy cannot be reset by traffic.
@@ -421,17 +421,17 @@ class RetentionPolicy:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RetentionReport:
-    """What one retention pass deleted, or would have deleted under `dry_run`.
+    """What one retention pass deleted, or would have deleted under dry_run.
 
-    Identifiers rather than content: `delete()` leaves no operation-log row, so this report is
+    Identifiers rather than content: delete() leaves no operation-log row, so this report is
     the only account of a physical deletion, and it has to be safe to keep after the content it
     names is unrecoverable.
     """
 
     dry_run: bool
-    # Memories deleted because they referenced media older than `media_days`.
+    # Memories deleted because they referenced media older than media_days.
     media_memory_ids: tuple[str, ...] = ()
-    # Memories deleted because they had been cognitively forgotten longer than `forgotten_days`.
+    # Memories deleted because they had been cognitively forgotten longer than forgotten_days.
     forgotten_memory_ids: tuple[str, ...] = ()
     # Additional derived records deleted because every complete support clause was lost.
     cascade_memory_ids: tuple[str, ...] = ()

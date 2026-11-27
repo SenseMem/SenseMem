@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic import ValidationError as SchemaError
 
 from sensemem.content import Blob
@@ -59,7 +59,7 @@ class CheckpointEvent(BaseModel):
 class Checkpoint(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    version: Literal[5] = 5
+    version: Literal[5]
     model: str
     recipe: str
     data_dir: str
@@ -68,6 +68,13 @@ class Checkpoint(BaseModel):
     streams: tuple[CheckpointStream, ...]
     events: tuple[CheckpointEvent, ...]
     pending: tuple[CheckpointChunk, ...]
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_integer_version(cls, value: object) -> int:
+        if type(value) is not int:
+            raise ValueError("event checkpoint version must be an integer")
+        return value
 
 
 class EventCheckpoint:
@@ -184,13 +191,13 @@ class EventCheckpoint:
             raise StorageError("could not prune event checkpoint media") from error
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+def _atomic_write(path: Path, payload: bytes) -> None:
     """Publish bytes only after flush; a crash leaves the previous complete manifest readable."""
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
             temporary = Path(output.name)
-            output.write(data)
+            output.write(payload)
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)

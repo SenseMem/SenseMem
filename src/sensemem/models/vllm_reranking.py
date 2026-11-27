@@ -10,6 +10,7 @@ from contextvars import copy_context
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from opentelemetry.trace import get_current_span
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 from pydantic import ValidationError as PydanticValidationError
 
@@ -65,7 +66,7 @@ class _RequestUsage:
 
 
 class VLLMReranker:
-    """Score via ``<base_url>/score`` and restore input-order scores.
+    """Score via <base_url>/score and restore input-order scores.
 
     Model loading, revision pinning, templates, context limits, and media preprocessing
     belong to the server. The owning Memory closes the HTTP client, including an injected one.
@@ -168,8 +169,6 @@ class VLLMReranker:
                 key=lambda index: (-scores[index], index),
             )[: self._media_candidates]
             if eligible:
-                from opentelemetry.trace import get_current_span
-
                 get_current_span().set_attribute(
                     "sensemem.reranking.media_candidates", len(eligible)
                 )

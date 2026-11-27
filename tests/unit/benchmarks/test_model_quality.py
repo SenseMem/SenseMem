@@ -43,7 +43,6 @@ class _GroundedAnswerer:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        del answer_policy, exhaustive
         self.evidence.append(tuple(hit.content for hit in hits))
         if self.fail:
             raise ModelError("sensitive-provider-body", reason="response_invalid")

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal
 
 import httpx2 as httpx
 import pytest
@@ -27,7 +27,6 @@ from sensemem.evidence import answer_evidence_payloads
 from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models.openai_completion import OpenAICompletion
 from sensemem.models.openai_embedding import OpenAIEmbedder
-from sensemem.models.openai_speech import OpenAITranscriber
 from sensemem.prompts import generation as prompts
 
 
@@ -100,10 +99,6 @@ def _model(
     )
 
 
-def _transcriber(client: OpenAI, *, vision_video_frames: int = 4) -> OpenAITranscriber:
-    return OpenAITranscriber(client)
-
-
 def _hit(video: AssetRef, *, content: str = "source transcript") -> SearchHit:
     return SearchHit(
         id="source-memory",
@@ -143,7 +138,7 @@ def test_frame_count_changes_only_the_nondefault_vision_recipe() -> None:
 @pytest.mark.parametrize("count", (True, 1, 65, 4.0))
 def test_invalid_frame_count_is_rejected(count: object) -> None:
     with pytest.raises(ValidationError, match="vision_video_frames"):
-        OpenAICompletion(vision_video_frames=cast(Any, count))
+        OpenAICompletion(vision_video_frames=count)  # type: ignore[arg-type]
 
 
 def test_vision_sends_the_configured_real_frame_count(tmp_path: Path) -> None:

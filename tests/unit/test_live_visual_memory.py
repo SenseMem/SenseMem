@@ -8,12 +8,18 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING
 
 import pytest
 from _feature_support import TinyEmbedder
 from PIL import Image
 
+from examples.live.perception import (
+    FrameEvidence,
+    PerceptionContext,
+    PerceptionFrame,
+    PerceptionResult,
+)
+from examples.live.visual_memory import VisualMemoryCapture
 from sensemem import (
     AsyncMemory,
     ContentInput,
@@ -26,21 +32,11 @@ from sensemem import (
     StreamInput,
 )
 
-if TYPE_CHECKING:
-    from examples.live.perception import PerceptionFrame, PerceptionResult
-    from examples.live.visual_memory import VisualMemoryCapture
-
 NOW = datetime(2026, 11, 17, tzinfo=timezone.utc)
 SOURCE = "live:visual-memory-fixture"
 
 
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
-
-
 def _frames(start: int = 1, count: int = 2) -> tuple[PerceptionFrame, ...]:
-    from examples.live.perception import PerceptionFrame
 
     frames: list[PerceptionFrame] = []
     for sequence in range(start, start + count):
@@ -60,7 +56,6 @@ def _frames(start: int = 1, count: int = 2) -> tuple[PerceptionFrame, ...]:
 def _window(
     start: int = 1, *, changed: bool = False, epoch: int = 0, count: int = 2
 ) -> PerceptionResult:
-    from examples.live.perception import FrameEvidence, PerceptionContext, PerceptionResult
 
     frames = _frames(start, count)
     return PerceptionResult(
@@ -108,7 +103,6 @@ def _submit(
 async def test_original_images_times_and_interpretation_survive_capture_settle_and_reopen(
     tmp_path: Path, frame_count: int
 ) -> None:
-    from examples.live.visual_memory import VisualMemoryCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -160,7 +154,6 @@ async def test_original_images_times_and_interpretation_survive_capture_settle_a
 async def test_unchanged_reviews_and_duplicate_windows_skip_but_changes_and_new_epochs_persist(
     tmp_path: Path,
 ) -> None:
-    from examples.live.visual_memory import VisualMemoryCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -186,7 +179,6 @@ async def test_unchanged_reviews_and_duplicate_windows_skip_but_changes_and_new_
 async def test_overload_coalesces_bounded_work_while_retaining_first_and_latest_window(
     tmp_path: Path,
 ) -> None:
-    from examples.live.visual_memory import VisualMemoryCapture
 
     commits: list[StreamCommit] = []
     async with AsyncMemory(Memory(tmp_path, embedder=TinyEmbedder())) as memory:
@@ -204,7 +196,6 @@ async def test_overload_coalesces_bounded_work_while_retaining_first_and_latest_
 async def test_slow_native_settlement_does_not_block_accepting_the_next_visual_change(
     tmp_path: Path,
 ) -> None:
-    from examples.live.visual_memory import VisualMemoryCapture
 
     class SlowEmbedder(TinyEmbedder):
         entered = Event()
@@ -241,7 +232,6 @@ async def test_slow_native_settlement_does_not_block_accepting_the_next_visual_c
 async def test_failed_capture_reports_safe_code_and_a_later_changed_window_can_commit(
     tmp_path: Path,
 ) -> None:
-    from examples.live.visual_memory import VisualMemoryCapture
 
     class FailingMemory(AsyncMemory):
         fail = True

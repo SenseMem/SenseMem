@@ -1,4 +1,4 @@
-"""Behaviour benchmark for the slow loop: `consolidate()`, `record_outcome()`, `rollback()`.
+"""Behaviour benchmark for the slow loop: consolidate(), record_outcome(), rollback().
 
 The public SDK ingests a seeded synthetic run with known duplicate groups, preference flips,
 and standing facts. These ground-truth labels make consolidation precision, contradiction
@@ -32,7 +32,7 @@ from sensemem.types import Modality, RecordKind
 # The scenario's own clock. Fixed, so two runs of one seed ingest byte-identical occurrence times.
 _EPOCH = datetime(2026, 1, 6, 9, tzinfo=timezone.utc)
 _NAMES = ("Ana", "Bruno", "Chen", "Dara", "Eli", "Fatima", "Goran", "Hana")
-# After the last person's day, whatever `persons` is: the window the failing recalls ask about.
+# After the last person's day, whatever persons is: the window the failing recalls ask about.
 _HORIZON = _EPOCH + timedelta(days=len(_NAMES))
 _JOBS = ("radiographer", "luthier", "cartographer", "beekeeper")
 _DRINKS = ("oat flat white", "genmaicha", "cold brew", "barley tea")
@@ -45,7 +45,7 @@ class Scenario:
 
     # Each group is one fact observed twice: a correct CONSOLIDATE cites exactly one of these.
     duplicates: tuple[frozenset[str], ...] = ()
-    # `(superseded, current)`: the two host-derived claims of one preference flip, oldest first.
+    # (superseded, current): the two host-derived claims of one preference flip, oldest first.
     # A recovered contradiction leaves the second in force and the first out of recall.
     contradictions: tuple[tuple[str, str], ...] = ()
     # Standing facts nothing in this scenario contradicts or duplicates. Retiring one is a false
@@ -64,7 +64,7 @@ class _Ingest:
     queries: list[str] = field(default_factory=list)
 
 
-class _PreferenceFormer:
+class PreferenceFormer:
     """Interpret the fixture's explicit preferences as model-inferred functional states."""
 
     formation_capabilities = frozenset({Modality.TEXT})
@@ -103,7 +103,7 @@ def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
     """Ingest one seeded synthetic long run and return its ground truth.
 
     Each exclusive preference flip is formed as one model-inferred state per side in the same
-    `add_many` transaction. Both claims therefore stand for the loop to weigh, while the raw
+    add_many transaction. Both claims therefore stand for the loop to weigh, while the raw
     observations remain the benchmark's source evidence.
 
     Order matters and is part of the design. The failing recalls come last, because a candidate
@@ -123,7 +123,7 @@ def build_scenario(memory: Memory, *, persons: int, seed: int) -> Scenario:
         stale, current = _PREFERENCES[rng.randrange(len(_PREFERENCES))]
         base = _EPOCH + timedelta(days=index)
         # One transaction per person rather than five: the ordering the ground truth needs is the
-        # declared `occurred_at`, not the order the index happened to flush in.
+        # declared occurred_at, not the order the index happened to flush in.
         gold, first, second, older, newer = memory.add_many(
             (
                 f"{name} works as a {job}.",
@@ -177,7 +177,7 @@ def run_benchmark(
     with Memory(
         Path(data_dir),
         embedder=embedder,
-        former=_PreferenceFormer(),
+        former=PreferenceFormer(),
         consolidator=consolidator,
         # The deliberation window must cover the whole scenario, and reinforcement must not make
         # one query's retrieval depend on which earlier one ran. Both are measurement policy.
@@ -259,7 +259,7 @@ def _metrics(
     )
     return {
         # Applied CONSOLIDATE operations whose cited evidence is exactly one injected duplicate
-        # group, over every applied CONSOLIDATE. `None` when the loop proposed none: an
+        # group, over every applied CONSOLIDATE. None when the loop proposed none: an
         # undefined rate is not a perfect one.
         "consolidation_precision": _ratio(matched, len(consolidations)),
         # Injected preference flips where the newer derived claim is the one left in force.
@@ -317,8 +317,8 @@ def _verdict(scenario: Scenario, record: MemoryOperationRecord) -> MemoryOutcome
 def _retired(memory: Memory, memory_id: str) -> bool:
     """Whether one record is out of active recall -- forgotten, or its claim version retired.
 
-    Both halves matter: `FORGET` and consolidation forgetting set `forgotten_at`, while the
-    `CORRECT` that resolves a contradiction retires the version instead.
+    Both halves matter: FORGET and consolidation forgetting set forgotten_at, while the
+    CORRECT that resolves a contradiction retires the version instead.
     """
     record = memory.get(memory_id)
     return record.forgotten_at is not None or (

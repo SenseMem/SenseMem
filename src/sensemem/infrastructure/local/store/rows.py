@@ -9,14 +9,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal, NoReturn, cast
+from typing import Literal, NoReturn, Self
 
 from sensemem.content import ContentPart
 from sensemem.identity import SpeakerSegment
+from sensemem.perception import SpeechAnalysis
 from sensemem.semantics import RecordSemantics
-
-if TYPE_CHECKING:
-    from sensemem.perception import SpeechAnalysis
 
 MEMORY_MODALITIES = frozenset({"text", "image", "video", "audio", "omni"})
 
@@ -52,8 +50,8 @@ class RecallDigest:
 class RecallRead(tuple["StoredMemory", ...]):
     """The rows one recall primitive returned, carrying how many IDs its predicate selected.
 
-    A tuple of memories, so every caller reads it as the row sequence it always was. `selected`
-    is the count `max_rows` was applied to in SQL. Match/window reads apply temporal eligibility
+    A tuple of memories, so every caller reads it as the row sequence it always was. selected
+    is the count max_rows was applied to in SQL. Match/window reads apply temporal eligibility
     before that bound; metric scope is still applied during hydration and can reduce the rows.
 
     That difference is the only thing that can say whether rows beyond the bound exist. Deciding
@@ -68,7 +66,7 @@ class RecallRead(tuple["StoredMemory", ...]):
         memories: Sequence[StoredMemory] = (),
         *,
         selected: int | None = None,
-    ) -> RecallRead:
+    ) -> Self:
         read = super().__new__(cls, memories)
         read.selected = len(read) if selected is None else selected
         return read
@@ -80,7 +78,7 @@ class RelatedRead(RecallRead):
     Attribution is not diagnostics here: an expansion that recovered evidence through the capture
     edge and one that recovered it through the identity edge are different claims about why the
     store could answer, and a run that cannot tell them apart cannot say which edge a corpus
-    needs. `dropped` names the edges that linked to more of the corpus than the caller's ceiling
+    needs. dropped names the edges that linked to more of the corpus than the caller's ceiling
     allows, which is the difference between an edge that found nothing and an edge that found
     everything.
     """
@@ -95,8 +93,8 @@ class RelatedRead(RecallRead):
         selected: int | None = None,
         edges: Mapping[str, int] | None = None,
         dropped: Sequence[str] = (),
-    ) -> RelatedRead:
-        read = cast("RelatedRead", super().__new__(cls, memories, selected=selected))
+    ) -> Self:
+        read = super().__new__(cls, memories, selected=selected)
         read.edges = dict(edges or {})
         read.dropped = tuple(dropped)
         return read
@@ -294,7 +292,7 @@ class StoredOperation:
     """One append-only control-plane operation-log row.
 
     The same value describes a pending write and a logged read: a caller supplies everything but
-    `operation_id`, and the store returns a copy carrying the assigned id and the effects it
+    operation_id, and the store returns a copy carrying the assigned id and the effects it
     actually applied.
     """
 
@@ -318,12 +316,12 @@ class StoredOperation:
     # that predated the operation survives it.
     linked: tuple[tuple[str, str], ...] = ()
     clause_changes: tuple[StoredEvidenceClauseChange, ...] = ()
-    # `(memory_id, version)` pairs this operation's own lineage rule superseded: the current
+    # (memory_id, version) pairs this operation's own lineage rule superseded: the current
     # versions of the other records in the derived record's lineage whose validity it overlapped.
     # Rollback restores exactly these, so a supersession the backend never named is reversible.
     superseded: tuple[tuple[str, int], ...] = ()
     rolled_back_at: datetime | None = None
-    # Post-hoc judgement of this operation, written only by `record_operation_outcome`.
+    # Post-hoc judgement of this operation, written only by record_operation_outcome.
     outcome: str | None = None
     outcome_note: str | None = None
 
@@ -427,7 +425,7 @@ class IndexCandidate:
     """Ranking-path projection of an indexed embedding.
 
     Retrieval ranks on index scores and event times; it never reads the stored vector or the
-    memory content. Hydrating a full ``IndexDocument`` for that would unpack and revalidate one
+    memory content. Hydrating a full IndexDocument for that would unpack and revalidate one
     FP32 vector per candidate, which measured at twenty-one times the cost of the query that
     produced the row. This projection reads the four columns ranking uses.
     """

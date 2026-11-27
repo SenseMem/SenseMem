@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   reader:
-    if: github.event_name != 'schedule' || vars.MODEL_QUALITY_ENABLED == 'true'
+    if: github.event_name == 'workflow_dispatch' || vars.MODEL_QUALITY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from pydantic import (
     AwareDatetime,
@@ -80,7 +80,7 @@ class SearchHitResponse(MemoryResponse):
 class AffectCueResponse(SearchHitResponse):
     """One affect entry of a compiled bundle, with the evidence hop the cue hangs on.
 
-    The observations the cue cites are its own `context.evidence_ids`. `event_ids` are the
+    The observations the cue cites are its own context.evidence_ids. event_ids are the
     events formed from those same observations: co-occurrence inside one capture, never an
     attributed cause.
     """
@@ -175,7 +175,7 @@ class IdentityChangeResponse(_ResponseModel):
 
 
 class MemoryOperationResponse(_ResponseModel):
-    """One control-plane log row, flattened exactly as `sensemem operations` prints it.
+    """One control-plane log row, flattened exactly as sensemem operations prints it.
 
     The operation's own fields are lifted beside the log row's because a reader wants one
     record of what was proposed and what it did, not two nested objects to join.
@@ -189,7 +189,7 @@ class MemoryOperationResponse(_ResponseModel):
     claim: IdentityClaimResponse | None
     consent: ConsentClaimResponse | None
     identity: IdentityChangeResponse | None
-    # The canonical logged payload, exactly as `sensemem operations` prints it: a
+    # The canonical logged payload, exactly as sensemem operations prints it: a
     # consolidation's subject is what it proposed, so a row without this reported an intent and
     # no statement, and the replay path had to read the proposal from the SDK instead.
     proposal: dict[str, object] | None
@@ -231,8 +231,11 @@ class RetentionResponse(_ResponseModel):
 def _operation_response(record: MemoryOperationRecord) -> MemoryOperationResponse:
     operation = record.operation
     # Read back from the canonical logged payload rather than re-derived from the value type, so
-    # the row REST serves and the row the CLI prints are one document -- and `apply` accepts it.
-    logged = cast(dict[str, object], json.loads(dump_operation(operation)))
+    # the row REST serves and the row the CLI prints are one document -- and apply accepts it.
+    decoded: object = json.loads(dump_operation(operation))
+    assert isinstance(decoded, dict)
+    proposal_value = decoded.get("proposal")
+    assert proposal_value is None or isinstance(proposal_value, dict)
     return MemoryOperationResponse(
         operation_id=record.operation_id,
         intent=operation.intent,
@@ -254,7 +257,7 @@ def _operation_response(record: MemoryOperationRecord) -> MemoryOperationRespons
             if operation.identity is None
             else IdentityChangeResponse.model_validate(operation.identity)
         ),
-        proposal=cast("dict[str, object] | None", logged["proposal"]),
+        proposal=proposal_value,
         rationale=operation.rationale,
         model_id=record.model_id,
         recipe=record.recipe,
@@ -269,7 +272,7 @@ def _operation_response(record: MemoryOperationRecord) -> MemoryOperationRespons
     )
 
 
-def _export_response(bundle: ExportBundle) -> ExportResponse:
+def export_response(bundle: ExportBundle) -> ExportResponse:
     return ExportResponse(
         exported_at=bundle.exported_at,
         identity_id=bundle.identity_id,
@@ -389,7 +392,7 @@ class ContextBundleResponse(_ResponseModel):
     proof_scoring: ContextProofScoring = "independent_pair"
     supplements: tuple[ContextSupplement, ...] = ()
     omitted_supplements: int = 0
-    # The deterministic text of `ContextBundle.render()`, so a caller need not re-derive it.
+    # The deterministic text of ContextBundle.render(), so a caller need not re-derive it.
     rendered: str
 
 
@@ -427,8 +430,8 @@ class CapabilitiesResponse(_ResponseModel):
     consolidation_model: str | None
     speaker_recognition: bool
     # Derived from the backends above, not declared: which optional operations this composition
-    # can serve *and this app routes to*. `MemoryCapabilities.document()` is the one place that
-    # derivation happens; `_ROUTED_OPERATIONS` is what `/healthz` may promise of it.
+    # can serve *and this app routes to*. MemoryCapabilities.document() is the one place that
+    # derivation happens; _ROUTED_OPERATIONS is what /healthz may promise of it.
     operations: tuple[str, ...]
 
 
@@ -437,8 +440,8 @@ class HealthResponse(BaseModel):
     capabilities: CapabilitiesResponse
 
 
-def _bundle_response(bundle: ContextBundle) -> ContextBundleResponse:
-    """Publish `ContextBundle.document()`, the same projection MCP and the CLI publish."""
+def bundle_response(bundle: ContextBundle) -> ContextBundleResponse:
+    """Publish ContextBundle.document(), the same projection MCP and the CLI publish."""
     return ContextBundleResponse.model_validate(bundle.document())
 
 

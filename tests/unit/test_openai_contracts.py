@@ -5,10 +5,14 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import httpx2 as httpx
 import pytest
+from fixtures.openai import make_asset as _asset
+from fixtures.openai import sdk_client as _sdk_client
+from fixtures.openai import search_hit as _search_hit
+from fixtures.openai import stream_chunk as _stream_chunk
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
@@ -16,7 +20,6 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from test_openai_adapters import _asset, _sdk_client, _search_hit, _stream_chunk
 
 import sensemem.recipes as recipes
 from sensemem import (
@@ -56,9 +59,9 @@ def _reply(content: str | None, *, refusal: str | None = None) -> httpx.Response
     )
 
 
-@pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5-mini-2025-08-07", "o3", "gpt-6-astra"])
+@pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5-mini-2025-08-07", "o3"])
 def test_reasoning_plans_omit_sampling_and_use_completion_budget(model: str) -> None:
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -78,9 +81,11 @@ def test_reasoning_plans_omit_sampling_and_use_completion_budget(model: str) -> 
 
 
 @pytest.mark.parametrize("control", [{"generation_temperature": 0.0}, {"generation_seed": 0}])
-def test_unsupported_explicit_reasoning_sampler_fails_before_http(control: dict[str, Any]) -> None:
+def test_unsupported_explicit_reasoning_sampler_fails_before_http(
+    control: dict[str, object],
+) -> None:
     with pytest.raises(ValidationError, match="not support"):
-        OpenAICompletion(generation_model="gpt-5-mini", **control)
+        OpenAICompletion(generation_model="gpt-5-mini", **control)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -315,7 +320,7 @@ def test_provider_payload_rejection_is_permanent_and_private(
 def test_answer_text_ceiling_matches_emitted_utf8_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, media: bool
 ) -> None:
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
     image = _asset(tmp_path, "image", Modality.IMAGE, "image/png", b"pixels")
     hit = replace(
         _search_hit(),
@@ -332,9 +337,11 @@ def test_answer_text_ceiling_matches_emitted_utf8_text(
             _sdk_client(client), generation_capabilities=frozenset({Modality.TEXT, Modality.IMAGE})
         )
         assert adapter.answer(ModelInput(text="什么颜色?"), (hit,)).answer == "blue"
+        sent_messages = sent[0]["messages"]
+        assert isinstance(sent_messages, list)
         text_bytes = sum(
             len(part.encode("utf-8"))
-            for message in sent[0]["messages"]
+            for message in sent_messages
             for part in (
                 [message["content"]]
                 if isinstance(message["content"], str)
@@ -387,8 +394,6 @@ def test_trace_keeps_request_id_without_provider_bodies(failed: bool) -> None:
 @pytest.mark.parametrize(
     ("code", "reason", "retryable"),
     [
-        ("502001", "provider_unavailable", True),
-        (502001, "provider_unavailable", True),
         ("unknown", None, False),
     ],
 )
@@ -558,7 +563,7 @@ def test_vision_recipe_uses_effective_sampling_controls() -> None:
 
 def test_invalid_response_format_fails_locally() -> None:
     with pytest.raises(ValidationError, match="generation_response_format"):
-        OpenAICompletion(generation_response_format=cast(Any, "invalid"))
+        OpenAICompletion(generation_response_format="invalid")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

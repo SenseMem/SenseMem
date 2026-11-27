@@ -11,7 +11,7 @@ from dataclasses import replace
 from functools import partial
 from importlib import import_module
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from sensemem._telemetry import mark_model_requests, record_unmetered_model_usage
 from sensemem._validation import commit_revision, nonempty_text, optional_text, positive_int
@@ -20,13 +20,19 @@ from sensemem.exceptions import ModelError, ValidationError
 from sensemem.models._media import fetch_videos, load_mono_audio
 from sensemem.models.base import EmbedTask, ModelInput, _modalities
 from sensemem.models.reranking import reranking_inputs, reranking_scores
+from sensemem.prompts.embedding import EMBEDDINGGEMMA2_MODEL
 from sensemem.types import Modality
 
 _ATOMIC_MODALITIES = (Modality.TEXT, Modality.IMAGE, Modality.VIDEO, Modality.AUDIO)
 _STANDARD_RECIPE = "sentence-transformers-ordered-input-v2"
-_EMBEDDINGGEMMA2_MODEL = "google/embeddinggemma-2"
 _EMBEDDINGGEMMA2_DIMENSIONS = (128, 256, 512, 768)
 _EMBEDDINGGEMMA2_RECIPE = "embeddinggemma2-ordered-text-prompts-pyav-audio16k-v3"
+_MISSING = object()
+
+
+@runtime_checkable
+class _IndexedModules(Protocol):
+    def __getitem__(self, index: int) -> object: ...
 
 
 class _EmbeddingMatrix(Protocol):
@@ -84,7 +90,7 @@ class SentenceTransformersEmbedder:
         if dtype not in ("auto", "float32", "bfloat16"):
             raise ValidationError("dtype must be auto, float32, or bfloat16")
         selected = None if modalities is None else _modalities(modalities, "embedding")
-        if selected is not None and (not selected or self._model_id != _EMBEDDINGGEMMA2_MODEL):
+        if selected is not None and (not selected or self._model_id != EMBEDDINGGEMMA2_MODEL):
             raise ValidationError("modalities must be nonempty and select google/embeddinggemma-2")
         if encoder is not None and (dtype != "auto" or selected is not None):
             raise ValidationError("dtype and modalities configure loading, not injected encoders")
@@ -96,7 +102,7 @@ class SentenceTransformersEmbedder:
         recipe = _STANDARD_RECIPE
         precision: str | None = None if dtype == "auto" else dtype
         if encoder is None:
-            if self._model_id == _EMBEDDINGGEMMA2_MODEL:
+            if self._model_id == EMBEDDINGGEMMA2_MODEL:
                 precision, self._device = _embeddinggemma2_precision(dtype, self._device)
             encoder = _load_encoder(
                 self._model_id,
@@ -130,7 +136,7 @@ class SentenceTransformersEmbedder:
             or self._message_inputs
             or route.modalities in self._compound_inputs
         )
-        if self._model_id == _EMBEDDINGGEMMA2_MODEL:
+        if self._model_id == EMBEDDINGGEMMA2_MODEL:
             recipe = _EMBEDDINGGEMMA2_RECIPE
             # BF16 is a distinct numerical recipe even when all other input settings match.
             precision = None if precision == "float32" else precision
@@ -186,7 +192,7 @@ class SentenceTransformersEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        """Encode a batch through the retrieval-side method selected by ``task``."""
+        """Encode a batch through the retrieval-side method selected by task."""
         if isinstance(inputs, (str, bytes)):
             raise ValidationError("inputs must be a sequence of ModelInput values")
         try:
@@ -201,7 +207,7 @@ class SentenceTransformersEmbedder:
             raise ValidationError("embedding task is invalid") from None
 
         encoding_kwargs: dict[str, object] = {}
-        if self._model_id == _EMBEDDINGGEMMA2_MODEL:
+        if self._model_id == EMBEDDINGGEMMA2_MODEL:
             prompts = getattr(self._encoder, "prompts", None)
             name = "query" if selected_task is EmbedTask.QUERY else "document"
             if not isinstance(prompts, Mapping) or not isinstance(prefix := prompts.get(name), str):
@@ -284,7 +290,7 @@ class SentenceTransformersEmbedder:
                     (
                         cast(Modality, item.modality).value,
                         load_mono_audio(cast(Path, item.path), sampling_rate=16000)
-                        if self._model_id == _EMBEDDINGGEMMA2_MODEL
+                        if self._model_id == EMBEDDINGGEMMA2_MODEL
                         and item.modality is Modality.AUDIO
                         else str(item.path),
                     )
@@ -386,7 +392,7 @@ def _load_encoder(
             **({"model_kwargs": {"dtype": dtype}} if dtype is not None else {}),
             **({"config_kwargs": config_kwargs} if config_kwargs else {}),
         )
-        if model_id == _EMBEDDINGGEMMA2_MODEL:
+        if model_id == EMBEDDINGGEMMA2_MODEL:
             processor = getattr(_first_module(encoder), "processor", None)
             video_processor = getattr(processor, "video_processor", None)
             if video_processor is not None:
@@ -413,9 +419,9 @@ def _dimensions(
         return requested, None
     advertised = _config_value(encoder, "matryoshka_dimensions")
     matryoshka = _config_value(encoder, "is_matryoshka")
-    # The upstream checkpoint documents MRL but omits these optional config fields.
+    # EmbeddingGemma 2 supports Matryoshka truncation even when config omits these optional fields.
     if (
-        model_id == _EMBEDDINGGEMMA2_MODEL
+        model_id == EMBEDDINGGEMMA2_MODEL
         and _config_value(encoder, "model_type") == "embedding_gemma2"
         and native == 768
     ):
@@ -445,14 +451,18 @@ def _config_value(encoder: object, name: str) -> object:
     )
     for config in candidates:
         for source in (config, getattr(config, "text_config", None)):
-            if source is not None and hasattr(source, name):
-                return getattr(source, name)
+            if source is not None:
+                found = getattr(source, name, _MISSING)
+                if found is not _MISSING:
+                    return found
     return None
 
 
 def _first_module(encoder: object) -> object | None:
+    if not isinstance(encoder, _IndexedModules):
+        return None
     try:
-        return cast(object, encoder[0])  # type: ignore[index]
+        return encoder[0]
     except (IndexError, KeyError, TypeError):
         return None
 
@@ -537,7 +547,7 @@ class _CrossEncoderFactory(Protocol):
 class SentenceTransformersReranker:
     """Score text pairs in input order; raw logits are not answer probabilities.
 
-    The model owns tokenization and ``max_length`` truncation. Documents retain their
+    The model owns tokenization and max_length truncation. Documents retain their
     complete text at this boundary; source identity and result ordering stay in the kernel.
     """
 

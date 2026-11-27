@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import List, Optional
+from typing import List
 
 from .atm_normalizer import (
     aggressive_preprocess,
@@ -96,7 +96,7 @@ def tokens_match(expected: List, actual: List) -> bool:
 
 
 def _deterministic_accuracy_core(
-    ground_truth: str, prediction: str, question: Optional[str] = None
+    ground_truth: str, prediction: str, question: str | None = None
 ) -> tuple[bool, str]:
     is_abst_gt = is_abstention(ground_truth)
     is_abst_pred = is_abstention(prediction)
@@ -216,9 +216,7 @@ def _deterministic_accuracy_core(
     return gt_normalized == pred_normalized, pred_normalized
 
 
-def deterministic_accuracy(
-    ground_truth: str, prediction: str, question: Optional[str] = None
-) -> bool:
+def deterministic_accuracy(ground_truth: str, prediction: str, question: str | None = None) -> bool:
     return _deterministic_accuracy_core(ground_truth, prediction, question)[0]
 
 

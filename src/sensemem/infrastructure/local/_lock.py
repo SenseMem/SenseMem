@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import errno
 import os
+import sys
 from pathlib import Path
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 
 class DataDirectoryInUseError(RuntimeError):
@@ -52,27 +58,19 @@ class DataDirectoryLock:
             os.close(descriptor)
 
 
-if os.name == "nt":
+if sys.platform == "win32":
 
     def _lock_descriptor(descriptor: int) -> None:
-        import msvcrt
-
-        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
 
     def _unlock_descriptor(descriptor: int) -> None:
-        import msvcrt
-
         os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
 
 else:
 
     def _lock_descriptor(descriptor: int) -> None:
-        import fcntl
-
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def _unlock_descriptor(descriptor: int) -> None:
-        import fcntl
-
         fcntl.flock(descriptor, fcntl.LOCK_UN)

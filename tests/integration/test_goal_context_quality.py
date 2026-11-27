@@ -20,9 +20,13 @@ pytestmark = [
 
 
 def test_goal_context_quality() -> None:
-    model = os.environ.get("SENSEMEM_CONTEXT_EVAL_MODEL", "qwen3.8-omni-flash")
+    model = os.environ.get("SENSEMEM_CONTEXT_EVAL_MODEL", "").strip()
+    if not model:
+        pytest.skip("requires SENSEMEM_CONTEXT_EVAL_MODEL")
     reasoning_controls = (
-        {"reasoning_effort": "none"} if model.rsplit("/", 1)[-1] == "qwen3.8-omni-flash" else None
+        {"reasoning_effort": os.environ["SENSEMEM_CONTEXT_EVAL_REASONING_EFFORT"]}
+        if os.environ.get("SENSEMEM_CONTEXT_EVAL_REASONING_EFFORT")
+        else None
     )
     with (
         OpenAI(timeout=120, max_retries=0) as generation,

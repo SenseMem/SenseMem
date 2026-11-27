@@ -6,7 +6,6 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import cast
 
 from opentelemetry.trace import Tracer
 
@@ -40,8 +39,8 @@ from sensemem.identity import (
     PerceptionResult,
     PerceptionSkipReason,
 )
-from sensemem.infrastructure.local.store import (
-    StaleOperationError,
+from sensemem.infrastructure.local.store.errors import StaleOperationError
+from sensemem.infrastructure.local.store.rows import (
     StoredAsset,
     StoredEmbedding,
     StoredMemory,
@@ -82,7 +81,7 @@ from sensemem.models.base import SpeechBackend
 from sensemem.perception import VisualDescription
 from sensemem.types import EvidenceBasis, Modality, RecordKind
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def _perception_coverage(
@@ -169,7 +168,9 @@ class Identities(Traced):
                 assets = tuple({asset.asset_id: asset for asset in memory.assets}.values())
                 self._lifecycle.lease_assets(assets, operation.leased)
             coverage: list[PerceptionCoverage] = []
-            for kind, modalities, available, supported, missing in (
+            perception_specs: tuple[
+                tuple[PerceptionKind, set[Modality], bool, frozenset[Modality], str], ...
+            ] = (
                 (
                     "speech",
                     {Modality.AUDIO, Modality.VIDEO},
@@ -184,8 +185,8 @@ class Identities(Traced):
                     self._backends.face_capabilities,
                     "no face backend is configured",
                 ),
-            ):
-                kind = cast(PerceptionKind, kind)
+            )
+            for kind, modalities, available, supported, missing in perception_specs:
                 coverage.extend(
                     _perception_coverage(
                         assets,
@@ -282,7 +283,7 @@ class Identities(Traced):
     ) -> MemoryOperationRecord | None:
         """Commit one consent statement as a bound STATE assertion with its own log row.
 
-        Structurally the twin of `_assert_identity_name`: the assertion is the record, the
+        Structurally the twin of _assert_identity_name: the assertion is the record, the
         projection reads it, and the log row is what makes it auditable and reversible. A STATE
         rather than an ENTITY kind because that is what it is -- how this person may be
         processed, right now -- and because it keeps consent out of the naming lineage the
@@ -351,8 +352,8 @@ class Identities(Traced):
         with (
             self._trace("sensemem.unlink_identity", kind="operation"),
             self._lifecycle.operation(model_work=True) as operation,
-            # `_formation_lock` before `_write_lock`, the same order `consolidate()`'s apply
-            # phase and `add()`'s formation use: a split must not land while a consolidate apply
+            # _formation_lock before _write_lock, the same order consolidate()'s apply
+            # phase and add()'s formation use: a split must not land while a consolidate apply
             # pass is in progress, and taking the two locks in a different order here would
             # deadlock against that path.
             self._formation_lock,
@@ -488,7 +489,7 @@ class Identities(Traced):
         """Rebuild every indexed memory whose speech projection names one identity.
 
         This always runs beside a projection recompute, so the text a search matches and the
-        name `identities` reports are written from the same assertion in one commit.
+        name identities reports are written from the same assertion in one commit.
         """
         with self._write_lock, translate_storage_errors("read identity memories"):
             memory_ids = self._store.identities.speaker_memory_ids(
@@ -550,7 +551,7 @@ class Identities(Traced):
                 raise IdentityNotFoundError(f"identity does not exist: {requested_id}")
             assert normalized_id is not None
             assert memory_ids is not None
-            # `_assert_identity_name` prepares the affected speech documents before it commits,
+            # _assert_identity_name prepares the affected speech documents before it commits,
             # then writes the assertion, registry projection, documents, vectors, and log in one
             # SQLite transaction.
             self._assert_identity_name(
@@ -638,9 +639,9 @@ class Identities(Traced):
         base_key = operation_key(proposed, recipe=recipe)
         with translate_storage_errors("check a naming operation"):
             key = self._store.control.naming_operation_key(base_key, prepared.memory_id)
-        # `_register_identity` holds `_formation_lock` for this whole call (the same lock
-        # `add()`'s automatic formation holds across its own `_commit_formation`, see
-        # `_form_sources`), so this IDENTIFY commit cannot land while a consolidate apply pass
+        # _register_identity holds _formation_lock for this whole call (the same lock
+        # add()'s automatic formation holds across its own _commit_formation, see
+        # _form_sources), so this IDENTIFY commit cannot land while a consolidate apply pass
         # is in progress either.
         for attempt in range(4):
             try:
@@ -688,8 +689,8 @@ class Identities(Traced):
         with (
             self._trace("sensemem.forget_identity", kind="operation"),
             self._lifecycle.operation(model_work=True) as operation,
-            # `_formation_lock` before `_write_lock`, the same order `consolidate()`'s apply
-            # phase and `add()`'s formation use: an irreversible erasure must not land while a
+            # _formation_lock before _write_lock, the same order consolidate()'s apply
+            # phase and add()'s formation use: an irreversible erasure must not land while a
             # consolidate apply pass is in progress, and taking the two locks in a different
             # order here would deadlock against that path.
             self._formation_lock,
@@ -702,7 +703,7 @@ class Identities(Traced):
                 )
             if normalized_id is None or not known:
                 raise IdentityNotFoundError(f"identity does not exist: {requested_id}")
-            # `speaker_name=None` is the projection of a person with no naming assertion left,
+            # speaker_name=None is the projection of a person with no naming assertion left,
             # which is what erasure makes them. The rebuilt documents are handed to the store so
             # the erasure and the reindex commit in one transaction: a crash between them would
             # leave the name searchable for a person whose template was already gone.
@@ -730,8 +731,8 @@ class Identities(Traced):
 
         Erasure is physical forgetting of a person, so the row is audit history and nothing
         else: it carries the identity, its aliases, and the naming assertions the erasure
-        deleted -- ids and counts, never content -- and `rollback()` refuses it. That is the
-        marker that separates this from the cognitive `FORGET` a row with `target_ids` records.
+        deleted -- ids and counts, never content -- and rollback() refuses it. That is the
+        marker that separates this from the cognitive FORGET a row with target_ids records.
         """
         with translate_storage_errors("read identity aliases"):
             members = self._store.identities.identity_equivalence_class(identity_id)
@@ -761,7 +762,7 @@ class Identities(Traced):
 
         A different standing name is never overwritten. The name came from a model reading a
         transcript, and one mishearing would rewrite every document that person appears in; the
-        host's own `register_identity` stays the only thing that can replace a name. A name
+        host's own register_identity stays the only thing that can replace a name. A name
         supplies no authority to bind a voice to a face.
         """
         bindings = dict(operation.speaker_names)
@@ -784,7 +785,7 @@ class Identities(Traced):
                     continue
                 if profile.name is not None and profile.name != proposed:
                     refused += 1
-                    _LOGGER.warning(
+                    LOGGER.warning(
                         "a distilled name conflicts with an existing name; "
                         "keeping the registered name"
                     )
@@ -828,7 +829,7 @@ class Identities(Traced):
 
         Only a label this asset's own recognizer produced can be resolved, so a fact naming a
         speaker who is not in this clip is dropped rather than guessed at -- counted into
-        `operation.speaker_names_refused`, the same drop tally `_bind_speaker_names` adds to and
+        operation.speaker_names_refused, the same drop tally _bind_speaker_names adds to and
         reports, so a fact naming a label nobody produced is not simply invisible. Cached
         descriptions are read too: re-ingesting a corpus must reach the same named store as the
         first ingest, and re-asserting a standing name is a no-op.
@@ -850,12 +851,12 @@ class Identities(Traced):
                 standing[1].add(asset_id)
 
     def known_speaker_names(self, asset_id: str, operation: OperationAssets) -> dict[str, str]:
-        """Map this asset's `speaker_N` labels to whatever name is already known for them.
+        """Map this asset's speaker_N labels to whatever name is already known for them.
 
-        "Known now" is a name this very batch's own facts just staged (`operation.speaker_names`)
+        "Known now" is a name this very batch's own facts just staged (operation.speaker_names)
         or a name an already-registered identity carries on its recognized segments; a name a
         later write asserts is not, which is the write-time/retrieval-time split documented on
-        `project_fact_labels`.
+        project_fact_labels.
         """
         segments = operation.speech_segments.get(asset_id)
         if not segments:

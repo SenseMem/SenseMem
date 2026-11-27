@@ -59,7 +59,7 @@ OCCURRED = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
 def _people(name: str | None) -> tuple[str, ...]:
     """Return which people one asset contains, from the leading characters of its name.
 
-    `a-1.mp4` is one person, `b-1.mp4` is another, and `ab-1.wav` is a clip they share.
+    a-1.mp4 is one person, b-1.mp4 is another, and ab-1.wav is a clip they share.
     """
     if name is not None and name.startswith("ab"):
         return ("a", "b")
@@ -73,7 +73,7 @@ def _person(name: str | None) -> str:
 def _drift(name: str | None) -> float:
     """Return a small per-asset offset, so two clips of one person enroll two exemplars.
 
-    Keyed on the digit in the asset's name (`a-1.mp4`), not on its content hash, so the test
+    Keyed on the digit in the asset's name (a-1.mp4), not on its content hash, so the test
     controls exactly which observations are distinguishable.
     """
     digit = 0 if name is None or len(name) < 3 or not name[2].isdigit() else int(name[2])
@@ -169,7 +169,6 @@ def _memory(
     )
 
 
-# ---------------------------------------------------------------------------------------------
 # Consent
 
 
@@ -226,7 +225,7 @@ def test_consent_refuses_an_unknown_identity_and_an_invalid_state(tmp_path: Path
 
 
 def test_no_model_may_state_or_retire_consent(tmp_path: Path) -> None:
-    """A `CONSENT` proposal is refused as unauthorized, and a standing one cannot be retired.
+    """A CONSENT proposal is refused as unauthorized, and a standing one cannot be retired.
 
     Consent is the one claim whose whole value is that a person made it. A backend that could
     propose one could manufacture permission; a backend that could forget one could withdraw a
@@ -261,7 +260,6 @@ def test_no_model_may_state_or_retire_consent(tmp_path: Path) -> None:
         assert memory.consent(identity_id) is ConsentState.WITHDRAWN
 
 
-# ---------------------------------------------------------------------------------------------
 # What withheld consent restrains
 
 
@@ -446,10 +444,10 @@ def test_compile_names_an_observed_person_only_as_of_the_requested_knowledge_tim
 def test_a_withheld_person_is_not_named_by_a_clip_alone(tmp_path: Path) -> None:
     """Consent is read from every identity edge that can name somebody, not only ENTITY hits.
 
-    The restrained set used to be derived from the bound `ENTITY` hits retrieval returned, so a
+    The restrained set used to be derived from the bound ENTITY hits retrieval returned, so a
     bundle that reached only a person's clip -- their naming assertion outside the budget's own
     type bound -- found nothing bound, consulted no consent at all, and then resolved the clip's
-    own face edge into exactly the `NamedActor` that `WITHDRAWN` consent promises to omit.
+    own face edge into exactly the NamedActor that WITHDRAWN consent promises to omit.
     """
     with _memory(tmp_path) as memory:
         clip = memory.add(
@@ -459,7 +457,7 @@ def test_a_withheld_person_is_not_named_by_a_clip_alone(tmp_path: Path) -> None:
         )
         identity_id = _confirm_identity(memory, clip)
         memory.register_identity(identity_id, "Ann", relationship="neighbour")
-        # Episodic evidence only, so the naming assertion -- a semantic `ENTITY` -- is never
+        # Episodic evidence only, so the naming assertion -- a semantic ENTITY -- is never
         # retrieved, and the clip's face edge is the only thing that can name her.
         budget = ContextBudget(max_items=10, memory_types=frozenset({MemoryCategory.EPISODIC}))
 
@@ -482,7 +480,6 @@ def test_a_withheld_person_is_not_named_by_a_clip_alone(tmp_path: Path) -> None:
         assert clip.id in {hit.id for hit in bundle.hits}
 
 
-# ---------------------------------------------------------------------------------------------
 # Export
 
 
@@ -552,7 +549,7 @@ def test_a_clip_two_people_share_is_exported_to_both_of_them(tmp_path: Path) -> 
     One recording containing two people is held about both of them, so withholding it from
     either subject's export would answer their access request with less than is held. The
     consequence is that each export carries the other person's observations embedded in that
-    record, which `export()`'s contract states rather than silently trims.
+    record, which export()'s contract states rather than silently trims.
     """
     with _memory(tmp_path) as memory:
         alone = memory.add(Blob(b"a-1 speaking", "audio/wav", "a-1.wav"))
@@ -578,7 +575,6 @@ def test_a_clip_two_people_share_is_exported_to_both_of_them(tmp_path: Path) -> 
             assert neighbour not in {profile.identity_id for profile in bundle.identities}
 
 
-# ---------------------------------------------------------------------------------------------
 # Retention
 
 # Small enough that anything already written is past it, so a test does not have to wait.
@@ -647,7 +643,10 @@ def test_failed_capture_retention_is_not_starved_by_unattempted_captures(tmp_pat
     with _memory(tmp_path, retention=RetentionPolicy(capture_failure_days=_AGED)) as memory:
         unattempted = tuple(memory.capture(f"unattempted {index}").id for index in range(1000))
         failed = memory.capture("failed after the first queue page")
-        memory._store.captures.record_capture_failure(failed.id, "model unavailable")
+        (pending,) = memory.pending_captures(memory_ids=(failed.id,))
+        assert memory._store.captures.record_capture_failure(
+            failed.id, "model unavailable", enqueued_at=pending.enqueued_at
+        )
 
         assert memory.apply_retention(dry_run=True).capture_memory_ids == (failed.id,)
         assert memory.pending_captures(memory_ids=(failed.id,))
@@ -743,7 +742,7 @@ def test_retention_flushes_the_index_once_for_a_page_of_deletions(tmp_path: Path
 
 
 def test_an_undeclared_policy_deletes_nothing(tmp_path: Path) -> None:
-    """`None` is "no policy", not "keep for zero days"; nothing ages out because a clock ticked."""
+    """None is "no policy", not "keep for zero days"; nothing ages out because a clock ticked."""
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))
         note = memory.add("the gate sticks in the rain", occurred_at=OCCURRED)
@@ -755,7 +754,6 @@ def test_an_undeclared_policy_deletes_nothing(tmp_path: Path) -> None:
         assert memory.get(note.id).forgotten_at is not None
 
 
-# ---------------------------------------------------------------------------------------------
 # The CLI translation of the three rights
 
 
@@ -843,9 +841,9 @@ def test_formation_cannot_manufacture_consent_through_an_ordinary_proposal(
 ) -> None:
     """The predicate is reserved: a model's STATE claim about it binds to nobody.
 
-    `_apply_memory_operation` refuses a proposed CONSENT operation, but ordinary formation
-    never passes through it -- a `FormationBackend` returning a bound-looking STATE proposal on
-    the `add()` path would otherwise have written a row every consent read believes.
+    _apply_memory_operation refuses a proposed CONSENT operation, but ordinary formation
+    never passes through it -- a FormationBackend returning a bound-looking STATE proposal on
+    the add() path would otherwise have written a row every consent read believes.
     """
     with _memory(tmp_path) as memory:
         clip = memory.add(Blob(b"a-1 arrives", "video/mp4", "a-1.mp4"))

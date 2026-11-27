@@ -134,7 +134,7 @@ def write_memory_context(
         # Every version of this claim is retired: it was superseded or rolled back, and asserting
         # it again is a fresh claim rather than a repeat of a standing one. Restating it as the
         # next version reconciles the lineage the same way a first assertion does, so renaming a
-        # person back, or re-registering a name after `rollback`, lands instead of doing nothing.
+        # person back, or re-registering a name after rollback, lands instead of doing nothing.
 
     lineage_id = (
         row_text(existing, "lineage_id")
@@ -1026,14 +1026,14 @@ def _retire_active_evidence_clause(
     return tx_time
 
 
-# Independence is counted per capture: a raw observation resolves to the `source_id` its
-# `ObservationContext` carried, falling back to the observation record itself when the caller
+# Independence is counted per capture: a raw observation resolves to the source_id its
+# ObservationContext carried, falling back to the observation record itself when the caller
 # supplied none. A derived source (an affect cue, say) inherits the group its own evidence
 # already resolves to, so two observations of one capture -- and every cue formed from them --
 # stay one group and cannot corroborate each other into a visible trait. A source resolving to
 # several groups keeps its own identity: nothing that traces back to a single capture can then
-# reach two groups. `MIN = MAX` says "exactly one distinct group" without the temp B-tree a
-# `COUNT(DISTINCT ...)` would build, and holds because `source_group_id` is `TEXT NOT NULL`.
+# reach two groups. MIN = MAX says "exactly one distinct group" without the temp B-tree a
+# COUNT(DISTINCT ...) would build, and holds because source_group_id is TEXT NOT NULL.
 SOURCE_GROUP_QUERY = """
     SELECT COALESCE(
         (
@@ -1059,7 +1059,7 @@ def restamp_dependent_evidence(
 ) -> None:
     """Re-resolve the inherited group on every row citing a record whose own evidence moved.
 
-    `source_group_id` is copied from the cited source when the citing row is written, so
+    source_group_id is copied from the cited source when the citing row is written, so
     reinforcing, rolling back, or cascading a delete through that source later leaves the rows
     that cite it stamped with a group the source no longer resolves to -- and a dependent trait
     keeps counting corroboration that is gone. Restamp the whole reachable citation subgraph in
@@ -1241,8 +1241,8 @@ def version_retired(connection: sqlite3.Connection, memory_id: str) -> bool:
 def require_unretired_memories(connection: sqlite3.Connection, memory_ids: Sequence[str]) -> None:
     """Fail the transaction unless every named memory's current version still stands.
 
-    Deliberately narrower than `require_active_memories`: it says nothing about `forgotten_at`, and it
-    never looks at `visible`, because a hidden inferred `TRAIT` is a legitimate `REINFORCE`
+    Deliberately narrower than require_active_memories: it says nothing about forgotten_at, and it
+    never looks at visible, because a hidden inferred TRAIT is a legitimate REINFORCE
     target. A record with no typed version at all -- a plain observation -- passes.
     """
     for memory_id in dict.fromkeys(memory_ids):
@@ -1326,7 +1326,7 @@ def refresh_multi_source_projections(
     """Project confidence and visibility for records written with several sources at once.
 
     A record inserted with all of its evidence rows already present never reaches the per-row
-    projection in `add_memory_evidence`. Formation cites one source and needs nothing here;
+    projection in add_memory_evidence. Formation cites one source and needs nothing here;
     consolidation needs it for the noisy-OR confidence and trait visibility.
     """
     for memory in memories:
@@ -1375,9 +1375,9 @@ def restore_memory_versions(
     *,
     recorded_at: datetime,
 ) -> None:
-    """Carry a retired version forward again, by memory ID or by exact `(id, version)` pair.
+    """Carry a retired version forward again, by memory ID or by exact (id, version) pair.
 
-    A `CORRECT` retires whatever version was current, so naming the record is enough. A lineage
+    A CORRECT retires whatever version was current, so naming the record is enough. A lineage
     supersession may also have split the record's remaining validity into carried versions, so
     the operation row names the exact version it retired and that one is restored.
     """
@@ -1464,7 +1464,7 @@ def evidence_clause_changes_are_current(
     """
     for change in changes:
         # Deleting the output this operation created cascaded its clause and every version of
-        # it. `reverse_evidence_clause_changes` treats that deletion as the complete inverse;
+        # it. reverse_evidence_clause_changes treats that deletion as the complete inverse;
         # the currency guard has to agree, or the operation can never be rolled back.
         if (
             connection.execute(
@@ -1766,7 +1766,7 @@ def _refresh_inherited_columns(connection: sqlite3.Connection, memory_id: str) -
     kernel's rule -- every remaining source agrees, or nothing -- keeps a record whose survivors
     all stand in one room from staying unscoped and out of every place-filtered read.
 
-    A naming assertion -- a bound `ENTITY` -- inherits neither column from the clips that show
+    A naming assertion -- a bound ENTITY -- inherits neither column from the clips that show
     the person, so it is left alone: who somebody is does not stop being true in another room.
     """
     rows = connection.execute(
@@ -1807,8 +1807,8 @@ def _refresh_inherited_columns(connection: sqlite3.Connection, memory_id: str) -
         "UPDATE memory_records SET place_id = ?, metadata_json = ? WHERE memory_id = ?",
         (place_id, tags.pop() if len(tags) == 1 else "{}", memory_id),
     )
-    # The search index carries `place_id` as a filter field, so a record that regains or loses
-    # its inherited place has to be reprojected -- this UPDATE bypasses `write_memory`, which
+    # The search index carries place_id as a filter field, so a record that regains or loses
+    # its inherited place has to be reprojected -- this UPDATE bypasses write_memory, which
     # is where every other place change is noticed.
     if current is not None and optional_row_text(current, "place_id") != place_id:
         queue_memory_embeddings(connection, memory_id, exclude=set())

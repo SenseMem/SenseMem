@@ -16,13 +16,13 @@ from sensemem.exceptions import IndexUnavailableError, StorageError
 from sensemem.infrastructure.local._lock import DataDirectoryInUseError
 from sensemem.infrastructure.local.assets import AssetStore, AssetStoreError
 from sensemem.infrastructure.local.scoring import InvalidVectorError
-from sensemem.infrastructure.local.store import (
-    IndexDocument,
-    LocalStore,
+from sensemem.infrastructure.local.store.errors import (
     LocalStoreCapacityError,
     StoredDataError,
     UnsupportedSchemaError,
 )
+from sensemem.infrastructure.local.store.local_store import LocalStore
+from sensemem.infrastructure.local.store.rows import IndexDocument
 from sensemem.infrastructure.local.zvec_index import IndexHit
 
 
@@ -85,7 +85,7 @@ def open_store(data_dir: Path) -> LocalStore:
         return LocalStore(data_dir)
     except DataDirectoryInUseError as error:
         # The path is the caller's own configuration, but it is server state to every transport,
-        # so it travels in `subject` instead of the message every surface forwards.
+        # so it travels in subject instead of the message every surface forwards.
         raise StorageError(
             "the data directory is already in use by another live SenseMem instance",
             reason="data_dir_in_use",
@@ -154,10 +154,10 @@ def translate_index_errors(action: str) -> Iterator[None]:
 class Storage:
     """The authoritative store, the media store, and the process-local locks over them.
 
-    SQLite serializes its own writers; these locks order what SQLite cannot see. `write_lock`
+    SQLite serializes its own writers; these locks order what SQLite cannot see. write_lock
     protects outbox application, destructive operations, index replacement, final record and
     asset hydration, and add-time speaker identity updates, whose identity changes must roll
-    back with a failed add. `formation_lock` serializes the formation backend's proposals per
+    back with a failed add. formation_lock serializes the formation backend's proposals per
     source. Settlement and formation claim their own individual source IDs.
     """
 

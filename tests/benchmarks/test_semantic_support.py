@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -19,6 +18,7 @@ from sensemem import (
     ModelInput,
     RecordKind,
 )
+from sensemem.benchmarks.semantic_support import AuditRun, main, score_audit
 
 
 class _FixtureEmbedder:
@@ -36,8 +36,7 @@ class _FixtureEmbedder:
         pass
 
 
-def _audit(claims: list[dict[str, Any]], **fields: object) -> dict[str, Any]:
-    from sensemem.benchmarks.semantic_support import AuditRun, score_audit
+def _audit(claims: list[dict[str, object]], **fields: object) -> dict[str, object]:
 
     return score_audit(
         AuditRun.model_validate(
@@ -179,7 +178,7 @@ def test_withdrawal_excludes_soft_forgetting_and_preserves_valid_or_alternatives
         {"predicted_locations": [{"source_id": "s", "kind": "audio", "start": 0, "end": 1}]},
     ],
 )
-def test_invalid_review_inputs_cannot_silently_improve_metrics(change: dict[str, Any]) -> None:
+def test_invalid_review_inputs_cannot_silently_improve_metrics(change: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         _audit([{"claim_id": "a", "gold": "unknown", "admitted": True, **change}])
 
@@ -221,7 +220,6 @@ def test_partial_usage_keeps_unknown_measurements_and_counts_shared_requests_onc
 def test_cli_scores_without_echoing_private_content(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from sensemem.benchmarks.semantic_support import main
 
     source = tmp_path / "audit.json"
     output = tmp_path / "report.json"

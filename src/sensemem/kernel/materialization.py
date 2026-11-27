@@ -11,7 +11,7 @@ from sensemem._content import content_atoms
 from sensemem.content import AssetRef, Blob, ContentInput
 from sensemem.exceptions import SenseMemError, StorageError, ValidationError
 from sensemem.infrastructure.local.assets import AssetStoreError, AssetTooLargeError
-from sensemem.infrastructure.local.store import StoredAsset
+from sensemem.infrastructure.local.store.rows import StoredAsset
 from sensemem.kernel.content import (
     PreparedContent,
     PreparedMemory,

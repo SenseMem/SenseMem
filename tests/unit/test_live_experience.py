@@ -13,13 +13,15 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from threading import Event
-from typing import TYPE_CHECKING
 
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
 from fastapi.testclient import TestClient
+from fixtures.live import make_recording as _recording
 from PIL import Image
 
+from examples.live import app as demo
+from examples.live.app import LiveRuntime, create_app
 from sensemem import (
     AnswerPolicy,
     AnswerResult,
@@ -50,14 +52,6 @@ from sensemem import (
     SearchHit,
 )
 
-if TYPE_CHECKING:
-    from examples.live.app import LiveRuntime
-
-
-@pytest.fixture(autouse=True)
-def example_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.syspath_prepend(str(Path(__file__).parents[2]))
-
 
 class Segmenter:
     event_model = "experience-fixture"
@@ -66,7 +60,6 @@ class Segmenter:
     def segment_events(
         self, observations: Sequence[EventObservation], *, end_of_stream: bool = False
     ) -> tuple[EventSegment, ...]:
-        del end_of_stream
         return tuple(
             EventSegment(index + 1, "A complete observed activity")
             for index in range(len(observations))
@@ -114,7 +107,6 @@ class SourceReviewer:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        del answer_policy, exhaustive
         self.questions.append(question.text)
         selected = tuple(hit for hit in hits if hit.assets)
         for hit in selected:
@@ -142,9 +134,6 @@ def _config(path: Path, *, generation: bool = False, lifecycle: bool = False) ->
 def test_camera_reviews_save_originals_and_become_searchable_while_av_event_is_unfinished(  # noqa: C901 - one camera-to-native-memory round trip
     tmp_path: Path,
 ) -> None:
-    from test_live_media import _recording
-
-    from examples.live.app import create_app
 
     class VisualBackend(Segmenter):
         generation_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
@@ -289,7 +278,6 @@ def test_camera_reviews_save_originals_and_become_searchable_while_av_event_is_u
 def test_partial_recall_precedes_complete_input_and_final_search_keeps_authoritative_words(
     tmp_path: Path,
 ) -> None:
-    from examples.live.app import create_app
 
     opened: list[ObservedMemory] = []
 
@@ -345,7 +333,6 @@ def test_partial_recall_precedes_complete_input_and_final_search_keeps_authorita
 def test_media_review_uses_native_answer_and_returns_its_actual_hits(
     tmp_path: Path, generation: bool, with_media: bool
 ) -> None:
-    from examples.live.app import create_app
 
     reviewer = SourceReviewer()
     source_ids: list[str] = []
@@ -391,7 +378,6 @@ def test_media_review_uses_native_answer_and_returns_its_actual_hits(
 def test_forgetting_invalidates_cached_final_recall_and_restore_searches_fresh(
     tmp_path: Path,
 ) -> None:
-    from examples.live.app import create_app
 
     source_ids: list[str] = []
     opened: list[ObservedMemory] = []
@@ -450,7 +436,6 @@ def test_forgetting_invalidates_cached_final_recall_and_restore_searches_fresh(
 def test_media_review_rechecks_sources_while_unrelated_dialogue_can_continue(
     tmp_path: Path, forget_source: bool
 ) -> None:
-    from examples.live.app import create_app
 
     class BlockingReviewer(SourceReviewer):
         def __init__(self) -> None:
@@ -534,7 +519,6 @@ def test_media_review_rechecks_sources_while_unrelated_dialogue_can_continue(
 async def test_native_stream_groups_same_call_as_one_source_and_new_call_independently(
     tmp_path: Path,
 ) -> None:
-    from examples.live.app import LiveRuntime
 
     audio = BytesIO()
     with wave.open(audio, "wb") as encoded:
@@ -596,7 +580,6 @@ async def test_native_stream_groups_same_call_as_one_source_and_new_call_indepen
 async def test_partial_settlement_failure_still_invalidates_recall_and_pushes_updates(
     tmp_path: Path,
 ) -> None:
-    from examples.live.app import LiveRuntime
 
     class PartialFailure(AsyncMemory):
         async def settle(
@@ -669,7 +652,6 @@ def test_settlement_keeps_processing_visible_and_notifies_views_until_model_fini
     monkeypatch: pytest.MonkeyPatch,
     fail: bool,
 ) -> None:
-    from examples.live import app as demo
 
     class BlockingFormer(PreferenceFormer):
         def __init__(self) -> None:
@@ -735,7 +717,6 @@ class Maintenance:
         trigger: MemoryTrigger,
         query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
-        del evidence, trigger, query_failure
         self.called.set()
         if self.fail:
             raise ModelError("private model response must not leave the backend", reason="timeout")
@@ -748,7 +729,6 @@ class Maintenance:
 async def test_close_drains_native_captures_without_starting_another_consolidation(
     tmp_path: Path,
 ) -> None:
-    from examples.live.app import LiveRuntime
 
     class CountingMemory(AsyncMemory):
         def __init__(self, memory: Memory) -> None:
@@ -807,7 +787,6 @@ async def test_close_drains_native_captures_without_starting_another_consolidati
 def test_worker_runs_native_formation_and_bounded_maintenance_with_safe_failure_state(
     tmp_path: Path, fail: bool
 ) -> None:
-    from examples.live.app import create_app
 
     former = PreferenceFormer()
     maintenance = Maintenance(fail)

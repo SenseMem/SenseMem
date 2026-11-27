@@ -12,9 +12,9 @@ from uuid import uuid4
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 
+from examples.live import prompts as demo_prompts
 from examples.live.memories import MemoryCard, memory_cards
 from sensemem import AsyncMemory, MemoryNotFoundError, MemoryRecord, ModelError, SenseMemError
-from sensemem.prompts import demo as demo_prompts
 
 Publisher = Callable[[dict[str, object]], Awaitable[None]]
 
@@ -33,7 +33,11 @@ class _Input(BaseModel):
     type: Literal["sensory_recall", "context"]
     source_id: str | None = Field(default=None, strict=True)
     memory_revision: int = Field(strict=True, ge=0)
-    query: str = Field(default="与当前音视频相关的历史记录", strict=True, max_length=2000)
+    query: str = Field(
+        default="Historical records related to current audio and video",
+        strict=True,
+        max_length=2000,
+    )
     hits: tuple[MemoryCard, ...] = Field(max_length=16)
     expires_at: AwareDatetime | None = None
 
@@ -190,7 +194,13 @@ class MemoryFeedback:
             )
             if agent and context is not None and context.source_id == self.source_id:
                 continue
-            role = "Agent记录" if agent else "对话记录" if dialogue is not None else "历史记录"
+            role = (
+                "Agent record"
+                if agent
+                else "Dialogue record"
+                if dialogue is not None
+                else "History record"
+            )
             evidence.append(_Evidence(record, role))
             if len(evidence) == 2:
                 break
@@ -213,7 +223,7 @@ class MemoryFeedback:
             blob = await self.memory.read_asset(record.id, asset.id)
             if not self._current(work):
                 return None
-            prefix = f"{item.role}原片复核(模型): "
+            prefix = f"{item.role} source review (model): "
             question = demo_prompts.feedback_question(
                 work.query,
                 memory_id=record.id,
@@ -230,7 +240,7 @@ class MemoryFeedback:
             verification = "source_review"
             asset_ids = [asset.id]
         else:
-            prefix = f"{item.role}文本/未核实: "
+            prefix = f"{item.role} text/unverified: "
             excerpt = record.content.strip()
             available = budget - len(prefix)
             text = prefix + (

@@ -9,8 +9,18 @@ import subprocess
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
+from types import ModuleType
 from typing import cast
 
+TORCH: ModuleType | None
+try:
+    import torch as _torch_module
+except (ImportError, OSError):
+    TORCH = None
+else:
+    TORCH = _torch_module
+
+PROBE_COMMAND_TIMEOUT_SECONDS = 5
 _NVIDIA_QUERY = (
     "index",
     "name",
@@ -43,9 +53,7 @@ def _available_cpu_count() -> int | None:
 
 def acceleration_runtime_metadata() -> dict[str, object]:
     """Return the installed PyTorch/CUDA runtime, without making CUDA mandatory."""
-    try:
-        import torch
-    except (ImportError, OSError):
+    if TORCH is None:
         return {
             "torch_version": None,
             "torch_cuda_version": None,
@@ -55,12 +63,12 @@ def acceleration_runtime_metadata() -> dict[str, object]:
 
     cudnn_version: int | None = None
     with suppress(AttributeError, RuntimeError):
-        version = cast(Callable[[], int | None], torch.backends.cudnn.version)
+        version = cast(Callable[[], int | None], TORCH.backends.cudnn.version)
         cudnn_version = version()
     return {
-        "torch_version": str(torch.__version__),
-        "torch_cuda_version": torch.version.cuda,
-        "torch_cuda_available": bool(torch.cuda.is_available()),
+        "torch_version": str(TORCH.__version__),
+        "torch_cuda_version": TORCH.version.cuda,
+        "torch_cuda_available": bool(TORCH.cuda.is_available()),
         "torch_cudnn_version": cudnn_version,
     }
 
@@ -81,14 +89,14 @@ def _repository_root() -> Path:
 
 
 def _probe_command_output(command: Sequence[str]) -> str | None:
-    """Return one probe's stdout, or `None` when the tool is absent, times out, or fails."""
+    """Return one probe's stdout, or None when the tool is absent, times out, or fails."""
     try:
         result = subprocess.run(
             tuple(command),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=5,
+            timeout=PROBE_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -102,7 +110,7 @@ def _git(repository: Path, arguments: Sequence[str]) -> str | None:
 
 
 def nvidia_smi_rows(query: str) -> list[list[str]]:
-    """Return the CSV rows of one `nvidia-smi --query-gpu`, or none when it is absent or fails."""
+    """Return the CSV rows of one nvidia-smi --query-gpu, or none when it is absent or fails."""
     output = _probe_command_output(
         ("nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits")
     )

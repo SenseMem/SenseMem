@@ -10,7 +10,6 @@ from collections.abc import Sequence
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
@@ -68,7 +67,7 @@ def test_context_excerpt_rejects_non_numeric_scores_with_validation_error(score:
             matched_index_id="embedding",
             content=source,
             selector=selector,
-            score=cast(Any, score),
+            score=score,  # type: ignore[arg-type]
             created_at=REFERENCE,
         )
 
@@ -417,7 +416,10 @@ def test_partial_sources_are_explicit_opt_in_and_default_skips_selector_reads(
             allow_partial_sources=True,
         )
         with pytest.raises(ValidationError, match="allow_partial_sources must be a boolean"):
-            memory.compile("TARGET CLAIM", allow_partial_sources=cast("Any", 1))
+            memory.compile(
+                "TARGET CLAIM",
+                allow_partial_sources=1,  # type: ignore[arg-type]
+            )
 
     assert default.hits == ()
     assert default.excerpts == ()
@@ -622,12 +624,15 @@ def test_excerpt_serializes_through_shared_response_and_cli_contracts(tmp_path: 
         )
 
     response = ContextBundleResponse.model_validate(bundle.document()).model_dump(mode="json")
-    cli = cast(
-        "dict[str, Any]",
-        _bundle_document(bundle),
-    )
+    cli = _bundle_document(bundle)
     for document in (response, cli):
-        assert len(document["excerpts"]) == 1
-        value = document["excerpts"][0]
+        excerpts = document["excerpts"]
+        assert isinstance(excerpts, list) and len(excerpts) == 1
+        value = excerpts[0]
+        assert isinstance(value, dict)
         assert value["source_memory_id"] == bundle.excerpts[0].source_memory_id
-        assert value["selector"]["pieces"][0]["source_text"]
+        selector = value["selector"]
+        assert isinstance(selector, dict)
+        pieces = selector["pieces"]
+        assert isinstance(pieces, list) and isinstance(pieces[0], dict)
+        assert pieces[0]["source_text"]

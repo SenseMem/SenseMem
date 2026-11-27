@@ -12,11 +12,8 @@ src/memory_interface.py single-question extraction (MIT), copyright 2026 AMA-Ben
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sensemem.benchmarks.longmemeval_v2 import LongMemEvalV2Question
-    from sensemem.benchmarks.videozerobench import VideoZeroQuestion
+from sensemem.benchmarks.longmemeval_v2 import LongMemEvalV2Question
+from sensemem.benchmarks.videozerobench import VideoZeroQuestion
 
 
 def ama_question_prompt(question: str) -> str:

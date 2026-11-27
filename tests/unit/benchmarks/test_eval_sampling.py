@@ -20,13 +20,13 @@ from sensemem import EmbedTask, MemorySpec, Modality, ModelInput, SearchHit
 from sensemem.benchmarks import eval_backends as eval_backends_module
 from sensemem.benchmarks import eval_report as eval_report_module
 from sensemem.benchmarks.eval_adapters import EvalQuestion, EvalUnit, LoadedTask, MemoryItem
-from sensemem.benchmarks.eval_arms import _BaselineGenerator
+from sensemem.benchmarks.eval_arms import BaselineGenerator
 from sensemem.benchmarks.eval_config import (
-    _Arguments,
-    _evaluation_config,
-    _evaluation_memory_config,
+    Arguments,
     _generation_kwargs,
-    _generation_temperature,
+    evaluation_config,
+    evaluation_memory_config,
+    resolve_generation_temperature,
 )
 from sensemem.benchmarks.model_config import ModelConfig
 from sensemem.benchmarks.task_catalog import TASKS
@@ -37,7 +37,7 @@ def test_configuration_identity_is_stable_across_process_hash_seeds() -> None:
     script = """
 import json
 from sensemem import MemorySpec
-from sensemem.benchmarks.eval_config import _memory_config_payload
+from sensemem.benchmarks.eval_config import memory_config_payload
 config = MemorySpec.model_validate({
     "embedding": {"provider": "openai", "modalities": ["text", "image", "video"]},
     "generation": {"provider": "openai", "modalities": ["text", "image"], "routes": [
@@ -45,7 +45,7 @@ config = MemorySpec.model_validate({
     ]},
     "vision": {"provider": "openai", "modalities": ["image", "video"]},
 })
-print(json.dumps(_memory_config_payload(config), sort_keys=True))
+print(json.dumps(memory_config_payload(config), sort_keys=True))
 """
     results = [
         subprocess.check_output(
@@ -91,9 +91,9 @@ def test_media_inputs_preserve_declared_generation_routes(explicit_modalities: b
             ),
         ),
     )
-    effective = _evaluation_config(model, (task,), memory_config=declared)
+    effective = evaluation_config(model, (task,), memory_config=declared)
     assert effective.generation_capabilities == declared.generation.modalities
-    resolved = _evaluation_memory_config(declared, effective, gen_kwargs="", seed=0, device=None)
+    resolved = evaluation_memory_config(declared, effective, gen_kwargs="", seed=0, device=None)
     assert resolved is not None and isinstance(resolved.generation, OpenAIGenerationConfig)
     assert resolved.generation.modalities == declared.generation.modalities
     assert resolved.generation.routes[0].modalities == frozenset({Modality.TEXT, Modality.AUDIO})
@@ -112,7 +112,7 @@ def test_media_inputs_expand_undeclared_generation_capabilities() -> None:
             ),
         ),
     )
-    effective = _evaluation_config(ModelConfig(), (task,))
+    effective = evaluation_config(ModelConfig(), (task,))
     assert effective.generation_capabilities == frozenset({Modality.TEXT, Modality.AUDIO})
 
 
@@ -167,7 +167,6 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
         def embed(
             self, inputs: Sequence[ModelInput], task: EmbedTask
         ) -> tuple[tuple[float, ...], ...]:
-            del task
             return tuple((1.0, 0.0) for _value in inputs)
 
         def close(self) -> None: ...
@@ -176,8 +175,8 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
     monkeypatch.setattr(openai, "AsyncOpenAI", AsyncClient)
     monkeypatch.setattr(configuration_module, "SentenceTransformersEmbedder", Embedder)
     options = _generation_kwargs(f"temperature={temperature}", 7)
-    arguments = cast(_Arguments, SimpleNamespace(gen_kwargs=options, seed=7, device=None))
-    model = ModelConfig(generation_model="qwen3.8-27b")
+    arguments = cast(Arguments, SimpleNamespace(gen_kwargs=options, seed=7, device=None))
+    model = ModelConfig(generation_model="fixture-generation-model")
     declared = (
         MemorySpec.model_validate(
             {
@@ -192,15 +191,15 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
         if configured_style is not None
         else None
     )
-    effective = _evaluation_memory_config(
+    effective = evaluation_memory_config(
         declared,
         model,
         gen_kwargs=arguments.gen_kwargs,
         seed=arguments.seed,
         device=arguments.device,
     )
-    pool = eval_backends_module._BackendPool(model, memory_config=effective)
-    baseline = _BaselineGenerator(model, seed=7, gen_kwargs=options, generation=effective)
+    pool = eval_backends_module.BackendPool(model, memory_config=effective)
+    baseline = BaselineGenerator(model, seed=7, gen_kwargs=options, generation=effective)
     try:
         assert pool._plugins.answerer is not None
         hit = SearchHit(
@@ -233,8 +232,10 @@ def test_every_generation_arm_emits_the_resolved_temperature(  # noqa: C901 - sy
 
 def test_explicit_temperature_is_not_silently_dropped_for_an_unsupported_model() -> None:
     with pytest.raises(ValueError, match="does not support"):
-        _generation_temperature("gpt-5-mini", {"temperature": "0.7"})
+        resolve_generation_temperature("gpt-5-mini", {"temperature": "0.7"})
     assert (
-        _generation_temperature("gpt-5.4", {"temperature": "0.7"}, {"reasoning_effort": "none"})
+        resolve_generation_temperature(
+            "gpt-5.4", {"temperature": "0.7"}, {"reasoning_effort": "none"}
+        )
         == 0.7
     )

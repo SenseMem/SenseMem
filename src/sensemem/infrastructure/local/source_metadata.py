@@ -4,7 +4,6 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from typing import cast
 
 from opentelemetry import trace
 
@@ -62,14 +61,26 @@ def enrich_metadata(
         if not isinstance(gps, Mapping):
             continue
         response = gazetteer.nearby(gps["latitude"], gps["longitude"])
-        candidates = cast(list[dict[str, object]], response["candidates"])
+        raw_candidates = response["candidates"]
+        candidates = (
+            [entry for entry in raw_candidates if isinstance(entry, dict)]
+            if isinstance(raw_candidates, list)
+            else []
+        )
         available += len(candidates)
         if not candidates:
             continue
-        sources = cast(list[Mapping[str, object]] | None, response.get("sources"))
+        raw_sources = response.get("sources")
+        sources = (
+            [entry for entry in raw_sources if isinstance(entry, Mapping)]
+            if isinstance(raw_sources, list)
+            else None
+        )
         if sources is None:
-            source = cast(Mapping[str, object], response["source"])
-            header = cast(Mapping[str, object], source.get("header", {}))
+            source = response["source"]
+            assert isinstance(source, Mapping)
+            raw_header = source.get("header", {})
+            header = raw_header if isinstance(raw_header, Mapping) else {}
             source_fields: dict[str, object] = {
                 "map_snapshot_date": source["snapshot_date"],
                 "map_data_timestamp": header.get("osmosis_replication_timestamp"),
@@ -95,19 +106,28 @@ def enrich_metadata(
         for candidate in candidates:
             trial = {**enrichment, "candidates": [*chosen, candidate]}
             if sources is not None:
+                source_indices = sorted(
+                    {
+                        source_index
+                        for value in [*chosen, candidate]
+                        if isinstance(source_index := value["source_index"], int)
+                    }
+                )
                 trial["map_sources"] = [
                     {
                         "source_index": index,
                         "url": sources[index]["url"],
                         "sha256": sources[index]["sha256"],
                         "snapshot_date": sources[index]["snapshot_date"],
-                        "osmosis_replication_timestamp": cast(
-                            Mapping[str, object], sources[index].get("header", {})
-                        ).get("osmosis_replication_timestamp"),
+                        "osmosis_replication_timestamp": (
+                            source_header.get("osmosis_replication_timestamp")
+                            if isinstance(
+                                source_header := sources[index].get("header", {}), Mapping
+                            )
+                            else None
+                        ),
                     }
-                    for index in sorted(
-                        {cast(int, value["source_index"]) for value in [*chosen, candidate]}
-                    )
+                    for index in source_indices
                 ]
             added = (len(_json_text({"offline_osm_candidates": trial})) - 1) * occurrences[
                 identifier

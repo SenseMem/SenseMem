@@ -40,6 +40,12 @@ _PROCESS_IDLE_CONNECTIONS = 64
 _DIRECTORY_IDLE_RESERVE = 4
 _PROCESS_INSTANCES = Capacity(16)
 _PROCESS_CONNECTIONS = Capacity(128)
+# Each SQLite WAL connection opens up to three descriptors (main DB, WAL, SHM).
+SQLITE_CONNECTION_FD_COST = 3
+# Keep descriptor headroom for OS handles, Zvec index segments, and transport sockets.
+SQLITE_FD_RESERVE = 128
+SQLITE_TIMEOUT_SECONDS = 30
+SQLITE_BUSY_TIMEOUT_MS = 30_000
 
 
 class _IdleConnections:
@@ -57,11 +63,11 @@ class _IdleConnections:
         for handle_id in tuple(self.entries):
             owner = self.entries[handle_id]()
             if owner is None:
-                del self.entries[handle_id]
+                self.entries.pop(handle_id)
                 continue
             if len(owner._pool) <= minimum_retained:
                 continue
-            del self.entries[handle_id]
+            self.entries.pop(handle_id)
             connection = next(handle for handle in owner._pool if id(handle) == handle_id)
             owner._pool.remove(connection)
             owner._closing_connections += 1
@@ -177,7 +183,7 @@ class Connections:
             validate_predicate_provenance(connection)
 
     def _open_connection(self, *, secure_delete: bool = False) -> sqlite3.Connection:
-        # `check_same_thread=False` disables sqlite3's own guard, not the ownership rule it
+        # check_same_thread=False disables sqlite3's own guard, not the ownership rule it
         # approximates. A pooled connection is checked out to exactly one caller at a time, so
         # no two threads ever execute on it concurrently; without this, a connection could only
         # ever be reused by the thread that happened to open it.
@@ -190,7 +196,10 @@ class Connections:
         try:
             with FILE_DESCRIPTOR_LOCK:
                 usage = file_descriptor_usage()
-                if usage is not None and usage[0] + 3 + 128 > usage[1]:
+                if (
+                    usage is not None
+                    and usage[0] + SQLITE_CONNECTION_FD_COST + SQLITE_FD_RESERVE > usage[1]
+                ):
                     raise LocalStoreCapacityError(
                         "SQLite open refused before file descriptor exhaustion"
                     )
@@ -202,7 +211,7 @@ class Connections:
     def _connect(self, *, secure_delete: bool) -> sqlite3.Connection:
         connection = sqlite3.connect(
             self.database_path,
-            timeout=30,
+            timeout=SQLITE_TIMEOUT_SECONDS,
             isolation_level=None,
             check_same_thread=False,
         )
@@ -212,7 +221,7 @@ class Connections:
             if not self._schema_ready:
                 connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
-            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             connection.create_function(RECALL_FOLD_FUNCTION, 1, recall_fold, deterministic=True)
             if secure_delete:
                 # Zero-fill freed cells instead of leaving them legible in free pages. Scoped
@@ -231,17 +240,17 @@ class Connections:
     def connection(self, *, secure_delete: bool = False) -> Iterator[sqlite3.Connection]:
         """Borrow exclusively, refusing overload before opening another connection.
 
-        Connecting is not free: one `sqlite3_open` plus the four `PRAGMA` statements that make a
-        connection usable. One `add` paid for seven of them and one `search` five, because every
+        Connecting is not free: one sqlite3_open plus the four PRAGMA statements that make a
+        connection usable. One add paid for seven of them and one search five, because every
         helper opened its own; in the steady state they now open none.
 
-        A connection leaves the pool for exactly one `with` block and is returned by the same
-        `finally` that used to close it, so no two callers ever hold the same one -- including
+        A connection leaves the pool for exactly one with block and is returned by the same
+        finally that used to close it, so no two callers ever hold the same one -- including
         two nested blocks, which draw two separate connections exactly as they did before.
 
         A connection is closed rather than returned when the block raised, because a statement
         that failed part way through can leave a transaction open that the next borrower would
-        silently join. `secure_delete` and pre-schema connections are never pooled: the first is
+        silently join. secure_delete and pre-schema connections are never pooled: the first is
         a persistent per-connection pragma that would make every later DELETE pay for
         zero-filling, and the second runs during schema initialization.
         """
@@ -252,7 +261,7 @@ class Connections:
             self._active_connections += 1
             idle = self._pool.pop() if self._pool else None
             if idle is not None:
-                del self._idle.entries[id(idle)]
+                self._idle.entries.pop(id(idle))
         connection = None
         reusable = False
         try:
@@ -312,7 +321,7 @@ class Connections:
             connections = tuple(self._pool)
             self._pool.clear()
             for connection in connections:
-                del self._idle.entries[id(connection)]
+                self._idle.entries.pop(id(connection))
         for connection in connections:
             self._discard(connection)
 

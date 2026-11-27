@@ -11,7 +11,7 @@ from contextvars import ContextVar, copy_context
 from functools import partial
 from threading import BoundedSemaphore, Condition, Lock
 from time import perf_counter
-from typing import ParamSpec, TypeVar, cast
+from typing import ParamSpec, Protocol, TypeVar
 
 from sensemem._capacity import Capacity
 from sensemem.exceptions import StorageError
@@ -22,10 +22,20 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _PROCESS_SUBMISSIONS = Capacity(128)
 _PROCESS_REQUESTS = Capacity(128)
-_STREAM_EXHAUSTED = object()
+
+
+class _StreamExhausted:
+    pass
+
+
+_STREAM_EXHAUSTED = _StreamExhausted()
 ASYNC_QUEUE_TIME_MS: ContextVar[float | None] = ContextVar(
     "sensemem_async_queue_time_ms", default=None
 )
+
+
+class _OpenGuard(Protocol):
+    def __call__(self) -> None: ...
 
 
 class _ProcessWorkers:
@@ -88,13 +98,16 @@ class StreamWorker(Executor):
         self._worker = worker
         self._release_future: Future[None] | None = None
 
-    def submit(self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> Future[_T]:
+    def submit(
+        self, operation: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+    ) -> Future[_T]:
         if self._release_future is not None:
             raise RuntimeError("stream worker is released")
-        return self._worker.submit(fn, *args, **kwargs)
+        return self._worker.submit(operation, *args, **kwargs)
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
-        del cancel_futures  # Cleanup queued behind an uncancellable next() must always run.
+        # cancel_futures is part of Executor.shutdown; cleanup queued behind an uncancellable
+        # next() must always run.
         released = self.release()
         if wait:
             released.result()
@@ -110,7 +123,7 @@ class StreamWorker(Executor):
 class StreamWorkers:
     """At most eight pinned workers, shared by all wrappers around one Memory."""
 
-    def __init__(self, *, require_open: Callable[[], None] | None = None) -> None:
+    def __init__(self, *, require_open: _OpenGuard | None = None) -> None:
         self._require_open = require_open
         self._lock = Lock()
         self._borrowed = 0
@@ -156,7 +169,7 @@ class Execution:
         self._closed = False
 
     async def run_in_worker(
-        self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+        self, operation: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
     ) -> _T:
         """Run a synchronous operation off-thread with admission and context propagation."""
         queued_at = perf_counter()
@@ -164,7 +177,7 @@ class Execution:
         def invoke() -> _T:
             token = ASYNC_QUEUE_TIME_MS.set((perf_counter() - queued_at) * 1_000.0)
             try:
-                return fn(*args, **kwargs)
+                return operation(*args, **kwargs)
             finally:
                 ASYNC_QUEUE_TIME_MS.reset(token)
 
@@ -192,11 +205,11 @@ class Execution:
         """Advance an answer on one pinned worker and release it after terminal cleanup."""
         loop = asyncio.get_running_loop()
         context = copy_context()
-        # One worker, not `asyncio.to_thread`: every step has to run on the same thread so the
+        # One worker, not asyncio.to_thread: every step has to run on the same thread so the
         # span and operation contextvars the generator attaches on its first step are the ones
-        # it detaches on its last. `to_thread` runs each call in a fresh context copy, which
-        # would strand both. `next` is given a sentinel because a `StopIteration` crossing a
-        # future becomes `RuntimeError` rather than ending the loop.
+        # it detaches on its last. to_thread runs each call in a fresh context copy, which
+        # would strand both. next is given a sentinel because a StopIteration crossing a
+        # future becomes RuntimeError rather than ending the loop.
         #
         # Admission happens before a worker is created, and every wrapper and transport borrows
         # from this instance's same bounded pool.
@@ -204,7 +217,7 @@ class Execution:
         first_advance = True
         closed = False
 
-        def advance(queued_at: float, record_queue: bool) -> object:
+        def advance(queued_at: float, record_queue: bool) -> AnswerChunk | _StreamExhausted:
             token = None
             if record_queue:
                 token = ASYNC_QUEUE_TIME_MS.set((perf_counter() - queued_at) * 1_000.0)
@@ -241,19 +254,18 @@ class Execution:
                     queued_at,
                     record_queue,
                 )
-                if chunk is _STREAM_EXHAUSTED:
+                if isinstance(chunk, _StreamExhausted):
                     return
-                answer_chunk = cast(AnswerChunk, chunk)
-                if answer_chunk.result is not None:
+                if chunk.result is not None:
                     # Reading the terminal result is a complete consumption: callers need not
                     # advance once more or explicitly close it to return worker capacity.
                     await close_stream()
-                    yield answer_chunk
+                    yield chunk
                     return
-                yield answer_chunk
+                yield chunk
         finally:
             # A running executor call cannot be cancelled, so the close always completes even
-            # when the awaiting task is gone; `wait=False` keeps that off the event loop.
+            # when the awaiting task is gone; wait=False keeps that off the event loop.
             await close_stream()
 
     def _completed(self, future: Future[_T]) -> None:
@@ -303,9 +315,9 @@ class Execution:
 
     @contextmanager
     def overlap_speech(
-        self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
+        self, operation: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs
     ) -> Iterator[Future[_T]]:
-        future = self._submit(self._speech, self._speech_slots, partial(fn, *args, **kwargs))
+        future = self._submit(self._speech, self._speech_slots, partial(operation, *args, **kwargs))
         try:
             yield future
         finally:

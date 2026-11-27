@@ -106,7 +106,7 @@ class ObservationContext:
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     spatial: SpatialContext | None = None
-    # The symbolic room-level place, as distinct from `spatial`'s metric pose: a robot can label
+    # The symbolic room-level place, as distinct from spatial's metric pose: a robot can label
     # "kitchen" when it cannot localise, and "in the kitchen" is the query a household asks.
     # Equality-matched, so a producer must label consistently -- "kitchen" and "the kitchen" would
     # partition the store, and nothing normalises it beyond rejecting untrimmed text.
@@ -146,14 +146,14 @@ class ObservationContext:
 class RetrievalScope:
     """Optional world-time, knowledge-time, spatial, and identity retrieval scope.
 
-    Two spatial axes, because a household asks in both. `near`/`radius_m` is metric and answers
-    "within two metres of here". `place_id` is symbolic and answers "in the kitchen" — the query a
+    Two spatial axes, because a household asks in both. near/radius_m is metric and answers
+    "within two metres of here". place_id is symbolic and answers "in the kitchen" — the query a
     person actually asks, and the one a robot can label when it cannot localise metrically. They
     are independent: a symbolic equality is the one spatial predicate SQLite indexes cheaply,
     while the metric radius is a filter over retrieved candidates.
 
-    `identity_id` answers "about this person". A memory is in scope when its semantic subject is
-    that identity (`memory_semantics.identity_id`, the binding a naming or claim assertion
+    identity_id answers "about this person". A memory is in scope when its semantic subject is
+    that identity (memory_semantics.identity_id, the binding a naming or claim assertion
     carries) **or** the identity was observed in it: a diarised speech segment or a face
     observation on one of the memory's media assets. A merged alias resolves to the surviving
     identity, so scoping by either ID of a merged pair returns the same memories.
@@ -163,9 +163,9 @@ class RetrievalScope:
     known_at: datetime | None = None
     near: SpatialContext | None = None
     radius_m: float | None = None
-    # `None` means "do not scope by place", never "memories that have no place".
+    # None means "do not scope by place", never "memories that have no place".
     place_id: str | None = None
-    # `None` means "do not scope by identity", never "memories about nobody".
+    # None means "do not scope by identity", never "memories about nobody".
     identity_id: str | None = None
 
     def __post_init__(self) -> None:

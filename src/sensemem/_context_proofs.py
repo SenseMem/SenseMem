@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from itertools import combinations
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from sensemem.context_values import ContextProof, ContextProofScoring
+from sensemem.context_values import ContextProof, ContextProofScoring
 
 
 def singleton_group(proof: ContextProof, conditions: frozenset[str]) -> str | None:

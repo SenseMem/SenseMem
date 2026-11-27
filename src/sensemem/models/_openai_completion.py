@@ -10,13 +10,13 @@ from opentelemetry import trace
 
 from sensemem._telemetry import GEN_AI_TTFC, MODEL_TTFT
 from sensemem.models._openai_output import (
-    _invalid_json_response,
     _InvalidStructuredResponse,
-    _model_refused,
+    invalid_json_response,
+    model_refused,
 )
 from sensemem.models._openai_telemetry import (
     _record_openai_provenance,
-    _record_provider_request_id,
+    record_provider_request_id,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +63,7 @@ def _collect_streamed_completion(  # noqa: C901 - one response lifecycle and adm
         snapshot.system_fingerprint = fingerprint
         return snapshot
 
-    _record_provider_request_id(responses)
+    record_provider_request_id(responses)
     try:
         for response in cast("Iterable[ChatCompletionChunk]", responses):
             latest = response
@@ -71,11 +71,8 @@ def _collect_streamed_completion(  # noqa: C901 - one response lifecycle and adm
             if allow_tool_calls and first_chunk:
                 trace.get_current_span().set_attribute(GEN_AI_TTFC, time.perf_counter() - started)
                 first_chunk = False
-            if (
-                isinstance(response_model := getattr(response, "model", None), str)
-                and response_model
-            ):
-                model = response_model
+            if isinstance(response.model, str) and response.model:
+                model = response.model
             if (
                 isinstance(response_fingerprint := response.system_fingerprint, str)
                 and response_fingerprint
@@ -83,18 +80,18 @@ def _collect_streamed_completion(  # noqa: C901 - one response lifecycle and adm
                 fingerprint = response_fingerprint
             if response.usage is not None:
                 usage = response.usage
-            choices = getattr(response, "choices", None)
+            choices = response.choices
             if not isinstance(choices, list):
-                raise _invalid_json_response(subject, stage)
+                raise invalid_json_response(subject, stage)
             if choices:
                 if len(choices) != 1 or choices[0].index != 0:
-                    raise _invalid_json_response(subject, stage)
+                    raise invalid_json_response(subject, stage)
                 choice = choices[0]
                 finish_reason = choice.finish_reason or finish_reason
                 delta = choice.delta
                 refused = refused or bool(delta.refusal)
                 if delta.content is not None and not isinstance(delta.content, str):
-                    raise _invalid_json_response(subject, stage)
+                    raise invalid_json_response(subject, stage)
                 if allow_tool_calls and delta.content and first_text:
                     trace.get_current_span().set_attribute(
                         MODEL_TTFT, time.perf_counter() - started
@@ -102,25 +99,25 @@ def _collect_streamed_completion(  # noqa: C901 - one response lifecycle and adm
                     first_text = False
                 if allow_tool_calls and delta.tool_calls is not None:
                     if not isinstance(delta.tool_calls, list):
-                        raise _invalid_json_response(subject, stage)
+                        raise invalid_json_response(subject, stage)
                     for fragment in delta.tool_calls:
                         if (
                             isinstance(fragment.index, bool)
                             or not isinstance(fragment.index, int)
                             or fragment.index != 0
                         ):
-                            raise _invalid_json_response(subject, stage)
+                            raise invalid_json_response(subject, stage)
                         if fragment.type is not None and fragment.type != "function":
-                            raise _invalid_json_response(subject, stage)
+                            raise invalid_json_response(subject, stage)
                         if fragment.function is not None and any(
                             value is not None and not isinstance(value, str)
                             for value in (fragment.function.name, fragment.function.arguments)
                         ):
-                            raise _invalid_json_response(subject, stage)
+                            raise invalid_json_response(subject, stage)
             try:
                 state.handle_chunk(response)
             except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-                raise _invalid_json_response(subject, stage) from None
+                raise invalid_json_response(subject, stage) from None
             snapshot = state.current_completion_snapshot
         completed = True
     except Exception as error:
@@ -129,7 +126,7 @@ def _collect_streamed_completion(  # noqa: C901 - one response lifecycle and adm
         if on_failure is not None:
             on_failure(partial_response())
         if refused or finish_reason == "content_filter":
-            raise _model_refused(subject, stage) from None
+            raise model_refused(subject, stage) from None
         raise
     finally:
         close = getattr(responses, "close", None)
@@ -148,7 +145,7 @@ def _collect_streamed_completion(  # noqa: C901 - one response lifecycle and adm
     ):
         if on_failure is not None:
             on_failure(partial_response())
-        invalid = _invalid_json_response(subject, stage)
+        invalid = invalid_json_response(subject, stage)
         invalid._cleanup_failed = cleanup_error is not None
         raise invalid
     partial_response()

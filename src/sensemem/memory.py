@@ -1,6 +1,6 @@
 """Developer-facing local memory API.
 
-`Memory` is the facade over the kernel in `sensemem.kernel`. It validates local policy and
+Memory is the facade over the kernel in sensemem.kernel. It validates local policy and
 backend contracts once, opens the store and the index in the documented order, wires one object
 per plane -- write, retrieval, answering, compilation, identity, control, records -- with the
 dependencies each declares, and forwards every public operation to the plane that owns it. The
@@ -70,7 +70,7 @@ from sensemem.identity import (
     PerceptionResult,
 )
 from sensemem.infrastructure.local.assets import AssetStore
-from sensemem.infrastructure.local.store import LocalStore
+from sensemem.infrastructure.local.store.local_store import LocalStore
 from sensemem.infrastructure.local.zvec_index import ZvecIndex, validate_index_configuration
 from sensemem.kernel.answering import Answering
 from sensemem.kernel.candidates import Candidates
@@ -132,7 +132,7 @@ from sensemem.stream_values import StreamInput
 from sensemem.tools import ToolRegistry, ToolResult
 from sensemem.types import AnswerPolicy, MemoryCategory
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 class Memory:
@@ -207,7 +207,7 @@ class Memory:
                 and not isinstance(answerer, RecallPlanningBackend)
             ):
                 # Planning deliberately falls back on failures; flag missing wiring at assembly.
-                _LOGGER.warning(
+                LOGGER.warning(
                     "recall_planning is on but the answerer cannot plan; every question runs the "
                     "fallback plan"
                 )
@@ -545,14 +545,14 @@ class Memory:
         memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
         context: ObservationContext | None = None,
     ) -> MemoryRecord:
-        """Commit one memory without calling any model; `settle()` makes it searchable.
+        """Commit one memory without calling any model; settle() makes it searchable.
 
-        The returned record is the content-addressed record `add()` returns for the same input, so
+        The returned record is the content-addressed record add() returns for the same input, so
         capturing and then adding the same content is one memory. It is durable and readable
-        through `get()` and `list()` immediately and invisible to `search()` until settled.
+        through get() and list() immediately and invisible to search() until settled.
 
-        `settle()` appends the text its models derive to `content`; it never rewrites what the
-        caller supplied. See `MemoryRecord` for how derived sections are marked and where the raw
+        settle() appends the text its models derive to content; it never rewrites what the
+        caller supplied. See MemoryRecord for how derived sections are marked and where the raw
         evidence lives.
         """
         return self._ingestion.capture(
@@ -571,17 +571,17 @@ class Memory:
         max_attempts: int = 3,
         memory_ids: Sequence[str] | None = None,
     ) -> int:
-        """Enrich, embed, index, and form up to `limit` captured records in enqueue order.
+        """Enrich, embed, index, and form up to limit captured records in enqueue order.
 
         Every readable record is attempted: a failing one keeps its queue row, its attempt count,
         and its reason, and the records behind it still settle. The first failure is raised once
-        the batch is done, with `subject` naming its record; the rest are readable through
-        `pending_captures()`. A record that has already failed `max_attempts` times is skipped
+        the batch is done, with subject naming its record; the rest are readable through
+        pending_captures(). A record that has already failed max_attempts times is skipped
         rather than retried, so one poisoned capture cannot block the queue forever. It stays
         queued and visible, and raising the ceiling is what retries it.
 
-        Pass `memory_ids` to settle only those records. Naming a record is the host asking for it
-        by hand, so the retry ceiling does not apply and `max_attempts` is ignored: that is how a
+        Pass memory_ids to settle only those records. Naming a record is the host asking for it
+        by hand, so the retry ceiling does not apply and max_attempts is ignored: that is how a
         record parked at the ceiling is retried, quarantined by simply never being named, or
         settled ahead of the queue. IDs that are not queued are skipped.
 
@@ -597,12 +597,12 @@ class Memory:
         memory_ids: Sequence[str] | None = None,
         cursor: str | None = None,
     ) -> tuple[PendingCapture, ...]:
-        """Return up to `limit` records whose deferred work is not finished, oldest first.
+        """Return up to limit records whose deferred work is not finished, oldest first.
 
-        With a formation backend, `add()` holds a row between its commit and formation, so a
-        queued record may already be searchable and owe formation only. Pass `memory_ids` to ask
+        With a formation backend, add() holds a row between its commit and formation, so a
+        queued record may already be searchable and owe formation only. Pass memory_ids to ask
         whether specific records are still waiting: one that is absent from the result is not
-        pending, which means it is settled or was never stored, and `get()` tells the two apart.
+        pending, which means it is settled or was never stored, and get() tells the two apart.
         """
         return self._ingestion.pending_captures(limit=limit, memory_ids=memory_ids, cursor=cursor)
 
@@ -618,9 +618,9 @@ class Memory:
         group instead of one per item; a reader always drains first, so a committed item is
         searchable before the group closes.
 
-        With `capture=True` each item commits through `capture()` instead: every yielded record is
+        With capture=True each item commits through capture() instead: every yielded record is
         durable and readable but has no vectors, so the stream keeps its acknowledgement off the
-        model path and the host owes the matching `settle()` before anything is searchable.
+        model path and the host owes the matching settle() before anything is searchable.
         """
         return self._ingestion.add_stream(contents, capture=capture)
 
@@ -660,15 +660,15 @@ class Memory:
     ) -> AnswerResult:
         """Answer a native or mixed-modal question only from retrieved memories.
 
-        `answer_policy` decides what happens when the retrieved evidence is thin. The default,
-        `"strict"`, refuses: `answer` is a fixed sentence and `abstained` is true. With
-        `"best_effort"` the answerer commits to the most likely answer the evidence supports --
+        answer_policy decides what happens when the retrieved evidence is thin. The default,
+        "strict", refuses: answer is a fixed sentence and abstained is true. With
+        "best_effort" the answerer commits to the most likely answer the evidence supports --
         for a multiple-choice question, always one of the options -- and still reports the same
-        `abstained` and `abstention_reason`, so a caller whose protocol gives no credit for
+        abstained and abstention_reason, so a caller whose protocol gives no credit for
         "unknown" gets a usable answer without losing the confidence signal.
 
         Recognition keeps voice and face identities separate. Only a host-authored
-        `apply(MemoryOperation(intent=MemoryIntent.MERGE, identity=...))` confirms a binding.
+        apply(MemoryOperation(intent=MemoryIntent.MERGE, identity=...)) confirms a binding.
         """
         return self._answering.ask(
             question,
@@ -689,15 +689,15 @@ class Memory:
         scope: RetrievalScope | None = None,
         answer_policy: AnswerPolicy = "strict",
     ) -> Generator[AnswerChunk, None, AnswerResult]:
-        """Answer as `ask()` does, but yield the answer while the model is still producing it.
+        """Answer as ask() does, but yield the answer while the model is still producing it.
 
         Retrieval runs to completion before the first chunk; only generation is incremental. The
-        terminal chunk carries the same `AnswerResult` `ask()` returns, and a backend without
-        `stream_answer` still yields its whole answer as one delta.
+        terminal chunk carries the same AnswerResult ask() returns, and a backend without
+        stream_answer still yields its whole answer as one delta.
 
         Reading to the terminal chunk releases everything the answer held, so stopping there
         needs no cleanup. Abandoning the stream mid-answer leaves one operation open until the
-        generator is closed or collected, and `close()` waits for open operations.
+        generator is closed or collected, and close() waits for open operations.
         """
         return self._answering.ask_stream(
             question,
@@ -754,7 +754,7 @@ class Memory:
         return self._backends.capabilities
 
     def get(self, memory_id: str) -> MemoryRecord:
-        """Return one memory or raise `MemoryNotFoundError`."""
+        """Return one memory or raise MemoryNotFoundError."""
         return self._records.get(memory_id)
 
     def read_asset(self, memory_id: str, asset_id: str) -> Blob:
@@ -782,7 +782,7 @@ class Memory:
     ) -> None:
         """Assign or replace the name, and optionally the relationship, of one identity.
 
-        Omitting ``relationship`` leaves any recorded relationship intact, so renaming a person
+        Omitting relationship leaves any recorded relationship intact, so renaming a person
         never silently discards it. There is deliberately no way to clear one here.
         """
         return self._identities.register_identity(identity_id, name, relationship=relationship)
@@ -790,7 +790,7 @@ class Memory:
     def identity(self, identity_id: str) -> IdentityProfile | None:
         """Return one identity's recorded name and relationship, or None when it does not exist.
 
-        Face and speech observations carry an ``identity_id``; this resolves that id, following
+        Face and speech observations carry an identity_id; this resolves that id, following
         a merge alias, to whatever a caller has registered for the person.
         """
         return self._identities.identity(identity_id)
@@ -805,21 +805,21 @@ class Memory:
         """Record what one recognized person said about being processed as a recognized person.
 
         Consent is an assertion in the same family as naming: an identity-bound, evidence-bearing
-        claim that stands until a later one supersedes it, recorded as `USER_STATEMENT` because
+        claim that stands until a later one supersedes it, recorded as USER_STATEMENT because
         only a person can give it. A model may not propose one -- the kernel refuses a proposed
-        `CONSENT` operation as `unauthorized` the way it refuses a proposed `MERGE` -- so this is
+        CONSENT operation as unauthorized the way it refuses a proposed MERGE -- so this is
         the only path that writes one.
 
-        `WITHHELD` and `WITHDRAWN` restrain the kernel identically from the next observation on:
-        `perceive()` and `ask()` stop enrolling new face and voice
+        WITHHELD and WITHDRAWN restrain the kernel identically from the next observation on:
+        perceive() and ask() stop enrolling new face and voice
         exemplars for this person and stop merging their voice and face identities, and
-        `compile()` leaves them out of the actors section and says so with a `CONSENT_WITHHELD`
+        compile() leaves them out of the actors section and says so with a CONSENT_WITHHELD
         unknown. Recognition against exemplars already held is deliberately untouched: a
         question about a photo the host already has is not new processing of a person, and
-        destroying what is already held is `forget_identity`, which this is not.
+        destroying what is already held is forget_identity, which this is not.
 
-        Returns the logged operation, or `None` when the same statement already stands, so the
-        decision is auditable through `operations()` and reversible through `rollback()`, which
+        Returns the logged operation, or None when the same statement already stands, so the
+        decision is auditable through operations() and reversible through rollback(), which
         restores whatever was recorded before it.
         """
         return self._identities.record_consent(identity_id, state, note=note)
@@ -827,13 +827,13 @@ class Memory:
     def consent(self, identity_id: str) -> ConsentState | None:
         """Return the consent state one identity's standing assertion projects, or None.
 
-        `None` means nobody has recorded a statement, which is neither consent nor a refusal:
+        None means nobody has recorded a statement, which is neither consent nor a refusal:
         the kernel restrains itself only on a statement that was actually made.
         """
         return self._identities.consent(identity_id)
 
     def unlink_identity(self, alias_id: str) -> str | None:
-        """Reverse one recorded face-and-voice merge, restoring ``alias_id`` as its own identity.
+        """Reverse one recorded face-and-voice merge, restoring alias_id as its own identity.
 
         Cross-modal binding requires an explicit host-confirmed MERGE operation. Returns the
         restored identity ID, or None when the merge is not reversible
@@ -843,8 +843,8 @@ class Memory:
         The split durably rejects the pair. Rescanning old or new assets cannot merge it again;
         another explicit host confirmation or rollback of the split can override that rejection.
 
-        A split is the `CORRECT` half of the control plane's "correct or split" intent, so it
-        commits with its own log row: it shows up in `operations()` and `rollback()` of that row
+        A split is the CORRECT half of the control plane's "correct or split" intent, so it
+        commits with its own log row: it shows up in operations() and rollback() of that row
         re-merges the pair under the identity that survived.
         """
         return self._identities.unlink_identity(alias_id)
@@ -852,7 +852,7 @@ class Memory:
     def forget_identity(self, identity_id: str) -> IdentityErasure:
         """Erase a person: their biometric template, their aliases, and their indexed name.
 
-        `delete` removes a memory; this removes a *person* from every memory. Both are needed,
+        delete removes a memory; this removes a *person* from every memory. Both are needed,
         because they answer different requests: "forget that evening" and "forget me". Erasing
         the identity rows alone would not honour the second one, since a registered name is
         written into the indexed document, so the search projection would still answer to it.
@@ -871,11 +871,10 @@ class Memory:
         """Record explicit positive feedback for existing memories."""
         return self._records.reinforce(memory_ids)
 
-    # -- Agentic memory control plane ----------------------------------------------------------
-    # One bounded memory-management loop (gate 3 of docs/context-os.md). The backend sees a
+    # One bounded memory-management loop (docs/architecture.md). The backend sees a
     # bounded evidence set and only proposes; every field is validated here, each accepted
-    # operation commits with its own append-only log row, and `rollback()` reverses it. Physical
-    # deletion is not an intent: it stays on `delete()` under host authority. None of these
+    # operation commits with its own append-only log row, and rollback() reverses it. Physical
+    # deletion is not an intent: it stays on delete() under host authority. None of these
     # methods is exposed on REST or MCP.
 
     def consolidation_candidates(
@@ -884,15 +883,15 @@ class Memory:
         limit: int = 32,
         idle: bool = False,
     ) -> tuple[ConsolidationCandidate, ...]:
-        """Ask what needs deliberation, at most `limit` rows, interleaved across triggers.
+        """Ask what needs deliberation, at most limit rows, interleaved across triggers.
 
         This is the durable trigger the slow loop runs on: every row is derived from state
         already committed -- evidence links, lineage disagreement, recorded confirmations,
         recorded recall failures, the configured record budget -- rather than from a clock. Hand
-        a row's `memory_ids` straight to `consolidate(evidence_ids=...)` with the row's
-        `trigger`, or call `consolidate_pending()` to run the candidate loop.
+        a row's memory_ids straight to consolidate(evidence_ids=...) with the row's
+        trigger, or call consolidate_pending() to run the candidate loop.
 
-        `idle` is the operator declaring an approved idle or charging window. The kernel does not
+        idle is the operator declaring an approved idle or charging window. The kernel does not
         guess it from a clock: whether now is a good time to spend the device's battery on
         reasoning is the host's knowledge.
         """
@@ -925,14 +924,14 @@ class Memory:
     def apply(self, operation: MemoryOperation) -> MemoryOperationRecord:
         """Apply one operation the host supplies, through the same kernel validation.
 
-        This is the public replay surface: a logged `MemoryOperation` re-applied against a fresh
-        store reproduces the derived state, without a `ConsolidationBackend` and without a model.
+        This is the public replay surface: a logged MemoryOperation re-applied against a fresh
+        store reproduces the derived state, without a ConsolidationBackend and without a model.
         Nothing is trusted because the host supplied it. The window is the operation's own cited
         evidence and named targets, eligibility is checked exactly as it is for a proposal, and
         the apply transaction re-checks every target so one that moved meanwhile is refused as
         stale rather than half-applied.
 
-        Raises `ValidationError` naming the kernel's own rejection reason when the operation is
+        Raises ValidationError naming the kernel's own rejection reason when the operation is
         refused, because a single operation the caller chose has nowhere else to report it.
         """
         return self._control.apply(operation)
@@ -947,31 +946,31 @@ class Memory:
         """Record what later evidence said about one applied operation.
 
         Post-hoc and purely for measurement: the kernel never reads it back into a decision, and
-        recording `REFUTED` does not reverse anything -- `rollback()` does that. It exists so the
+        recording REFUTED does not reverse anything -- rollback() does that. It exists so the
         slow loop's quality is derivable from the log rather than only its rollback success:
-        consolidation precision and contradiction recovery are `CONFIRMED` rates over
-        `CONSOLIDATE` and `CORRECT` rows, and false retirement is the `REFUTED` rate over rows
+        consolidation precision and contradiction recovery are CONFIRMED rates over
+        CONSOLIDATE and CORRECT rows, and false retirement is the REFUTED rate over rows
         that forgot something.
 
-        Reports `False` for an unknown `operation_id`. A later call replaces an earlier
+        Reports False for an unknown operation_id. A later call replaces an earlier
         judgement, because later evidence supersedes earlier evidence here as everywhere.
         """
         return self._control.record_outcome(operation_id, outcome, note=note)
 
     def forget(self, memory_ids: Sequence[str]) -> MemoryOperationRecord | None:
-        """Cognitively forget memories: recall skips them, `get()` and `list()` keep them.
+        """Cognitively forget memories: recall skips them, get() and list() keep them.
 
-        This is not deletion. `MemoryRecord.forgotten_at` stays readable for audit and
-        `rollback()` of the returned operation is what restores recall -- re-adding the same
+        This is not deletion. MemoryRecord.forgotten_at stays readable for audit and
+        rollback() of the returned operation is what restores recall -- re-adding the same
         content does not, because content addressing returns the record that already exists and
-        leaves its `forgotten_at` standing. Use `delete()` to remove a record and its media.
+        leaves its forgotten_at standing. Use delete() to remove a record and its media.
 
-        All or nothing: an unknown ID raises `MemoryNotFoundError` the way `get()` and `delete()`
+        All or nothing: an unknown ID raises MemoryNotFoundError the way get() and delete()
         do. The host names the IDs here, so partially applying them and logging the rest would
         make the operation log claim an effect that never happened.
 
-        `None` means nothing changed and nothing was logged: no IDs were named, a record was
-        already forgotten, the set named a bound naming assertion (only `rollback()` of the
+        None means nothing changed and nothing was logged: no IDs were named, a record was
+        already forgotten, the set named a bound naming assertion (only rollback() of the
         operation that asserted a name may retire it), a target moved under the proposal, or an
         identical operation is already in the log.
         """
@@ -980,13 +979,13 @@ class Memory:
     def rollback(self, operation_id: int) -> bool:
         """Reverse one applied operation, newest first on a lineage.
 
-        Reports `False` for an unknown or already-reversed `operation_id`, and for one a later
+        Reports False for an unknown or already-reversed operation_id, and for one a later
         standing operation has built on: when a second consolidation superseded the record this
         one put in force, reversing this one first would leave two current versions in the
         lineage, so the newer operation must be rolled back first.
 
-        Also reports `False`, without reversing anything, for the one operation that is not
-        reversible: the erasure of a person. A `FORGET` row carrying an identity is physical
+        Also reports False, without reversing anything, for the one operation that is not
+        reversible: the erasure of a person. A FORGET row carrying an identity is physical
         forgetting, and its log row is the audit trail that it happened rather than a copy of
         what it destroyed.
         """
@@ -1017,9 +1016,9 @@ class Memory:
     ) -> ExportBundle:
         """Return everything this memory holds about one data subject, in transferable form.
 
-        Name exactly one subject: `identity_id` for a recognized person -- every memory they
+        Name exactly one subject: identity_id for a recognized person -- every memory they
         occur in, every name and consent statement asserted about them, their registry row, and
-        every logged operation that moved any of it -- or `memory_ids` for a set of records a
+        every logged operation that moved any of it -- or memory_ids for a set of records a
         caller already knows, with the log rows that touched them.
 
         Records come back in every version, including retired ones and ones cognitively
@@ -1038,14 +1037,14 @@ class Memory:
         Physical forgetting under a deterministic policy: aged media and every memory that
         still references it, records cognitively forgotten longer ago than the policy allows,
         and capture-queue rows whose repeated failures have aged out. Deletion runs through
-        `delete()`, so media is garbage-collected and the naming projection is rebuilt exactly
+        delete(), so media is garbage-collected and the naming projection is rebuilt exactly
         as they are for a hand-deleted record.
 
-        An unset field in `RetentionPolicy` is not a zero-day policy: it does nothing at all.
+        An unset field in RetentionPolicy is not a zero-day policy: it does nothing at all.
         A policy that names no age therefore makes this a no-op, which is the right default for
         an operation whose effect cannot be undone.
 
-        `dry_run=True` reports the same identifiers and deletes nothing, so a policy can be
+        dry_run=True reports the same identifiers and deletes nothing, so a policy can be
         read back against a real store before it is allowed to run.
         """
         return self._records.apply_retention(dry_run=dry_run)
@@ -1111,7 +1110,7 @@ class Memory:
 
 
 class AsyncMemory:
-    """Async facade over one open synchronous `Memory`, which it owns and closes."""
+    """Async facade over one open synchronous Memory, which it owns and closes."""
 
     def __init__(self, memory: Memory) -> None:
         if not isinstance(memory, Memory):
@@ -1248,7 +1247,7 @@ class AsyncMemory:
     ) -> AsyncIterator[MemoryRecord]:
         """Add an async omni stream one durable, searchable observation at a time.
 
-        With `capture=True` each item commits through `capture()` and owes a later `settle()`.
+        With capture=True each item commits through capture() and owes a later settle().
         """
         async for record in self._memory._ingestion.add_async_stream(contents, capture=capture):
             yield record
@@ -1307,15 +1306,15 @@ class AsyncMemory:
         scope: RetrievalScope | None = None,
         answer_policy: AnswerPolicy = "strict",
     ) -> AsyncGenerator[AnswerChunk, None]:
-        """Answer as `ask()` does, yielding chunks as the model produces them.
+        """Answer as ask() does, yielding chunks as the model produces them.
 
         Every step of the underlying synchronous stream runs in a worker thread, so the event
         loop stays free while the provider is generating. Abandoning or cancelling the stream
         closes it, which releases the operation the answer holds open.
 
-        This is a plain function returning an async generator, not an `async def` generator, so
-        that arguments are rejected at the call exactly as `Memory.ask_stream` rejects them; an
-        `async def` generator would defer them to the first `__anext__`.
+        This is a plain function returning an async generator, not an async def generator, so
+        that arguments are rejected at the call exactly as Memory.ask_stream rejects them; an
+        async def generator would defer them to the first __anext__.
         """
         # Validation and generator construction only, no I/O, so the event loop is not blocked.
         stream = self._memory.ask_stream(

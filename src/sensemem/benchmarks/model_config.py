@@ -87,7 +87,7 @@ def _modalities(value: str | None) -> frozenset[Modality]:
     return frozenset(parsed)
 
 
-# Where the pinned corpora live when no `--benchmarks-root` is given. Resolved from the
+# Where the pinned corpora live when no --benchmarks-root is given. Resolved from the
 # repository rather than the process directory: the corpus is hundreds of gigabytes and is
 # shared, so a run started inside a Git worktree must reach the checkout's one copy instead of
 # silently reporting every task as missing against a sibling directory that was never populated.
@@ -139,20 +139,20 @@ class RunOverrides(_HarnessModel):
 
     Every field is optional and mirrors the flag of the same name. A flag still wins, because a
     flag is typed for one run while a file is reused across many. Command-line-only inputs include
-    the modes that do something other than evaluate (`--list-tasks`, `--check-integrity`)
-    and the `--model-args`/`--gen-kwargs`/
-    `--judge-model-args` strings, whose settings each already have a typed home elsewhere in this
+    the modes that do something other than evaluate (--list-tasks, --check-integrity)
+    and the --model-args/--gen-kwargs/
+    --judge-model-args strings, whose settings each already have a typed home elsewhere in this
     file.
     """
 
     tasks: str | None = None
     # Which arms answer, and the budget the full-context arm stuffs. A baseline sweep is exactly
-    # the thing a file describes and a flag does not, so both belong here; `--blind` stays
+    # the thing a file describes and a flag does not, so both belong here; --blind stays
     # command-line-only because it labels one run as the control rather than describing a sweep.
     arms: str | None = None
     full_context_chars: Annotated[int, Field(strict=True, gt=0)] | None = None
-    # The compile arm's `ContextBudget` and the ingest mode `capture()`+`settle()` exercises
-    # through the public SDK -- baseline-sweep knobs, the same reason `full_context_chars` lives
+    # The compile arm's ContextBudget and the ingest mode capture()+settle() exercises
+    # through the public SDK -- baseline-sweep knobs, the same reason full_context_chars lives
     # here.
     compile_max_items: Annotated[int, Field(strict=True, gt=0)] | None = None
     compile_max_chars: Annotated[int, Field(strict=True, gt=0)] | None = None
@@ -163,7 +163,7 @@ class RunOverrides(_HarnessModel):
     task_data: Mapping[str, Path] | None = None
     media_root: Mapping[str, Path] | None = None
     media_manifest: Path | None = None
-    # `all`, -1, a 0-1 fraction, or a count -- normalised by the same rule as the flag.
+    # all, -1, a 0-1 fraction, or a count -- normalised by the same rule as the flag.
     limit: int | float | str | None = None
     offset: Annotated[int, Field(strict=True, ge=0)] | None = None
     batch_size: str | None = None
@@ -199,13 +199,13 @@ class RunOverrides(_HarnessModel):
 
 
 class HarnessOverrides(_HarnessModel):
-    """The `benchmark:` section of a harness configuration file.
+    """The benchmark: section of a harness configuration file.
 
     Every field is optional and every field wins over the matching environment variable. The
-    section is absent from `MemorySpec` on purpose: judging and corpus acquisition are
+    section is absent from MemorySpec on purpose: judging and corpus acquisition are
     harness concerns, and putting them in the product schema would make them part of the public
     contract. Nothing that describes a model endpoint appears here -- not even the short-video
-    floor, which is `generation.min_video_seconds` in the product block -- because a setting with
+    floor, which is generation.min_video_seconds in the product block -- because a setting with
     two homes is a setting whose effective value nobody can read off the file.
     """
 
@@ -229,7 +229,7 @@ class HarnessOverrides(_HarnessModel):
 def default_benchmarks_root(start: Path | None = None) -> Path:
     """Return the checkout's benchmark corpus directory, or a relative path if there is none.
 
-    A linked worktree stores `.git` as a file naming the common directory inside the main
+    A linked worktree stores .git as a file naming the common directory inside the main
     checkout; its parent is the directory holding the single populated corpus. Falling back to a
     relative path keeps the function usable outside a repository at all.
     """
@@ -308,7 +308,7 @@ class DownloadSettings:
     def apply_environment(self, environ: dict[str, str] | None = None) -> None:
         """Publish the resolved addresses as process environment.
 
-        `huggingface_hub` reads `HF_HOME` and `HF_ENDPOINT` when it is first imported, and that
+        huggingface_hub reads HF_HOME and HF_ENDPOINT when it is first imported, and that
         import is lazy inside the download path, so writing them here is what actually redirects
         acquisition. Publishing rather than threading a parameter also keeps one resolved answer
         for every reader, including the media preparer's throttle.

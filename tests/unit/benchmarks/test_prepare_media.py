@@ -66,7 +66,7 @@ def test_youtube_acquisition_records_permanently_unavailable_video(
     monkeypatch.setattr(prepare_media, "_yt_dlp_command", lambda: ("yt-dlp",))
     monkeypatch.setattr(prepare_media, "_youtube_sleep", lambda: 0.0)
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr(prepare_media, "_has_audio", lambda _path: True)
+    monkeypatch.setattr(prepare_media, "has_audio", lambda _path: True)
 
     unavailable = prepare_media._acquire_youtube(
         TASKS["m3-bench-web"],

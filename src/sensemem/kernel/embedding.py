@@ -16,12 +16,8 @@ from opentelemetry.trace import Tracer
 from sensemem._telemetry import EMBEDDING_PARTS_ELIDED, EMBEDDING_TASK, mark_model_requests
 from sensemem.exceptions import ModelError, SenseMemError
 from sensemem.identity import SpeakerSegment
-from sensemem.infrastructure.local.store import (
-    NamingDocuments,
-    NamingProjection,
-    StoredEmbedding,
-    StoredMemory,
-)
+from sensemem.infrastructure.local.store._naming_projection import NamingDocuments, NamingProjection
+from sensemem.infrastructure.local.store.rows import StoredEmbedding, StoredMemory
 from sensemem.kernel.content import (
     PreparedContent,
     PreparedMemory,
@@ -147,7 +143,7 @@ class Embedding(Traced):
 
         A memory whose media exceeds what the embedding model accepts inline used to fail the
         whole write, which discards the memory rather than the route that could not take it.
-        `_embedding_inputs` already produces one key per atomic part, so the oversized key can be
+        _embedding_inputs already produces one key per atomic part, so the oversized key can be
         dropped while the rest of the memory is stored and stays retrievable. A memory left with
         no key at all still fails, because then nothing would find it.
         """
@@ -170,7 +166,7 @@ class Embedding(Traced):
                     raise
                 continue
             kept.append(entry)
-        # The index carries a memory's full-text document on its `object_part == 0` row alone,
+        # The index carries a memory's full-text document on its object_part == 0 row alone,
         # and part 0 is the aggregate key -- the one holding every asset, so the one an oversized
         # asset elides. Leaving the gap stores a memory with no lexical document at all, which is
         # a silent retrieval hole rather than the degradation this promises. Renumbering restores

@@ -6,6 +6,7 @@ import json
 from contextlib import ExitStack
 from dataclasses import replace
 
+from examples.live import prompts as demo_prompts
 from sensemem import (
     AsyncMemory,
     DefaultQueryPolicy,
@@ -20,7 +21,6 @@ from sensemem import (
     ValidationError,
     build_memory_composition,
 )
-from sensemem.prompts import demo as demo_prompts
 
 
 class LiveReviewQueryPolicy:

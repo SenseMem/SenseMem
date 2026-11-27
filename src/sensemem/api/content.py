@@ -1,10 +1,10 @@
 """The one strict content-part contract REST and MCP both accept.
 
-REST and MCP validate the same ordered `input_text`, `input_image`, and `input_file` union and
-normalize it into the same public `ContentInput`. This module is that decoder; the transports
+REST and MCP validate the same ordered input_text, input_image, and input_file union and
+normalize it into the same public ContentInput. This module is that decoder; the transports
 only wrap it in their own request and tool models.
 
-`_InputText`, `_InputImage`, and `_InputFile` keep their leading underscore because FastAPI names
+_InputText, _InputImage, and _InputFile keep their leading underscore because FastAPI names
 OpenAPI schema components after the class: renaming one is a published REST contract change, not a
 style fix.
 """
@@ -67,7 +67,7 @@ Filename = Annotated[
     ),
 ]
 Source = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8_192)]
-# The numeric bounds the request and tool models share. `strict=True` keeps a float out of an
+# The numeric bounds the request and tool models share. strict=True keeps a float out of an
 # integer field, which JSON would otherwise round into a silently different request.
 Limit = Annotated[int, Field(strict=True, ge=1, le=100)]
 Chars = Annotated[int, Field(strict=True, ge=1, le=MAX_TEXT_CHARACTERS)]
@@ -220,19 +220,19 @@ def content_input(content: Content) -> ContentInput:
     return tuple(atoms)
 
 
-# The compilation bounds both transports accept. REST publishes it as `ContextBudgetRequest` and
+# The compilation bounds both transports accept. REST publishes it as ContextBudgetRequest and
 # MCP under this name, so REST subclasses rather than reuses the class: each SDK names its schema
 # component after the class, and renaming one is a published contract change. No docstring, for
-# the same reason -- it would become a schema `description` neither surface publishes today.
+# the same reason -- it would become a schema description neither surface publishes today.
 class ContextBudgetInput(StrictModel):
     max_chars: Chars = _BUDGET.max_chars
     max_items: Limit = _BUDGET.max_items
     # Grounded media parts, not their price: 0 compiles a text-only bundle, null lets
-    # `max_chars` alone decide.
+    # max_chars alone decide.
     max_media_items: MediaItems | None = None
     memory_types: Annotated[list[MemoryCategory], Field(min_length=1)] | None = None
     min_confidence: Confidence = _BUDGET.min_confidence
-    # `ContextBudget.freshness` is a timedelta; JSON carries the same bound as seconds.
+    # ContextBudget.freshness is a timedelta; JSON carries the same bound as seconds.
     freshness_seconds: Seconds | None = None
     max_latency_ms: Milliseconds | None = None
     selected_proofs: bool = False

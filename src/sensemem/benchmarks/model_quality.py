@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -19,7 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
+from typing import Protocol, runtime_checkable
 
+import openai
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -33,12 +36,21 @@ from sensemem import (
     MemorySettings,
     SenseMemError,
 )
-from sensemem.benchmarks.quality_support import CaseResult, QualityReport, _FixtureEmbedder
+from sensemem.benchmarks.quality_support import CaseResult, FixtureEmbedder, QualityReport
 from sensemem.models.openai_completion import OpenAICompletion
 
+LOGGER = logging.getLogger(__name__)
 FIXTURE_VERSION = "sensemem-reader-quality-v3"
+QUALITY_CLIENT_TIMEOUT_SECONDS = 45.0
+QUALITY_MAX_OUTPUT_TOKENS = 4_096
+QUALITY_MAX_RETRIES = 1
 _REFERENCE_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _ATTACK_MARKER = "MB_QUALITY_ATTACK_EXECUTED"
+
+
+@runtime_checkable
+class _NamedGenerationBackend(Protocol):
+    generation_model: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,10 +179,15 @@ def run_quality_eval(
                 response_models.update(
                     model for model in models if isinstance(model, str) and model
                 )
-        configured_model = getattr(answerer, "generation_model", None)
+        configured_model = (
+            answerer.generation_model
+            if isinstance(answerer, _NamedGenerationBackend)
+            and isinstance(answerer.generation_model, str)
+            else "unknown"
+        )
         return QualityReport(
             FIXTURE_VERSION,
-            configured_model if isinstance(configured_model, str) else "unknown",
+            configured_model,
             tuple(sorted(response_models)),
             repeats,
             cases,
@@ -192,7 +209,7 @@ def _run_case(
             TemporaryDirectory(prefix="sensemem-quality-") as directory,
             Memory(
                 Path(directory),
-                embedder=_FixtureEmbedder() if embedder is None else embedder,
+                embedder=FixtureEmbedder() if embedder is None else embedder,
                 answerer=answerer,
                 tracer=tracer,
                 settings=MemorySettings(evidence_budget_chars=None, reinforce_on_answer=False),
@@ -241,14 +258,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         print("OPENAI_API_KEY is required for the model quality gate", file=sys.stderr)
         return 2
-    from openai import OpenAI
-
     try:
-        with OpenAI(timeout=45.0, max_retries=1) as client:
+        with openai.OpenAI(
+            timeout=QUALITY_CLIENT_TIMEOUT_SECONDS, max_retries=QUALITY_MAX_RETRIES
+        ) as client:
             answerer = OpenAICompletion(
                 client=client,
                 generation_model=arguments.model,
-                generation_max_tokens=4_096,
+                generation_max_tokens=QUALITY_MAX_OUTPUT_TOKENS,
                 generation_response_format=arguments.response_format,
             )
             report = run_quality_eval(answerer, repeats=arguments.repeats)
@@ -259,9 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         arguments.output.parent.mkdir(parents=True, exist_ok=True)
         arguments.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    except Exception:
-        # Provider and filesystem exceptions can carry credentials or generated content. The
-        # structured per-case SenseMem errors above remain available in an ordinary report.
+    except (OSError, SenseMemError, openai.OpenAIError) as error:
+        LOGGER.error(f"Model quality evaluation failed with {type(error).__name__}")
         print(
             "Model quality evaluation failed before a complete report was written", file=sys.stderr
         )

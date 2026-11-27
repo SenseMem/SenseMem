@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from test_automatic_routing import Answerer
-from test_visual_retrieval import VisualBackend
+from fixtures.routing import Answerer, VisualBackend
 
 from sensemem import (
     AssetRef,

@@ -212,7 +212,7 @@ class EventSegmentation(Traced):
                     if self._checkpoint is None:
                         self._buffer_bytes -= size
                     if previous_end is None:
-                        del self._states[stream_id]
+                        self._states.pop(stream_id)
                     raise
             else:
                 return None
@@ -285,7 +285,12 @@ class EventSegmentation(Traced):
                         separators=(",", ":"),
                     ).encode()
                 )
-                for digest in _chunk_digests(chunk):
+                digests = (
+                    (hashlib.sha256(blob.data).hexdigest() for blob in chunk.media)
+                    if isinstance(chunk, EventChunk)
+                    else (blob.digest for blob in chunk.media)
+                )
+                for digest in digests:
                     identity.update(bytes.fromhex(digest))
             ready.event_id = identity.hexdigest()
         content: list[ContentAtom] = [blob for chunk in event_chunks for blob in chunk.media]
@@ -489,6 +494,7 @@ class EventSegmentation(Traced):
         if checkpoint is None:
             return None
         saved = Checkpoint(
+            version=5,
             model=self._segmenter.event_model,
             recipe=self._segmenter.event_recipe,
             data_dir=checkpoint.data_dir,
@@ -626,12 +632,6 @@ def _chunk_size(chunk: EventChunk | CheckpointChunk) -> int:
     if isinstance(chunk, EventChunk):
         return sum(len(blob.data) for blob in chunk.media)
     return sum(blob.size_bytes for blob in chunk.media)
-
-
-def _chunk_digests(chunk: EventChunk | CheckpointChunk) -> tuple[str, ...]:
-    if isinstance(chunk, EventChunk):
-        return tuple(hashlib.sha256(blob.data).hexdigest() for blob in chunk.media)
-    return tuple(blob.digest for blob in chunk.media)
 
 
 def _validate_pending_reference(chunk: CheckpointChunk) -> None:

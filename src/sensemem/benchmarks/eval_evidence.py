@@ -41,7 +41,7 @@ class EvidenceInterval:
         }
 
 
-def _evidence(hit: SearchHit) -> EvidenceInterval:
+def evidence(hit: SearchHit) -> EvidenceInterval:
     source_id = hit.metadata.get("source_id")
     start = hit.metadata.get("start_seconds")
     end = hit.metadata.get("end_seconds")
@@ -53,7 +53,7 @@ def _evidence(hit: SearchHit) -> EvidenceInterval:
     )
 
 
-def _limited_source_evidence(source: ContextExcerpt | ContextProjection) -> EvidenceInterval:
+def limited_source_evidence(source: ContextExcerpt | ContextProjection) -> EvidenceInterval:
     """Record limited delivery without certifying original media, complete spans, or support."""
     context = source.context
     return EvidenceInterval(

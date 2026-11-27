@@ -75,7 +75,7 @@ class AffectWitness:
 class FormationProposal:
     """One typed, source-grounded semantic memory proposed by a model adapter.
 
-    ``evidence_ids=None`` uses the primary input as the sole evidence member. A supplied tuple
+    evidence_ids=None uses the primary input as the sole evidence member. A supplied tuple
     declares the offered records the proposal jointly depends on; the memory kernel verifies
     the primary source and the supplied batch/history window before commit. Typed affect links
     also require their focal cue and any record-valued object as premises.

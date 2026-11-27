@@ -2,7 +2,7 @@
 
 Formulas follow tasks/e5_horizon_lifecycle.py and scripts/aggregate_eval.py at
 bowen-upenn/PersonaMem-v3@ad80a3b1b322. The official micro uses per-row E6
-`correct`; complete warn/foil pairs additionally report `paired_correct` and F1.
+correct; complete warn/foil pairs additionally report paired_correct and F1.
 """
 
 from __future__ import annotations

@@ -49,7 +49,7 @@ class OpenAITranscriber(OpenAIClient):
         super().__init__(client, owns_client=owns_client)
         transcription_model = nonempty_text(transcription_model, "transcription_model")
         transcription_prompt, transcription_keywords, transcription_languages = (
-            protocol._transcription_context(
+            protocol.transcription_context(
                 transcription_prompt,
                 transcription_keywords,
                 transcription_languages,
@@ -60,7 +60,7 @@ class OpenAITranscriber(OpenAIClient):
         self._transcription_keywords = transcription_keywords
         self._transcription_languages = transcription_languages
         self._transcription_space = (
-            protocol._default_transcription_space(
+            protocol.default_transcription_space(
                 transcription_model,
                 prompt=transcription_prompt,
                 keywords=transcription_keywords,
@@ -99,7 +99,7 @@ class OpenAITranscriber(OpenAIClient):
 
         def transcribe_one(asset: AssetRef) -> str:
             modality, media_type, path = resolved_asset(asset)
-            protocol._require_capabilities(
+            protocol.require_capabilities(
                 "transcription", frozenset({modality}), self.transcription_capabilities
             )
             create_transcription = cast(
@@ -107,14 +107,14 @@ class OpenAITranscriber(OpenAIClient):
                 self._client("transcription").audio.transcriptions.create,
             )
             try:
-                with media._transcription_file(asset, modality, media_type, path) as file:
+                with media.transcription_file(asset, modality, media_type, path) as file:
                     if file is None:
                         # A video with no audio stream carries no speech to preserve, so it
                         # costs neither a request nor a usage slot.
                         return ""
                     attempted.append(None)
                     response = create_transcription(
-                        **requests._transcription_request(
+                        **requests.transcription_request(
                             self.transcription_model,
                             file,
                             prompt=self._transcription_prompt,

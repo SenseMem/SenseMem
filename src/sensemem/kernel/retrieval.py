@@ -21,7 +21,7 @@ from sensemem.control import dump_query_failure, query_failure_key
 from sensemem.control_values import QueryFailure
 from sensemem.exceptions import ModelError, SenseMemError
 from sensemem.infrastructure.local.scoring import max_cosine_part_scores, max_cosine_scores
-from sensemem.infrastructure.local.store import IndexCandidate, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store.rows import IndexCandidate, StoredEmbedding, StoredMemory
 from sensemem.kernel.candidates import Candidates
 from sensemem.kernel.content import PreparedContent
 from sensemem.kernel.contracts import Backends
@@ -87,16 +87,16 @@ _QUERY_NOISE = re.compile(r"[^\w\s]+", re.UNICODE)
 _QUERY_SPACE = re.compile(r"\s+")
 
 
-# Depth of every index route, deliberately not a function of the requested `limit`. Each route
+# Depth of every index route, deliberately not a function of the requested limit. Each route
 # is truncated to it and a memory's dense relevance is the maximum over the routes that reached
-# it, so a `limit`-derived depth made the score -- and the lexical term weights computed over the
+# it, so a limit-derived depth made the score -- and the lexical term weights computed over the
 # candidate pool -- properties of the request: at limit 20 against limit 100, 27-39 % of the
 # candidates present in both runs reported a different dense relevance and 78-100 % a different
 # lexical bonus, over adjacent-rank cosine gaps whose median is 0.0026-0.0077. Every public
-# `limit` is capped at 100. Unquantized routes keep that fixed pool; quantized routes retain
+# limit is capped at 100. Unquantized routes keep that fixed pool; quantized routes retain
 # twice as many parents before authoritative FP32 scoring, without repeating that expansion
 # in native grouping. The depth remains independent of the requested result count. Earlier
-# widening to `limit * 3` cost 2.3x p50 on a common limit-8 query; the loop below widens further
+# widening to limit * 3 cost 2.3x p50 on a common limit-8 query; the loop below widens further
 # only when authoritative scope checks leave too few survivors.
 _ROUTE_CANDIDATES = RERANK_CANDIDATES
 _QUANTIZED_ROUTE_CANDIDATES = RERANK_CANDIDATES * 2
@@ -609,7 +609,7 @@ class Retrieval(Traced):
         scope_place_id = None if scope is None else scope.place_id
         scope_identity_id = self._pushed_identity(scope)
         with self._write_lock:
-            # A read asks for the current truth, so it closes an `add_stream` group that is still
+            # A read asks for the current truth, so it closes an add_stream group that is still
             # open on this thread instead of skipping the drain with it: the consumer that searches
             # between two yields must see the item it was just handed.
             self._projection.drain(force=True)
@@ -675,7 +675,7 @@ class Retrieval(Traced):
             with translate_storage_errors("apply search scope"):
                 # Only the number of survivors decides whether to widen, so count them under
                 # the same predicates instead of hydrating content, media assets and typed
-                # context rows and calling `len()` on the records.
+                # context rows and calling len() on the records.
                 active_count = self._store.records.count_memories(
                     candidate_parent_ids,
                     valid_at=None if scope is None else scope.valid_at,
@@ -828,7 +828,7 @@ class Retrieval(Traced):
         return tuple(result)
 
     def _pushed_identity(self, scope: RetrievalScope | None) -> str | None:
-        """Resolve a scoped identity to the ID the index projection stores, or `None`.
+        """Resolve a scoped identity to the ID the index projection stores, or None.
 
         A merge re-points every projected row onto the survivor, so a request naming a merged
         alias has to be resolved before it can be pushed down. An unknown identity is pushed

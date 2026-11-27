@@ -11,14 +11,35 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import TypeVar
+
+import httpx
 
 from sensemem import (
     AnswerPolicy,
     SenseMemError,
 )
+from sensemem.benchmarks.eval_diagnostics import quality_diagnostics
 from sensemem.benchmarks.eval_evidence import EvidenceInterval
 
+_HTTPX2: ModuleType | None
+try:
+    import httpx2 as _httpx2_module
+except ImportError:
+    _HTTPX2 = None
+else:
+    _HTTPX2 = _httpx2_module
+
+_OPENAI: ModuleType | None
+try:
+    import openai as _openai_module
+except ImportError:
+    _OPENAI = None
+else:
+    _OPENAI = _openai_module
+
+LOGGER = logging.getLogger(__name__)
 EVAL_SCHEMA_VERSION = 25
 DEFAULT_ARM = "sensemem"
 
@@ -27,10 +48,10 @@ DEFAULT_ARM = "sensemem"
 class FailureDetail:
     """Safe, stable benchmark failure diagnostics.
 
-    `message` is the provider's own words when it gave any, else the failure's text: the stable
+    message is the provider's own words when it gave any, else the failure's text: the stable
     fields say a request was rejected, only the words say whether the prompt was malformed or the
     gateway aborted its own generation, and a one-in-two-hundred failure cannot be reproduced on
-    demand afterwards. Whitespace-normalized and bounded like `scorer_error`.
+    demand afterwards. Whitespace-normalized and bounded like scorer_error.
     """
 
     source_id: str | None
@@ -51,7 +72,7 @@ class FailureDetail:
         }
 
 
-class _SystemicEmbeddingFailure(RuntimeError):
+class SystemicEmbeddingFailure(RuntimeError):
     """Stop a benchmark unit when the shared embedding service cannot serve requests."""
 
 
@@ -69,38 +90,43 @@ def _exception_chain(error: BaseException) -> tuple[BaseException, ...]:
     return tuple(chain)
 
 
+def _http_status_code(error: BaseException) -> int | None:
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code
+    if _HTTPX2 is not None and isinstance(error, _HTTPX2.HTTPStatusError):
+        return int(error.response.status_code)
+    if _OPENAI is not None and isinstance(error, _OPENAI.APIStatusError):
+        return int(error.status_code)
+    return None
+
+
+def _is_transport_outage(error: BaseException) -> bool:
+    if isinstance(
+        error, (TimeoutError, ConnectionError, httpx.TimeoutException, httpx.ConnectError)
+    ):
+        return True
+    if _HTTPX2 is not None and isinstance(error, (_HTTPX2.TimeoutException, _HTTPX2.ConnectError)):
+        return True
+    return _OPENAI is not None and isinstance(
+        error, (_OPENAI.APIConnectionError, _OPENAI.APITimeoutError)
+    )
+
+
 def _systemic_embedding_failure(error: BaseException) -> bool:
     """Recognize failures for which recursive item isolation only amplifies an outage."""
     for current in _exception_chain(error):
-        response = getattr(current, "response", None)
-        status = getattr(response, "status_code", None)
-        if status is None:
-            status = getattr(current, "status_code", None)
-        if status in _SYSTEMIC_EMBEDDING_HTTP_STATUSES:
-            return True
-        transport_type = type(current)
-        if isinstance(current, (TimeoutError, ConnectionError)) or (
-            transport_type.__module__.split(".", maxsplit=1)[0] in {"httpx", "httpcore"}
-            and transport_type.__name__
-            in {
-                "ConnectError",
-                "ConnectTimeout",
-                "PoolTimeout",
-                "ReadTimeout",
-                "TimeoutException",
-                "WriteTimeout",
-            }
-        ):
+        status = _http_status_code(current)
+        if status in _SYSTEMIC_EMBEDDING_HTTP_STATUSES or _is_transport_outage(current):
             return True
     return False
 
 
-def _raise_if_systemic_embedding(error: Exception, message: str) -> None:
-    if _systemic_embedding_stage_failure(error):
-        raise _SystemicEmbeddingFailure(message) from error
+def raise_if_systemic_embedding(error: Exception, message: str) -> None:
+    if systemic_embedding_stage_failure(error):
+        raise SystemicEmbeddingFailure(message) from error
 
 
-def _systemic_embedding_stage_failure(error: Exception) -> bool:
+def systemic_embedding_stage_failure(error: Exception) -> bool:
     return _systemic_embedding_failure(error) and any(
         isinstance(current, SenseMemError) and current.stage == "embed"
         for current in _exception_chain(error)
@@ -118,30 +144,25 @@ _TRANSIENT_REASONS = frozenset(
 )
 
 
-_Retried = TypeVar("_Retried")
+Retried = TypeVar("Retried")
 
 
 def _transient_provider_failure(error: BaseException) -> bool:
     """Recognize a provider failure that time, not a different request, resolves."""
-    try:
-        import openai
-    except ImportError:
-        return any(
-            isinstance(current, SenseMemError) and current.reason in _TRANSIENT_REASONS
-            for current in _exception_chain(error)
-        )
     for current in _exception_chain(error):
         if isinstance(current, SenseMemError) and current.reason in _TRANSIENT_REASONS:
             return True
-        if isinstance(current, openai.RateLimitError):
+        if _OPENAI is not None and isinstance(current, _OPENAI.RateLimitError):
             # Exhausted billing is a 429 too, and waiting never refills it.
-            return current.code != "insufficient_quota"
-        if isinstance(current, (openai.APIConnectionError, openai.InternalServerError)):
+            return bool(current.code != "insufficient_quota")
+        if _OPENAI is not None and isinstance(
+            current, (_OPENAI.APIConnectionError, _OPENAI.InternalServerError)
+        ):
             return True
     return False
 
 
-async def _retry_transient(operation: Callable[[], Awaitable[_Retried]]) -> _Retried:
+async def retry_transient(operation: Callable[[], Awaitable[Retried]]) -> Retried:
     """Wait out a provider outage with exponential backoff instead of recording an error.
 
     A connection reset is a fact about the network at that second, not about the answer, the
@@ -159,9 +180,7 @@ async def _retry_transient(operation: Callable[[], Awaitable[_Retried]]) -> _Ret
             if not _transient_provider_failure(error) or time.monotonic() + delay > deadline:
                 raise
             attempt += 1
-            logging.getLogger(__name__).warning(
-                "provider failure (%s); retrying in %.0fs", type(error).__name__, delay
-            )
+            LOGGER.warning(f"provider failure ({type(error).__name__}); retrying in {delay:.0f}s")
             await asyncio.sleep(delay)
 
 
@@ -186,13 +205,13 @@ class SampleResult:
     error_code: str | None
     metadata: Mapping[str, object]
     arm: str = DEFAULT_ARM
-    # Two different denominators, both needed. `candidate_count` is the pool a ranker could have
+    # Two different denominators, both needed. candidate_count is the pool a ranker could have
     # drawn from, which is what makes the random-ranker expectation meaningful;
-    # `retrieval_candidates` is how deep the retriever's own ranked list actually went.
+    # retrieval_candidates is how deep the retriever's own ranked list actually went.
     candidate_count: int = 0
     retrieval_candidates: int = 0
     # The retriever's own ranked source IDs, deepest first-party list the run produced. Task-level
-    # retrieval recall scores this list; `evidence` is what the generator cited, a different
+    # retrieval recall scores this list; evidence is what the generator cited, a different
     # quantity that an earlier version of this harness scored under the same name.
     ranked_source_ids: tuple[str, ...] = ()
     ranked_source_ids_complete: bool = False
@@ -242,8 +261,6 @@ class SampleResult:
         return identity if self.arm == DEFAULT_ARM else f"{self.arm}:{identity}"
 
     def json(self) -> dict[str, object]:
-        from sensemem.benchmarks.eval_diagnostics import quality_diagnostics
-
         payload: dict[str, object] = {
             "schema_version": EVAL_SCHEMA_VERSION,
             "sample_id": self.sample_id,
@@ -263,7 +280,7 @@ class SampleResult:
             "grounding_request": self.grounding_request,
             "recall_shape": self.recall_shape,
             "task": self.task,
-            # The policy this sample's request carried; only the product arm reaches `ask`.
+            # The policy this sample's request carried; only the product arm reaches ask.
             "answer_policy": self.answer_policy,
             "benchmark": self.benchmark,
             "dataset_sha256": self.dataset_sha256,
@@ -319,7 +336,7 @@ class SampleResult:
 
 
 @dataclass(frozen=True, slots=True)
-class _AnswerOutcome:
+class AnswerOutcome:
     prediction: str
     latency_ms: float
     confidence: float
@@ -330,11 +347,11 @@ class _AnswerOutcome:
     cached: bool = False
     error: BaseException | None = None
     # The answer's ranked list before grounding, in score order. Retrieval metrics score this;
-    # `evidence` stays the answer's grounded hits.
+    # evidence stays the answer's grounded hits.
     ranked_source_ids: tuple[str, ...] = ()
     ranked_source_ids_complete: bool = False
     retrieval_diagnostic_error: BaseException | None = None
-    # Set only by the `compile` arm: the bundle's own size, so "useful evidence per token" is
+    # Set only by the compile arm: the bundle's own size, so "useful evidence per token" is
     # computable per answered question without a second call to reconstruct it.
     compiled_chars: int | None = None
     compiled_items: int | None = None
@@ -347,7 +364,7 @@ class _AnswerOutcome:
     answer_span_id: str | None = None
 
 
-def _restored_failure(payload: Mapping[str, object]) -> FailureDetail:
+def restored_failure(payload: Mapping[str, object]) -> FailureDetail:
     return FailureDetail(
         source_id=_optional_text(payload["source_id"]),
         code=str(payload["code"]),
@@ -366,7 +383,7 @@ def _error_code(error: BaseException) -> str:
     return error.code if isinstance(error, SenseMemError) else type(error).__name__
 
 
-def _failure_detail(error: BaseException, *, source_id: str | None = None) -> FailureDetail:
+def failure_detail(error: BaseException, *, source_id: str | None = None) -> FailureDetail:
     chain = _exception_chain(error)
     cause = chain[-1] if len(chain) > 1 else None
     return FailureDetail(
@@ -389,9 +406,10 @@ def _failure_message(error: BaseException) -> str | None:
     names the request URL, and a URL may carry credentials.
     """
     for current in _exception_chain(error):
-        body = getattr(current, "body", None)
-        message = body.get("message") if isinstance(body, Mapping) else None
-        if isinstance(message, str) and message.strip():
-            return " ".join(message.split())[:_FAILURE_MESSAGE_CHARS]
+        if _OPENAI is not None and isinstance(current, _OPENAI.APIStatusError):
+            body = current.body
+            message = body.get("message") if isinstance(body, Mapping) else None
+            if isinstance(message, str) and message.strip():
+                return " ".join(message.split())[:_FAILURE_MESSAGE_CHARS]
     text = " ".join(str(error).split())
     return text[:_FAILURE_MESSAGE_CHARS] or None

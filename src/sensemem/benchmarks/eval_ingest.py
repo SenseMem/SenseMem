@@ -35,18 +35,18 @@ from sensemem.benchmarks.eval_config import (
     INGEST_MODES,
 )
 from sensemem.benchmarks.eval_console import (
-    _announce,
+    announce,
 )
-from sensemem.benchmarks.eval_inputs import _memory_content, _memory_metadata, _prefix_end
+from sensemem.benchmarks.eval_inputs import memory_content, memory_metadata, prefix_end
 from sensemem.benchmarks.eval_results import (
     DEFAULT_ARM,
     FailureDetail,
-    _failure_detail,
-    _raise_if_systemic_embedding,
-    _restored_failure,
-    _retry_transient,
+    failure_detail,
+    raise_if_systemic_embedding,
+    restored_failure,
+    retry_transient,
 )
-from sensemem.benchmarks.eval_runtime import _SDK_OPERATION_LIMIT, MemoryFactory, _model_operation
+from sensemem.benchmarks.eval_runtime import SDK_OPERATION_LIMIT, MemoryFactory, model_operation
 from sensemem.benchmarks.eval_telemetry import (
     BENCHMARK_ARM,
     BENCHMARK_INGEST_ITEMS,
@@ -58,7 +58,7 @@ from sensemem.benchmarks.isolation import BenchmarkRun
 
 
 @dataclass(frozen=True, slots=True)
-class _IngestCheckpoint:
+class IngestCheckpoint:
     """Record how much of one unit's causal prefix is durably in its store.
 
     A store is authoritative for what it holds but says nothing about which benchmark items were
@@ -84,7 +84,7 @@ class _IngestCheckpoint:
         # A store ingested past the first pending cutoff would answer that cutoff's questions with
         # memories they must not have seen yet. That leak is silent and scores well, so the store
         # is rebuilt rather than reused.
-        if ingested and cutoffs and ingested > _prefix_end(memories, cutoffs[0]):
+        if ingested and cutoffs and ingested > prefix_end(memories, cutoffs[0]):
             ingested, failures = 0, []
         # A note is evidence only about a store that is still there. One left over from a deleted
         # or already-rebuilt directory would skip a prefix that nothing ever wrote.
@@ -94,7 +94,7 @@ class _IngestCheckpoint:
         if self.run.resume and not ingested:
             if occupied:
                 # A store keeps its ownership lock inside its own directory, so deleting one
-                # another run still owns would replace that run's `DataDirectoryInUseError` with
+                # another run still owns would replace that run's DataDirectoryInUseError with
                 # two live writers. Opening the store first is how this run learns through the
                 # public path that the directory it is about to destroy is nobody else's.
                 async with memory_factory(data_dir):
@@ -142,7 +142,7 @@ class _IngestCheckpoint:
         ):
             return 0, []
         try:
-            details = [_restored_failure(detail) for detail in failures]
+            details = [restored_failure(detail) for detail in failures]
         except (KeyError, TypeError):
             return 0, []
         return ingested, details
@@ -153,8 +153,8 @@ def _holds_anything(directory: Path) -> bool:
     return directory.is_dir() and any(directory.iterdir())
 
 
-def _ingest_observer(
-    checkpoint: _IngestCheckpoint | None,
+def ingest_observer(
+    checkpoint: IngestCheckpoint | None,
     ingested: int,
     failures: Sequence[FailureDetail],
     notify: Callable[[int], None],
@@ -179,7 +179,7 @@ def _durable_write(
 ) -> Iterator[None]:
     """Time one accepted batch through to durable, searchable memory.
 
-    ``add``/``add_many`` return only after SQLite commits, Zvec flushes, and the search-index
+    add/add_many return only after SQLite commits, Zvec flushes, and the search-index
     outbox is acknowledged, so this span measures accepted input to durable and searchable
     memory rather than the time until the call was accepted.
     """
@@ -208,8 +208,8 @@ async def _capture_chunk(
     arm: str = DEFAULT_ARM,
     model_semaphore: asyncio.Semaphore | None = None,
 ) -> int:
-    """Ingest one chunk through `capture()` + `settle()`, so both produce real
-    `sensemem.capture` and `sensemem.settle` spans -- the only way `--ingest capture` makes
+    """Ingest one chunk through capture() + settle(), so both produce real
+    sensemem.capture and sensemem.settle spans -- the only way --ingest capture makes
     capture acknowledgement and time-to-searchable measurable by a real run instead of
     unmeasurable.
     """
@@ -218,10 +218,10 @@ async def _capture_chunk(
         for item in chunk:
             try:
                 await memory.capture(
-                    _memory_content(item),
+                    memory_content(item),
                     occurred_at=item.occurred_at,
                     occurred_end=item.occurred_end,
-                    metadata=_memory_metadata(item),
+                    metadata=memory_metadata(item),
                     memory_type=MemoryCategory.EPISODIC,
                 )
             except IndexUnavailableError:
@@ -229,27 +229,27 @@ async def _capture_chunk(
             except Exception as error:
                 failures += 1
                 if on_failure is not None:
-                    on_failure(_failure_detail(error, source_id=item.source_id))
+                    on_failure(failure_detail(error, source_id=item.source_id))
         # Drain the store's whole capture queue so the span still measures durable-and-searchable
-        # wall time, as `_ingest_json` documents for the `add` path. Each `AsyncMemory` here is
+        # wall time, as _ingest_json documents for the add path. Each AsyncMemory here is
         # one evaluation unit's isolated store and cutoffs settle sequentially, so this only ever
         # drains what this unit itself captured.
         while True:
             try:
-                settled = await _model_operation(model_semaphore, lambda: memory.settle(limit=100))
+                settled = await model_operation(model_semaphore, lambda: memory.settle(limit=100))
             except IndexUnavailableError:
                 raise
             except Exception as error:
                 failures += 1
                 if on_failure is not None:
-                    on_failure(_failure_detail(error))
+                    on_failure(failure_detail(error))
                 continue
             if not settled:
                 break
     return failures
 
 
-async def _deliberate_after_ingest(memory: AsyncMemory) -> int:
+async def deliberate_after_ingest(memory: AsyncMemory) -> int:
     """Run the slow loop over what was just ingested, before the cutoff's questions are asked.
 
     Between ingest and questions rather than after the whole unit: that is where a real
@@ -260,7 +260,7 @@ async def _deliberate_after_ingest(memory: AsyncMemory) -> int:
     return report.applied
 
 
-async def _ingest(  # noqa: C901 - bisection, systemic-outage abort, and transient retry share one chunk path
+async def ingest(  # noqa: C901 - bisection, systemic-outage abort, and transient retry share one chunk path
     memory: AsyncMemory,
     items: Sequence[MemoryItem],
     *,
@@ -275,7 +275,7 @@ async def _ingest(  # noqa: C901 - bisection, systemic-outage abort, and transie
     ingest_concurrency: int = 1,
     run_state: IngestRunState | None = None,
 ) -> int:
-    # An arm that reads no memory never reaches here: `_run_unit` skips ingestion for it, so the
+    # An arm that reads no memory never reaches here: _run_unit skips ingestion for it, so the
     # blind control cannot accidentally score a store it was supposed to run without.
     run_state = run_state or IngestRunState()
     if mode not in INGEST_MODES:
@@ -288,7 +288,7 @@ async def _ingest(  # noqa: C901 - bisection, systemic-outage abort, and transie
         chunk: Sequence[MemoryItem],
         failure_callback: Callable[[FailureDetail], None] | None = on_failure,
     ) -> int:
-        contents = tuple(_memory_content(item) for item in chunk)
+        contents = tuple(memory_content(item) for item in chunk)
 
         async def add_all() -> None:
             with _durable_write(tracer, len(chunk), arm=arm):
@@ -296,7 +296,7 @@ async def _ingest(  # noqa: C901 - bisection, systemic-outage abort, and transie
                     contents,
                     occurred_at=tuple(item.occurred_at for item in chunk),
                     occurred_end=tuple(item.occurred_end for item in chunk),
-                    metadata=tuple(_memory_metadata(item) for item in chunk),
+                    metadata=tuple(memory_metadata(item) for item in chunk),
                     memory_type=MemoryCategory.EPISODIC,
                 )
 
@@ -306,17 +306,17 @@ async def _ingest(  # noqa: C901 - bisection, systemic-outage abort, and transie
                     contents[0],
                     occurred_at=chunk[0].occurred_at,
                     occurred_end=chunk[0].occurred_end,
-                    metadata=_memory_metadata(chunk[0]),
+                    metadata=memory_metadata(chunk[0]),
                     memory_type=MemoryCategory.EPISODIC,
                 )
 
         try:
-            await _retry_transient(lambda: _model_operation(model_semaphore, add_all))
+            await retry_transient(lambda: model_operation(model_semaphore, add_all))
             return 0
         except IndexUnavailableError:
             raise
         except Exception as error:
-            _raise_if_systemic_embedding(
+            raise_if_systemic_embedding(
                 error, "systemic embedding provider failure; item isolation aborted"
             )
             if len(chunk) > 1:
@@ -325,16 +325,16 @@ async def _ingest(  # noqa: C901 - bisection, systemic-outage abort, and transie
                     chunk[middle:], failure_callback
                 )
         try:
-            await _retry_transient(lambda: _model_operation(model_semaphore, add_first))
+            await retry_transient(lambda: model_operation(model_semaphore, add_first))
         except IndexUnavailableError:
             raise
         except Exception as error:
-            _raise_if_systemic_embedding(
+            raise_if_systemic_embedding(
                 error, "systemic embedding provider failure; single-item fallback aborted"
             )
             _announce_first_ingest_failure(error, chunk[0].source_id, run_state)
             if failure_callback is not None:
-                failure_callback(_failure_detail(error, source_id=chunk[0].source_id))
+                failure_callback(failure_detail(error, source_id=chunk[0].source_id))
             return 1
         return 0
 
@@ -402,7 +402,7 @@ async def _ingest_chunks(  # noqa: C901 - bounded waves drain before releasing o
                 await asyncio.gather(*predecessors)
             return await ingest_chunk(chunk)
 
-        width = min(ingest_concurrency, _SDK_OPERATION_LIMIT)
+        width = min(ingest_concurrency, SDK_OPERATION_LIMIT)
         for start in range(0, len(items), batch_size * width):
             offsets = range(start, min(start + batch_size * width, len(items)), batch_size)
             chunks = [items[offset : offset + batch_size] for offset in offsets]
@@ -471,7 +471,7 @@ def _announce_first_ingest_failure(
 ) -> None:
     """Say once, immediately, that writes are failing.
 
-    Ingest failures are bisected, counted and reported in the final table's `unwritten` column,
+    Ingest failures are bisected, counted and reported in the final table's unwritten column,
     which is right for a corpus with a few unreadable items and wrong for a misconfiguration that
     fails every write: a run with an embedding dimension the model does not produce looked alive
     for fourteen minutes while every store on the machine stayed empty. One line at the first
@@ -480,9 +480,9 @@ def _announce_first_ingest_failure(
     if state.first_failure_announced:
         return
     state.first_failure_announced = True
-    detail = _failure_detail(error, source_id=source_id)
+    detail = failure_detail(error, source_id=source_id)
     reason = "" if detail.reason is None else f"/{detail.reason}"
-    _announce(
+    announce(
         f"first ingest failure at source {source_id} ({detail.code}{reason}): {error}"
         " -- further failures are counted in the unwritten column"
     )

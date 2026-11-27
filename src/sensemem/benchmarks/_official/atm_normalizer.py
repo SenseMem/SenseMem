@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Tuple
 
 ABSTENTION_PHRASES = [
     "unknown",
@@ -349,17 +349,17 @@ def is_abstention(text: str) -> bool:
     return False
 
 
-def _month_to_number(name: str) -> Optional[int]:
+def _month_to_number(name: str) -> int | None:
     return MONTHS.get(name.lower())
 
 
-def _format_date(year: Optional[int], month: int, day: int) -> str:
+def _format_date(year: int | None, month: int, day: int) -> str:
     if year:
         return f"{year:04d}{month:02d}{day:02d}"
     return f"{month:02d}{day:02d}"
 
 
-def _format_range(year: Optional[int], month: int, start_day: int, end_day: int) -> str:
+def _format_range(year: int | None, month: int, start_day: int, end_day: int) -> str:
     if year:
         start = f"{year:04d}{month:02d}{start_day:02d}"
         end = f"{year:04d}{month:02d}{end_day:02d}"
@@ -416,7 +416,7 @@ def extract_dates(text: str) -> List[DateToken]:
     return dedupe_tokens(tokens)
 
 
-def _normalize_time(hour: int, minute: int, ampm: Optional[str]) -> str:
+def _normalize_time(hour: int, minute: int, ampm: str | None) -> str:
     if ampm:
         ampm = ampm.lower()
         if hour == 12:
@@ -486,7 +486,7 @@ def remove_date_time_text(text: str) -> str:
     return cleaned
 
 
-def _normalize_decimal(value: str) -> Optional[Decimal]:
+def _normalize_decimal(value: str) -> Decimal | None:
     try:
         return Decimal(value.replace(",", ""))
     except (InvalidOperation, ValueError):
@@ -623,7 +623,7 @@ def location_token_match(ground_truth: str, prediction: str) -> bool:
     return all(token in pred_tokens for token in filtered)
 
 
-def extract_reference_date(text: str) -> Optional[date]:
+def extract_reference_date(text: str) -> date | None:
     tokens = extract_dates(text)
     for token in tokens:
         value = token.value
@@ -635,7 +635,7 @@ def extract_reference_date(text: str) -> Optional[date]:
     return None
 
 
-def resolve_relative_dates(text: str, reference: Optional[date]) -> str:
+def resolve_relative_dates(text: str, reference: date | None) -> str:
     if not reference:
         return text
     mapping = {

@@ -274,7 +274,7 @@ class PrefetchResult:
 
 @dataclass(frozen=True, slots=True)
 class PrefetchUpdate:
-    """A completed speculative result tied to the revision returned by ``submit``."""
+    """A completed speculative result tied to the revision returned by submit."""
 
     revision: int
     result: PrefetchResult
@@ -289,9 +289,9 @@ class PrefetchUpdate:
 class StreamCommit:
     """One durable final observation, with retrieval skipped when awaiting settlement.
 
-    `pending_settlement` is true when the reducer committed through `capture` rather than `add`:
-    the record is durable and readable but has no vectors yet, so it stays invisible to `search`
-    until the host calls `settle`. Both `prefetch` and `retrieval_error` may then be `None`.
+    pending_settlement is true when the reducer committed through capture rather than add:
+    the record is durable and readable but has no vectors yet, so it stays invisible to search
+    until the host calls settle. Both prefetch and retrieval_error may then be None.
     """
 
     record: MemoryRecord

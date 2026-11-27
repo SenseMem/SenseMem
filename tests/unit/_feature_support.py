@@ -33,7 +33,6 @@ class TinyEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         vectors = []
         for value in inputs:
             material = value.text.encode()
@@ -65,7 +64,6 @@ class CueConsolidator:
         trigger: MemoryTrigger,
         query_failure: QueryFailure | None = None,
     ) -> tuple[MemoryOperation, ...]:
-        del trigger
         over_trait = any(
             record.context is not None and record.context.kind is RecordKind.TRAIT
             for record in evidence

@@ -16,14 +16,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
+import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from sensemem import AsyncMemory, Blob, MemoryRecord, MemorySpec, SearchHit
 from sensemem.api.content import StrictModel
 from sensemem.api.errors import register_error_handlers
+from sensemem.benchmarks import eval_backends
 from sensemem.benchmarks.artifact_io import encode_json_bytes, replace_artifact_files
-from sensemem.benchmarks.eval_config import _read_config_document
+from sensemem.benchmarks.eval_config import read_config_document
+from sensemem.benchmarks.model_config import ModelConfig
 from sensemem.content import ContentInput
 from sensemem.infrastructure.local._lock import DataDirectoryLock
 
@@ -336,25 +339,19 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     if not 1 <= arguments.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     try:
-        values = dict(_read_config_document(arguments.config.expanduser().resolve()))
+        values = dict(read_config_document(arguments.config.expanduser().resolve()))
         values.pop("benchmark", None)
         if values.get("embedding") is None:
             raise ValueError("benchmark config requires an explicit embedding section")
         config = MemorySpec.model_validate(values).model_copy(update={"generation": None})
     except ValueError as error:
         parser.error(str(error))
-    try:
-        import uvicorn
-    except ImportError:
-        parser.error("serving requires uvicorn and sensemem[benchmarks,server]")
-    from sensemem.benchmarks.eval_backends import _BackendPool
-    from sensemem.benchmarks.model_config import ModelConfig
 
     with ExitStack() as cleanup:
         root = arguments.data_root.expanduser().resolve()
         owner = DataDirectoryLock(root)
         cleanup.callback(owner.close)
-        pool = _BackendPool(ModelConfig(), memory_config=config)
+        pool = eval_backends.BackendPool(ModelConfig(), memory_config=config)
         cleanup.callback(pool.close)
         uvicorn.run(
             create_app(

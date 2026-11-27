@@ -13,8 +13,8 @@ def test_hardware_metadata_records_reproducible_gpu_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = (
-        "0, NVIDIA GeForce RTX 5090, GPU-one, 32607, 580.178.04, 575.00\n"
-        "1, NVIDIA GPU, GPU-two, N/A, 580.178.04, N/A\n"
+        "0, Fixture GPU, GPU-one, 32607, 580.178.04, 575.00\n"
+        "1, Secondary GPU, GPU-two, N/A, 580.178.04, N/A\n"
     )
     monkeypatch.setattr(
         subprocess,
@@ -31,7 +31,7 @@ def test_hardware_metadata_records_reproducible_gpu_facts(
     assert metadata["gpus"] == [
         {
             "index": 0,
-            "name": "NVIDIA GeForce RTX 5090",
+            "name": "Fixture GPU",
             "uuid": "GPU-one",
             "memory_total_mib": 32607,
             "driver_version": "580.178.04",
@@ -39,7 +39,7 @@ def test_hardware_metadata_records_reproducible_gpu_facts(
         },
         {
             "index": 1,
-            "name": "NVIDIA GPU",
+            "name": "Secondary GPU",
             "uuid": "GPU-two",
             "memory_total_mib": None,
             "driver_version": "580.178.04",

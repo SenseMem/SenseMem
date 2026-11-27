@@ -40,7 +40,7 @@ class _ScriptedEmbedder:
     """Places records at chosen angles from the query, so a test can dictate the ranking.
 
     The gate compares linked rows against the candidates the ask ranked, and that pool is
-    `min(100, limit * 3)` deep. A hash embedder cannot say which record lands inside it, so a test
+    min(100, limit * 3) deep. A hash embedder cannot say which record lands inside it, so a test
     about the gate has to choose: text mapped to an angle, the query at zero, and cosine order is
     the order the angles were written.
     """
@@ -58,7 +58,6 @@ class _ScriptedEmbedder:
         inputs: Sequence[ModelInput],
         task: EmbedTask = EmbedTask.DOCUMENT,
     ) -> tuple[tuple[float, ...], ...]:
-        del task
         vectors = []
         for value in inputs:
             angle = next(
@@ -90,7 +89,6 @@ class _RecordingAnswerer:
         answer_policy: AnswerPolicy = "strict",
         exhaustive: bool = False,
     ) -> AnswerResult:
-        del answer_policy, exhaustive
         grounded = tuple(hits)
         self.questions.append(question)
         self.grounded.append(grounded)
@@ -232,7 +230,7 @@ def test_expansion_is_off_by_default_and_changes_nothing(tmp_path: Path) -> None
     assert "linked to the evidence above" not in (answerer.questions[-1].text or "")
 
 
-# One capture whose partner the ranking never proposes: `limit=1` ranks three candidates, and the
+# One capture whose partner the ranking never proposes: limit=1 ranks three candidates, and the
 # partner is placed fifth. Distractors fill the pool so the gate has something to discard.
 _FAR_PARTNER = {
     "a red wrench on the bench": 0.0,
@@ -343,10 +341,10 @@ def test_evidence_expansion_max_rows_must_be_positive(tmp_path: Path) -> None:
 def test_evidence_expansion_max_rows_is_bounded_by_the_store_read_it_becomes(
     tmp_path: Path,
 ) -> None:
-    """The value goes straight to a recall read's own `max_rows`, which refuses 501.
+    """The value goes straight to a recall read's own max_rows, which refuses 501.
 
     Unbounded at wiring, a caller who set it high opened a memory that worked and then raised a
-    bare store `ValueError` out of every `ask` -- policy failing at query time instead of once.
+    bare store ValueError out of every ask -- policy failing at query time instead of once.
     """
     with pytest.raises(ValidationError):
         Memory(
@@ -371,7 +369,7 @@ _ONE_SLOT = {
 def test_the_note_names_only_the_edges_that_supplied_a_row(tmp_path: Path) -> None:
     """Attribution is a claim to the reader, so it is counted over the rows it actually got.
 
-    Counted over what the edges linked to instead, scope and `max_rows` drop rows between the two
+    Counted over what the edges linked to instead, scope and max_rows drop rows between the two
     and the prompt tells a reader a record is there because it shares a capture when the capture
     edge supplied nothing at all.
     """
@@ -445,9 +443,9 @@ def test_a_linked_row_the_ranking_also_ranked_is_still_offered(tmp_path: Path) -
     """Pool membership is not window membership, so it cannot decide what expansion admits.
 
     Discarding a linked row that appears anywhere in the candidate pool was tried and measured
-    harmful: with no character budget the pool is `min(100, limit * 3)` and the window is `limit`,
+    harmful: with no character budget the pool is min(100, limit * 3) and the window is limit,
     so a gold row at rank 20 is in the pool and will never be in the window. What removes the rows
-    a wider window would have held anyway is `pack_grounding`'s dedup, which is the only place
+    a wider window would have held anyway is pack_grounding's dedup, which is the only place
     that knows what the window holds.
     """
     answerer = _RecordingAnswerer()
@@ -513,9 +511,9 @@ def test_expansion_media_rows_stop_at_the_cap_a_plan_s_media_rows_stop_at() -> N
     """Linked clips cost recognition writes exactly as a plan's matched clips do.
 
     A capture on a photo corpus is a day of photographs, so an unbounded expansion could follow a
-    `limit`-row window with `evidence_expansion_max_rows` clips -- each one paying face and speech
+    limit-row window with evidence_expansion_max_rows clips -- each one paying face and speech
     recognition before the answer call and again on every replan round, which is the cost
-    `_budgeted_recall` already refuses to let a set read run up. The cap is a packing pass like
+    _budgeted_recall already refuses to let a set read run up. The cap is a packing pass like
     every other bound here, so a text row behind a refused clip still gets in.
     """
     window = (_hit("w1"),)

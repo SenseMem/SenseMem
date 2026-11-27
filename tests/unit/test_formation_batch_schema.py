@@ -1,11 +1,11 @@
 """Strict formation batches constrain coverage while local semantics remain authoritative."""
 
 import json
-from typing import Any, Literal
+from typing import Literal
 
 import httpx2 as httpx
 import pytest
-from test_openai_adapters import _sdk_client
+from fixtures.openai import sdk_client as _sdk_client
 
 from sensemem import FormationInput, ModelError, ModelInput, ObservationContext
 from sensemem.models._openai_schemas import response_schema
@@ -50,7 +50,7 @@ def _reply(aliases: list[str]) -> httpx.Response:
 def test_each_batch_uses_its_own_envelope_without_forcing_facts(
     mode: Literal["json_schema", "json_object"],
 ) -> None:
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -69,9 +69,13 @@ def test_each_batch_uses_its_own_envelope_without_forcing_facts(
         if mode == "json_object":
             assert body["response_format"] == {"type": "json_object"}
             continue
-        wire = body["response_format"]["json_schema"]
+        response_format = body["response_format"]
+        assert isinstance(response_format, dict)
+        wire = response_format["json_schema"]
+        assert isinstance(wire, dict)
         assert wire["name"] == "formation" and wire["strict"] is True
         schema = wire["schema"]
+        assert isinstance(schema, dict)
         items = schema["properties"]["items"]
         assert items["minItems"] == items["maxItems"] == count
         fields = items["items"]["properties"]
@@ -80,14 +84,15 @@ def test_each_batch_uses_its_own_envelope_without_forcing_facts(
             "enum": [f"observation_{index}" for index in range(count)],
         }
         # Only envelope cardinality and source aliases change. Empty proposal sets stay valid.
-        del items["minItems"], items["maxItems"]
+        items.pop("minItems")
+        items.pop("maxItems")
         fields["observation_id"] = {"type": "string"}
         assert schema == original
     assert response_schema("formation") == original
 
 
 def test_semantic_repair_retains_the_exact_batch_schema() -> None:
-    sent: list[dict[str, Any]] = []
+    sent: list[dict[str, object]] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -99,8 +104,11 @@ def test_semantic_repair_retains_the_exact_batch_schema() -> None:
         assert adapter.form(_inputs(4)) == ((),) * 4
     assert len(sent) == 2
     assert sent[0]["response_format"] == sent[1]["response_format"]
-    assert "Repair only the JSON envelope" in sent[1]["messages"][1]["content"]
-    assert sent[0]["messages"][0] == sent[1]["messages"][0]
+    first_messages = sent[0]["messages"]
+    second_messages = sent[1]["messages"]
+    assert isinstance(first_messages, list) and isinstance(second_messages, list)
+    assert "Repair only the JSON envelope" in second_messages[1]["content"]
+    assert first_messages[0] == second_messages[0]
 
 
 @pytest.mark.parametrize(

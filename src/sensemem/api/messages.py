@@ -1,6 +1,6 @@
 """Default failure messages shared by REST and MCP.
 
-Kept apart from `errors` so the MCP surface, which installs without FastAPI, can reach them.
+Kept apart from errors so the MCP surface, which installs without FastAPI, can reach them.
 """
 
 from __future__ import annotations

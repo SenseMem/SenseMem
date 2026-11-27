@@ -14,11 +14,11 @@ from sensemem.records import SearchHit
 class ContextCandidate:
     """One eligible anchor and the kernel-calculated cost of its required evidence.
 
-    ``chars`` prices the anchor's rendered line, including its media; ``section_chars``
-    prices its section heading. ``closure_chars`` includes every required record, heading,
+    chars prices the anchor's rendered line, including its media; section_chars
+    prices its section heading. closure_chars includes every required record, heading,
     and proof when admitted alone. Shared records and proofs are charged once by the kernel,
     so that standalone cost is an upper bound on the marginal cost of a later admission.
-    ``required_ids`` includes the anchor and any evidence or conflicting assertions it needs.
+    required_ids includes the anchor and any evidence or conflicting assertions it needs.
     These values describe evidence; a selector cannot replace or edit it.
     """
 
@@ -37,9 +37,9 @@ class ContextCandidate:
 class ContextSelectionRequest:
     """Authorized candidates and the remaining evidence budget for one selection pass.
 
-    ``reserved_chars`` already includes the context frame and admitted temporary context;
-    ``budget.max_items`` is the number of memory slots left after that temporary context.
-    ``closed_evidence`` means admission must preserve multi-record or proof-bearing closures.
+    reserved_chars already includes the context frame and admitted temporary context;
+    budget.max_items is the number of memory slots left after that temporary context.
+    closed_evidence means admission must preserve multi-record or proof-bearing closures.
     A compiler may request selection again after optional evidence annotations change costs.
     """
 
@@ -65,11 +65,11 @@ class ContextSelection:
 class ContextSelector(Protocol):
     """Propose anchor priority and diversity; the compiler alone admits evidence.
 
-    Returning a subset deliberately excludes other anchors; empty ``anchor_ids`` excludes
+    Returning a subset deliberately excludes other anchors; empty anchor_ids excludes
     all of them. The kernel retains consent, complete evidence, conflicts, and every budget
     check. Selection priority does not change the retrieval scores on the resulting hits.
     Implementations are deterministic computations over the request and perform no model or
-    storage work. ``Memory`` owns the selector and closes it with its other plugins.
+    storage work. Memory owns the selector and closes it with its other plugins.
     """
 
     def select(self, request: ContextSelectionRequest) -> ContextSelection: ...

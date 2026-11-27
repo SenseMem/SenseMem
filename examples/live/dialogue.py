@@ -181,8 +181,8 @@ async def capture_dialogue(
     reviewed_evidence: dict[str, object] = {}
     playback = supplied.playback
     content = (
-        (f"你\uff1a\n{supplied.user.text}\n\n" if supplied.user is not None else "")
-        + f"SenseMem\uff1a\n{supplied.assistant.text if supplied.assistant.text.strip() else '语音回复'}"
+        (f"User:\n{supplied.user.text}\n\n" if supplied.user is not None else "")
+        + f"SenseMem:\n{supplied.assistant.text if supplied.assistant.text.strip() else 'Voice reply'}"
     )
     if supplied.origin == "proactive":
         assert reviewed_memory_ids is not None

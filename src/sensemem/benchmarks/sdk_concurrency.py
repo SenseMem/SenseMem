@@ -37,6 +37,8 @@ from sensemem import (
 )
 from sensemem.benchmarks.eval_statistics import percentile
 
+WORKER_BARRIER_TIMEOUT_SECONDS = 30
+
 
 class SyntheticEmbedder:
     """Precomputed independent unit vectors, with optional simulated model latency."""
@@ -175,7 +177,7 @@ def run_case(
                 for number in range(concurrency)
             ]
             cpu_started, started = process_time(), perf_counter()
-            barrier.wait(timeout=30)
+            barrier.wait(timeout=WORKER_BARRIER_TIMEOUT_SECONDS)
             results = [future.result() for future in futures]
             seconds, cpu_seconds = perf_counter() - started, process_time() - cpu_started
         latencies = [latency for successful, _, _, _ in results for latency in successful]
@@ -223,7 +225,7 @@ def _start_worker(
     number: int,
     call: Callable[[], tuple[list[float], Counter[str], list[float], list[str]]],
 ) -> tuple[list[float], Counter[str], list[float], list[str]]:
-    barrier.wait(timeout=30)
+    barrier.wait(timeout=WORKER_BARRIER_TIMEOUT_SECONDS)
     # CPython's profiling backend permits one active cProfile collector.
     if profile_dir is None or number != 0:
         return call()

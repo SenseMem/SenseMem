@@ -17,7 +17,7 @@ from sensemem.api.messages import MESSAGE_BY_CODE as MESSAGE_BY_CODE
 from sensemem.api.messages import error_message
 from sensemem.exceptions import SenseMemError, ValidationError
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 _RETRY_AFTER_SECONDS = "1"
 # Subjects for these codes describe server state, not caller input, so an unauthenticated client
 # gets the code, reason, and stage without the local path or row the failure names.
@@ -156,7 +156,7 @@ def exception_response(error: Exception) -> JSONResponse:
             ),
         )
     trace_id = _trace_id()
-    _LOGGER.error("unhandled API error (%s)", type(error).__name__, extra={"trace_id": trace_id})
+    LOGGER.error(f"unhandled API error ({type(error).__name__})", extra={"trace_id": trace_id})
     return error_response(
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         "internal_error",

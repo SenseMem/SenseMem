@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import TypeVar
 
 from sensemem._content import content_atoms, snapshot_content
 from sensemem._validation import nonempty_text, positive_int
@@ -220,9 +220,9 @@ class AsyncOmniPrefetch:
 class AsyncCaptureStream:
     """Reduce associated capture streams into retrieval and durable memories.
 
-    `capture=True` commits each `FINAL` through `Memory.capture()` instead of `Memory.add()`, so
-    automatic retrieval is skipped and every `StreamCommit` reports `pending_settlement` with
-    `prefetch=None`. The host then owes `settle()`; the default stays the strong `add()`.
+    capture=True commits each FINAL through Memory.capture() instead of Memory.add(), so
+    automatic retrieval is skipped and every StreamCommit reports pending_settlement with
+    prefetch=None. The host then owes settle(); the default stays the strong add().
     """
 
     def __init__(
@@ -250,7 +250,7 @@ class AsyncCaptureStream:
     async def consume(  # noqa: C901 - the three-state reducer is intentionally inline
         self,
         events: AsyncIterable[StreamEvent],
-    ) -> AsyncIterator[StreamCommit]:
+    ) -> AsyncGenerator[StreamCommit, None]:
         """Yield only final observations; partials, cancellation, and EOF never write."""
         if not isinstance(events, AsyncIterable):
             raise ValidationError("events must be an async iterable of StreamEvent values")
@@ -351,28 +351,28 @@ class AsyncCaptureStream:
         prefetches[stream_id] = prefetch
         return prefetch
 
-    def _final_query(self, item: ContentInput | StreamInput) -> ContentInput:
-        if not isinstance(item, StreamInput) or (
-            item.transcript is None and item.description is None
+    def _final_query(self, entry: ContentInput | StreamInput) -> ContentInput:
+        if not isinstance(entry, StreamInput) or (
+            entry.transcript is None and entry.description is None
         ):
-            return item.content if isinstance(item, StreamInput) else item
+            return entry.content if isinstance(entry, StreamInput) else entry
         capabilities = self._memory.capabilities.embedding
         if Modality.TEXT not in capabilities:
-            return item.content
+            return entry.content
         routed: list[ContentAtom] = [
-            value for value in (item.transcript, item.description) if value is not None
+            value for value in (entry.transcript, entry.description) if value is not None
         ]
-        for atom in content_atoms(item.content):
+        for atom in content_atoms(entry.content):
             modality = declared_atom_modality(atom)
             if (
                 modality is Modality.AUDIO
-                and item.transcript is not None
+                and entry.transcript is not None
                 and modality not in capabilities
             ):
                 continue
             if (
                 modality in {Modality.IMAGE, Modality.VIDEO}
-                and item.description is not None
+                and entry.description is not None
                 and modality not in capabilities
             ):
                 continue
@@ -391,7 +391,7 @@ def _stream_context(context: StreamContext) -> Callable[[], ObservationContext |
 
     A capture stream outlives the observations it commits, so a robot's pose is not a property
     of the stream. A callable is read once per closed observation, which is the only moment at
-    which the adapter knows which interval the pose belongs to. A fixed `ObservationContext`
+    which the adapter knows which interval the pose belongs to. A fixed ObservationContext
     stays accepted because a static camera really does have one.
     """
     if context is None:
@@ -502,9 +502,9 @@ class AsyncEventStream:
     async def append(self, chunk: EventChunk) -> None:
         """Flush a window to the native checkpoint without waiting for any model work.
 
-        Requires ``checkpoint_path``. Concurrent appends are serialized at durable acceptance;
-        one ``process()`` may assess earlier input concurrently. ``max_pending_bytes`` bounds
-        unassessed staged media separately from the active ``max_buffer_bytes`` budget.
+        Requires checkpoint_path. Concurrent appends are serialized at durable acceptance;
+        one process() may assess earlier input concurrently. max_pending_bytes bounds
+        unassessed staged media separately from the active max_buffer_bytes budget.
         """
         if self._checkpoint_path is None:
             raise ValidationError("append requires checkpoint_path for durable acceptance")
@@ -520,7 +520,7 @@ class AsyncEventStream:
     async def process(self, *, end_of_stream: bool = False) -> AsyncIterator[StreamCommit]:
         """Drain arrived input through one bounded semantic processor.
 
-        Adjacent queued windows are assessed together within ``max_chunks`` and the active
+        Adjacent queued windows are assessed together within max_chunks and the active
         byte budget. Idle input does not imply EOF. Explicit EOF assesses the final suffix
         without forcing completion; source bytes remain resumable when a model fails.
         """
@@ -539,9 +539,7 @@ class AsyncEventStream:
         try:
             async with (
                 aclosing(self._events(end_of_stream=end_of_stream)) as events,
-                aclosing(
-                    cast(AsyncGenerator[StreamCommit, None], self._capture.consume(events))
-                ) as captures,
+                aclosing(self._capture.consume(events)) as captures,
             ):
                 async for commit in captures:
                     await self._drain_call(self._plane.acknowledge)

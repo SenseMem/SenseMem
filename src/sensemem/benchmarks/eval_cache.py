@@ -122,10 +122,16 @@ _DESCRIPTIONS_DDL = (
 )
 
 
+SQLITE_BUSY_TIMEOUT_SECONDS = 60
+
+
 def _open(path: Path, ddl: str, *, check_same_thread: bool = True) -> sqlite3.Connection:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     connection = sqlite3.connect(
-        path, timeout=60, isolation_level=None, check_same_thread=check_same_thread
+        path,
+        timeout=SQLITE_BUSY_TIMEOUT_SECONDS,
+        isolation_level=None,
+        check_same_thread=check_same_thread,
     )
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=FULL")
@@ -289,7 +295,7 @@ class DescriptionCache:
         self.hits = 0
         self.misses = 0
         self._closed = False
-        # Unlike `ResponseCache`, which every unit opens for itself, one description cache serves
+        # Unlike ResponseCache, which every unit opens for itself, one description cache serves
         # the whole run from the thread that built the backend pool while units ingest on worker
         # threads. SQLite's per-thread binding is lifted and the calls are serialised here instead.
         self._lock = threading.Lock()
@@ -313,7 +319,7 @@ class DescriptionCache:
     def put_many(self, items: Sequence[tuple[str, str]]) -> None:
         """Write one batch of captions in one transaction.
 
-        `synchronous=FULL` costs an fsync per commit, and a described batch is written as a
+        synchronous=FULL costs an fsync per commit, and a described batch is written as a
         batch, so committing each caption on its own made the cache slower than the endpoint.
         """
         rows = []

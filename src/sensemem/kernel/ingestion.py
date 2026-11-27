@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -18,7 +19,8 @@ from opentelemetry.trace import Tracer
 from sensemem._telemetry import CAPTURE_FAILED, CAPTURE_SETTLED, CAPTURE_TIME_TO_SEARCHABLE
 from sensemem.content import AssetRef, Blob, ContentInput
 from sensemem.exceptions import ModelError, SenseMemError, StorageError, ValidationError
-from sensemem.infrastructure.local.store import StaleOperationError, StoredEmbedding, StoredMemory
+from sensemem.infrastructure.local.store.errors import StaleOperationError
+from sensemem.infrastructure.local.store.rows import StoredEmbedding, StoredMemory
 from sensemem.kernel.content import (
     PreparedContent,
     PreparedMemory,
@@ -73,6 +75,7 @@ STREAM_GROUP_SECONDS = 0.25
 
 
 _T = TypeVar("_T")
+LOGGER = logging.getLogger(__name__)
 
 
 def _batch_values(
@@ -303,9 +306,9 @@ class Ingestion(Traced):
                 context = ObservationContext()
             with self._trace("sensemem.content.prepare", kind="stage"):
                 prepared_content = self._materializer.materialize_content(content, assets)
-                # Folded in here, exactly as `_add_one` folds them, so a streaming FINAL that
+                # Folded in here, exactly as _add_one folds them, so a streaming FINAL that
                 # already carries ASR or caption text keeps the same content-addressed ID on
-                # either commit path and `settle()` sees the marker instead of paying again.
+                # either commit path and settle() sees the marker instead of paying again.
                 if transcript is not None:
                     prepared_content = with_stream_transcript(prepared_content, transcript)
                 if description is not None:
@@ -330,7 +333,7 @@ class Ingestion(Traced):
                     updated_content = refresh_stream_content(previous, prepared.content)
                     refreshed = updated_content != previous
                     prepared = replace(prepared, content=updated_content)
-            # Reject unsupported media before committing a capture; otherwise `settle()` cannot
+            # Reject unsupported media before committing a capture; otherwise settle() cannot
             # process it with the configured native or derived capabilities.
             fallback_unsupported(
                 prepared.content,
@@ -380,7 +383,7 @@ class Ingestion(Traced):
                 raise StorageError("captured memory could not be read from SQLite")
             assets.persisted.update(asset.asset_id for asset in authoritative[0].assets)
             # A stream's caption arrives with the capture and its asset now exists, so the cache
-            # row is written here rather than waiting for a `settle()` that will see the marker
+            # row is written here rather than waiting for a settle() that will see the marker
             # and skip the asset entirely. A no-op for every capture that carries no caption.
             self._vision.persist_descriptions(assets)
             return self._hydrator.memory_record(authoritative[0])
@@ -405,7 +408,7 @@ class Ingestion(Traced):
                 raise ValidationError("max_attempts must be a positive integer")
             memory_ids = memory_id_filter(memory_ids)
             with translate_storage_errors("read the capture queue"):
-                # Same filter `pending_captures()` publishes, so naming records reuses the
+                # Same filter pending_captures() publishes, so naming records reuses the
                 # queue read rather than adding a second way to select them.
                 queued = self._store.captures.pending_captures(
                     limit=limit,
@@ -468,7 +471,7 @@ class Ingestion(Traced):
         index = 0
         grouped = 0
         group_started = perf_counter()
-        # A capture-routed item bypasses grouping: `capture()` writes no vectors and enqueues no
+        # A capture-routed item bypasses grouping: capture() writes no vectors and enqueues no
         # outbox work, so there is nothing for a group to batch. Deferring index commits for it
         # would only postpone work some other caller left pending, and the empty forced drain at
         # each boundary would put a Zvec lock back on the path capture exists to keep clear.
@@ -747,8 +750,8 @@ class Ingestion(Traced):
                 translate_storage_errors("write memories"),
             ):
                 # With a former configured, the same transaction enqueues the formation this
-                # call still owes. `add()` deletes the row once it returns, so the row only
-                # outlives the commit when the process did not: the next `settle()` then
+                # call still owes. add() deletes the row once it returns, so the row only
+                # outlives the commit when the process did not: the next settle() then
                 # finds an embedded record that owes formation and finishes it.
                 self._store.records.write_memories(
                     stored_memories,
@@ -778,7 +781,7 @@ class Ingestion(Traced):
             raise StorageError("written memories could not be read from SQLite", reason="io_failed")
         # After the commit: the naming assertion reindexes
         # every memory that mentions the person, and this write's own memory has to be one of
-        # them -- `speaker_memory_ids` joins through `memory_assets`, which exists only now.
+        # them -- speaker_memory_ids joins through memory_assets, which exists only now.
         self._identities.bind_speaker_names(operation)
         return (
             tuple(
@@ -788,10 +791,10 @@ class Ingestion(Traced):
         )
 
     def _complete_formation(self, formation_through: Mapping[str, datetime]) -> None:
-        """Clear the queue rows `_add_prepared` wrote once formation has actually run.
+        """Clear the queue rows _add_prepared wrote once formation has actually run.
 
         A no-op without a former, and harmless for a record that was never enqueued or whose row
-        `_settle_queued` already removed: the delete simply matches nothing.
+        _settle_queued already removed: the delete simply matches nothing.
         """
         if self._backends.former is None or not formation_through:
             return
@@ -807,9 +810,9 @@ class Ingestion(Traced):
         *,
         operation: OperationAssets,
     ) -> None:
-        """Settle rows `add()` found already stored but still queued from `capture()`.
+        """Settle rows add() found already stored but still queued from capture().
 
-        Such a row is durable and has no vectors, so `add()` owes it the enrichment `capture()`
+        Such a row is durable and has no vectors, so add() owes it the enrichment capture()
         deferred instead of taking the "already exists" shortcut past every model.
         """
         if not existing:
@@ -822,7 +825,7 @@ class Ingestion(Traced):
                     memory_ids=tuple(row.memory_id for row in existing),
                 )
             )
-        # No attempt ceiling here: `add()` promises a searchable return, so a record it is being
+        # No attempt ceiling here: add() promises a searchable return, so a record it is being
         # asked for has to be settled however many times it has already failed.
         _settled, failures = self._settle_stored(
             tuple(row for row in existing if row.memory_id in queued),
@@ -856,9 +859,11 @@ class Ingestion(Traced):
         ):
             try:
                 return self._settle_text_batch(rows)
-            except ModelError:
-                # Isolate a poisoned row without abandoning the other committed captures.
-                pass
+            except ModelError as error:
+                LOGGER.warning(
+                    f"batch capture settlement failed ({error.reason}); "
+                    f"retrying {len(rows)} capture(s) individually"
+                )
         outcomes = self._execution.perception(tuple(partial(self._settle_one, row) for row in rows))
         return (
             tuple(
@@ -995,8 +1000,8 @@ class Ingestion(Traced):
         enqueued_at: datetime,
         operation: OperationAssets,
     ) -> bool:
-        """Settle one captured row, or report `False` if another writer settled it first."""
-        # An `add()` that crashed between its commit and formation leaves a queue row over a
+        """Settle one captured row, or report False if another writer settled it first."""
+        # An add() that crashed between its commit and formation leaves a queue row over a
         # record that is already enriched, embedded, and indexed. Its vectors are final, so
         # settling it owes formation only; re-running the model stages would buy the same
         # vectors twice.
@@ -1047,7 +1052,7 @@ class Ingestion(Traced):
         enqueued_at: datetime,
         operation: OperationAssets,
     ) -> StoredMemory | None:
-        """Derive, embed, and commit one captured row, or return `None` if it lost the race."""
+        """Derive, embed, and commit one captured row, or return None if it lost the race."""
         documents, embeddings, now = self._prepare_documents(
             (prepared_from_stored(row),), operation
         )
@@ -1078,7 +1083,7 @@ class Ingestion(Traced):
             if operation.speech_updates:
                 self._speech.persist_transcripts(operation)
             self._vision.persist_descriptions(operation)
-        # Same order as `_add_prepared`: after the commit, so the row this write just settled is
+        # Same order as _add_prepared: after the commit, so the row this write just settled is
         # one of the memories the naming assertion reindexes.
         self._identities.bind_speaker_names(operation)
         return enriched if committed else None
@@ -1091,7 +1096,7 @@ class Ingestion(Traced):
     ) -> None:
         """Cache a stream's caption for its frame, the way a described write caches one.
 
-        The inlined marker makes `_pending_visual_descriptions` skip the asset -- the caption is
+        The inlined marker makes _pending_visual_descriptions skip the asset -- the caption is
         already in this document, so re-deriving it would buy the same text twice -- and the row
         it would otherwise have written is exactly what stops the *next* memory citing this frame
         from paying for a differently worded one. Staged like any other derived caption, because
@@ -1138,8 +1143,8 @@ class Ingestion(Traced):
         # A description is derived convenience, not the caller's content, so one that does not fit
         # is omitted rather than allowed to fail a write whose own text is inside the limit. The
         # asset is still stored and still embedded; each description that did land carries its
-        # `[visual description:<asset_id>]` marker, so which ones are present is inspectable
-        # through `get`. Failing here instead would make a long note plus an image unstorable for
+        # [visual description:<asset_id>] marker, so which ones are present is inspectable
+        # through get. Failing here instead would make a long note plus an image unstorable for
         # no reason the caller could act on.
         kept: list[str] = []
         text = prepared.text

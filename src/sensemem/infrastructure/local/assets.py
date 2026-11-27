@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
-from sensemem.infrastructure.local.store import StoredAsset, validate_asset_name
+from sensemem.infrastructure.local.store.rows import StoredAsset, validate_asset_name
 
 _CHUNK_BYTES = 1024 * 1024
 _DEFAULT_MAX_BYTES = 512 * 1024 * 1024
@@ -33,7 +33,7 @@ class AssetTooLargeError(AssetStoreError):
 
 
 class AssetStore:
-    """Materialize immutable media beneath ``data_dir/assets`` by SHA-256."""
+    """Materialize immutable media beneath data_dir/assets by SHA-256."""
 
     def __init__(
         self,

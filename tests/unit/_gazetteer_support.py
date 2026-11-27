@@ -7,7 +7,6 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -53,7 +52,7 @@ def index_fixture(path: Path) -> tuple[Path, str]:
             geometry.LineString([(0.06, 0.06), (0.08, 0.06), (0.08, 0.08)]),
         ),
     )
-    metadata: dict[str, Any] = {
+    metadata: dict[str, object] = {
         "recipe": "offline-osm-named-geometries-v1-aeqd-wgs84-step0005",
         "source": {
             "url": "https://example.invalid/public-region.osm.pbf",

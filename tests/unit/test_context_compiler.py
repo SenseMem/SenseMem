@@ -14,7 +14,7 @@ from typing import cast
 
 import pytest
 from _feature_support import ATOMIC_MODALITIES, TinyEmbedder
-from test_memory_control_plane import ScriptedConsolidator
+from fixtures.control import ScriptedConsolidator
 
 from sensemem import (
     AffectCue,
@@ -144,7 +144,6 @@ def _compile(hits: Sequence[SearchHit], **budget: object) -> ContextBundle:
     )
 
 
-# ---------------------------------------------------------------------------------------------
 # Budget validation
 
 
@@ -210,7 +209,6 @@ def test_the_default_budget_admits_one_video_memory() -> None:
     assert bundle.omitted == 0
 
 
-# ---------------------------------------------------------------------------------------------
 # Partitioning and selection
 
 
@@ -231,7 +229,7 @@ def test_hits_partition_by_memory_type_and_kind() -> None:
     )
 
     assert [hit.id for hit in bundle.actors if isinstance(hit, SearchHit)] == ["actor"]
-    # Relationships and scene state are the doc's own words and now their own sections; `facts`
+    # Relationships and scene state are the doc's own words and now their own sections; facts
     # keeps only what is neither, so the two are no longer indistinguishable inside it.
     assert [hit.id for hit in bundle.relationships] == ["relation"]
     assert [hit.id for hit in bundle.scene] == ["state"]
@@ -268,7 +266,7 @@ def test_a_small_budget_stays_in_pure_rank_order() -> None:
 
 
 def test_a_budget_that_affords_both_seats_every_section_it_spans() -> None:
-    """Once the bottom half of `max_items` seats every spanned section, each one gets a slot."""
+    """Once the bottom half of max_items seats every spanned section, each one gets a slot."""
     bundle = _compile(_spanning_hits(), max_items=6)
 
     assert [hit.id for hit in bundle.hits] == [
@@ -307,8 +305,8 @@ def test_item_and_character_budgets_are_never_exceeded() -> None:
     assert len(items.hits) == 4
     assert items.omitted == 6
 
-    # `max_chars` prices the rendered evidence: the header, the section heading, and each
-    # memory's whole `- [id] ... (confidence 1.00)` line, not `len(content)` alone.
+    # max_chars prices the rendered evidence: the header, the section heading, and each
+    # memory's whole - [id] ... (confidence 1.00) line, not len(content) alone.
     chars = _compile(hits, max_chars=800)
     assert len(chars.hits) == 2
     assert chars.omitted == 8
@@ -316,11 +314,11 @@ def test_item_and_character_budgets_are_never_exceeded() -> None:
 
 
 def test_max_chars_bounds_the_rendered_evidence_and_not_only_the_record_text() -> None:
-    """A bundle carrying no diagnostics renders inside `max_chars`, frame and headers included.
+    """A bundle carrying no diagnostics renders inside max_chars, frame and headers included.
 
-    The old accounting charged `len(content)` alone, so the header, the section headings and
-    every `- [id] ... (confidence 1.00)` frame were spent outside the budget the caller declared
-    and the docstring told callers to measure `render()` themselves.
+    The old accounting charged len(content) alone, so the header, the section headings and
+    every - [id] ... (confidence 1.00) frame were spent outside the budget the caller declared
+    and the docstring told callers to measure render() themselves.
     """
     hits = tuple(
         _hit(f"fact-{index}", score=0.9 - index / 100, content="x" * 60) for index in range(40)
@@ -328,7 +326,7 @@ def test_max_chars_bounds_the_rendered_evidence_and_not_only_the_record_text() -
 
     for ceiling in (500, 600, 1000, 4000):
         bundle = _compile(hits, max_chars=ceiling)
-        # `omitted` puts an unknown and a trailer below the evidence; measure the evidence.
+        # omitted puts an unknown and a trailer below the evidence; measure the evidence.
         rendered = bundle.render().split("\n\n## Unknowns")[0]
         assert len(rendered) <= bundle.chars <= ceiling, ceiling
 
@@ -339,7 +337,7 @@ def test_max_chars_bounds_the_rendered_evidence_and_not_only_the_record_text() -
 
 
 def test_max_media_items_bounds_grounded_parts_instead_of_their_price() -> None:
-    """`0` compiles a text-only bundle; a positive bound caps the parts, not the characters."""
+    """0 compiles a text-only bundle; a positive bound caps the parts, not the characters."""
     clips = tuple(
         _hit(
             f"clip-{index}",
@@ -360,7 +358,7 @@ def test_max_media_items_bounds_grounded_parts_instead_of_their_price() -> None:
     )
     hits = (*clips, _hit("note", score=0.1, content="a short note"))
 
-    # Unbounded: the default `max_chars` decides, and it buys some of the parts.
+    # Unbounded: the default max_chars decides, and it buys some of the parts.
     assert [hit.id for hit in _compile(hits).hits] == [
         "clip-0",
         "clip-1",
@@ -406,7 +404,6 @@ def test_a_media_hit_is_charged_far_above_its_record_text() -> None:
     assert [hit.id for hit in _compile((video, text)).hits] == ["clip", "note"]
 
 
-# ---------------------------------------------------------------------------------------------
 # Filters
 
 
@@ -460,7 +457,6 @@ def test_freshness_anchors_on_event_end_then_event_start_then_creation() -> None
     assert bundle.omitted == 0
 
 
-# ---------------------------------------------------------------------------------------------
 # Conflicts, bounds, and frames
 
 
@@ -597,7 +593,7 @@ def test_an_unavailable_conflict_counterpart_cannot_fall_back_to_flat_selection(
     )
 
     assert bundle.hits == ()
-    # Withheld, not lost: the top-ranked hit is in no section and not in `omitted`, so the
+    # Withheld, not lost: the top-ranked hit is in no section and not in omitted, so the
     # bundle has to say why it is missing.
     assert [
         unknown.detail
@@ -691,7 +687,7 @@ def test_the_spatial_summary_carries_symbolic_places_beside_metric_frames() -> N
         )
     )
 
-    # `place_id` is the axis a household query uses, and every hit already carries it.
+    # place_id is the axis a household query uses, and every hit already carries it.
     assert bundle.places == ("hall", "kitchen")
     assert bundle.frames == ("map",)
 
@@ -707,7 +703,6 @@ def test_an_empty_retrieval_compiles_an_empty_bundle() -> None:
     assert "Omitted" not in bundle.render()
 
 
-# ---------------------------------------------------------------------------------------------
 # Explicit unknowns and the latency deadline
 
 
@@ -763,10 +758,10 @@ def test_every_budget_bound_that_removed_evidence_is_named_with_its_count() -> N
 
 
 def test_a_memory_type_filter_names_the_sections_it_emptied() -> None:
-    """A `{semantic}` request loses affect and procedures, and the bundle says which filter did.
+    """A {semantic} request loses affect and procedures, and the bundle says which filter did.
 
-    Kind `affect` is stored `episodic` and kind `response_policy` `procedural`, so those two
-    sections cannot be filled under a `{semantic}` request however well their records rank. The
+    Kind affect is stored episodic and kind response_policy procedural, so those two
+    sections cannot be filled under a {semantic} request however well their records rank. The
     reader has to be able to map the loss back to the section, not only to the type.
     """
     bundle = _compile(
@@ -964,7 +959,6 @@ def test_goal_media_the_embedder_cannot_take_natively_is_reported(tmp_path: Path
     ]
 
 
-# ---------------------------------------------------------------------------------------------
 # Rendering
 
 
@@ -1047,7 +1041,6 @@ def test_an_open_validity_interval_renders_as_valid_from() -> None:
     assert f"(confidence 0.90; valid from {REFERENCE.isoformat()})" in bundle.render()
 
 
-# ---------------------------------------------------------------------------------------------
 # Kernel integration
 
 
@@ -1258,7 +1251,6 @@ def test_compile_completes_a_low_ranked_competing_state_before_delivery(
         original_search = memory._retrieval.search_prepared
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1297,7 +1289,6 @@ def test_compile_does_not_invent_a_conflict_for_the_same_functional_value(
         assert berlin_stored is not None
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1346,7 +1337,6 @@ def test_competing_lineage_uses_a_confident_copy_of_a_ranked_value(
         )
 
         def ranked_weak_copy(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(hits=ranked, matched_dense_index_ids={})
 
         monkeypatch.setattr(memory._retrieval, "search_prepared", ranked_weak_copy)
@@ -1390,7 +1380,6 @@ def test_competing_lineage_uses_a_supported_copy_of_a_ranked_value(
     ) as memory:
 
         def ranked_unsupported_copy(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(berlin, unsupported_paris),
                 matched_dense_index_ids={},
@@ -1432,7 +1421,6 @@ def test_competing_lineage_uses_a_consented_copy_of_a_ranked_value(
     ) as memory:
 
         def ranked_withheld_copy(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(hits=(berlin, withheld_paris), matched_dense_index_ids={})
 
         def withhold_one_copy(
@@ -1443,7 +1431,6 @@ def test_competing_lineage_uses_a_consented_copy_of_a_ranked_value(
         ) -> tuple[
             tuple[SearchHit, ...], dict[str, tuple[object, ...]], tuple[object, ...], frozenset[str]
         ]:
-            del named, observed_identity_ids
             return tuple(hit for hit in hits if hit.id != withheld_paris.id), {}, (), frozenset()
 
         monkeypatch.setattr(memory._retrieval, "search_prepared", ranked_withheld_copy)
@@ -1490,7 +1477,6 @@ def test_competing_lineage_completion_obeys_the_requested_valid_time(
         assert berlin_stored is not None
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1530,7 +1516,6 @@ def test_competing_lineage_completion_ignores_repeated_same_value_rows(
         assert berlin_stored is not None
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1566,7 +1551,6 @@ def test_competing_lineage_completion_keeps_more_than_256_same_value_rows(
         assert berlin_stored is not None
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1607,7 +1591,6 @@ def test_competing_lineage_completion_ignores_superseded_history(
         assert berlin_stored is not None
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1642,7 +1625,6 @@ def test_competing_lineage_completion_refuses_more_than_its_bounded_values(
         assert first_stored is not None
 
         def ranked_first(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(first_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1691,7 +1673,6 @@ def test_competing_lineage_refusal_does_not_leak_through_a_derived_closure(
         )
 
         def ranked_state_and_derived(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(state, derived),
                 matched_dense_index_ids={},
@@ -1701,7 +1682,6 @@ def test_competing_lineage_refusal_does_not_leak_through_a_derived_closure(
             anchors: Sequence[SearchHit],
             **kwargs: object,
         ) -> tuple[tuple[EvidenceClosure, ...], tuple[object, ...]]:
-            del anchors, kwargs
             return (EvidenceClosure(derived, (derived, state)),), ()
 
         monkeypatch.setattr(memory._retrieval, "search_prepared", ranked_state_and_derived)
@@ -1736,7 +1716,6 @@ def test_competing_lineage_completion_rechecks_after_consent_filtering(
         assert berlin_stored is not None
 
         def ranked_berlin(*args: object, **kwargs: object) -> SimpleNamespace:
-            del args, kwargs
             return SimpleNamespace(
                 hits=(memory._hydrator.search_hit(berlin_stored, 0.9),),
                 matched_dense_index_ids={},
@@ -1750,7 +1729,6 @@ def test_competing_lineage_completion_rechecks_after_consent_filtering(
         ) -> tuple[
             tuple[SearchHit, ...], dict[str, tuple[object, ...]], tuple[object, ...], frozenset[str]
         ]:
-            del named, observed_identity_ids
             return (
                 tuple(hit for hit in hits if hit.context is None or hit.context.value != "paris"),
                 {},
@@ -1891,10 +1869,10 @@ def test_a_type_only_budget_reaches_past_the_window_the_common_types_fill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`memory_types` is pushed into the index, so a rare type gets its own candidate depth.
+    """memory_types is pushed into the index, so a rare type gets its own candidate depth.
 
     Filtering after retrieval let sixty episodes crowd the one procedural record out of the
-    window, and the bundle came back empty with only a `candidates_exhausted` unknown to explain
+    window, and the bundle came back empty with only a candidates_exhausted unknown to explain
     it. The narrowed rerank window here is what a real store reaches with more records.
     """
     monkeypatch.setattr("sensemem.kernel.retrieval.RERANK_CANDIDATES", 4)
@@ -2056,7 +2034,6 @@ def test_the_cli_command_serializes_the_bundle(tmp_path: Path) -> None:
     assert "Budget: " in str(document["rendered"])
 
 
-# ---------------------------------------------------------------------------------------------
 # Provisional actors
 
 
@@ -2113,7 +2090,7 @@ def test_an_actor_line_is_dropped_rather_than_given_away_free_when_it_does_not_f
         unknown.kind.value == "budget_excluded" and "actor line" in unknown.detail
         for unknown in bundle.unknowns
     )
-    # The dropped actor never inflates `chars`; only the `## Unknowns` block that explains the
+    # The dropped actor never inflates chars; only the ## Unknowns block that explains the
     # drop sits outside the ceiling, same as it does for a dropped hit.
     assert bundle.chars <= bundle.budget.max_chars
 
@@ -2134,12 +2111,12 @@ def test_a_provisional_actor_of_omitted_evidence_is_not_reported() -> None:
 
 
 def test_a_synthesized_actor_pays_for_the_heading_it_makes_render_write() -> None:
-    """`chars` counts the `## Actors` heading no typed hit paid for, so it cannot underreport.
+    """chars counts the ## Actors heading no typed hit paid for, so it cannot underreport.
 
-    `_bundle_chars` prices the sections `_select` filled, and an episode that only carries an
-    identity edge leaves that section empty. The actor line was charged and the heading `render()
-    writes above it was not, so `chars` came in a heading short of the text and a bundle sized to
-    a tight `max_chars` rendered past it.
+    _bundle_chars prices the sections _select filled, and an episode that only carries an
+    identity edge leaves that section empty. The actor line was charged and the heading render()
+    writes above it was not, so chars came in a heading short of the text and a bundle sized to
+    a tight max_chars rendered past it.
     """
     hit = _hit("clip", kind=RecordKind.EVENT, memory_type=MemoryCategory.EPISODIC)
     plain = compile_context(
@@ -2167,7 +2144,7 @@ def test_a_synthesized_actor_pays_for_the_heading_it_makes_render_write() -> Non
 
 
 def test_a_typed_actor_section_pays_for_its_heading_once() -> None:
-    """A synthesized actor joining a section `_select` already filled owes no second heading."""
+    """A synthesized actor joining a section _select already filled owes no second heading."""
     bundle = compile_context(
         "who was in the kitchen",
         (_hit("face", kind=RecordKind.ENTITY),),
@@ -2183,10 +2160,10 @@ def test_a_typed_actor_section_pays_for_its_heading_once() -> None:
 
 
 def test_a_budget_the_context_header_alone_overruns_is_refused() -> None:
-    """`max_chars` bounds the header too, so a budget under it has no bundle that satisfies it.
+    """max_chars bounds the header too, so a budget under it has no bundle that satisfies it.
 
-    `_select` buys nothing and the four framing lines are written anyway, so the bundle used to
-    come back over the limit it was given -- and report that oversized total as `chars`. The
+    _select buys nothing and the four framing lines are written anyway, so the bundle used to
+    come back over the limit it was given -- and report that oversized total as chars. The
     floor moves with the goal, because the header repeats it.
     """
     goal = "how did the sprint go"
@@ -2203,7 +2180,7 @@ def test_a_budget_the_context_header_alone_overruns_is_refused() -> None:
 
     assert raised.value.subject == "budget"
     assert str(floor) in str(raised.value)
-    # The floor is self-referential -- the header prints `max_chars`, so a budget with more
+    # The floor is self-referential -- the header prints max_chars, so a budget with more
     # digits frames slightly wider -- which is why the message states the floor for the budget it
     # was handed rather than a constant. A budget clear of it spends, and stays inside itself.
     spendable = ContextBudget(max_chars=floor * 2)
@@ -2229,7 +2206,6 @@ def test_rendering_labels_a_provisional_actor_plainly() -> None:
     assert bundle.render() == bundle.render()
 
 
-# ---------------------------------------------------------------------------------------------
 # Affect cues
 
 
@@ -2285,9 +2261,9 @@ def test_an_affect_entry_names_the_basis_that_makes_it_a_statement() -> None:
 def test_the_affect_hop_takes_no_item_slot_and_charges_only_what_it_prints() -> None:
     """The events are never fetched, and the IDs the line does print are paid for.
 
-    `bundle_cost` prices `render_hit_line`, so the hop marks are charged like every other
-    rendered character and `chars` keeps bounding `render()`. What the hop costs nothing of is
-    item slots, `episodes` entries, and the event text it never read.
+    bundle_cost prices render_hit_line, so the hop marks are charged like every other
+    rendered character and chars keeps bounding render(). What the hop costs nothing of is
+    item slots, episodes entries, and the event text it never read.
     """
     hits = (_affect_hit(), _hit("fact-1"))
     plain = compile_context(
@@ -2309,17 +2285,17 @@ def test_the_affect_hop_takes_no_item_slot_and_charges_only_what_it_prints() -> 
     # Exactly the marks the line gained, so the price and the text cannot drift.
     assert hopped.chars - plain.chars == len("; co-occurring events [event-1], [event-2]")
     assert len(hopped.render()) <= hopped.chars
-    # The linked events were never fetched, so they are not smuggled into `episodes`.
+    # The linked events were never fetched, so they are not smuggled into episodes.
     assert [hit.id for hit in hopped.episodes] == []
 
 
 def test_an_affect_entry_is_priced_as_the_cue_it_renders_as() -> None:
-    """A bundle carrying affect stays inside the `max_chars` it reports.
+    """A bundle carrying affect stays inside the max_chars it reports.
 
     The cue's basis, cue modality, valence, arousal, evidence IDs, and co-occurring events are
-    characters the line prints. They were added after `_select` had priced the plain hit, so a
+    characters the line prints. They were added after _select had priced the plain hit, so a
     store holding a handful of affect entries compiled a bundle whose own header announced
-    `Budget: 4647/4000 chars`.
+    Budget: 4647/4000 chars.
     """
     hits = (
         *(
@@ -2346,7 +2322,7 @@ def test_an_affect_entry_is_priced_as_the_cue_it_renders_as() -> None:
             reference_at=REFERENCE,
             resolve_co_derived_event_ids=lambda cues: {cue: (f"{cue}-event",) for cue in cues},
         )
-        # `omitted` puts an unknown and a trailer below the evidence; measure the evidence.
+        # omitted puts an unknown and a trailer below the evidence; measure the evidence.
         evidence = bundle.render().split("\n\n## Unknowns")[0].split("\n\nOmitted:")[0]
         assert bundle.affect, ceiling
         assert len(evidence) <= bundle.chars <= ceiling, ceiling
@@ -2375,7 +2351,7 @@ def _hop_spy() -> tuple[list[Sequence[str]], Callable[[Sequence[str]], dict[str,
 
 
 def test_the_affect_hop_and_its_provenance_stay_bounded_by_a_constant() -> None:
-    """The marks are not charged against `max_chars`, so they are capped instead."""
+    """The marks are not charged against max_chars, so they are capped instead."""
     sources = tuple(f"obs-{index:02d}" for index in range(12))
     bundle = compile_context(
         "how did that land",
@@ -2604,7 +2580,7 @@ def test_the_cli_command_serializes_the_affect_hop(tmp_path: Path) -> None:
 
 
 def test_the_affect_hop_reads_the_transaction_time_the_scope_asked_for(tmp_path: Path) -> None:
-    """`known_at` reaches the hop, so it cannot report a version the hits were not hydrated at."""
+    """known_at reaches the hop, so it cannot report a version the hits were not hydrated at."""
     later = datetime.now(timezone.utc) + timedelta(days=1)
     with _affect_memory(tmp_path) as memory:
         memory.add("cue: the review call about the harbour")
@@ -2663,7 +2639,7 @@ def test_an_unnamed_identity_still_yields_a_provisional_actor_beside_a_named_one
 
 
 def test_a_named_identity_is_never_also_reported_provisional() -> None:
-    """A stale `provisional` entry for an identity `named` already reports is dropped."""
+    """A stale provisional entry for an identity named already reports is dropped."""
     bundle = compile_context(
         "who is in the room",
         (_hit("episode", kind=RecordKind.EVENT, memory_type=MemoryCategory.EPISODIC),),
@@ -2701,8 +2677,8 @@ def test_a_named_actor_aggregates_every_memory_that_carries_its_edge() -> None:
             naming_assertion_id="naming",
         )
     ]
-    # One actor line however many memories carried its edge, priced once -- and the `## Actors`
-    # heading it makes `render()` write, which no typed `ENTITY` hit paid for here.
+    # One actor line however many memories carried its edge, priced once -- and the ## Actors
+    # heading it makes render() write, which no typed ENTITY hit paid for here.
     assert bundle.chars == sum(bundle_cost(hit) for hit in bundle.hits) + named_actor_cost(
         named_actors[0]
     ) + _frame_and_headings(bundle, ("episodes", "actors"))

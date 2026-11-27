@@ -14,6 +14,7 @@ from typing import Literal, Self, cast
 from uuid import uuid4
 
 import av
+import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,13 +23,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr, mod
 from pydantic import ValidationError as PydanticValidationError
 from starlette.types import Scope
 
+from examples.live import prompts as demo_prompts
 from examples.live.capture import EventCapture
 from examples.live.dialogue import DialogueInput, capture_dialogue
 from examples.live.events import open_event_memory
 from examples.live.feedback import MemoryFeedback
 from examples.live.media import MediaReceiver
 from examples.live.memories import memory_cards, memory_router
-from examples.live.realtime import DEFAULT_REALTIME_URL, RealtimeRelay
+from examples.live.realtime import DEFAULT_REALTIME_URL, MAX_MESSAGE_BYTES, RealtimeRelay
 from examples.live.recall import LiveRecall
 from examples.live.updates import LiveEvent, LiveUpdates
 from examples.live.user_audio import UserAudioCapture
@@ -51,8 +53,13 @@ from sensemem import (
     StreamCommit,
     ValidationError,
 )
-from sensemem.prompts import demo as demo_prompts
 
+MAX_DIALOGUE_BYTES = 20 * 1024 * 1024
+MAX_REVALIDATION_ATTEMPTS = 3
+SSE_KEEPALIVE_SECONDS = 15
+GRACEFUL_SHUTDOWN_SECONDS = 5
+DEFAULT_LIVE_HOST = "127.0.0.1"
+DEFAULT_LIVE_PORT = 8787
 MemoryFactory = Callable[[MemorySpec], tuple[AsyncMemory, EventSegmentationBackend]]
 
 
@@ -306,23 +313,26 @@ class LiveRuntime:
     async def _revalidate_review(self, sources: Sequence[MemoryRecord | SearchHit]) -> int | None:
         """Allow unrelated writes while rejecting changed or withdrawn actual evidence."""
         memory = await self.open_memory()
-        revision = self.memory_revision
-        for source in sources:
-            try:
-                current = await memory.get(source.id)
-            except MemoryNotFoundError:
-                return None
-            if (
-                current.forgotten_at is not None
-                or (
-                    current.context is not None
-                    and (not current.context.visible or current.context.retired_at is not None)
-                )
-                or not current.content.startswith(source.content)
-                or any(asset not in current.assets for asset in source.assets)
-            ):
-                return None
-        return revision if revision == self.memory_revision else None
+        for _ in range(MAX_REVALIDATION_ATTEMPTS):
+            revision = self.memory_revision
+            for source in sources:
+                try:
+                    current = await memory.get(source.id)
+                except MemoryNotFoundError:
+                    return None
+                if (
+                    current.forgotten_at is not None
+                    or (
+                        current.context is not None
+                        and (not current.context.visible or current.context.retired_at is not None)
+                    )
+                    or not current.content.startswith(source.content)
+                    or any(asset not in current.assets for asset in source.assets)
+                ):
+                    return None
+            if revision == self.memory_revision:
+                return revision
+        return None
 
     async def open_memory(self) -> AsyncMemory:
         """Open the shared memory and its deferred-work loop once."""
@@ -609,9 +619,15 @@ def create_app(  # noqa: C901 - one literal example route registry
 
     @app.get("/api/config")
     async def public_config() -> dict[str, object]:
+        realtime_model = os.environ.get("SENSEMEM_REALTIME_MODEL") or (
+            None
+            if runtime.config.generation is None
+            or isinstance(runtime.config.generation, PluginConfig)
+            else runtime.config.generation.model
+        )
         return {
             "session": _create_realtime_session(),
-            "realtime_model": "qwen3.8-omni-flash",
+            "realtime_model": realtime_model,
             "speech_service": "speech-to-speech",
             "capabilities": {
                 "input_audio": True,
@@ -644,7 +660,7 @@ def create_app(  # noqa: C901 - one literal example route registry
     async def dialogue(request: Request) -> dict[str, str]:  # noqa: C901 - one provenance-checked capture
         try:
             supplied = DialogueInput.model_validate_json(
-                await _request_json_body(request, 20 * 1024 * 1024)
+                await _request_json_body(request, MAX_DIALOGUE_BYTES)
             )
         except PydanticValidationError:
             raise HTTPException(422, "Invalid completed dialogue.") from None
@@ -867,7 +883,7 @@ def create_app(  # noqa: C901 - one literal example route registry
                         async with runtime.changes:
                             await asyncio.wait_for(
                                 runtime.changes.wait_for(changed),
-                                timeout=15,
+                                timeout=SSE_KEEPALIVE_SECONDS,
                             )
                     except TimeoutError:
                         yield ": keepalive\n\n"
@@ -883,7 +899,7 @@ def create_app(  # noqa: C901 - one literal example route registry
     async def search(request: Request) -> dict[str, object]:
         try:
             supplied = SearchInput.model_validate_json(
-                await _request_json_body(request, 4 * 1024 * 1024)
+                await _request_json_body(request, MAX_MESSAGE_BYTES)
             )
         except PydanticValidationError:
             raise HTTPException(422, "Invalid memory query.") from None
@@ -953,21 +969,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True, help="MemorySpec JSON file")
     parser.add_argument("--data-dir", type=Path, default=Path(".sensemem/live-demo"))
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--host", default=DEFAULT_LIVE_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_LIVE_PORT)
     parser.add_argument("--realtime-url", help="Local speech-to-speech Realtime WebSocket URL")
     args = parser.parse_args(argv)
     try:
         config = MemorySpec.model_validate_json(args.config.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         parser.error("provide a readable, valid MemorySpec JSON file")
-    import uvicorn
-
     uvicorn.run(
         create_app(config, data_dir=args.data_dir, realtime_url=args.realtime_url),
         host=args.host,
         port=args.port,
         access_log=False,
-        timeout_graceful_shutdown=5,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
     return 0

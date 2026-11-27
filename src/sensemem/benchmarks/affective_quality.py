@@ -17,6 +17,7 @@ from time import perf_counter
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from PIL import Image, ImageDraw, ImageFont
 
 from sensemem import (
     Blob,
@@ -34,11 +35,10 @@ from sensemem import (
     RetrievalScope,
     SenseMemError,
 )
-from sensemem.benchmarks.quality_support import _FixtureEmbedder
+from sensemem.benchmarks.quality_support import FixtureEmbedder
 from sensemem.models.openai_completion import OpenAICompletion
 
 FIXTURE_VERSION = "sensemem-affective-quality-v5"
-DEFAULT_MODEL = "qwen3.8-omni-flash"
 REFERENCE_AT = datetime(2026, 3, 2, 12, tzinfo=timezone.utc)
 
 
@@ -331,13 +331,11 @@ CASES = (
 CASE_IDS = tuple(case.case_id for case in CASES)
 
 
-class _AffectiveEmbedder(_FixtureEmbedder):
+class _AffectiveEmbedder(FixtureEmbedder):
     embedding_capabilities = frozenset({Modality.TEXT, Modality.IMAGE})
 
 
 def _mood_card(text: str) -> Blob:
-    from PIL import Image, ImageDraw, ImageFont
-
     image = Image.new("RGB", (1000, 360), "white")
     ImageDraw.Draw(image).multiline_text(
         (30, 40), text, fill="black", font=ImageFont.truetype("DejaVuSans.ttf", 42), spacing=20

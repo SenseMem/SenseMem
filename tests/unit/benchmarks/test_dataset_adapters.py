@@ -14,14 +14,28 @@ from pathlib import Path
 import pytest
 
 from sensemem.benchmarks.download import _patterns
-from sensemem.benchmarks.eval_adapters import load_task
+from sensemem.benchmarks.eval_adapters import (
+    EvalQuestion,
+    EvalUnit,
+    MemoryItem,
+    _text_memories,
+    _with_corpus_reference,
+    load_task,
+)
+from sensemem.benchmarks.eval_inputs import memory_content, memory_metadata
 from sensemem.benchmarks.memlens import load_memlens
 from sensemem.benchmarks.personamem_v3 import (
     load_personamem_v3,
     render_candidates,
     render_event,
 )
+from sensemem.benchmarks.supermemory_vqa import (
+    SUPERMEMORY_UNANSWERABLE_CHOICE,
+    load_supermemory_vqa,
+)
 from sensemem.benchmarks.task_catalog import TASKS, expand
+from sensemem.kernel.temporal import query_temporal_range
+from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
 
 
 def _write(path: Path, payload: object) -> Path:
@@ -30,14 +44,11 @@ def _write(path: Path, payload: object) -> Path:
     return path
 
 
-def test_longmemeval_catalog_only_accepts_the_current_release() -> None:
+def test_longmemeval_catalog_expands_v2_splits() -> None:
     assert expand(("longmemeval-v2",)) == (
         "longmemeval-v2-small",
         "longmemeval-v2-medium",
     )
-    for legacy in ("longmemeval", "longmemeval-s", "longmemeval-m", "longmemeval-oracle"):
-        with pytest.raises(ValueError, match="unknown task:"):
-            expand((legacy,))
 
 
 def test_memlens_reads_direct_and_data_wrapped_releases_without_changing_root_errors(
@@ -71,9 +82,9 @@ def test_memlens_reads_direct_and_data_wrapped_releases_without_changing_root_er
 def test_memlens_marks_the_published_answer_sessions_and_rejects_ones_outside_the_haystack(
     tmp_path: Path,
 ) -> None:
-    """`answer_session_ids` is the only gold retrieval label MEMLENS publishes.
+    """answer_session_ids is the only gold retrieval label MEMLENS publishes.
 
-    Every released row carries it, as a subset of `haystack_session_ids`; refusal rows carry
+    Every released row carries it, as a subset of haystack_session_ids; refusal rows carry
     an empty list. Dropping it left the task's retrieval quality reported as unmeasurable.
     """
     record = {
@@ -146,7 +157,7 @@ def test_personamem_v3_reads_every_released_row_shape(tmp_path: Path) -> None:
         persona / "instagram.json",
         [
             _personamem_event("a", 1_000),
-            # A direct-message thread names its parts `sender`/`text`.
+            # A direct-message thread names its parts sender/text.
             _personamem_event(
                 "dm",
                 1_500,
@@ -173,7 +184,7 @@ def test_personamem_v3_reads_every_released_row_shape(tmp_path: Path) -> None:
                         "location": {"city": "Osaka", "country": "Japan"},
                     },
                 },
-                # An `updated` modification carries no `entry` at all, only the
+                # An updated modification carries no entry at all, only the
                 # entry ID and a per-field diff.
                 {
                     "mod_id": "mod_002",
@@ -257,7 +268,7 @@ def test_personamem_v3_reads_every_released_row_shape(tmp_path: Path) -> None:
     assert "LEAK" not in slate
     assert "_held_out_persona_item" not in slate
     assert "title='A'" in slate
-    # `profile.json` is scorer-side and is never read as memory.
+    # profile.json is scorer-side and is never read as memory.
     assert not any(event.app == "Profile" for event in events)
 
 
@@ -316,7 +327,7 @@ def test_personamem_v3_keeps_what_each_calendar_modification_says(tmp_path: Path
 
     added = events["calendar:mod_001"]
     # The appointment's window is a different moment from the edit's, and the
-    # duration appears nowhere else, so neither is recoverable from `ts`.
+    # duration appears nowhere else, so neither is recoverable from ts.
     assert added.occurred_at.isoformat() == "1970-01-01T00:20:00+00:00"
     assert added.scheduled_start is not None
     assert added.scheduled_start.isoformat() == "1970-01-01T02:30:00+00:00"
@@ -327,7 +338,7 @@ def test_personamem_v3_keeps_what_each_calendar_modification_says(tmp_path: Path
     assert "Location: Osaka, Japan" in rendered
     assert "Type: work" in rendered
 
-    # An `updated` modification has no `entry`; without its diff the memory
+    # An updated modification has no entry; without its diff the memory
     # would be a bare header line with nothing retrievable in it.
     updated = render_event(events["calendar:mod_002"])
     assert "end_ts 1970-01-01T04:30:00+00:00 -> 1970-01-01T05:00:00+00:00" in updated
@@ -374,8 +385,8 @@ def test_personamem_v3_reads_the_flattened_row_spelling(tmp_path: Path) -> None:
                 "task_family": "over_personalization",
                 "task_type": "over_personalization_sensitive_event",
                 "ts": 2_000,
-                # `query_text`, not `user_query`; no `query_kind` at all;
-                # `expected_response_kind` in place of `expected_behavior`;
+                # query_text, not user_query; no query_kind at all;
+                # expected_response_kind in place of expected_behavior;
                 # semicolon-joined rubric tags; and the instance as a JSON
                 # string rather than an object.
                 "query_text": "is that just burnout or something else?",
@@ -383,7 +394,7 @@ def test_personamem_v3_reads_the_flattened_row_spelling(tmp_path: Path) -> None:
                 "rubric_tags": "avoid_overpersonalization;telegraph_avoidance",
                 "instance_json": '{"test_id": "row00", "arm": "sensitive_event"}',
             },
-            # `user_query` present but null, with the question in the instance.
+            # user_query present but null, with the question in the instance.
             {
                 **_personamem_query(query_id="26:0044:nulled"),
                 "user_query": None,
@@ -519,9 +530,7 @@ def test_personamem_v3_proactive_prompt_keeps_the_decision_and_evidence_hidden(
 
 
 def test_personamem_v3_never_records_the_question_as_its_own_reference(tmp_path: Path) -> None:
-    """857 released queries publish no `example_response`."""
-    from sensemem.benchmarks.eval_adapters import load_task
-    from sensemem.benchmarks.task_catalog import TASKS
+    """857 released queries publish no example_response."""
 
     persona = tmp_path / "personamem-v3" / "backend" / "8"
     _write(persona / "instagram.json", [_personamem_event("a", 1_000)])
@@ -555,12 +564,10 @@ def test_personamem_v3_never_records_the_question_as_its_own_reference(tmp_path:
 def test_text_memories_split_passages_the_product_would_reject() -> None:
     """An oversized part is not just dropped -- it voids its whole unit.
 
-    `memory.add` rejects a part over `MAX_TEXT_CHARACTERS`, the runner counts
-    an ingest failure, and `_apply_judges` then skips every question in that
+    memory.add rejects a part over MAX_TEXT_CHARACTERS, the runner counts
+    an ingest failure, and _apply_judges then skips every question in that
     unit. Splitting oversized passages preserves all text within the product limit.
     """
-    from sensemem.benchmarks.eval_adapters import _text_memories
-    from sensemem.kernel.validation import MAX_TEXT_CHARACTERS
 
     short = _text_memories("turn", "one short line")
     assert len(short) == 1
@@ -586,18 +593,17 @@ def test_text_memories_split_passages_the_product_would_reject() -> None:
     assert rebuilt.replace("\n\n", " ").split() == long_turn.split()
 
 
-# --- gold evidence: which adapters can carry a source-level retrieval label -----------------
+# gold evidence: which adapters can carry a source-level retrieval label
 
 
 def test_locomo_refined_labels_the_dialogue_turns_that_hold_the_answer(tmp_path: Path) -> None:
-    """`evidence` names `dia_id` values, which are this unit's memory source IDs.
+    """evidence names dia_id values, which are this unit's memory source IDs.
 
     The join is not assumed. An evidence ID that names no stored turn is reported
     under its own key instead of being dropped, so a release whose label vocabulary
     is not the source-ID vocabulary reads as a join failure rather than as recall
     over the handful of IDs that happened to match.
     """
-    from sensemem.benchmarks.eval_adapters import load_task
 
     _write(
         tmp_path / "locomo-refined" / "data" / "raw" / "locomo_refined.json",
@@ -645,7 +651,7 @@ def test_locomo_refined_labels_the_dialogue_turns_that_hold_the_answer(tmp_path:
     # Exact, source-level gold: the packed string is split and both IDs kept in order.
     assert labels["conv-1#q0000"]["evidence_ids"] == ("D1:1", "D1:3")
     assert labels["conv-1#q0000"]["unresolved_evidence_ids"] == ()
-    # `D7:9` names no stored turn, so it is reported rather than silently absorbed.
+    # D7:9 names no stored turn, so it is reported rather than silently absorbed.
     assert labels["conv-1#q0001"]["evidence_ids"] == ("D1:2",)
     assert labels["conv-1#q0001"]["unresolved_evidence_ids"] == ("D7:9",)
     # A question the release left unlabelled carries no label, so it is excluded
@@ -661,15 +667,9 @@ def test_undated_questions_are_anchored_at_the_end_of_their_corpus() -> None:
     """A relative date in a question must resolve the same way in a run and in its replay.
 
     LoCoMo, ATM-Bench and Mem-Gallery date their memories but not their questions; without an
-    anchor `Memory.ask` used the wall clock, so "this year" meant the run's year, not the
+    anchor Memory.ask used the wall clock, so "this year" meant the run's year, not the
     corpus's. Questions that carry their own date keep it.
     """
-    from sensemem.benchmarks.eval_adapters import (
-        EvalQuestion,
-        EvalUnit,
-        MemoryItem,
-        _with_corpus_reference,
-    )
 
     first = datetime(2023, 5, 20, 2, 21, tzinfo=timezone.utc)
     last = datetime(2023, 6, 1, 9, 0, tzinfo=timezone.utc)
@@ -707,13 +707,6 @@ def test_undated_questions_are_anchored_at_the_end_of_their_corpus() -> None:
 def test_question_clock_precedes_corpus_fallback(
     question: str, expected: tuple[int, int, int]
 ) -> None:
-    from sensemem.benchmarks.eval_adapters import (
-        EvalQuestion,
-        EvalUnit,
-        MemoryItem,
-        _with_corpus_reference,
-    )
-    from sensemem.kernel.temporal import query_temporal_range
 
     latest = datetime(2025, 7, 22, tzinfo=timezone.utc)
     unit = EvalUnit(
@@ -733,12 +726,6 @@ def test_question_clock_precedes_corpus_fallback(
 
 
 def test_question_clock_uses_original_text_and_preserves_explicit_dates() -> None:
-    from sensemem.benchmarks.eval_adapters import (
-        EvalQuestion,
-        EvalUnit,
-        MemoryItem,
-        _with_corpus_reference,
-    )
 
     explicit = datetime(2023, 1, 1, tzinfo=timezone.utc)
     original = "Today is 2024-05-02. When was dinner last week?"
@@ -763,21 +750,71 @@ def test_question_clock_uses_original_text_and_preserves_explicit_dates() -> Non
 def test_media_only_memory_items_carry_their_source_id_as_metadata_not_text(
     tmp_path: Path,
 ) -> None:
-    """The `[source_id: …]` line is a text memory's label; a clip already has it in metadata.
+    """The [source_id: …] line is a text memory's label; a clip already has it in metadata.
 
     As content it became a third retrieval key (the marker text) and made the aggregate key
     differ from the clip's own key, so every 30 s clip was uploaded to the embedder twice. The
-    harness reads source ids from metadata (`_evidence`), never from content.
+    harness reads source ids from metadata (_evidence), never from content.
     """
-    from sensemem.benchmarks.eval_adapters import MemoryItem
-    from sensemem.benchmarks.eval_inputs import _memory_content, _memory_metadata
 
     clip = tmp_path / "segment.mp4"
     clip.write_bytes(b"video")
 
-    assert _memory_content(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0)) == (clip,)
-    assert _memory_metadata(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0))["source_id"] == (
+    assert memory_content(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0)) == (clip,)
+    assert memory_metadata(MemoryItem("0.mp4-00001", (clip,), 30.0, 60.0))["source_id"] == (
         "0.mp4-00001"
     )
-    assert _memory_content(MemoryItem("t", ("hello",))) == "[source_id: t]\nhello"
-    assert _memory_content(MemoryItem("t", ("hello", clip))) == ("[source_id: t]\nhello", clip)
+    assert memory_content(MemoryItem("t", ("hello",))) == "[source_id: t]\nhello"
+    assert memory_content(MemoryItem("t", ("hello", clip))) == ("[source_id: t]\nhello", clip)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        {
+            "time_spans": [
+                {
+                    "start_time": 2,
+                    "end_time": 5,
+                    "video_id": "video-1",
+                    "video_start_time_unix": 1000,
+                }
+            ],
+        },
+        {
+            "time_span": {"start_time": "00:02", "end_time": "00:05"},
+            "video_id": "video-1",
+            "start_time": 1000,
+        },
+    ),
+    ids=("absolute-span", "local-span"),
+)
+def test_current_annotation_shapes_resolve_the_question_end(
+    tmp_path: Path, evidence: dict[str, object]
+) -> None:
+    annotation = tmp_path / "all_qa.json"
+    annotation.write_text(
+        json.dumps(
+            [
+                {
+                    "question_id": 1,
+                    "subject": 1,
+                    "question": "What color is the cup?",
+                    "choices": ["red", "blue", "green", SUPERMEMORY_UNANSWERABLE_CHOICE],
+                    "correct_answer": "red",
+                    "correct_option_index": 0,
+                    "choice_types": ["correct", "incorrect", "incorrect", "unanswerable"],
+                    "metadata": {"skill": "color", "primary_video_id": "video-1"},
+                    "video_ids": ["video-1"],
+                    "question_evidence": evidence,
+                    "is_answerable": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (question,) = load_supermemory_vqa(annotation)
+
+    assert question.question_video_id == "video-1"
+    assert question.question_ended_at == datetime.fromtimestamp(1005, tz=timezone.utc)

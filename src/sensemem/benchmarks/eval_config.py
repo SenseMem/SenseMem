@@ -69,26 +69,26 @@ RETRIEVAL_CANDIDATE_LIMIT = 100
 DEFAULT_BOOTSTRAP_SAMPLES = 2_000
 
 
-_RESULTS_FILE = "results.jsonl"
+RESULTS_FILE = "results.jsonl"
 
 
-_SAMPLES_FILE = "samples.jsonl"
+SAMPLES_FILE = "samples.jsonl"
 
 
-_CONFIG_FILE = "config.yaml"
+CONFIG_FILE = "config.yaml"
 
 
 # Written task by task while the run is still going, and removed once the real artifacts land. A
 # multi-task run used to hold every sample in memory until the last task finished, so an upstream
 # outage during task five threw away four tasks of answers. This file is never an evaluation
 # artifact -- it carries no results document and no digest -- it is the crash copy.
-_PARTIAL_SAMPLES_FILE = "samples.partial.jsonl"
+PARTIAL_SAMPLES_FILE = "samples.partial.jsonl"
 
 
-_MEDIA_MANIFEST_FILE = "media-manifest.jsonl"
+MEDIA_MANIFEST_FILE = "media-manifest.jsonl"
 
 
-_MODALITY_BY_SUFFIX = {
+MODALITY_BY_SUFFIX = {
     ".aac": Modality.AUDIO,
     ".flac": Modality.AUDIO,
     ".jpeg": Modality.IMAGE,
@@ -105,7 +105,7 @@ _MODALITY_BY_SUFFIX = {
 
 
 @dataclass(frozen=True, slots=True)
-class _Arguments:
+class Arguments:
     tasks: tuple[str, ...]
     benchmarks_root: Path
     data_root: Path
@@ -164,7 +164,7 @@ class _Arguments:
 
 
 @dataclass(frozen=True, slots=True)
-class _JudgeConfig:
+class JudgeConfig:
     model: str
     base_url: str
     api_key: str | None = field(default=None, repr=False)
@@ -182,7 +182,7 @@ class _JudgeConfig:
             raise ValueError("judge concurrency must be positive")
 
 
-def _memory_config_payload(
+def memory_config_payload(
     config: MemorySpec,
     *,
     exclude: frozenset[str] = frozenset(),
@@ -193,7 +193,7 @@ def _memory_config_payload(
     )
 
 
-def _build_parser(prog: str | None) -> argparse.ArgumentParser:
+def build_parser(prog: str | None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
         description=__doc__,
@@ -213,19 +213,19 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--full-context-chars",
-        type=_positive_int,
+        type=positive_int,
         default=None,
         help="character budget the full-context arm stuffs into one prompt",
     )
     parser.add_argument(
         "--compile-max-items",
-        type=_positive_int,
+        type=positive_int,
         default=None,
         help="ContextBudget.max_items for the compile arm",
     )
     parser.add_argument(
         "--compile-max-chars",
-        type=_positive_int,
+        type=positive_int,
         default=None,
         help="ContextBudget.max_chars for the compile arm",
     )
@@ -319,17 +319,17 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
         help="generation settings; supports temperature, max_tokens and enable_thinking",
     )
     parser.add_argument("--batch-size", "-b", default=None)
-    parser.add_argument("--max-batch-size", type=_positive_int, default=None)
-    parser.add_argument("--unit-concurrency", type=_positive_int, default=None)
+    parser.add_argument("--max-batch-size", type=positive_int, default=None)
+    parser.add_argument("--unit-concurrency", type=positive_int, default=None)
     parser.add_argument(
         "--ingest-concurrency",
-        type=_positive_int,
+        type=positive_int,
         default=None,
         help="concurrent add_many chunks per unit; requires add without history-dependent backends",
     )
-    parser.add_argument("--request-concurrency", type=_positive_int, default=None)
-    parser.add_argument("--judge-concurrency", type=_positive_int, default=None)
-    parser.add_argument("--recall-limit", type=_positive_int, default=None)
+    parser.add_argument("--request-concurrency", type=positive_int, default=None)
+    parser.add_argument("--judge-concurrency", type=positive_int, default=None)
+    parser.add_argument("--recall-limit", type=positive_int, default=None)
     parser.add_argument(
         "--answer-policy",
         choices=get_args(AnswerPolicy),
@@ -340,7 +340,7 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--seed", type=_seed_values, default=None)
-    parser.add_argument("--bootstrap-samples", type=_positive_int, default=None)
+    parser.add_argument("--bootstrap-samples", type=positive_int, default=None)
     parser.add_argument(
         "--repeat-index",
         type=_nonnegative_int,
@@ -438,7 +438,7 @@ def _build_parser(prog: str | None) -> argparse.ArgumentParser:
 def _selected_arms(
     parser: argparse.ArgumentParser, parsed: argparse.Namespace, declared: str
 ) -> tuple[str, ...]:
-    """Resolve which arms this run answers, coupling `--blind` to the arm that has no evidence."""
+    """Resolve which arms this run answers, coupling --blind to the arm that has no evidence."""
     arms = tuple(dict.fromkeys(part.strip() for part in declared.split(",") if part.strip()))
     if not arms:
         parser.error("--arms must name at least one arm")
@@ -447,7 +447,7 @@ def _selected_arms(
         parser.error(f"unknown arm(s): {', '.join(unknown)}; choose from {', '.join(ARMS)}")
     if not parsed.blind:
         return arms
-    # `--blind` labels the whole run as the control, in the results document and in the
+    # --blind labels the whole run as the control, in the results document and in the
     # response-cache namespace, so it has to select the arm that actually answers without
     # evidence. Leaving the product arm running under that label is how a memory-backed run gets
     # published as its own baseline.
@@ -456,73 +456,73 @@ def _selected_arms(
     return ("blind",)
 
 
-def _arguments(
+def resolve_arguments(
     parser: argparse.ArgumentParser,
     parsed: argparse.Namespace,
     download: DownloadSettings | None = None,
     overrides: HarnessOverrides | None = None,
-) -> _Arguments:
+) -> Arguments:
     harness = HarnessOverrides() if overrides is None else overrides
     run = harness.run
-    arms = _selected_arms(parser, parsed, _picked(parsed.arms, run.arms, DEFAULT_ARM))
+    arms = _selected_arms(parser, parsed, picked(parsed.arms, run.arms, DEFAULT_ARM))
     tasks_value = parsed.tasks or run.tasks
     if not tasks_value:
         parser.error("--tasks is required unless --list-tasks is used")
     # A flag beats the file; the file beats the built-in default. Every constant below is the
     # default the flag used to carry, moved here so that "unset" stays distinguishable.
-    offset = _picked(parsed.offset, run.offset, 0)
-    batch_size = _picked(parsed.batch_size, run.batch_size, "auto")
-    max_batch_size = _picked(parsed.max_batch_size, run.max_batch_size, 64)
-    unit_concurrency = _picked(parsed.unit_concurrency, run.unit_concurrency, 1)
-    ingest_concurrency = _picked(parsed.ingest_concurrency, run.ingest_concurrency, 1)
-    request_concurrency = _picked(parsed.request_concurrency, run.request_concurrency, 4)
-    judge_concurrency = _picked(parsed.judge_concurrency, run.judge_concurrency, 8)
-    recall_limit = _picked(parsed.recall_limit, run.recall_limit, 20)
-    answer_policy = _picked(parsed.answer_policy, run.answer_policy, None)
-    full_context_chars = _picked(
+    offset = picked(parsed.offset, run.offset, 0)
+    batch_size = picked(parsed.batch_size, run.batch_size, "auto")
+    max_batch_size = picked(parsed.max_batch_size, run.max_batch_size, 64)
+    unit_concurrency = picked(parsed.unit_concurrency, run.unit_concurrency, 1)
+    ingest_concurrency = picked(parsed.ingest_concurrency, run.ingest_concurrency, 1)
+    request_concurrency = picked(parsed.request_concurrency, run.request_concurrency, 4)
+    judge_concurrency = picked(parsed.judge_concurrency, run.judge_concurrency, 8)
+    recall_limit = picked(parsed.recall_limit, run.recall_limit, 20)
+    answer_policy = picked(parsed.answer_policy, run.answer_policy, None)
+    full_context_chars = picked(
         parsed.full_context_chars, run.full_context_chars, DEFAULT_FULL_CONTEXT_CHARS
     )
-    compile_max_items = _picked(
+    compile_max_items = picked(
         parsed.compile_max_items, run.compile_max_items, DEFAULT_COMPILE_BUDGET.max_items
     )
-    compile_max_chars = _picked(
+    compile_max_chars = picked(
         parsed.compile_max_chars, run.compile_max_chars, DEFAULT_COMPILE_BUDGET.max_chars
     )
-    compile_allow_partial_sources = _picked(
+    compile_allow_partial_sources = picked(
         parsed.compile_allow_partial_sources,
         run.compile_allow_partial_sources,
         False,
     )
-    ingest = _picked(parsed.ingest, run.ingest, DEFAULT_INGEST_MODE)
+    ingest = picked(parsed.ingest, run.ingest, DEFAULT_INGEST_MODE)
     if ingest_concurrency > 1 and (ingest != "add" or parsed.deliberate):
         parser.error("--ingest-concurrency above 1 requires --ingest add without --deliberate")
-    bootstrap_samples = _picked(
+    bootstrap_samples = picked(
         parsed.bootstrap_samples, run.bootstrap_samples, DEFAULT_BOOTSTRAP_SAMPLES
     )
-    repeat_index = _picked(parsed.repeat_index, run.repeat_index, 0)
-    device = _picked(parsed.device, run.device, None)
-    device_lock = _picked(parsed.device_lock, run.device_lock, True)
-    use_cache = _picked(parsed.use_cache, run.use_cache, None)
-    compare = _picked(parsed.compare, run.compare, None)
-    fail_on_regression = _picked(parsed.fail_on_regression, run.fail_on_regression, False)
-    regression_threshold = _picked(parsed.regression_threshold, run.regression_threshold, 0.0)
-    predict_only = _picked(parsed.predict_only, run.predict_only, False)
-    log_samples = _picked(parsed.log_samples, run.log_samples, False)
-    stream_results = _picked(parsed.stream_results, run.stream_results, True)
-    stream_answers = _picked(parsed.stream_answers, run.stream_answers, True)
-    allow_unverified = _picked(parsed.allow_unverified_data, run.allow_unverified_data, False)
-    download_inputs = _picked(parsed.download, run.download, True)
-    overwrite = _picked(parsed.overwrite, run.overwrite, False)
-    quiet = _picked(parsed.quiet, run.quiet, False)
-    verbosity = _picked(parsed.verbosity, run.verbosity, "INFO")
-    media_manifest = _picked(parsed.media_manifest, run.media_manifest, None)
+    repeat_index = picked(parsed.repeat_index, run.repeat_index, 0)
+    device = picked(parsed.device, run.device, None)
+    device_lock = picked(parsed.device_lock, run.device_lock, True)
+    use_cache = picked(parsed.use_cache, run.use_cache, None)
+    compare = picked(parsed.compare, run.compare, None)
+    fail_on_regression = picked(parsed.fail_on_regression, run.fail_on_regression, False)
+    regression_threshold = picked(parsed.regression_threshold, run.regression_threshold, 0.0)
+    predict_only = picked(parsed.predict_only, run.predict_only, False)
+    log_samples = picked(parsed.log_samples, run.log_samples, False)
+    stream_results = picked(parsed.stream_results, run.stream_results, True)
+    stream_answers = picked(parsed.stream_answers, run.stream_answers, True)
+    allow_unverified = picked(parsed.allow_unverified_data, run.allow_unverified_data, False)
+    download_inputs = picked(parsed.download, run.download, True)
+    overwrite = picked(parsed.overwrite, run.overwrite, False)
+    quiet = picked(parsed.quiet, run.quiet, False)
+    verbosity = picked(parsed.verbosity, run.verbosity, "INFO")
+    media_manifest = picked(parsed.media_manifest, run.media_manifest, None)
     if fail_on_regression and compare is None:
         parser.error("--fail-on-regression requires --compare")
     if recall_limit > 100:
         parser.error("--recall-limit must not exceed 100")
     requested = tuple(part.strip() for part in tasks_value.split(",") if part.strip())
-    # `--seed` and `--limit` are argparse `type=` callables, which signal a bad value with
-    # `ArgumentTypeError`; that is not a `ValueError`, so a configured value has to be caught here
+    # --seed and --limit are argparse type= callables, which signal a bad value with
+    # ArgumentTypeError; that is not a ValueError, so a configured value has to be caught here
     # explicitly or it escapes as an unhandled exception instead of a usage message.
     try:
         seeds = _resolved_seeds(parsed.seed, run.seed)
@@ -548,14 +548,14 @@ def _arguments(
         parsed.run_id or declared_run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     )
     # A generated run identifier names a directory no earlier run wrote to, so resuming one would
-    # quietly ingest everything again. `--resume` stays command-line-only for the reason `--blind`
+    # quietly ingest everything again. --resume stays command-line-only for the reason --blind
     # does: it describes one invocation's recovery, not the sweep a configuration file declares.
     if parsed.resume and not (parsed.run_id or declared_run_id):
         parser.error("--resume needs the --run-id of the run it continues")
     output = parsed.output_path or run.output_path or settings.benchmarks_root / "results" / run_id
     if performance_budgets and compare is None:
         parser.error("--performance-budget requires --compare")
-    return _Arguments(
+    return Arguments(
         tasks=tasks,
         benchmarks_root=settings.benchmarks_root.expanduser().resolve(),
         data_root=settings.data_root.expanduser().resolve(),
@@ -606,7 +606,7 @@ def _arguments(
         log_samples=log_samples,
         stream_results=stream_results,
         stream_answers=stream_answers,
-        search_replay=_picked(parsed.search_replay, run.search_replay, True),
+        search_replay=picked(parsed.search_replay, run.search_replay, True),
         allow_unverified_data=allow_unverified,
         download=download_inputs,
         overwrite=overwrite,
@@ -616,14 +616,14 @@ def _arguments(
     )
 
 
-def _read_config_document(path: Path) -> Mapping[str, object]:
+def read_config_document(path: Path) -> Mapping[str, object]:
     """Parse one harness configuration file, reporting where invalid YAML went wrong."""
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
     except OSError as error:
         raise ValueError(f"cannot read benchmark config {path}: {error}") from None
     except yaml.YAMLError as error:
-        mark = getattr(error, "problem_mark", None)
+        mark = error.problem_mark if isinstance(error, yaml.MarkedYAMLError) else None
         location = "" if mark is None else f" at line {mark.line + 1}, column {mark.column + 1}"
         raise ValueError(f"benchmark config {path} is invalid YAML{location}") from None
     if document is None:
@@ -637,14 +637,14 @@ _Picked = TypeVar("_Picked")
 
 
 @overload
-def _picked(flag: _Picked | None, declared: _Picked | None, default: None) -> _Picked | None: ...
+def picked(flag: _Picked | None, declared: _Picked | None, default: None) -> _Picked | None: ...
 
 
 @overload
-def _picked(flag: _Picked | None, declared: _Picked | None, default: _Picked) -> _Picked: ...
+def picked(flag: _Picked | None, declared: _Picked | None, default: _Picked) -> _Picked: ...
 
 
-def _picked(
+def picked(
     flag: _Picked | None, declared: _Picked | None, default: _Picked | None
 ) -> _Picked | None:
     """Return the first supplied value: command line, then configuration file, then default."""
@@ -658,7 +658,7 @@ def _picked(
 def _resolved_seeds(
     flag: tuple[int, int, int, int] | None, declared: int | Sequence[int] | None
 ) -> tuple[int, int, int, int]:
-    """Expand a configured seed the way `--seed` expands one: 1 or 3 values fill out to 4."""
+    """Expand a configured seed the way --seed expands one: 1 or 3 values fill out to 4."""
     if flag is not None:
         return flag
     if declared is None:
@@ -670,7 +670,7 @@ def _resolved_seeds(
 def _resolved_limit(
     flag: int | float | None, declared: int | float | str | None
 ) -> int | float | None:
-    """Accept the configured limit in the spellings the flag accepts, `all` included."""
+    """Accept the configured limit in the spellings the flag accepts, all included."""
     if flag is not None:
         return flag
     if declared is None:
@@ -681,7 +681,7 @@ def _resolved_limit(
 def _overridden_paths(
     flag: Sequence[str] | None, declared: Mapping[str, Path] | None
 ) -> tuple[str, ...]:
-    """Render both spellings of a per-task path override into the one `TASK=PATH` form."""
+    """Render both spellings of a per-task path override into the one TASK=PATH form."""
     if flag:
         return tuple(flag)
     if not declared:
@@ -713,18 +713,18 @@ def _resolved_performance_budgets(
     return budgets
 
 
-def _load_memory_config(
+def load_memory_config(
     path: Path | None,
 ) -> tuple[MemorySpec | None, HarnessOverrides]:
     """Load one harness configuration file into its product and harness halves.
 
-    The `benchmark:` mapping is the harness's own: credentials, judging, and corpus
-    acquisition have no field in `MemorySpec` and must not gain one, because that schema is
+    The benchmark: mapping is the harness's own: credentials, judging, and corpus
+    acquisition have no field in MemorySpec and must not gain one, because that schema is
     a public contract and its credentials are deliberately kept off disk.
     """
     if path is None:
         return None, HarnessOverrides()
-    values = dict(_read_config_document(path))
+    values = dict(read_config_document(path))
     section = values.pop("benchmark", None)
     if section is None:
         section = {}
@@ -759,7 +759,7 @@ def _load_memory_config(
     return config, overrides
 
 
-def _model_config(
+def model_config(
     arguments: str,
     *,
     memory_config: MemorySpec | None = None,
@@ -767,9 +767,9 @@ def _model_config(
     config = ModelConfig.from_environment()
     if memory_config is not None and isinstance(memory_config.generation, OpenAIGenerationConfig):
         generation = memory_config.generation
-        # `model` and `modalities` carry non-`None` schema defaults, so an absent value cannot be
-        # told apart from an explicit one by truthiness the way `base_url`/`timeout` can. Checking
-        # `model_fields_set` is what lets an env-only SENSEMEM_GENERATION_MODEL or
+        # model and modalities carry non-None schema defaults, so an absent value cannot be
+        # told apart from an explicit one by truthiness the way base_url/timeout can. Checking
+        # model_fields_set is what lets an env-only SENSEMEM_GENERATION_MODEL or
         # SENSEMEM_GENERATION_MODALITIES survive a file that does not mention the field at all.
         declared = generation.model_fields_set
         config = replace(
@@ -809,16 +809,16 @@ def _model_config(
     return config
 
 
-def _judge_config(
+def resolve_judge_config(
     config: ModelConfig,
-    arguments: _Arguments,
+    arguments: Arguments,
     *,
     overrides: HarnessOverrides | None = None,
-) -> _JudgeConfig:
+) -> JudgeConfig:
     # The configuration file wins over the environment; either wins over falling back to the
     # generation endpoint, which is what an unset judge has always meant.
     declared = HarnessOverrides().judge if overrides is None else overrides.judge
-    judge = _JudgeConfig(
+    judge = JudgeConfig(
         model=(declared.model or os.getenv("SENSEMEM_JUDGE_MODEL") or config.generation_model),
         base_url=(
             declared.base_url or os.getenv("SENSEMEM_JUDGE_BASE_URL") or config.generation_base_url
@@ -851,7 +851,7 @@ def _judge_config(
     return judge
 
 
-def _evaluation_config(
+def evaluation_config(
     config: ModelConfig,
     tasks: Sequence[LoadedTask],
     *,
@@ -870,7 +870,7 @@ def _evaluation_config(
         for memory in unit.memories
         for atom in memory.content
         if isinstance(atom, Path)
-        and (modality := _MODALITY_BY_SUFFIX.get(atom.suffix.casefold())) is not None
+        and (modality := MODALITY_BY_SUFFIX.get(atom.suffix.casefold())) is not None
     )
     required.update(
         modality
@@ -879,7 +879,7 @@ def _evaluation_config(
         for question in unit.questions
         for atom in question.content
         if isinstance(atom, Path)
-        and (modality := _MODALITY_BY_SUFFIX.get(atom.suffix.casefold())) is not None
+        and (modality := MODALITY_BY_SUFFIX.get(atom.suffix.casefold())) is not None
     )
     return replace(
         config,
@@ -887,7 +887,7 @@ def _evaluation_config(
     )
 
 
-def _evaluation_memory_config(
+def evaluation_memory_config(
     config: MemorySpec | None,
     model: ModelConfig,
     *,
@@ -897,11 +897,11 @@ def _evaluation_memory_config(
 ) -> MemorySpec | None:
     if config is None:
         return None
-    # The pool pins answer-time reinforcement off for every product arm (see `_BackendPool`), so
-    # the settings this run reports -- in the effective-config artifact, `results.jsonl`, and
-    # the resume checkpoints -- have to say so too, whether or not the file has a `generation`
-    # section. The 2026-09-11 baseline's `config.yaml` said `reinforce_on_answer: true` while
-    # every store's `access_count` column stayed at zero.
+    # The pool pins answer-time reinforcement off for every product arm (see _BackendPool), so
+    # the settings this run reports -- in the effective-config artifact, results.jsonl, and
+    # the resume checkpoints -- have to say so too, whether or not the file has a generation
+    # section. The 2026-09-11 baseline's config.yaml said reinforce_on_answer: true while
+    # every store's access_count column stayed at zero.
     config = config.model_copy(
         update={"settings": replace(config.settings, reinforce_on_answer=False)}
     )
@@ -919,16 +919,18 @@ def _evaluation_memory_config(
     generation = generation.model_copy(
         update={
             "base_url": model.generation_base_url,
-            # `model` is the already-resolved credential (file, then SENSEMEM_GENERATION_API_KEY,
+            # model is the already-resolved credential (file, then SENSEMEM_GENERATION_API_KEY,
             # then the SDK's own lookup): without repeating it here, an env-only credential is
-            # dropped the moment the file declares no `api_key`, since `model_copy(update=...)`
-            # only touches keys named in this dict and this field would otherwise stay `None`.
+            # dropped the moment the file declares no api_key, since model_copy(update=...)
+            # only touches keys named in this dict and this field would otherwise stay None.
             "api_key": (
                 None if model.generation_api_key is None else SecretStr(model.generation_api_key)
             ),
             "model": model.generation_model,
             "timeout": model.timeout_seconds,
-            "temperature": _generation_temperature(model.generation_model, options, extra_body),
+            "temperature": resolve_generation_temperature(
+                model.generation_model, options, extra_body
+            ),
             "seed": None if reasoning_model(model.generation_model) else seed,
             "modalities": model.generation_capabilities,
             "max_tokens": (
@@ -968,8 +970,8 @@ def _replace_config(config: ModelConfig, key: str, value: str) -> ModelConfig:
     raise AssertionError(f"unhandled model setting: {key}")
 
 
-def _description_cache_path(
-    arguments: _Arguments,
+def description_cache_path(
+    arguments: Arguments,
     memory_config: MemorySpec | None,
 ) -> Path | None:
     """Share descriptions inside one run without warming later performance repeats."""
@@ -978,7 +980,7 @@ def _description_cache_path(
     return arguments.data_root / "cache" / arguments.run_id / "descriptions.db"
 
 
-def _batch_size(arguments: _Arguments, task: LoadedTask) -> int:
+def resolve_batch_size(arguments: Arguments, task: LoadedTask) -> int:
     explicit = _parse_batch_size(arguments.batch_size)
     if explicit is not None:
         return min(explicit, arguments.max_batch_size)
@@ -1031,16 +1033,16 @@ def _assignments(values: Sequence[str], selected: Sequence[str]) -> dict[str, Pa
     return result
 
 
-def _require_output(path: Path, *, overwrite: bool, resume: bool = False) -> None:
+def require_output(path: Path, *, overwrite: bool, resume: bool = False) -> None:
     # The crash copy is guarded like the artifacts it stands in for. A run that died leaves one
-    # behind and no `results.jsonl`, so without this a same-`--run-id` retry would pass the guard
+    # behind and no results.jsonl, so without this a same---run-id retry would pass the guard
     # and delete the only record of the tasks that did finish, before answering anything.
-    # `--resume` is the exception, and only for the crash copy: it names the interrupted run it
+    # --resume is the exception, and only for the crash copy: it names the interrupted run it
     # continues, so the leftover is that run's own and refusing it would block the one command
-    # written to recover from it. The finished artifacts still need `--overwrite`, because a run
+    # written to recover from it. The finished artifacts still need --overwrite, because a run
     # that wrote them is not one to resume.
-    guarded = (_RESULTS_FILE, _SAMPLES_FILE)
-    for name in guarded if resume else (*guarded, _PARTIAL_SAMPLES_FILE, _CONFIG_FILE):
+    guarded = (RESULTS_FILE, SAMPLES_FILE)
+    for name in guarded if resume else (*guarded, PARTIAL_SAMPLES_FILE, CONFIG_FILE):
         target = path / name
         if target.exists() and not overwrite:
             raise FileExistsError(f"evaluation artifact already exists: {target}")
@@ -1061,7 +1063,7 @@ def _fallback_reference_at(value: str) -> datetime:
 
 
 def _limit_value(value: str) -> int | float:
-    # `all` is the word the help text advertises and the word a reader reaches for; accepting only
+    # all is the word the help text advertises and the word a reader reaches for; accepting only
     # -1 made the documented spelling an error.
     if value.strip().casefold() in {"all", "-1"}:
         return -1
@@ -1162,7 +1164,7 @@ def _generation_kwargs(  # noqa: C901 - ordered trust-boundary validation is lin
     return ",".join(normalized)
 
 
-def _generation_temperature(
+def resolve_generation_temperature(
     model: str, options: Mapping[str, str], extra_body: Mapping[str, object] | None = None
 ) -> float | None:
     temperature = float(options.get("temperature", "0"))
@@ -1173,7 +1175,7 @@ def _generation_temperature(
     return None
 
 
-def _positive_int(value: str) -> int:
+def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")

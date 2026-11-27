@@ -354,7 +354,7 @@ def test_evaluation_telemetry_sums_failed_description_batches_per_task() -> None
     """A write-path caption loss has to reach the artifact, because tokens cannot show it.
 
     A batch whose reply could not be used reports no usage at all, so it is invisible in
-    `token_usage`; what it leaves behind is a media memory with an empty full-text document.
+    token_usage; what it leaves behind is a media memory with an empty full-text document.
     """
     telemetry = EvaluationTelemetry()
     try:

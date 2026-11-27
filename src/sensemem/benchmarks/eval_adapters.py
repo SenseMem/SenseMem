@@ -14,17 +14,69 @@ from functools import cache
 from pathlib import Path
 from typing import Literal, TypeAlias, TypeVar, cast
 
-from sensemem.benchmarks.egotempo import EgoTempoQuestion
+from sensemem.benchmarks._official import personamem_v3_proactive
+from sensemem.benchmarks._official.mosaic_scoring import answer_query_prompt
+from sensemem.benchmarks._official.personamem_v3_prompts import (
+    e5_prompt,
+    e6_active_mistake_prevention_prompt,
+    new_suggestions_chatbot_prompt,
+)
+from sensemem.benchmarks._official.query_prompts import (
+    ama_question_prompt,
+    longmemeval_v2_question_prompt,
+    videozero_level_queries,
+)
+from sensemem.benchmarks.ama_bench import load_ama_bench
+from sensemem.benchmarks.atm_bench import (
+    atm_capture_time,
+    atm_email_block,
+    atm_sgm_block,
+    load_atm_bench,
+    load_atm_emails,
+    load_atm_sgm,
+)
+from sensemem.benchmarks.egotempo import EgoTempoQuestion, load_egotempo
+from sensemem.benchmarks.icm_bench import ICM_NO_ASR_CLIPS, clip_position, load_icm_bench
+from sensemem.benchmarks.locomo_refined import load_locomo_refined
+from sensemem.benchmarks.longmemeval_v2 import (
+    LongMemEvalV2Question,
+    load_longmemeval_v2_haystacks,
+    load_longmemeval_v2_questions,
+    load_longmemeval_v2_trajectories,
+)
+from sensemem.benchmarks.m3_bench import load_m3_bench
 from sensemem.benchmarks.mem_gallery import (
     MemGalleryQuestion,
     MemGalleryRound,
     MemGallerySession,
+    load_mem_gallery,
 )
-from sensemem.benchmarks.mosaic import MosaicSession
-from sensemem.benchmarks.personamem_v3 import PersonaMemQuery
-from sensemem.benchmarks.prompts import _choice_prompt, _free_text_parts, _free_text_prompt
-from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion
+from sensemem.benchmarks.memlens import load_memlens, load_memlens_agent_subset
+from sensemem.benchmarks.mm_lifelong import MMLifelongSplit, load_mm_lifelong
+from sensemem.benchmarks.mosaic import MosaicSession, load_mosaic, mosaic_media_path
+from sensemem.benchmarks.personamem_v3 import (
+    RANKING_TASK_TYPES,
+    PersonaMemQuery,
+    load_personamem_v3,
+    render_candidates,
+    render_event,
+)
+from sensemem.benchmarks.prompts import (
+    ATM_BENCH_QUERY_PROMPT,
+    EGOTEMPO_QUERY_PROMPT,
+    MEM_GALLERY_QUERY_PROMPT,
+    MEMLENS_QUERY_PROMPT,
+    PERSONAMEM_V3_QUERY_PROMPT,
+    PERSONAMEM_V3_RANKING_PROMPT,
+    choice_prompt,
+    free_text_parts,
+    free_text_prompt,
+    mem_gallery_format_constraint,
+    mem_gallery_refusal,
+)
+from sensemem.benchmarks.supermemory_vqa import SuperMemoryQuestion, load_supermemory_vqa
 from sensemem.benchmarks.task_catalog import TaskSpec
+from sensemem.benchmarks.videozerobench import load_videozerobench
 from sensemem.kernel.temporal import temporal_context
 
 ScoreKind = Literal["choice", "text", "submission"]
@@ -101,7 +153,7 @@ class EvalQuestion:
     reference_at: datetime | None = None
     source_question: str | None = None
     # Set when this task's own query prompt mandates a refusal wording of its own. The product
-    # reports `abstained` for its own refusal sentence, which it cannot do for a wording the task
+    # reports abstained for its own refusal sentence, which it cannot do for a wording the task
     # substituted; without this the run reports zero refusals while the model refuses.
     refusal: str | None = None
 
@@ -130,7 +182,7 @@ class EvalQuestion:
 
 @dataclass(frozen=True, slots=True)
 class EvalUnit:
-    """One independent corpus that owns one physical ``data_dir``."""
+    """One independent corpus that owns one physical data_dir."""
 
     unit_id: str
     memories: tuple[MemoryItem, ...]
@@ -566,10 +618,9 @@ def _locomo(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.locomo_refined import load_locomo_refined
 
     units = []
-    for conversation in _selected(load_locomo_refined(dataset), limit, offset):
+    for conversation in select_slice(load_locomo_refined(dataset), limit, offset):
         stored = {turn.dialog_id for turn in conversation.turns}
         memories = tuple(
             MemoryItem(
@@ -589,12 +640,12 @@ def _locomo(
         questions = tuple(
             EvalQuestion(
                 question.question_id,
-                (_free_text_prompt(question.question),),
+                (free_text_prompt(question.question),),
                 question.reference_answers,
                 metadata={
                     "category": question.category,
-                    # The release's `evidence` names the dialogue turns that carry the
-                    # answer as `dia_id` values, and `dia_id` is this unit's memory
+                    # The release's evidence names the dialogue turns that carry the
+                    # answer as dia_id values, and dia_id is this unit's memory
                     # source ID, so gold evidence is exact here rather than derived.
                     # Published IDs are matched against the stored turns rather than
                     # trusted: an ID that names no turn is reported separately, so a
@@ -623,10 +674,9 @@ def _m3(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.m3_bench import load_m3_bench
 
     units = []
-    for video in _selected(load_m3_bench(dataset), limit, offset):
+    for video in select_slice(load_m3_bench(dataset), limit, offset):
         if video.video_id in media.unavailable_units:
             continue
         memories = media.parts(
@@ -637,7 +687,7 @@ def _m3(
         questions = tuple(
             EvalQuestion(
                 question.question_id,
-                _free_text_parts(question.question),
+                free_text_parts(question.question),
                 (question.reference_answer,),
                 cutoff_seconds=question.cutoff_seconds,
                 metadata={"question_types": question.question_types},
@@ -658,11 +708,9 @@ def _videozerobench(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks._official.query_prompts import videozero_level_queries
-    from sensemem.benchmarks.videozerobench import load_videozerobench
 
     grouped: dict[str, list[EvalQuestion]] = {}
-    for question in _selected(load_videozerobench(dataset), limit, offset):
+    for question in select_slice(load_videozerobench(dataset), limit, offset):
         questions = grouped.setdefault(question.video_id, [])
         for level, query in videozero_level_queries(question):
             questions.append(
@@ -699,7 +747,6 @@ def _icm_bench(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.icm_bench import ICM_NO_ASR_CLIPS, clip_position, load_icm_bench
 
     release = root / "icm-bench"
     rows = [
@@ -720,7 +767,7 @@ def _icm_bench(
             f"ICM speakerless ASR roster mismatch: missing {sorted(expected - actual)}, "
             f"unexpected {sorted(actual - expected)}"
         )
-    questions = _selected(load_icm_bench(dataset), limit, offset)
+    questions = select_slice(load_icm_bench(dataset), limit, offset)
     memories = []
     for clip in clips:
         position = clip_position(clip)
@@ -749,7 +796,7 @@ def _icm_bench(
             tuple(
                 EvalQuestion(
                     question.question_id,
-                    _free_text_parts(question.question),
+                    free_text_parts(question.question),
                     (question.reference_answer,),
                     cutoff_seconds=None
                     if question.before_clip is None
@@ -776,11 +823,9 @@ def _egotempo(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.egotempo import load_egotempo
-    from sensemem.benchmarks.prompts import EGOTEMPO_QUERY_PROMPT
 
     grouped: dict[str, list[EgoTempoQuestion]] = {}
-    for question in _selected(load_egotempo(dataset), limit, offset):
+    for question in select_slice(load_egotempo(dataset), limit, offset):
         grouped.setdefault(question.clip_id, []).append(question)
     return tuple(
         EvalUnit(
@@ -809,8 +854,6 @@ def _memlens(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.memlens import load_memlens, load_memlens_agent_subset
-    from sensemem.benchmarks.prompts import MEMLENS_QUERY_PROMPT
 
     questions = load_memlens(dataset)
     subset_path = root / spec.auxiliary[0]
@@ -819,7 +862,7 @@ def _memlens(
         questions = tuple(question for question in questions if question.question_id in wanted)
     images = None if media.root is None else media.root.expanduser().resolve()
     units = []
-    for question in _selected(questions, limit, offset):
+    for question in select_slice(questions, limit, offset):
         memories = tuple(
             MemoryItem(
                 turn.turn_id,
@@ -908,14 +951,13 @@ def _mm_lifelong(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.mm_lifelong import MMLifelongSplit, load_mm_lifelong
 
     split = cast(MMLifelongSplit, spec.variant)
-    questions = _selected(load_mm_lifelong(dataset, split), limit, offset)
+    questions = select_slice(load_mm_lifelong(dataset, split), limit, offset)
     # The split's only clock is the video timeline; the offsets alone reached the store as
-    # metadata, so every memory had no `occurred_at` and the answerer resolved "before"/"after"
+    # metadata, so every memory had no occurred_at and the answerer resolved "before"/"after"
     # against the ingest wall clock. ponytail: only this adapter anchors offsets; lift it into
-    # `_memory_part` once the other media tasks' causal cutoffs are checked against it.
+    # _memory_part once the other media tasks' causal cutoffs are checked against it.
     memories = tuple(
         replace(
             item,
@@ -935,7 +977,7 @@ def _mm_lifelong(
             tuple(
                 EvalQuestion(
                     str(question.index),
-                    (_free_text_prompt(question.question),),
+                    (free_text_prompt(question.question),),
                     (question.reference_answer,),
                     metadata={
                         "question_type": question.question_type,
@@ -958,7 +1000,6 @@ def _supermemory(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.supermemory_vqa import load_supermemory_vqa
 
     grouped: dict[int, list[SuperMemoryQuestion]] = {}
     selected = tuple(
@@ -966,7 +1007,7 @@ def _supermemory(
         for question in load_supermemory_vqa(dataset)
         if spec.variant != "subject-1" or question.subject == 1
     )
-    for question in _selected(selected, limit, offset):
+    for question in select_slice(selected, limit, offset):
         grouped.setdefault(question.subject, []).append(question)
     units = []
     for subject, raw_questions in sorted(grouped.items()):
@@ -980,7 +1021,7 @@ def _supermemory(
         questions = tuple(
             EvalQuestion(
                 str(question.question_id),
-                (_choice_prompt(question.question, question.choices),),
+                (choice_prompt(question.question, question.choices),),
                 expected_choice="ABCD"[question.correct_option_index],
                 score_kind="choice",
                 cutoff_seconds=question.question_ended_at.timestamp(),
@@ -1006,15 +1047,6 @@ def _atm(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.atm_bench import (
-        atm_capture_time,
-        atm_email_block,
-        atm_sgm_block,
-        load_atm_bench,
-        load_atm_emails,
-        load_atm_sgm,
-    )
-    from sensemem.benchmarks.prompts import ATM_BENCH_QUERY_PROMPT
 
     email_path = root / spec.auxiliary[0]
     memories = [
@@ -1048,7 +1080,7 @@ def _atm(
             source_question=question.question,
             refusal=ATM_BENCH_QUERY_PROMPT.refusal,
         )
-        for question in _selected(load_atm_bench(dataset), limit, offset)
+        for question in select_slice(load_atm_bench(dataset), limit, offset)
     )
     return (EvalUnit(cast(str, spec.variant), tuple(memories), questions),)
 
@@ -1061,15 +1093,9 @@ def _mem_gallery(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.mem_gallery import load_mem_gallery
-    from sensemem.benchmarks.prompts import (
-        MEM_GALLERY_QUERY_PROMPT,
-        mem_gallery_format_constraint,
-        mem_gallery_refusal,
-    )
 
     units = []
-    for topic in _selected(load_mem_gallery(dataset), limit, offset):
+    for topic in select_slice(load_mem_gallery(dataset), limit, offset):
         memories = tuple(
             _gallery_memory(topic.profile.name, session, round_, media)
             for session in topic.sessions
@@ -1157,20 +1183,20 @@ def _query_parts(template: str, question: str, **values: str) -> tuple[str, ...]
 
 
 # SenseMem caps one memory or query part at 65,536 characters
-# (`sensemem.kernel.validation.MAX_TEXT_CHARACTERS`). Split long passages into blocks
+# (sensemem.kernel.validation.MAX_TEXT_CHARACTERS). Split long passages into blocks
 # well under the cap so each block is a usable retrieval unit.
 _TEXT_BLOCK_CHARACTERS = 8_000
 
 # Recorded in place of a reference answer where a release publishes none.
 # 857 of PersonaMem-v3's queries -- almost all of them sycophancy rows --
-# have no `example_response`, and none of its metrics reads a reference, so
+# have no example_response, and none of its metrics reads a reference, so
 # the slot would otherwise repeat the question back as its own gold answer.
 _NO_REFERENCE = "(no reference answer published for this row)"
 _MAX_PART_CHARACTERS = 60_000
 
 
 def _text_blocks(text: str, limit: int) -> tuple[str, ...]:
-    """Group a document into blocks of at most `limit` characters.
+    """Group a document into blocks of at most limit characters.
 
     Paragraphs are kept whole and packed greedily; a single paragraph longer
     than the limit is cut on the limit, because some records are one unbroken
@@ -1209,8 +1235,8 @@ def _text_memories(
 ) -> tuple[MemoryItem, ...]:
     """Store one passage as memories that each fit the product's part limit.
 
-    An oversized part is not merely dropped. `memory.add` rejects it, the
-    runner records an ingest failure for the unit, and `_apply_judges` then
+    An oversized part is not merely dropped. memory.add rejects it, the
+    runner records an ingest failure for the unit, and _apply_judges then
     skips **every** question in that unit -- so one long turn silently voids a
     whole conversation. Text under the block size stays unchanged; only longer
     passages are split.
@@ -1237,10 +1263,7 @@ def _ama_bench(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks._official.query_prompts import ama_question_prompt
-    from sensemem.benchmarks.ama_bench import load_ama_bench
 
-    del spec, resolver, root
     return tuple(
         EvalUnit(
             str(episode.episode_id),
@@ -1270,7 +1293,7 @@ def _ama_bench(
                 for index, question in enumerate(episode.qa_pairs)
             ),
         )
-        for episode in _selected(load_ama_bench(dataset), limit, offset)
+        for episode in select_slice(load_ama_bench(dataset), limit, offset)
     )
 
 
@@ -1282,13 +1305,6 @@ def _longmemeval_v2(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks._official.query_prompts import longmemeval_v2_question_prompt
-    from sensemem.benchmarks.longmemeval_v2 import (
-        LongMemEvalV2Question,
-        load_longmemeval_v2_haystacks,
-        load_longmemeval_v2_questions,
-        load_longmemeval_v2_trajectories,
-    )
 
     questions = load_longmemeval_v2_questions(dataset)
     haystacks = load_longmemeval_v2_haystacks(
@@ -1296,7 +1312,7 @@ def _longmemeval_v2(
     )
     if set(haystacks) != {question.id for question in questions}:
         raise ValueError("LongMemEval-V2 questions and haystack IDs must agree")
-    selected = _selected(questions, limit, offset)
+    selected = select_slice(questions, limit, offset)
     if not selected:
         return ()
     trajectories = load_longmemeval_v2_trajectories(
@@ -1376,8 +1392,6 @@ def _mosaic(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks._official.mosaic_scoring import answer_query_prompt
-    from sensemem.benchmarks.mosaic import load_mosaic
 
     units = []
     for persona in load_mosaic(dataset, limit=limit, offset=offset):
@@ -1432,7 +1446,6 @@ def _mosaic_memories(
     media: MediaResolver,
 ) -> tuple[tuple[MemoryItem, ...], dict[str, list[tuple[str, str]]]]:
     """Build the official native chunks and their scorer-only fact-to-source map."""
-    from sensemem.benchmarks.mosaic import mosaic_media_path
 
     memories = []
     facts: dict[str, list[tuple[str, str]]] = {}
@@ -1483,23 +1496,13 @@ def _personamem_v3(
     limit: Limit,
     offset: int,
 ) -> tuple[EvalUnit, ...]:
-    from sensemem.benchmarks.personamem_v3 import (
-        RANKING_TASK_TYPES,
-        load_personamem_v3,
-        render_candidates,
-        render_event,
-    )
-    from sensemem.benchmarks.prompts import (
-        PERSONAMEM_V3_QUERY_PROMPT,
-        PERSONAMEM_V3_RANKING_PROMPT,
-    )
 
     units = []
     for persona in load_personamem_v3(dataset, limit=limit, offset=offset):
         memories = tuple(
             item
             for event in persona.events
-            # `end_seconds` carries the event's moment so the runner's cutoff
+            # end_seconds carries the event's moment so the runner's cutoff
             # loop ingests only what happened before each query -- the causal
             # mask the release requires.
             for item in _text_memories(
@@ -1530,12 +1533,6 @@ def _personamem_question(
     ranking_template: str,
     query_template: str,
 ) -> EvalQuestion:
-    from sensemem.benchmarks._official import personamem_v3_proactive
-    from sensemem.benchmarks._official.personamem_v3_prompts import (
-        e5_prompt,
-        e6_active_mistake_prevention_prompt,
-        new_suggestions_chatbot_prompt,
-    )
 
     history = "\n".join(f"{turn.role}: {turn.content}" for turn in query.prior_conversation)
     question = query.user_query if not history else f"{history}\n\n{query.user_query}"
@@ -1559,9 +1556,9 @@ def _personamem_question(
         query.query_id,
         _split_parts(prompt),
         (query.example_response or query.groundtruth_preference or _NO_REFERENCE,),
-        # Strictly before the query's moment: `_run_unit` ingests memories whose
-        # end is `<=` the cutoff, and the release masks events at or after the
-        # query. `nextafter` is the exact float below it.
+        # Strictly before the query's moment: _run_unit ingests memories whose
+        # end is <= the cutoff, and the release masks events at or after the
+        # query. nextafter is the exact float below it.
         cutoff_seconds=math.nextafter(float(query.timestamp), -math.inf),
         metadata={
             "task_family": query.task_family,
@@ -1702,9 +1699,8 @@ def _selected_unavailable_units(
 ) -> Mapping[str, str]:
     if not unavailable_units or spec.name not in {"m3-bench-robot", "m3-bench-web"}:
         return unavailable_units
-    from sensemem.benchmarks.m3_bench import load_m3_bench
 
-    selected_ids = {video.video_id for video in _selected(load_m3_bench(dataset), limit, offset)}
+    selected_ids = {video.video_id for video in select_slice(load_m3_bench(dataset), limit, offset)}
     return {
         unit_id: reason for unit_id, reason in unavailable_units.items() if unit_id in selected_ids
     }
@@ -1722,14 +1718,14 @@ def _finite_number(value: object, name: str) -> float:
 def _with_corpus_reference(unit: EvalUnit) -> EvalUnit:
     """Anchor questions that carry no date of their own at the end of the unit's corpus.
 
-    `Memory.ask` resolves a relative expression such as "last week" or "this year" against
-    `reference_at`, and with none given against the wall clock. A dataset that does not date its
+    Memory.ask resolves a relative expression such as "last week" or "this year" against
+    reference_at, and with none given against the wall clock. A dataset that does not date its
     questions therefore retrieved different memories for the same seed depending on when the run
     started, and a replay hours later could not reproduce it. The one instant such a corpus
     defines is the time of its last memory: the question is asked after everything it can
     remember. Structured question dates take precedence; otherwise the product's pure parser
     reads an explicit "Today is ..." anchor from the original question. An omitted year uses
-    the corpus year, never the execution clock. Only genuinely undated questions use `latest`.
+    the corpus year, never the execution clock. Only genuinely undated questions use latest.
     """
     if all(question.reference_at is not None for question in unit.questions):
         return unit
@@ -1761,7 +1757,7 @@ def _with_corpus_reference(unit: EvalUnit) -> EvalUnit:
     )
 
 
-def _selected(values: Sequence[_T], limit: Limit, offset: int) -> Sequence[_T]:
+def select_slice(values: Sequence[_T], limit: Limit, offset: int) -> Sequence[_T]:
     if limit is None or limit == -1:
         return values[offset:]
     count = max(1, math.ceil(len(values) * limit)) if limit < 1 else int(limit)

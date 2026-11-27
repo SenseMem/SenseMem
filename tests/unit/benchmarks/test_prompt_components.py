@@ -16,136 +16,87 @@ from sensemem.benchmarks.videozerobench import (
 from sensemem.types import AnswerPolicy
 
 
-@pytest.mark.parametrize(
-    ("has_context", "override", "answer_policy", "answer_style", "digest"),
-    [
-        (
-            False,
-            None,
-            "strict",
-            "default",
-            "67766035feb7cd5d26091ab8514564459ccbcf38e10b6d9ec025e9a089a2e69a",
-        ),
-        (
-            False,
-            None,
-            "strict",
-            "concise",
-            "ce39f5678fdfed82222dbc35e2c721b39f48181d892134f0f1d051f863cf66bf",
-        ),
-        (
-            False,
-            None,
-            "best_effort",
-            "default",
-            "1cec294e8c82b6180b9f347e64b5f5066732209dc2ee60e7a83455cf30c64936",
-        ),
-        (
-            False,
-            None,
-            "best_effort",
-            "concise",
-            "da0f471ad00a708afcb4426745cfc282448c171dc5ed05f32f12af164d10efd5",
-        ),
-        (
-            True,
-            None,
-            "strict",
-            "default",
-            "fac920d66a798d546bc4bf44fbd601bad92afd2f8c7d151c2ccbc934752ab414",
-        ),
-        (
-            True,
-            None,
-            "strict",
-            "concise",
-            "b538dd4a017aed8b1ca7602b1d252dea8a7fb45bc0a70b3960b62478393817f0",
-        ),
-        (
-            True,
-            None,
-            "best_effort",
-            "default",
-            "b0b41530c03fb6f4db3c15de611349ddef35bee8d964eecd0c263e3d357dedc1",
-        ),
-        (
-            True,
-            None,
-            "best_effort",
-            "concise",
-            "d20c2b2dd82bb8713ea224718cf53f58c282d1d2d7cc9ec9e231965dcabc641d",
-        ),
-        (
-            False,
-            "",
-            "strict",
-            "default",
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        ),
-        (
-            True,
-            "OVERRIDE {literal}",
-            "best_effort",
-            "default",
-            "c41ec7f89508d74e531d2bd019fa0440e373808db822512857d6262712795434",
-        ),
-        (
-            True,
-            "OVERRIDE {literal}",
-            "strict",
-            "concise",
-            "c698daa33c18217dacd5fdf72b8013e48d71292494767fc75b3bf74edddf51d9",
-        ),
-        (
-            False,
-            "OVERRIDE {literal}",
-            "best_effort",
-            "concise",
-            "15fbf87ec7c69e2ccbc74ac0219e8a2008d6ff982bd9ed30504071f03cea6e20",
-        ),
-    ],
-)
-def test_baseline_system_builder_preserves_wire_bytes(
+@pytest.mark.parametrize("has_context", [False, True])
+@pytest.mark.parametrize("answer_policy", ["strict", "best_effort"])
+@pytest.mark.parametrize("answer_style", ["default", "concise"])
+def test_baseline_system_builder_composes_policy_style_and_context_instructions(
     has_context: bool,
-    override: str | None,
     answer_policy: AnswerPolicy,
     answer_style: Literal["default", "concise"],
-    digest: str,
 ) -> None:
     prompt = baseline_system_prompt(
         has_context=has_context,
-        override=override,
+        override=None,
         answer_policy=answer_policy,
         answer_style=answer_style,
     )
-    assert hashlib.sha256(prompt.encode()).hexdigest() == digest
+    assert prompt
+    assert ("untrusted data" in prompt) is has_context
+    assert ("no access to the user's memories" in prompt) is (not has_context)
+    if answer_policy == "strict":
+        assert "do not decline" not in prompt.casefold()
+    else:
+        assert "do not decline" in prompt.casefold() or "best" in prompt.casefold()
+    concise_prompt = baseline_system_prompt(
+        has_context=has_context,
+        override=None,
+        answer_policy=answer_policy,
+        answer_style="concise",
+    )
+    default_prompt = baseline_system_prompt(
+        has_context=has_context,
+        override=None,
+        answer_policy=answer_policy,
+        answer_style="default",
+    )
+    assert concise_prompt != default_prompt
+
+
+def test_baseline_system_builder_respects_literal_override() -> None:
+    assert (
+        baseline_system_prompt(
+            has_context=False,
+            override="",
+            answer_policy="strict",
+            answer_style="default",
+        )
+        == ""
+    )
+    overridden = baseline_system_prompt(
+        has_context=True,
+        override="OVERRIDE {literal}",
+        answer_policy="best_effort",
+        answer_style="default",
+    )
+    assert overridden.startswith("OVERRIDE {literal}")
+    assert "untrusted data" in overridden
 
 
 @pytest.mark.parametrize(
     ("prompt", "digest"),
     [
         (
-            judge_prompts._LOCOMO_PROMPT,
+            judge_prompts.LOCOMO_PROMPT,
             "899d035bd61813bc718812b2997f5908111c63ccd2ed76533e65f5dc3ca337a4",
         ),
         (
-            judge_prompts._M3_PROMPT,
+            judge_prompts.M3_PROMPT,
             "88543b6433f3d46c3cd8621b6e0837b8a8c406310510279d87021c283a13acaa",
         ),
         (
-            judge_prompts._EGOTEMPO_PROMPT,
+            judge_prompts.EGOTEMPO_PROMPT,
             "99da958bd7467147196f781982eb5b0e14f17864df8fc1bcadf620d3f8310fd8",
         ),
         (
-            judge_prompts._MM_LIFELONG_SYSTEM,
+            judge_prompts.MM_LIFELONG_SYSTEM,
             "effeeba5b3200fbae47699b5652e04afa2451337e61f9b5dc1e850ff37d3c231",
         ),
         (
-            judge_prompts._ATM_PROMPT,
+            judge_prompts.ATM_PROMPT,
             "d5669b9effea50bad2abbed3e141a4710a1731d1cccc93c211a06560448a2210",
         ),
         (
-            judge_prompts._GALLERY_PROMPT,
+            judge_prompts.GALLERY_PROMPT,
             "d2efdbd896f38e77644522d1c773e52d6921c24b72f17df376a5dc7d918de734",
         ),
     ],

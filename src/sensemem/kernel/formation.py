@@ -1,7 +1,7 @@
 """Formation: grounding typed proposals in committed observations.
 
-`Formation` runs the formation backend and commits accepted proposals with evidence, versions,
-and vectors in one store transaction. Shared proposal rules live in `formation_rules`.
+Formation runs the formation backend and commits accepted proposals with evidence, versions,
+and vectors in one store transaction. Shared proposal rules live in formation_rules.
 """
 
 from __future__ import annotations
@@ -12,20 +12,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from functools import partial
 from threading import Condition
-from typing import cast
 
 from opentelemetry.trace import Tracer
 
 from sensemem._telemetry import mark_model_requests, record_formation_refusals
 from sensemem.exceptions import ModelError, SenseMemError, ValidationError
-from sensemem.infrastructure.local.store import (
-    NamingPreparationRequired,
-    ProtectedMemoryError,
-    StaleOperationError,
-    StoredEmbedding,
-    StoredMemory,
-    StoredOperation,
-)
+from sensemem.infrastructure.local.store._naming_projection import NamingPreparationRequired
+from sensemem.infrastructure.local.store.errors import ProtectedMemoryError, StaleOperationError
+from sensemem.infrastructure.local.store.rows import StoredEmbedding, StoredMemory, StoredOperation
 from sensemem.kernel.affect import affect_witness_refusal, resolve_affect_proposal
 from sensemem.kernel.content import (
     PreparedMemory,
@@ -155,7 +149,7 @@ def _agreed_columns(
 ) -> PreparedMemory:
     """Return the first proposal of one derived record carrying only agreed inherited columns.
 
-    Same rule as `agreed_inheritance`, applied where the sources arrive one write at a time: the
+    Same rule as agreed_inheritance, applied where the sources arrive one write at a time: the
     place and the metadata survive only while every proposal of this record -- and the row already
     written for it -- says the same thing.
     """
@@ -366,11 +360,11 @@ class Formation(Traced):
             proposals = proposals_by_id[source.id]
             # Application data and the symbolic place travel with the knowledge formed from them:
             # a host that filters recall by metadata expects the tag on the observation to hold
-            # for what was learned from it, and `place_id` is a hard filter, so knowledge formed
+            # for what was learned from it, and place_id is a hard filter, so knowledge formed
             # from an observation in a room has to stand in that room too -- otherwise a
             # place-scoped question sees the raw observation and none of the entities, states, or
             # relations formed from it. One source agrees with itself; a record several sources
-            # share keeps only what they all say, which `_commit_formation` settles.
+            # share keeps only what they all say, which _commit_formation settles.
             for proposal in proposals:
                 if proposal.affect_link is not None:
                     continue
@@ -456,6 +450,7 @@ class Formation(Traced):
                 ):
                     continue
                 local_ids[f"proposal:{local_id}"] = prepared.memory_id
+                assert isinstance(prepared.context, RecordSemantics)
                 new_records[prepared.memory_id] = MemoryRecord(
                     id=prepared.memory_id,
                     content=prepared.content.text,
@@ -464,7 +459,7 @@ class Formation(Traced):
                     occurred_end=prepared.occurred_end,
                     metadata=decode_metadata(prepared.metadata_json),
                     memory_type=prepared.memory_type,
-                    context=cast(RecordSemantics, prepared.context),
+                    context=prepared.context,
                     place_id=prepared.place_id,
                     parts=prepared.content.parts,
                 )
@@ -591,7 +586,7 @@ class Formation(Traced):
     ) -> StoredOperation | None:
         """Embed and commit derived records; return the log row when one was requested.
 
-        A `None` source ID states that the record rests on no other memory, which is what an
+        A None source ID states that the record rests on no other memory, which is what an
         asserted claim such as a naming assertion is: it cites nothing and needs no evidence row.
         """
         recipe = self._backends.formation_space if recipe is None else recipe
@@ -629,27 +624,30 @@ class Formation(Traced):
             tuple(model_input for _memory, _part, model_input in parts),
             task=EmbedTask.DOCUMENT,
         )
-        stored = tuple(
-            StoredMemory(
-                memory_id=memory.memory_id,
-                content=memory.content.text,
-                modality=memory.content.modality.value,
-                memory_type=memory.memory_type.value,
-                assets=(),
-                metadata_json=memory.metadata_json,
-                occurred_at=memory.occurred_at,
-                occurred_end=memory.occurred_end,
-                created_at=completed_at,
-                updated_at=completed_at,
-                place_id=memory.place_id,
-                context=cast(RecordSemantics, memory.context),
-            )
+        stored_list: list[StoredMemory] = []
+        for memory in unique:
+            assert isinstance(memory.context, RecordSemantics)
             # Existing records travel too: what they skip is the embedding, not the write. The
             # store decides whether restating a claim it already holds is a no-op or a new
             # version, which is how re-asserting a retired one -- a name changed back, a
-            # registration repeated after `rollback` -- reaches the lineage at all.
-            for memory in unique
-        )
+            # registration repeated after rollback -- reaches the lineage at all.
+            stored_list.append(
+                StoredMemory(
+                    memory_id=memory.memory_id,
+                    content=memory.content.text,
+                    modality=memory.content.modality.value,
+                    memory_type=memory.memory_type.value,
+                    assets=(),
+                    metadata_json=memory.metadata_json,
+                    occurred_at=memory.occurred_at,
+                    occurred_end=memory.occurred_end,
+                    created_at=completed_at,
+                    updated_at=completed_at,
+                    place_id=memory.place_id,
+                    context=memory.context,
+                )
+            )
+        stored = tuple(stored_list)
         embeddings = tuple(
             StoredEmbedding(
                 embedding_id=embedding_row_id(memory.memory_id, object_part),

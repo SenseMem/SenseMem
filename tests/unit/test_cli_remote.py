@@ -1,6 +1,6 @@
-"""Round-trip checks for `--url` against one real `/v1` application.
+"""Round-trip checks for --url against one real /v1 application.
 
-`urlopen` is replaced by the FastAPI test client over a real `Memory`, so every assertion here
+urlopen is replaced by the FastAPI test client over a real Memory, so every assertion here
 runs the actual route: a wrong path answers 404 and a body the route does not accept answers 422,
 neither of which a recorded-request test can catch. What is asserted is that each command reaches
 its route and that the document it prints is the one the same command prints locally.
@@ -45,7 +45,6 @@ def _serve(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
     """Route the CLI's own transport into one test client, leaving its encoding untouched."""
 
     def urlopen(request: Request, *, timeout: float) -> BytesIO:
-        del timeout
         response = client.request(
             request.get_method(),
             request.full_url,
@@ -96,7 +95,7 @@ def test_capture_settle_and_pending_captures_round_trip(
 
     status, pending, _ = _run(capsys, "--url", URL, "-q", "pending-captures", cast(str, memory_id))
     assert status == 0
-    # `pending`, not the route's own `items`: one command prints one shape on both transports.
+    # pending, not the route's own items: one command prints one shape on both transports.
     rows = cast(list[dict[str, object]], cast(dict[str, object], pending)["pending"])
     assert [row["memory_id"] for row in rows] == [memory_id]
 
@@ -118,7 +117,7 @@ def test_reinforce_and_traced_search_round_trip(
 
     status, traced, _ = _run(capsys, "--url", URL, "-q", "search", "--explain", "spare key")
     assert status == 0
-    # The traced operation runs only when the request carries `explain`, so a null trace here
+    # The traced operation runs only when the request carries explain, so a null trace here
     # means the CLI reached the plain search route with the same body.
     assert cast(dict[str, object], traced)["trace"] is not None
 
@@ -126,10 +125,10 @@ def test_reinforce_and_traced_search_round_trip(
 def test_an_operation_row_prints_the_same_keys_on_both_transports(
     owner: Memory, open_owner: TestClient, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The REST row carried no `proposal`, so one command printed two shapes.
+    """The REST row carried no proposal, so one command printed two shapes.
 
-    `export` is the routed command whose document holds log rows, and the row it prints under
-    `--url` comes from the REST operation object while a local run prints the CLI's own.
+    export is the routed command whose document holds log rows, and the row it prints under
+    --url comes from the REST operation object while a local run prints the CLI's own.
     """
     observation = owner.add("Ana asked at the door")
     owner.apply(
@@ -202,8 +201,8 @@ def test_export_and_retention_round_trip(
     (
         # No identity exists yet, so the owner answers with the kernel's own judgement on the
         # subject the command named. That is the assertion: a mistyped path answers "route does
-        # not exist" and a body the route refuses answers `validation_error`, neither of which
-        # is a statement about `identity-1`.
+        # not exist" and a body the route refuses answers validation_error, neither of which
+        # is a statement about identity-1.
         ("register-identity", ("identity-1", "Ana"), None),
         ("record-consent", ("identity-1", "withdrawn"), None),
         ("forget-identity", ("identity-1",), None),
@@ -259,7 +258,7 @@ def test_a_reshaped_response_prints_the_document_the_command_prints_locally(
     """The three routes whose response shape is not the command's own document.
 
     Reaching these through a real owner needs an enrolled person, which needs a face analyzer;
-    the reshaping itself is what a `--url` caller would otherwise see differ from local mode.
+    the reshaping itself is what a --url caller would otherwise see differ from local mode.
     """
     assert cli._REMOTE_RESULT[command](response) == expected
 

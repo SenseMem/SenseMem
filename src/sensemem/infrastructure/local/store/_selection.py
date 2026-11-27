@@ -6,7 +6,7 @@ import math
 import sqlite3
 from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
-from typing import Literal, cast
+from typing import Literal
 
 from sensemem.infrastructure.local.store._codec import (
     SQLITE_PARAMETER_BATCH,
@@ -25,6 +25,22 @@ from sensemem.spatial import SpatialContext
 from sensemem.types import EvidenceBasis, Modality, RecordKind, SpatialAnchor
 
 
+def _affect_role(value: str) -> Literal["target", "elicitor"]:
+    if value == "target":
+        return "target"
+    if value == "elicitor":
+        return "elicitor"
+    raise ValueError(f"unsupported affect role: {value}")
+
+
+def _affect_polarity(value: str) -> Literal["affirmed", "denied"]:
+    if value == "affirmed":
+        return "affirmed"
+    if value == "denied":
+        return "denied"
+    raise ValueError(f"unsupported affect polarity: {value}")
+
+
 def memory_in_scope(
     row: sqlite3.Row,
     *,
@@ -35,9 +51,9 @@ def memory_in_scope(
     scoped_ids: Collection[str],
     retained_ids: Collection[str] = (),
 ) -> bool:
-    """Decide whether one `memory_records` row survives the requested scope.
+    """Decide whether one memory_records row survives the requested scope.
 
-    `row` needs only `memory_id`, `created_at`, and `forgotten_at`, so both the scoped hydration
+    row needs only memory_id, created_at, and forgotten_at, so both the scoped hydration
     and the scoped count reach this one predicate.
     """
     if not active_only:
@@ -49,9 +65,9 @@ def memory_in_scope(
     memory_id = row_text(row, "memory_id")
     if memory_id in scoped_ids:
         return True
-    # A record with no `memory_semantics` row declares no validity interval, so it is valid at
-    # every `valid_at` exactly like a version row whose `valid_from` and `valid_until` are NULL;
-    # only recorded time can exclude it, and there `created_at` is the honest bound. `near` is
+    # A record with no memory_semantics row declares no validity interval, so it is valid at
+    # every valid_at exactly like a version row whose valid_from and valid_until are NULL;
+    # only recorded time can exclude it, and there created_at is the honest bound. near is
     # separate and spatial: a record with no pose is not at any location, so it drops just as a
     # semantic row without a pose does in the selection pass.
     return (
@@ -116,7 +132,7 @@ def select_memory_contexts(  # noqa: C901 - one authoritative bitemporal selecti
 ) -> tuple[dict[str, tuple[sqlite3.Row, SpatialContext | None]], frozenset[str]]:
     """Choose the one current version row per memory and apply every scope predicate.
 
-    Shared by `read_memories` and `count_memories` so a scoped count cannot drift from the
+    Shared by read_memories and count_memories so a scoped count cannot drift from the
     scoped hydration it predicts.
     """
     if not memory_ids:
@@ -273,7 +289,7 @@ def read_memory_contexts(
                     if row["affect_id"] is None
                     else AffectLink(
                         affect_id=row_text(row, "affect_id"),
-                        role=cast("Literal['target', 'elicitor']", row_text(row, "affect_role")),
+                        role=_affect_role(row_text(row, "affect_role")),
                         object_ref=AffectObjectRef(
                             memory_id=optional_row_text(row, "affect_object_memory_id"),
                             identity_id=(
@@ -285,9 +301,7 @@ def read_memory_contexts(
                                 or row_text(row, "affect_object_identity_id")
                             ),
                         ),
-                        polarity=cast(
-                            "Literal['affirmed', 'denied']", row_text(row, "affect_polarity")
-                        ),
+                        polarity=_affect_polarity(row_text(row, "affect_polarity")),
                     )
                 ),
                 affect_witnesses=witnesses.get(memory_id, ()),
@@ -387,9 +401,9 @@ def identity_scope(
     connection: sqlite3.Connection,
     identity_id: str | None,
 ) -> tuple[str | None, tuple[object, ...]]:
-    """Return the SQL clause and parameters that scope `memory_records` to one identity.
+    """Return the SQL clause and parameters that scope memory_records to one identity.
 
-    A `None` clause means the requested identity does not exist, so nothing is in scope.
+    A None clause means the requested identity does not exist, so nothing is in scope.
     """
     if identity_id is None:
         return "", ()

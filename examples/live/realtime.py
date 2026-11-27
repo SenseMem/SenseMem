@@ -21,6 +21,9 @@ from examples.live.user_audio import UserAudioCapture
 MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 MAX_AUDIO_BASE64_CHARS = 4 * ((24_000 * 2 + 2) // 3)
 DEFAULT_REALTIME_URL = "ws://127.0.0.1:8765/v1/realtime"
+REALTIME_MAX_QUEUE = 8
+REALTIME_OPEN_TIMEOUT_SECONDS = 30
+REALTIME_CLOSE_TIMEOUT_SECONDS = 5
 
 
 class RealtimeRelay:
@@ -62,9 +65,9 @@ class RealtimeRelay:
             async with connect(
                 url,
                 max_size=MAX_MESSAGE_BYTES,
-                max_queue=8,
-                open_timeout=30,
-                close_timeout=5,
+                max_queue=REALTIME_MAX_QUEUE,
+                open_timeout=REALTIME_OPEN_TIMEOUT_SECONDS,
+                close_timeout=REALTIME_CLOSE_TIMEOUT_SECONDS,
             ) as connection:
                 pumps = (
                     asyncio.create_task(self._send(connection)),

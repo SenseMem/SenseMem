@@ -5,37 +5,36 @@ from __future__ import annotations
 import errno
 import math
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from importlib import import_module
 from pathlib import Path
 from shutil import rmtree
 from tempfile import TemporaryDirectory
 from threading import Condition, get_ident
 from types import ModuleType
-from typing import TYPE_CHECKING, NoReturn, cast
+from typing import NoReturn
+
+import zvec
+from zvec import (
+    Collection,
+    CollectionSchema,
+    CollectionStats,
+    Doc,
+    FtsIndexParam,
+    HnswIndexParam,
+    HnswRabitqIndexParam,
+    InvertIndexParam,
+    Status,
+)
 
 from sensemem.infrastructure.local._capacity import FILE_DESCRIPTOR_LOCK
 from sensemem.infrastructure.local._capacity import (
     file_descriptor_usage as _file_descriptor_usage,
 )
-from sensemem.infrastructure.local.store import IndexDocument
+from sensemem.infrastructure.local.store.rows import IndexDocument
 from sensemem.types import IndexQuantization
-
-if TYPE_CHECKING:
-    from zvec import (
-        Collection,
-        CollectionSchema,
-        CollectionStats,
-        Doc,
-        FtsIndexParam,
-        HnswIndexParam,
-        HnswRabitqIndexParam,
-        InvertIndexParam,
-        Status,
-    )
 
 _COLLECTION_NAME = "sensemem_memory_index"
 _CONTENT_FIELD = "content"
@@ -50,7 +49,7 @@ _PLACE_FIELD = "place_id"
 _IDENTITY_FIELD = "identity_ids"
 _VECTOR_FIELD = "embedding"
 # Zvec has no null scalars, so "this memory has no place" is the empty string. It is not a legal
-# `place_id` (the store rejects blank and untrimmed values), so it can never collide with one.
+# place_id (the store rejects blank and untrimmed values), so it can never collide with one.
 _MISSING_PLACE = ""
 _SCALAR_FIELDS = frozenset(
     {
@@ -73,14 +72,14 @@ _RABITQ_TOTAL_BITS = 7
 _RABITQ_NUM_CLUSTERS = 16
 # Zvec's native HNSW refuses a larger candidate list outright ("ef_search must be greater than 0
 # and less than or equal to 2048"), and the refusal surfaces as a Gandiva execution error from the
-# query rather than as a validation error, so every `ef` this module sends is clamped here.
+# query rather than as a validation error, so every ef this module sends is clamped here.
 _MAX_EF_SEARCH = 2048
 # Searching at a smaller candidate list silently loses true nearest neighbours, and nothing in the
-# index reports it: `doc_count` and `index_completeness` both read healthy. Measured on two shipped
+# index reports it: doc_count and index_completeness both read healthy. Measured on two shipped
 # 2048-dimension video stores (50 queries, exhaustive fp32 cosine as truth): at ef 300 a collection
 # whose vectors sit in an HNSW graph returned 0.53 of the true top-100 on 24,271 keys and 0.71 on
 # 50,642; at this bound it returns 0.95 and 0.94. Ranking the first store's 200 recorded questions
-# through `Memory.search(limit=100)` moves the share that retrieve a gold clip in the top twelve
+# through Memory.search(limit=100) moves the share that retrieve a gold clip in the top twelve
 # 0.235 -> 0.400, against 0.430 for an exhaustive scan, and its search p50 24.1 ms -> 30.7 ms. The
 # index-only cost grows with the corpus: on a 2048-dimension synthetic graph, p50 6.3 -> 14.4 ms at
 # 20,000 documents and 8.0 -> 29.0 ms at 100,000, with resident memory unchanged. Collections small
@@ -91,11 +90,11 @@ _DEFAULT_EF_SEARCH = _MAX_EF_SEARCH
 _LEXICAL_RANK_CONSTANT = 60
 _DEFAULT_REBUILD_BATCH_SIZE = 1_024
 # Zvec's native writer refuses a batch above this many documents, and does not expose the limit as
-# a Python value to check against -- it surfaces only as `ValueError: Too many docs: N exceeds max
-# write batch size of 1024`. Refusing one is not a failure a caller can retry past: one outbox
-# drain becomes one `upsert`, its rows are already committed to SQLite, and nothing acknowledges
+# a Python value to check against -- it surfaces only as ValueError: Too many docs: N exceeds max
+# write batch size of 1024. Refusing one is not a failure a caller can retry past: one outbox
+# drain becomes one upsert, its rows are already committed to SQLite, and nothing acknowledges
 # them, so every later drain re-reads the same batch and re-raises. Both native write paths chunk
-# on this, which is what lets `_OUTBOX_BATCH_SIZE` and `rebuild`'s public `batch_size` be chosen
+# on this, which is what lets _OUTBOX_BATCH_SIZE and rebuild's public batch_size be chosen
 # for flush cost alone.
 _MAX_WRITE_BATCH = 1_024
 _AUTO_OPTIMIZE_UNINDEXED_DOCUMENTS = 100_000
@@ -104,12 +103,12 @@ _AUTO_OPTIMIZE_UNINDEXED_DOCUMENTS = 100_000
 # 4 segments, 19.7 ms at 16 and 80.1 ms at 63, and 2.4-3.2 ms at any corpus size once merged. So
 # this bound is also the read tax, and 64 is a deliberate choice of the write side of that trade,
 # not an oversight. Lowering it to 8 moved the median search on a 16 000-memory interleaved
-# workload from 53.4 ms to 21.1 ms, and cost 120 single `add` calls on an 8 000-memory store 7.31 s
-# to 13.88 s with p90 latency 74 ms to 452 ms, because at the time one `add` made one segment
-# however little it carried and `optimize` costs the same ~530 ms whether it merges eight documents
+# workload from 53.4 ms to 21.1 ms, and cost 120 single add calls on an 8 000-memory store 7.31 s
+# to 13.88 s with p90 latency 74 ms to 452 ms, because at the time one add made one segment
+# however little it carried and optimize costs the same ~530 ms whether it merges eight documents
 # or eight thousand. Break-even was around three and a half searches per memory written. The
 # kernel now flushes once per batch of applied outbox rows rather than per write, so segments
-# accrue per flush rather than per `add`; the merge cadence below still counts flushes.
+# accrue per flush rather than per add; the merge cadence below still counts flushes.
 _AUTO_OPTIMIZE_FLUSHES = 64
 _AUTO_COMPACT_FLUSHES = 256
 _FILE_DESCRIPTOR_RESERVE = 128
@@ -142,7 +141,7 @@ _MAX_EMBEDDINGS_PER_MEMORY = 129
 # What each field holds is now decided by what the stemmed field can already answer rather than
 # by which script it is. Bigrams over Latin words are close to information-free -- "kitchen" and
 # "the garden at noon" share "he" and "en" -- so they buy no recall the stemmer does not have and
-# cost precision on every English query; `_ngram_text` strips them from both what is written to
+# cost precision on every English query; _ngram_text strips them from both what is written to
 # the bigram field and what is asked of it, and keeps everything else. A query left with nothing
 # for the bigram field runs the single stemmed route it always did. The failure direction is
 # inverted from the script test: a script this misjudges keeps its bigrams, which is noise, where
@@ -164,10 +163,6 @@ _FTS_FIELDS = (
         '{"ngram_min": 2, "ngram_max": 2, "token_chars": ["letter", "digit"]}',
     ),
 )
-
-
-class ZvecUnavailableError(RuntimeError):
-    """Raised when the optional native Zvec runtime cannot be imported."""
 
 
 class ZvecWriteError(RuntimeError):
@@ -280,11 +275,11 @@ class ZvecIndex:
         self.ef_search = ef_search
         self.quantization = quantization
         self._gate = _CollectionGate()
-        self._zvec = _load_zvec()
+        self._zvec: ModuleType = zvec
         self._schema = self._build_schema()
         # A compaction that was killed leaves behind a complete second copy of the collection.
-        # Removing it rests on the storage invariant that one physical `data_dir` has one live
-        # owner -- held by the store's `.sensemem.lock` -- so no live compaction can own a
+        # Removing it rests on the storage invariant that one physical data_dir has one live
+        # owner -- held by the store's .sensemem.lock -- so no live compaction can own a
         # workspace here; the glob is scoped to this collection's own name regardless.
         for debris in self.path.parent.glob(f".{self.path.name}.compact-*"):
             with suppress(OSError):
@@ -294,7 +289,7 @@ class ZvecIndex:
             option = self._zvec.CollectionOption(read_only=False, enable_mmap=True)
             inherited = self.path.exists()
             if inherited:
-                self._collection: object | None = self._zvec.open(str(self.path), option=option)
+                self._collection: Collection | None = self._zvec.open(str(self.path), option=option)
             else:
                 self._collection = self._zvec.create_and_open(
                     str(self.path),
@@ -336,7 +331,7 @@ class ZvecIndex:
             embedding = document.embedding
             self._validate_vector(embedding.values)
             # No filter-grammar check here. These are stored field values, not filter syntax:
-            # `IndexDocument` already validated every one of them, and the outbox row this
+            # IndexDocument already validated every one of them, and the outbox row this
             # batch drains is committed, so a refusal on the write path is unrecoverable --
             # the row never acks and every later drain re-raises the same rejection.
             ids.append(embedding.embedding_id)
@@ -365,19 +360,23 @@ class ZvecIndex:
                     vectors={_VECTOR_FIELD: list(embedding.values)},
                 )
             )
-        # Chunked because the native writer refuses a batch above `_MAX_WRITE_BATCH`, and
-        # refusing one is unrecoverable rather than retryable. `rebuild` reaches the same guard,
-        # so its caller-supplied `batch_size` cannot exceed the writer either. The chunks are one
+        # Chunked because the native writer refuses a batch above _MAX_WRITE_BATCH, and
+        # refusing one is unrecoverable rather than retryable. rebuild reaches the same guard,
+        # so its caller-supplied batch_size cannot exceed the writer either. The chunks are one
         # write as far as the maintenance lock is concerned: another writer's segments must not
         # land between two chunks of one drain.
-        written = []
+        written: list[tuple[list[str], Sequence[Status]]] = []
         with _INDEX_MAINTENANCE_LOCK, self._gate.read():
             _require_file_descriptor_headroom()
             collection = self._require_collection()
             for start in range(0, len(docs), _MAX_WRITE_BATCH):
                 end = start + _MAX_WRITE_BATCH
+                raw_statuses = collection.upsert(docs[start:end])
                 written.append(
-                    (ids[start:end], cast(Sequence[object], collection.upsert(docs[start:end])))
+                    (
+                        ids[start:end],
+                        [raw_statuses] if isinstance(raw_statuses, Status) else raw_statuses,
+                    )
                 )
         for batch_ids, statuses in written:
             self._check_statuses("upsert", batch_ids, statuses)
@@ -389,13 +388,16 @@ class ZvecIndex:
         for document_id in ids:
             if not document_id or document_id != document_id.strip():
                 raise ValueError("index document IDs must be non-empty and trimmed")
-        deleted = []
+        deleted: list[tuple[list[str], Sequence[Status]]] = []
         with _INDEX_MAINTENANCE_LOCK, self._gate.read():
             _require_file_descriptor_headroom()
             collection = self._require_collection()
             for start in range(0, len(ids), _MAX_WRITE_BATCH):
                 batch = list(ids[start : start + _MAX_WRITE_BATCH])
-                deleted.append((batch, cast(Sequence[object], collection.delete(batch))))
+                raw_statuses = collection.delete(batch)
+                deleted.append(
+                    (batch, [raw_statuses] if isinstance(raw_statuses, Status) else raw_statuses)
+                )
         for batch, statuses in deleted:
             self._check_statuses("delete", batch, statuses, allow_not_found=True)
 
@@ -456,7 +458,7 @@ class ZvecIndex:
 
         A query that has something for both full-text fields runs both, and Zvec fuses them by
         reciprocal rank, so a score here is a fusion score rather than one field's BM25. Only the
-        ratio to the best candidate leaves this method, and `_LEXICAL_RANK_CONSTANT` sets both the
+        ratio to the best candidate leaves this method, and _LEXICAL_RANK_CONSTANT sets both the
         fusion constant and the rank fallback below, so the two agree on how fast rank stops
         mattering.
         """
@@ -631,12 +633,12 @@ class ZvecIndex:
 
     def _replace_compacted_collection(
         self,
-        source: object,
+        source: Collection,
         temporary: Path,
         backup: Path,
     ) -> None:
         with self._gate.write():
-            cast("Collection", source).close()
+            source.close()
             self._collection = None
             # If the process stops between renames, the missing canonical path makes the
             # authoritative SQLite store rebuild this disposable index on the next open.
@@ -685,15 +687,17 @@ class ZvecIndex:
     ) -> None:
         """Copy already-native documents, in batches the writer will accept.
 
-        Only `_compact` reaches this, and its documents come from `iter_docs`, so each carries
-        the id the status check reports. `upsert` keeps its own list instead: the ids it needs are
-        on the `IndexDocument`, not on the native document it builds from one.
+        Only _compact reaches this, and its documents come from iter_docs, so each carries
+        the id the status check reports. upsert keeps its own list instead: the ids it needs are
+        on the IndexDocument, not on the native document it builds from one.
         """
         for start in range(0, len(documents), _MAX_WRITE_BATCH):
             batch = list(documents[start : start + _MAX_WRITE_BATCH])
             ids = [str(document.id) for document in batch]
             statuses = collection.upsert(batch)
-            self._check_statuses(action, ids, statuses)
+            self._check_statuses(
+                action, ids, [statuses] if isinstance(statuses, Status) else statuses
+            )
 
     def rebuild(
         self,
@@ -926,7 +930,7 @@ class ZvecIndex:
                     index_param=self._zvec.InvertIndexParam(),
                 ),
                 # One memory can be about several people, so this is the one array field.
-                # Zvec filters arrays only through `contain_any`/`contain_all`, which is
+                # Zvec filters arrays only through contain_any/contain_all, which is
                 # exactly the predicate an identity scope needs.
                 self._zvec.FieldSchema(
                     name=_IDENTITY_FIELD,
@@ -946,20 +950,19 @@ class ZvecIndex:
         )
         return schema
 
-    def _validate_schema(self, schema: object) -> None:  # noqa: C901 - one persisted schema
-        native_schema = cast("CollectionSchema", schema)
-        if native_schema.name != _COLLECTION_NAME:
-            _schema_mismatch(f"collection name is {native_schema.name!r}")
-        fields = {field.name: field for field in native_schema.fields}
+    def _validate_schema(self, schema: CollectionSchema) -> None:  # noqa: C901 - one persisted schema
+        if schema.name != _COLLECTION_NAME:
+            _schema_mismatch(f"collection name is {schema.name!r}")
+        fields = {field.name: field for field in schema.fields}
         if fields.keys() != _SCALAR_FIELDS:
             _schema_mismatch("scalar fields differ")
         for name, tokenizer, filters, extra_params in _FTS_FIELDS:
             content = fields[name]
-            content_index = cast("FtsIndexParam | None", content.index_param)
+            content_index = content.index_param
             if (
                 content.data_type != self._zvec.DataType.STRING
                 or content.nullable
-                or content_index is None
+                or not isinstance(content_index, FtsIndexParam)
                 or content_index.type != self._zvec.IndexType.FTS
                 or content_index.tokenizer_name != tokenizer
                 or tuple(content_index.filters) != filters
@@ -997,22 +1000,21 @@ class ZvecIndex:
                 _schema_mismatch(f"{name} scalar field differs")
         for name in (_OCCURRED_AT_FIELD, _OCCURRED_END_FIELD):
             field = fields[name]
-            range_index = cast("InvertIndexParam | None", field.index_param)
+            range_index = field.index_param
             if (
                 field.data_type != self._zvec.DataType.INT64
                 or field.nullable
-                or range_index is None
+                or not isinstance(range_index, InvertIndexParam)
                 or range_index.type != self._zvec.IndexType.INVERT
                 or not range_index.enable_range_optimization
             ):
                 _schema_mismatch(f"{name} filter field differs")
 
-        vectors = {vector.name: vector for vector in native_schema.vectors}
+        vectors = {vector.name: vector for vector in schema.vectors}
         if vectors.keys() != {_VECTOR_FIELD}:
             _schema_mismatch("vector fields differ")
         vector = vectors[_VECTOR_FIELD]
-        index = cast("HnswIndexParam | HnswRabitqIndexParam", vector.index_param)
-        rabitq = cast("HnswRabitqIndexParam", index)
+        index = vector.index_param
         expected_type = (
             self._zvec.IndexType.HNSW_RABITQ
             if self.quantization is IndexQuantization.RABITQ
@@ -1027,18 +1029,24 @@ class ZvecIndex:
         if (
             vector.data_type != self._zvec.DataType.VECTOR_FP32
             or vector.dimension != self.dimension
+            or not isinstance(index, (HnswIndexParam, HnswRabitqIndexParam))
             or index.type != expected_type
             or index.metric_type != self._zvec.MetricType.COSINE
             or index.m != _HNSW_M
             or index.ef_construction != _HNSW_EF_CONSTRUCTION
             or index.quantize_type != expected_quantization
-            or (self.quantization is IndexQuantization.INT8 and index.quantizer_param.enable_rotate)
+            or (
+                self.quantization is IndexQuantization.INT8
+                and isinstance(index, HnswIndexParam)
+                and index.quantizer_param.enable_rotate
+            )
             or (
                 self.quantization is IndexQuantization.RABITQ
                 and (
-                    rabitq.total_bits != _RABITQ_TOTAL_BITS
-                    or rabitq.num_clusters != _RABITQ_NUM_CLUSTERS
-                    or rabitq.sample_count != 0
+                    not isinstance(index, HnswRabitqIndexParam)
+                    or index.total_bits != _RABITQ_TOTAL_BITS
+                    or index.num_clusters != _RABITQ_NUM_CLUSTERS
+                    or index.sample_count != 0
                 )
             )
         ):
@@ -1085,7 +1093,7 @@ class ZvecIndex:
         self,
         action: str,
         ids: Sequence[str],
-        statuses: Sequence[object],
+        statuses: Sequence[Status],
         *,
         allow_not_found: bool = False,
     ) -> None:
@@ -1095,35 +1103,25 @@ class ZvecIndex:
             )
         failures = []
         for document_id, status in zip(ids, statuses, strict=False):
-            native_status = cast("Status", status)
-            if native_status.ok() or (
-                allow_not_found and native_status.code() == self._zvec.StatusCode.NOT_FOUND
+            if status.ok() or (
+                allow_not_found and status.code() == self._zvec.StatusCode.NOT_FOUND
             ):
                 continue
-            message = str(native_status.message())
+            message = str(status.message())
             if _FILE_DESCRIPTOR_FAILURE.search(message):
                 raise OSError(
                     errno.EMFILE,
                     "Zvec could not open an index file because the process "
                     "file-descriptor limit was reached",
                 )
-            failures.append(f"{document_id}: {native_status.code().name}: {message}")
+            failures.append(f"{document_id}: {status.code().name}: {message}")
         if failures:
             raise ZvecWriteError(f"Zvec {action} failed: {'; '.join(failures)}")
 
     def _require_collection(self) -> Collection:
         if self._collection is None:
             raise RuntimeError("Zvec index is closed")
-        return cast("Collection", self._collection)
-
-
-def _load_zvec() -> ModuleType:
-    try:
-        return import_module("zvec")
-    except ImportError as error:
-        raise ZvecUnavailableError(
-            "Zvec 0.8 is required for local search; install a supported 64-bit zvec wheel"
-        ) from error
+        return self._collection
 
 
 def _require_file_descriptor_headroom(required: int = 0) -> None:
@@ -1211,7 +1209,7 @@ def _scope_clauses(place_id: str | None, identity_id: str | None) -> list[str]:
     place_literal = None if place_id is None else _scope_literal(place_id, _PLACE_FIELD)
     if place_literal is not None:
         clauses.append(f"{_PLACE_FIELD} = {place_literal}")
-    # `contain_any` with one value: Zvec's array grammar has no scalar equality, and one member is
+    # contain_any with one value: Zvec's array grammar has no scalar equality, and one member is
     # what an identity scope asks. The index field is a projection, so a stale entry costs recall
     # only -- SQLite hydration reapplies the same predicate and decides.
     identity_literal = None if identity_id is None else _scope_literal(identity_id, _IDENTITY_FIELD)
@@ -1223,16 +1221,16 @@ def _scope_clauses(place_id: str | None, identity_id: str | None) -> list[str]:
 def _filter_literal(value: str, name: str) -> str:
     """Quote one value for Zvec's filter grammar, escaping rather than refusing an apostrophe.
 
-    `place_id` is free text -- non-empty and trimmed is its whole contract -- so a room called
+    place_id is free text -- non-empty and trimmed is its whole contract -- so a room called
     "Ana's room" has to be expressible. Measured against a real 0.7 collection: the lexer treats
-    a backslash as an escape only before an apostrophe, so `\\'` matches an apostrophe while every
+    a backslash as an escape only before an apostrophe, so \\' matches an apostrophe while every
     other backslash stands for itself (doubling one makes it match two). The two shapes the
     grammar therefore cannot spell are a backslash immediately before an apostrophe and one
     before the closing quote, and those are refused here -- at query time, where a refusal costs
     one search, never on the write path, where it would strand an already-committed outbox row.
 
     Internal fields (space, task, memory type) come from enumerated values, so a refusal is a
-    bug. User scope values go through `_scope_literal`, which drops the predicate instead.
+    bug. User scope values go through _scope_literal, which drops the predicate instead.
     """
     if not value or value != value.strip():
         raise ValueError(f"{name} must be non-empty and trimmed")
@@ -1244,8 +1242,8 @@ def _filter_literal(value: str, name: str) -> str:
 def _scope_literal(value: str, name: str) -> str | None:
     """Quote a caller's scope value, or drop its predicate when the grammar cannot spell it.
 
-    A place or identity id the write path accepted -- `attic\\`, a name holding a tab -- has to
-    be searchable: raising here turned a legal stored value into `IndexUnavailableError`, and a
+    A place or identity id the write path accepted -- attic\\, a name holding a tab -- has to
+    be searchable: raising here turned a legal stored value into IndexUnavailableError, and a
     503 from REST. The pushdown is an optimisation, so omitting the clause is safe.
 
     # ponytail: an unrepresentable value narrows recall to whatever the post-filter window
@@ -1274,38 +1272,38 @@ def _end_timestamp(start: datetime | None, end: datetime | None) -> int:
     return timestamp if timestamp == _MISSING_OCCURRED_AT else timestamp + 1
 
 
-def _required_score(doc: object) -> float:
-    native_doc = cast("Doc", doc)
-    if native_doc.score is None:
-        raise RuntimeError(f"Zvec query result {native_doc.id!r} has no score")
-    score = float(native_doc.score)
+def _required_score(document: Doc) -> float:
+    if document.score is None:
+        raise RuntimeError(f"Zvec query result {document.id!r} has no score")
+    score = float(document.score)
     if not math.isfinite(score):
-        raise RuntimeError(f"Zvec query result {native_doc.id!r} has a non-finite score")
+        raise RuntimeError(f"Zvec query result {document.id!r} has a non-finite score")
     return score
 
 
-def _required_id(doc: object) -> str:
-    document_id = cast("Doc", doc).id
+def _required_id(document: Doc) -> str:
+    document_id = document.id
     if not isinstance(document_id, str) or not document_id:
         raise RuntimeError("Zvec query result has no document ID")
     return document_id
 
 
-def _required_field(doc: object, name: str) -> str:
-    value = cast(Callable[[str], object], cast("Doc", doc).field)(name)
+def _required_field(document: Doc, name: str) -> str:
+    value: object = document.field(name)
     if not isinstance(value, str) or not value:
-        raise RuntimeError(f"Zvec query result {_required_id(doc)!r} has no {name}")
+        raise RuntimeError(f"Zvec query result {_required_id(document)!r} has no {name}")
     return value
 
 
 def _best_documents(documents: Iterable[Doc], limit: int) -> list[Doc]:
-    return sorted(documents, key=lambda doc: (_required_score(doc), _required_id(doc)))[:limit]
+    return sorted(
+        documents, key=lambda document: (_required_score(document), _required_id(document))
+    )[:limit]
 
 
-def _indexed_document_count(stats: object) -> int:
-    native_stats = cast("CollectionStats", stats)
-    document_count = int(native_stats.doc_count)
-    completeness = float(native_stats.index_completeness[_VECTOR_FIELD])
+def _indexed_document_count(stats: CollectionStats) -> int:
+    document_count = int(stats.doc_count)
+    completeness = float(stats.index_completeness[_VECTOR_FIELD])
     if not math.isfinite(completeness) or not 0.0 <= completeness <= 1.0:
         raise RuntimeError("Zvec index completeness must be between zero and one")
     return round(document_count * completeness)

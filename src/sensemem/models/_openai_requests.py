@@ -32,11 +32,11 @@ from sensemem.models._evidence_operations import (
 )
 from sensemem.models._openai_protocol import (
     _json_text,
-    _require_capabilities,
     output_limit_parameter,
+    require_capabilities,
 )
 from sensemem.models._openai_schemas import SchemaName, response_schema
-from sensemem.models._openai_telemetry import _record_grounding_fit, _record_grounding_request
+from sensemem.models._openai_telemetry import record_grounding_fit, record_grounding_request
 from sensemem.models.base import EventObservation, FormationInput, ModelInput
 from sensemem.prompts import evidence_operations as evidence_prompts
 from sensemem.prompts import generation as prompts
@@ -61,7 +61,7 @@ def _formation_response_schema(count: int) -> dict[str, object]:
     return schema
 
 
-def _transcription_request(
+def transcription_request(
     model: str,
     file: object,
     *,
@@ -82,7 +82,7 @@ def _transcription_request(
     return request
 
 
-def _event_content(
+def event_content(
     observations: Sequence[EventObservation],
     *,
     end_of_stream: bool,
@@ -90,10 +90,10 @@ def _event_content(
     audio_data_url: bool,
 ) -> list[dict[str, object]]:
     assets = tuple(asset for value in observations for asset in value.content.assets)
-    media._require_consistent_assets(assets)
+    media.require_consistent_assets(assets)
     verified_assets = media._require_asset_integrity(assets)
     image_parts = media._image_transport_parts(assets, image_max_pixels)
-    media._require_verified_inline_size(
+    media.require_verified_inline_size(
         tuple(verified for verified in verified_assets if verified[0].id not in image_parts)
     )
     parts: list[dict[str, object]] = [
@@ -139,7 +139,7 @@ def _event_content(
                 parts.append(
                     media._generation_asset_part(asset, cache, audio_data_url=audio_data_url)
                 )
-    media._require_inline_media_parts(parts)
+    media.require_inline_media_parts(parts)
     return parts
 
 
@@ -394,7 +394,7 @@ def _formation_input_payload(
     }
 
 
-def _consolidation_content(
+def consolidation_content(
     evidence: Sequence[MemoryRecord],
     *,
     trigger: MemoryTrigger,
@@ -435,9 +435,9 @@ def _consolidation_content(
             }
         )
     # One part is emitted per attachment below, so the same asset cited by two evidence items
-    # is carried twice. Size the request the way `form()` does, by emitted part, not by asset ID.
+    # is carried twice. Size the request the way form() does, by emitted part, not by asset ID.
     carried = tuple(chain.from_iterable(attached))
-    media._require_consistent_assets(carried)
+    media.require_consistent_assets(carried)
     media._require_inline_size(carried)
     parts: list[dict[str, object]] = [
         {
@@ -516,7 +516,7 @@ def _consolidation_evidence_payload(
     return payload
 
 
-def _vision_content(
+def vision_content(
     inputs: Sequence[ModelInput],
     *,
     video_frames: int = 4,
@@ -532,7 +532,7 @@ def _vision_content(
     billed and the caption was lost. Naming the count is what makes one caption per clip the
     obvious reading.
 
-    `ModelInput.text` is the visual's own already-derived context -- in practice the clip's
+    ModelInput.text is the visual's own already-derived context -- in practice the clip's
     diarised transcript, which the write path computed before describing. It is what a durable
     fact about a person can be read from at all: four stills say two people are at a table, and
     only the words say which of them is called Lily and which is allergic to peanuts. It follows
@@ -549,7 +549,7 @@ def _vision_content(
             (
                 image_parts[asset.id]
                 if image_parts is not None and asset.id in image_parts
-                else media._vision_asset_parts(asset, cache, video_frames=video_frames)
+                else media.vision_asset_parts(asset, cache, video_frames=video_frames)
             )
             for asset in value.assets
         )
@@ -587,7 +587,7 @@ def _vision_content(
     return parts
 
 
-def _json_retry_request(request: dict[str, object], instruction: str) -> dict[str, object]:
+def json_retry_request(request: dict[str, object], instruction: str) -> dict[str, object]:
     """Append a correction to the existing user content without replaying rejected model text."""
     messages = cast(list[dict[str, object]], request["messages"])
     user = messages[-1]
@@ -601,7 +601,7 @@ def _json_retry_request(request: dict[str, object], instruction: str) -> dict[st
     return {**request, "messages": [*messages[:-1], corrected_user]}
 
 
-def _embedding_samples(
+def embedding_samples(
     inputs: Sequence[ModelInput],
     *,
     sample_video: bool = False,
@@ -646,7 +646,7 @@ def _answer_wire_size(request: Mapping[str, object], *, stream: bool) -> int:
     )
 
 
-def _evidence_operation_recovery(request: Mapping[str, object]) -> dict[str, object]:
+def evidence_operation_recovery(request: Mapping[str, object]) -> dict[str, object]:
     messages = cast(list[dict[str, object]], request["messages"])
     system = messages[0]
     return {
@@ -679,14 +679,14 @@ def _answer_parts(
 ) -> list[dict[str, object]]:
     """Interleave the request text with its media, each asset announced by its label.
 
-    The label text part sits immediately before the asset's own parts, so `attachment 3` is
+    The label text part sits immediately before the asset's own parts, so attachment 3 is
     defined where the media is and not by counting pictures: a short video may arrive as several
     still frames, and without the marker the reader has no way to tell where one attachment ends
     and the next begins. The labels are derived here from the same question and hits that
-    `_answer_text_parts` derives them from, by the same pure function, so the payloads and the
+    _answer_text_parts derives them from, by the same pure function, so the payloads and the
     markers agree by construction and no caller can hand either a mismatched mapping.
     """
-    media_labels = media._media_labels(question, hits)
+    media_labels = media.media_labels(question, hits)
     cache: dict[str, str] = {}
     parts: list[dict[str, object]] = [{"type": "text", "text": texts[0]}]
     seen_assets: set[str] = set()
@@ -701,7 +701,7 @@ def _answer_parts(
         asset_parts = (
             sampled
             if sampled is not None
-            else media._generation_asset_parts(
+            else media.generation_asset_parts(
                 asset,
                 cache,
                 minimum_video_seconds,
@@ -714,7 +714,7 @@ def _answer_parts(
             if asset.modality is Modality.VIDEO and asset_parts[0]["type"] == "image_url"
             else sampled
         )
-        label = media._transport_label(media_labels[asset.id], represented, asset.modality)
+        label = media.transport_label(media_labels[asset.id], represented, asset.modality)
         parts.append({"type": "text", "text": label})
         parts.extend(asset_parts)
         if (
@@ -722,7 +722,7 @@ def _answer_parts(
             and asset.modality is Modality.VIDEO
             and asset_parts[0]["type"] == "image_url"
         ):
-            media_slack_bytes += original_size - media._image_parts_size(asset_parts)
+            media_slack_bytes += original_size - media.image_parts_size(asset_parts)
 
     for asset in question.assets:
         emit(asset)
@@ -743,7 +743,7 @@ def _answer_text_parts(
 ) -> tuple[str, ...]:
     if len(evidence_payloads) != len(hits):
         raise ValueError("answer evidence payloads must align with hits")
-    media_labels = media._media_labels(question, hits)
+    media_labels = media.media_labels(question, hits)
     assets = (*question.assets, *(asset for hit in hits for asset in hit.assets))
     capture = (
         media._source_capture_metadata(assets, cached=capture_metadata)
@@ -847,6 +847,7 @@ class OpenAIRequestBuilder:
     answer_format: Literal["text", "structured"]
     evidence_operation_tool: bool
     source_metadata_key: str
+    audio_data_url: bool = False
 
     def json_request(
         self,
@@ -863,7 +864,7 @@ class OpenAIRequestBuilder:
             "messages": [
                 {
                     "role": "system",
-                    "content": prompts._json_system_prompt(
+                    "content": prompts.json_system_prompt(
                         system_prompt, strict_schema=self.response_format == "json_schema"
                     ),
                 },
@@ -949,9 +950,7 @@ class OpenAIRequestBuilder:
                         r"(attachment [1-9][0-9]*)(?: \(.*\))?", cast(str, part["text"])
                     )
                     current = None if marker is None else marker[1]
-                elif (
-                    part["type"] in media._GENERATION_MODALITY_BY_PART_TYPE and current is not None
-                ):
+                elif part["type"] in media.GENERATION_MODALITY_BY_PART_TYPE and current is not None:
                     supplied.add(current)
             parts: list[dict[str, object]] = []
             index = 0
@@ -988,7 +987,7 @@ class OpenAIRequestBuilder:
         # the tool-free recovery notice without dropping or admitting any original media.
         if not self.evidence_operation_fits(
             candidate, stream=stream
-        ) or not self.evidence_operation_fits(_evidence_operation_recovery(request), stream=stream):
+        ) or not self.evidence_operation_fits(evidence_operation_recovery(request), stream=stream):
             return None
         return candidate, make_evidence_catalogue(
             grounded,
@@ -1025,9 +1024,9 @@ class OpenAIRequestBuilder:
             image_max_pixels=self.image_max_pixels,
             capture_metadata=capture_metadata,
         )
-        _record_grounding_fit(retrieved, grounded)
-        # `best_effort` asks the model even with nothing to ground on: the caller wants a guess
-        # rather than a refusal, and `_forced_abstention` still reports that there was no
+        record_grounding_fit(retrieved, grounded)
+        # best_effort asks the model even with nothing to ground on: the caller wants a guess
+        # rather than a refusal, and _forced_abstention still reports that there was no
         # evidence behind it.
         if not grounded and answer_policy == "strict":
             return (
@@ -1042,7 +1041,7 @@ class OpenAIRequestBuilder:
             else omission_source_hits
         )
         # Keep metadata from this call's original inputs through both transport fits.
-        # Omission provenance may also name media an upstream policy already withheld.
+        # Omission provenance may also name media a provider policy already withheld.
         source_assets = question.assets + tuple(asset for hit in retrieved for asset in hit.assets)
         capture_metadata = media._source_capture_metadata(source_assets, cached=capture_metadata)
         original_assets = {asset.id for hit in grounded for asset in hit.assets}
@@ -1072,7 +1071,7 @@ class OpenAIRequestBuilder:
                 stream=stream,
                 metadata_source_hits=retrieved,
             )
-            _record_grounding_fit(retrieved, grounded)
+            record_grounding_fit(retrieved, grounded)
             if not grounded and answer_policy == "strict":
                 return AbstentionReason.INSUFFICIENT_EVIDENCE
             rendered = self.render_answer_request(
@@ -1109,7 +1108,7 @@ class OpenAIRequestBuilder:
                 ):
                     rendered = contextual
         request, modalities, assets, text_parts = rendered
-        unique_assets = media._require_consistent_assets(assets)
+        unique_assets = media.require_consistent_assets(assets)
         for modality, name in (
             (Modality.VIDEO, "video_sampled_assets"),
             (Modality.IMAGE, "image_transcoded_assets"),
@@ -1144,7 +1143,7 @@ class OpenAIRequestBuilder:
                         for asset in unique_assets
                     ),
                 )
-        _record_grounding_request(grounded, assets, text_parts)
+        record_grounding_request(grounded, assets, text_parts)
         return request, grounded, modalities
 
     def bound_answer_media(  # noqa: C901 - deterministic admission against the complete wire body
@@ -1197,11 +1196,11 @@ class OpenAIRequestBuilder:
         def shrink(asset: AssetRef, overflow: int, *, mandatory: bool = False) -> bool:
             # Reserve space for the changed attachment label and JSON part wrappers. The full
             # body is measured again; this allowance is not the final admission decision.
-            available = media._transport_size(asset, sampled_parts) - overflow - 256
+            available = media.transport_size(asset, sampled_parts) - overflow - 256
             if mandatory and available <= 0:
                 # Several mandatory assets can jointly exceed the cap by more than any one
                 # asset. Make progress on each rather than requiring one to absorb all excess.
-                available = media._transport_size(asset, sampled_parts) // 2
+                available = media.transport_size(asset, sampled_parts) // 2
             if available <= 0 or Modality.IMAGE not in self.capabilities:
                 return False
             if asset.modality is Modality.IMAGE:
@@ -1235,7 +1234,7 @@ class OpenAIRequestBuilder:
         # Mandatory question assets can be resized/sampled, but never removed.
         while current_size > maximum:
             previous_size = current_size
-            for asset in reversed(media._require_consistent_assets(question.assets)):
+            for asset in reversed(media.require_consistent_assets(question.assets)):
                 if current_size <= maximum:
                     break
                 previous_parts = sampled_parts.get(asset.id)
@@ -1255,7 +1254,7 @@ class OpenAIRequestBuilder:
                 reason="payload_too_large",
                 stage="generate",
             )
-        for asset in media._require_consistent_assets(
+        for asset in media.require_consistent_assets(
             tuple(asset for hit in hits for asset in hit.assets)
         ):
             if asset.id in admitted:
@@ -1375,21 +1374,21 @@ class OpenAIRequestBuilder:
                 (system_prompt,),
                 text_parts,
                 (
-                    media._transport_label(
+                    media.transport_label(
                         label,
                         sampled_parts.get(asset_id),
                         next(asset.modality for asset in assets if asset.id == asset_id),
                     )
-                    for asset_id, label in media._media_labels(question_input, grounded).items()
+                    for asset_id, label in media.media_labels(question_input, grounded).items()
                 ),
             )
         )
         required = {Modality.TEXT}
         required.update(cast(Modality, asset.modality) for asset in assets)
-        _require_capabilities("generation", frozenset(required), self.capabilities)
-        unique_assets = media._require_consistent_assets(assets)
+        require_capabilities("generation", frozenset(required), self.capabilities)
+        unique_assets = media.require_consistent_assets(assets)
         verified_assets = media._require_asset_integrity(unique_assets)
-        media._require_verified_inline_size(
+        media.require_verified_inline_size(
             tuple(value for value in verified_assets if value[0].id not in sampled_parts)
         )
         content: str | list[dict[str, object]] = (
@@ -1398,25 +1397,25 @@ class OpenAIRequestBuilder:
                 grounded,
                 text_parts,
                 media_slack_bytes=media._MAX_INLINE_MODEL_BYTES
-                - sum(media._transport_size(asset, sampled_parts) for asset in unique_assets),
+                - sum(media.transport_size(asset, sampled_parts) for asset in unique_assets),
                 minimum_video_seconds=(
                     self.min_video_seconds if Modality.IMAGE in self.capabilities else None
                 ),
                 sampled_parts=sampled_parts,
-                audio_data_url=self.model.rsplit("/", 1)[-1] == "qwen3.8-omni-flash",
+                audio_data_url=self.audio_data_url,
             )
             if assets or metadata_only
             else text_parts[0]
         )
         if not isinstance(content, str):
-            media._require_inline_media_parts(content)
+            media.require_inline_media_parts(content)
             _require_answer_text_size(
                 chain(
                     (system_prompt,),
                     (cast(str, part["text"]) for part in content if part["type"] == "text"),
                 )
             )
-        modalities = media._generation_modalities(content)
+        modalities = media.generation_modalities(content)
         request: dict[str, object] = (
             self.json_request(system_prompt, content, schema="answer")
             if self.answer_format == "structured"

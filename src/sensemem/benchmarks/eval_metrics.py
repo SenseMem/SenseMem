@@ -19,13 +19,13 @@ from sensemem.benchmarks.ama_bench import result_summary as ama_result_summary
 from sensemem.benchmarks.baseline_prompts import BLIND_PROMPT_VERSION
 from sensemem.benchmarks.eval_adapters import LoadedTask
 from sensemem.benchmarks.eval_arms import (
-    _Arm,
+    Arm,
 )
 from sensemem.benchmarks.eval_config import (
-    _RESULTS_FILE,
-    _SAMPLES_FILE,
+    RESULTS_FILE,
     RETRIEVAL_CANDIDATE_LIMIT,
-    _Arguments,
+    SAMPLES_FILE,
+    Arguments,
 )
 from sensemem.benchmarks.eval_diagnostics import summarize_diagnostics
 from sensemem.benchmarks.eval_results import (
@@ -70,7 +70,7 @@ _MANDATORY_CONTROLS = ("random_ranker", "blind", "recall_at_20")
 # The question-metadata fields each benchmark family groups its per-question
 # scores by, keyed by family so that one catalog task cannot drift from its
 # siblings. A family absent here reports no breakdown at all, which is
-# invisible in a results document, so `tests/unit/benchmarks/test_eval.py`
+# invisible in a results document, so tests/unit/benchmarks/test_eval.py
 # pins this table against the metadata the adapters actually emit.
 _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
     "mosaic": ("question_type", "answerability"),
@@ -90,14 +90,14 @@ _BREAKDOWN_FIELDS: Mapping[str, tuple[str, ...]] = {
 }
 
 
-def _answer_retrieval_candidate_limit(
+def answer_retrieval_candidate_limit(
     recall_limit: int,
     memory_config: MemorySpec | None,
 ) -> int:
-    """Mirror the ranked window ``Memory.ask`` requests from the retrieval kernel."""
+    """Mirror the ranked window Memory.ask requests from the retrieval kernel."""
     return (
         RETRIEVAL_CANDIDATE_LIMIT
-        if _evidence_budget_chars(memory_config) is not None
+        if resolve_evidence_budget_chars(memory_config) is not None
         else min(RETRIEVAL_CANDIDATE_LIMIT, recall_limit * 3)
     )
 
@@ -111,10 +111,10 @@ def _primary_sample(task: str, metadata: Mapping[str, object]) -> bool:
     return task != "videozerobench" or metadata["level"] == 3
 
 
-def _metrics(
+def compute_task_metrics(
     task: LoadedTask,
     samples: Sequence[SampleResult],
-    arguments: _Arguments,
+    arguments: Arguments,
     blind: Mapping[str, object] | None = None,
     *,
     arm: str = DEFAULT_ARM,
@@ -189,7 +189,7 @@ def _metrics(
             recall_limit=arguments.recall_limit,
             retrieval_candidate_limit=retrieval_candidate_limit,
         )
-        if _Arm(arm).retrieves
+        if Arm(arm).retrieves
         else {"unavailable_reason": f"the {arm} arm does not run ranked retrieval"}
     )
     error_count = sum(sample.error_code is not None for sample in samples)
@@ -241,7 +241,7 @@ def _metrics(
         "error_count": error_count,
         "retrieval_diagnostic_error_count": retrieval_diagnostic_error_count,
         "ingest_failure_count": ingest_failure_count,
-        "abstentions": _abstentions(samples),
+        "abstentions": abstentions(samples),
         "answer_latency_ms": {
             "measures": (
                 "memory.ask wall clock per question, timed after concurrency admission so it "
@@ -258,7 +258,7 @@ def _metrics(
             retrieval,
             blind,
             is_blind_run=arguments.blind,
-            retrieves=_Arm(arm).retrieves,
+            retrieves=Arm(arm).retrieves,
         ),
         "noise_floor": _noise_floor(scored, primary),
         "cross_harness_comparable": False,
@@ -350,7 +350,7 @@ def _metrics(
     if (
         task.spec.name == "videozerobench"
         and any(sample.metrics for sample in samples)
-        and _Arm(arm).generates
+        and Arm(arm).generates
     ):
         result["protocol_notes"] = (
             "Five-level queries and upstream scoring through the public memory SDK. "
@@ -457,7 +457,7 @@ def _metadata_ids(metadata: Mapping[str, object], key: str) -> tuple[str, ...]:
 def _retrieved_sources(sample: SampleResult) -> tuple[str, ...]:
     """Return the retriever's ranked source IDs in rank order, deduplicated.
 
-    This is the ranked list observed inside ``Memory.ask``, not ``sample.evidence``. Evidence is
+    This is the ranked list observed inside Memory.ask, not sample.evidence. Evidence is
     narrowed to the hits the generator saw, so scoring it would report grounding behaviour under
     the name of retrieval recall.
     """
@@ -688,7 +688,7 @@ def _controls(
 
     An arm that never retrieves (blind, full-context) has no retrieval to control for, so the two
     retrieval controls do not apply to it rather than being missing. Requiring them turned
-    `controls_complete` false on every run that carried a blind arm, which hid the difference
+    controls_complete false on every run that carried a blind arm, which hid the difference
     between a task with no gold labels and a healthy one.
     """
     recall_rows = cast(Mapping[str, object], retrieval["recall_at_k"]) if retrieves else {}
@@ -722,8 +722,8 @@ def _controls(
     }
 
 
-def _in_run_blind_rows(
-    arguments: _Arguments,
+def in_run_blind_rows(
+    arguments: Arguments,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
 ) -> dict[str, dict[str, object]]:
@@ -765,7 +765,7 @@ def _validate_blind_protocol(document: Mapping[str, object]) -> None:
         raise ValueError("blind baseline prompt differs; rerun the control with this harness")
 
 
-def _blind_baseline_rows(
+def blind_baseline_rows(
     path: Path | None,
     tasks: Sequence[LoadedTask],
     *,
@@ -775,7 +775,7 @@ def _blind_baseline_rows(
     if path is None:
         return {}
     resolved = path.expanduser().resolve()
-    document_path = resolved / _RESULTS_FILE if resolved.is_dir() else resolved
+    document_path = resolved / RESULTS_FILE if resolved.is_dir() else resolved
     if not document_path.is_file():
         raise FileNotFoundError(f"blind baseline does not exist: {document_path}")
     document = json.loads(document_path.read_text(encoding="utf-8"))
@@ -802,7 +802,7 @@ def _blind_baseline_rows(
     return rows
 
 
-def _abstentions(samples: Sequence[SampleResult]) -> dict[str, object]:
+def abstentions(samples: Sequence[SampleResult]) -> dict[str, object]:
     count = sum(sample.abstained for sample in samples)
     reasons = {
         reason: sum(sample.abstention_reason == reason for sample in samples)
@@ -820,7 +820,7 @@ def _abstentions(samples: Sequence[SampleResult]) -> dict[str, object]:
 def _metric_breakdowns(
     task: LoadedTask,
     samples: Sequence[SampleResult],
-    arguments: _Arguments,
+    arguments: Arguments,
 ) -> dict[str, object]:
     family = task_family(task.spec.name)
     fields = _BREAKDOWN_FIELDS.get(family or "", ())
@@ -877,8 +877,8 @@ def _answerability(samples: Sequence[SampleResult]) -> dict[str, object]:
     }
 
 
-def _comparisons(
-    arguments: _Arguments,
+def build_comparisons(
+    arguments: Arguments,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
 ) -> list[dict[str, object]]:
@@ -948,7 +948,7 @@ def _comparisons(
 
 
 def _videozerobench_comparisons(
-    arguments: _Arguments,
+    arguments: Arguments,
     task: LoadedTask,
     samples: Sequence[SampleResult],
     baseline: Sequence[Mapping[str, object]],
@@ -1005,7 +1005,7 @@ def _videozerobench_comparisons(
 
 
 def _comparison_row(
-    arguments: _Arguments,
+    arguments: Arguments,
     task_name: str,
     metric: str,
     current: Sequence[ScoredValue],
@@ -1061,9 +1061,9 @@ def _baseline_value(row: Mapping[str, object]) -> ScoredValue:
 
 def _baseline_samples(path: Path) -> tuple[dict[str, object], ...]:
     resolved = path.expanduser().resolve()
-    sample_path = resolved / _SAMPLES_FILE if resolved.is_dir() else resolved
-    if sample_path.name == _RESULTS_FILE:
-        sample_path = sample_path.with_name(_SAMPLES_FILE)
+    sample_path = resolved / SAMPLES_FILE if resolved.is_dir() else resolved
+    if sample_path.name == RESULTS_FILE:
+        sample_path = sample_path.with_name(SAMPLES_FILE)
     if not sample_path.is_file():
         raise FileNotFoundError(f"baseline samples do not exist: {sample_path}")
     rows = []
@@ -1084,22 +1084,22 @@ def _task_seed(seed: int, task: str) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
-def _evidence_budget_chars(memory_config: MemorySpec | None) -> int | None:
+def resolve_evidence_budget_chars(memory_config: MemorySpec | None) -> int | None:
     """The budget the product arm grounds with, which is the product default when no file set it.
 
-    A run without a config file builds its `Memory` from `MemorySettings()` plus the harness's own
-    two overrides, so the default budget applies there too; reading `None` for that case made
-    the reported candidate limit disagree with the window `ask` actually ranked.
+    A run without a config file builds its Memory from MemorySettings() plus the harness's own
+    two overrides, so the default budget applies there too; reading None for that case made
+    the reported candidate limit disagree with the window ask actually ranked.
     """
     settings = MemorySettings() if memory_config is None else memory_config.settings
     return settings.evidence_budget_chars
 
 
 def _random_group_hit(pool: int, size: int, cutoff: int) -> float:
-    """Exact chance a uniform ranker over `pool` puts any of `size` gold items in its top `cutoff`.
+    """Exact chance a uniform ranker over pool puts any of size gold items in its top cutoff.
 
-    One gold item reduces to `min(1, cutoff / pool)`, the row published before groups existed,
-    so singleton labels keep the number they always had. `comb(pool - size, cutoff)` is zero once
+    One gold item reduces to min(1, cutoff / pool), the row published before groups existed,
+    so singleton labels keep the number they always had. comb(pool - size, cutoff) is zero once
     the window is wider than the non-gold pool, which is the certain hit.
     """
     size, cutoff = min(size, pool), min(cutoff, pool)

@@ -12,7 +12,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from time import perf_counter
-from typing import cast
 
 from opentelemetry import trace
 from opentelemetry.trace import Tracer
@@ -42,7 +41,7 @@ from sensemem.context_values import ContextBudget
 from sensemem.exceptions import ModelError, SenseMemError, StorageError, ValidationError
 from sensemem.kernel import grounding
 from sensemem.kernel.content import PreparedContent, memory_modality, prepared_modalities
-from sensemem.kernel.contracts import Backends
+from sensemem.kernel.contracts import Backends, generation_model_name
 from sensemem.kernel.derived import has_stream_description, has_stream_transcript
 from sensemem.kernel.execution import ASYNC_QUEUE_TIME_MS, Execution
 from sensemem.kernel.hydration import Hydrator
@@ -81,9 +80,7 @@ from sensemem.models.base import (
     StreamingGenerationBackend,
 )
 from sensemem.prompts import recall as recall_prompts
-from sensemem.recall import (
-    RecallResult,
-)
+from sensemem.recall import RecallResult
 from sensemem.records import AnswerChunk, AnswerResult, SearchHit
 from sensemem.spatial import RetrievalScope
 from sensemem.types import AnswerPolicy, MemoryCategory, Modality
@@ -149,7 +146,7 @@ class Answering(Traced):
         scope: RetrievalScope | None = None,
         answer_policy: AnswerPolicy = "strict",
     ) -> AnswerResult:
-        # Draining `ask_stream()` keeps one implementation of the whole path, so a buffered and
+        # Draining ask_stream() keeps one implementation of the whole path, so a buffered and
         # a streamed answer cannot drift apart in grounding, abstention, or reinforcement.
         stream = self.ask_stream(
             question,
@@ -163,7 +160,8 @@ class Answering(Traced):
             try:
                 next(stream)
             except StopIteration as complete:
-                return cast(AnswerResult, complete.value)
+                assert isinstance(complete.value, AnswerResult)
+                return complete.value
 
     def ask_stream(
         self,
@@ -217,7 +215,7 @@ class Answering(Traced):
         # The operation and its span close before the result is handed over. A generator stays
         # suspended at whichever yield the caller stops on, so a terminal chunk yielded inside
         # the operation would pin it open for every caller that reads the result and stops --
-        # the ordinary way to consume this -- and `close()` waits on open operations.
+        # the ordinary way to consume this -- and close() waits on open operations.
         yield AnswerChunk(result=answer)
         return answer
 
@@ -241,7 +239,7 @@ class Answering(Traced):
             queue_time_ms = ASYNC_QUEUE_TIME_MS.get()
             if queue_time_ms is not None:
                 span.set_attribute(ASYNC_QUEUE_TIME, queue_time_ms)
-            # `search()` opens a `sensemem.search` operation span; `ask` reaches the same
+            # search() opens a sensemem.search operation span; ask reaches the same
             # retrieval plane directly. Keep its stage around every prerequisite through ranked
             # hits so the reported leg matches what answering actually waits for.
             with self._trace("sensemem.retrieve", kind="stage"):
@@ -264,7 +262,7 @@ class Answering(Traced):
                 prepared_search = partial(
                     self._retrieval.search_prepared,
                     prepared,
-                    # Without a budget the answer grounds on `limit` hits, so ranking three times
+                    # Without a budget the answer grounds on limit hits, so ranking three times
                     # that is enough headroom for the modality round robin. With one, the budget is
                     # what decides depth, so the whole rerank pool has to be ranked for it to spend.
                     limit=ranked_depth,
@@ -328,10 +326,10 @@ class Answering(Traced):
                 memory_type=memory_type,
                 answer_policy=answer_policy,
             )
-            # `closing` rather than plain iteration: an abandoned stream throws `GeneratorExit`
+            # closing rather than plain iteration: an abandoned stream throws GeneratorExit
             # at the yield below, and without this the inner generator would only be closed when
             # the cleared frame drops its last reference. That defers closing the provider's
-            # response and ends `sensemem.model.generation` after its own parent, which loses
+            # response and ends sensemem.model.generation after its own parent, which loses
             # the call's model usage and emits a malformed trace.
             with closing(self._answer_rounds(round_context)) as deltas:
                 while True:
@@ -508,7 +506,7 @@ class Answering(Traced):
     ) -> Generator[str, None, tuple[AnswerResult, tuple[SearchHit, ...]]]:
         """Ground one attempt at this question and yield its answer deltas.
 
-        With `recall_planning` off there is exactly one attempt and this is the sequence `ask`
+        With recall_planning off there is exactly one attempt and this is the sequence ask
         has always run: the ranking's own grounding window, the routed question with the
         reference clock last, then the answer.
         """
@@ -810,7 +808,7 @@ class Answering(Traced):
         """Pack query-local evidence before the replaceable original ranked tail.
 
         Scores from distinct queries are not comparable. Each query can add at most one
-        `limit`-sized window, after dedup; the character and media caps may narrow it further.
+        limit-sized window, after dedup; the character and media caps may narrow it further.
         The same limits apply to point and exhaustive plans, without licensing set totals.
         """
         routes = reads.semantic_routes()
@@ -881,7 +879,7 @@ class Answering(Traced):
         """Widen the grounding window by whatever the question's shape asks for beyond it.
 
         A ranking question keeps the window the ranking earned. A question that asked for every
-        matching record adds that set to it, up to `recall_set_budget_chars`, and carries a line
+        matching record adds that set to it, up to recall_set_budget_chars, and carries a line
         saying what the set is -- because a reader cannot see the predicate that produced its
         evidence, and a count over a silently truncated set is a wrong answer stated confidently.
 
@@ -992,14 +990,14 @@ class Answering(Traced):
     ) -> Generator[str, None, AnswerResult]:
         """Yield answer deltas in provider order and return the validated grounded result.
 
-        A backend without `stream_answer` yields its whole answer as one delta, so every caller
-        sees the same shape and `ask_stream()` never requires a streaming provider.
+        A backend without stream_answer yields its whole answer as one delta, so every caller
+        sees the same shape and ask_stream() never requires a streaming provider.
         """
-        model = getattr(answerer, "generation_model", None)
+        model = generation_model_name(answerer)
         with self._model_trace(
             "generation",
             "chat",
-            model=model if isinstance(model, str) else None,
+            model=model,
             batch_size=1,
             modalities=(
                 modality
@@ -1039,7 +1037,7 @@ class Answering(Traced):
                                 yield part
                     finally:
                         # This iterator owns the provider's streaming response. An abandoned
-                        # `ask_stream()` unwinds to here; close explicitly so releasing the
+                        # ask_stream() unwinds to here; close explicitly so releasing the
                         # response does not depend on interpreter reference collection.
                         stream.close()
                     answer = "".join(parts)
@@ -1077,7 +1075,7 @@ class Answering(Traced):
 
         The caller intersects the backend's result with the selected canonical hits. Declared
         use is not verified factual support. Bookkeeping failure must not discard the generated
-        answer; disabling `reinforce_on_answer` keeps later rankings independent of this update.
+        answer; disabling reinforce_on_answer keeps later rankings independent of this update.
         """
         if not hits or not self._settings.reinforce_on_answer:
             return

@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import av
 import pytest
 
 import sensemem.models.funasr as funasr_module
@@ -404,7 +405,6 @@ def test_funasr_maps_an_empty_vad_result_to_silence(tmp_path: Path) -> None:
 def test_funasr_skips_videos_without_audio_and_keeps_batch_alignment(
     tmp_path: Path, include_audio: bool
 ) -> None:
-    import av
 
     video = tmp_path / "silent.mp4"
     with av.open(str(video), "w") as output:

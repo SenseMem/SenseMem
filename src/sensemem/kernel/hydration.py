@@ -12,7 +12,7 @@ from sensemem.context_values import ContextBudget, ContextUnknown, ContextUnknow
 from sensemem.control import load_operation
 from sensemem.control_values import MemoryOperationRecord, MemoryOutcome, MemoryTrigger
 from sensemem.exceptions import StorageError
-from sensemem.infrastructure.local.store import StoredAsset, StoredMemory, StoredOperation
+from sensemem.infrastructure.local.store.rows import StoredAsset, StoredMemory, StoredOperation
 from sensemem.kernel.content import PreparedContent, decode_metadata
 from sensemem.kernel.runtime import Storage, translate_storage_errors
 from sensemem.models.base import ModelInput
@@ -260,7 +260,7 @@ class Hydrator:
             if reason is not None:
                 failed[anchor.id] = reason
                 continue
-            # `visit` is postorder; the anchor remains query-ranked and leads its own closure.
+            # visit is postorder; the anchor remains query-ranked and leads its own closure.
             closures.append(
                 EvidenceClosure(
                     anchor,

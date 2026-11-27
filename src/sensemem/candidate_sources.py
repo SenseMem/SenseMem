@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from sensemem._validation import nonempty_text, unit_interval
 from sensemem.exceptions import ValidationError
@@ -18,8 +18,8 @@ CandidateKind = Literal["dense", "lexical"]
 class CandidateQuery:
     """One native read; its bounds can narrow the enclosing request, never expand it.
 
-    Dense reads use ``vector``; lexical reads use ``text``. The kernel supplies the embedding
-    space, task, scope and route depth. ``exact`` and ``ef`` tune native dense discovery only.
+    Dense reads use vector; lexical reads use text. The kernel supplies the embedding
+    space, task, scope and route depth. exact and ef tune native dense discovery only.
     """
 
     kind: CandidateKind
@@ -82,9 +82,9 @@ class MemoryCandidate:
 class CandidateBatch:
     """Candidate hints from one source pass, before authoritative hydration.
 
-    ``exhausted`` describes the discovery routes, never exhaustive coverage of a recall plan.
-    The source may return at most ``request.limit`` external memory references and at most
-    ``request.max_routes * request.limit`` native hits in total.
+    exhausted describes the discovery routes, never exhaustive coverage of a recall plan.
+    The source may return at most request.limit external memory references and at most
+    request.max_routes * request.limit native hits in total.
     """
 
     dense: tuple[CandidateHit, ...] = ()
@@ -113,7 +113,7 @@ class CandidateReadPort(Protocol):
     """Execute native routes with fixed instance identity and request scope.
 
     A batch retains the runtime's bounded native parallelism. The port carries no write,
-    lifecycle, storage, asset, flush or rebuild capability and is valid only during ``search``.
+    lifecycle, storage, asset, flush or rebuild capability and is valid only during search.
     """
 
     def read(self, queries: tuple[CandidateQuery, ...]) -> tuple[tuple[CandidateHit, ...], ...]: ...
@@ -123,7 +123,7 @@ class CandidateReadPort(Protocol):
 class CandidateSource(Protocol):
     """Discover candidate references; the kernel hydrates, authorizes and ranks them.
 
-    ``requires_embeddings`` is fixed at assembly. False skips query embedding preparation,
+    requires_embeddings is fixed at assembly. False skips query embedding preparation,
     allowing a text-only external source without an unused embedding-model request. Sources
     must be thread-safe; Memory owns and closes each distinct configured source once.
     """
@@ -230,10 +230,11 @@ def merge_candidate_hits(*groups: tuple[CandidateHit, ...]) -> tuple[CandidateHi
             if current is None:
                 merged[hit.id] = hit
                 continue
+            assert current.confidence is not None and hit.confidence is not None
             merged[hit.id] = CandidateHit(
                 id=hit.id,
                 relevance=max(current.relevance, hit.relevance),
-                confidence=max(cast(float, current.confidence), cast(float, hit.confidence)),
+                confidence=max(current.confidence, hit.confidence),
                 lexical_match=current.lexical_match or hit.lexical_match,
                 lexical_score=max(
                     (

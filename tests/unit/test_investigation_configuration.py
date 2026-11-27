@@ -15,6 +15,8 @@ from pydantic import ValidationError as PydanticValidationError
 import sensemem.configuration as configuration
 import sensemem.recipes as recipes
 from sensemem import Memory, MemorySpec, Modality, ModelInput, SearchHit, ValidationError
+from sensemem.benchmarks.eval_config import evaluation_memory_config
+from sensemem.benchmarks.model_config import ModelConfig
 from sensemem.models.base import GenerationBackend
 from sensemem.models.openai_completion import OpenAICompletion
 
@@ -231,8 +233,6 @@ def test_reranking_validation_reports_the_public_field_path(provider: str) -> No
 def test_native_benchmark_overrides_preserve_the_reranking_provider(
     provider: Literal["sentence-transformers", "qwen3-vl"],
 ) -> None:
-    from sensemem.benchmarks.eval_config import _evaluation_memory_config
-    from sensemem.benchmarks.model_config import ModelConfig
 
     config = MemorySpec.model_validate(
         {
@@ -241,7 +241,7 @@ def test_native_benchmark_overrides_preserve_the_reranking_provider(
             "reranking": {"provider": provider, "model": "org/reranker", "revision": "a" * 40},
         }
     )
-    effective = _evaluation_memory_config(
+    effective = evaluation_memory_config(
         config, ModelConfig(), gen_kwargs="max_tokens=2048", seed=0, device=None
     )
     assert effective is not None

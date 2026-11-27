@@ -26,16 +26,16 @@ from sensemem.benchmarks.eval_adapters import (
     LoadedTask,
 )
 from sensemem.benchmarks.eval_arms import (
-    _answers_through_ask,
-    _requests_answer_policy,
+    answers_through_ask,
+    requests_answer_policy,
 )
 from sensemem.benchmarks.eval_config import (
-    _MODALITY_BY_SUFFIX,
+    MODALITY_BY_SUFFIX,
     RETRIEVAL_CANDIDATE_LIMIT,
-    _Arguments,
-    _generation_temperature,
-    _JudgeConfig,
-    _memory_config_payload,
+    Arguments,
+    JudgeConfig,
+    memory_config_payload,
+    resolve_generation_temperature,
 )
 from sensemem.benchmarks.eval_environment import (
     acceleration_runtime_metadata,
@@ -44,12 +44,12 @@ from sensemem.benchmarks.eval_environment import (
 )
 from sensemem.benchmarks.eval_judge import JUDGE_REQUEST_VERSION
 from sensemem.benchmarks.eval_metrics import (
-    _abstentions,
-    _answer_retrieval_candidate_limit,
-    _blind_baseline_rows,
-    _evidence_budget_chars,
-    _in_run_blind_rows,
-    _metrics,
+    abstentions,
+    answer_retrieval_candidate_limit,
+    blind_baseline_rows,
+    compute_task_metrics,
+    in_run_blind_rows,
+    resolve_evidence_budget_chars,
 )
 from sensemem.benchmarks.eval_results import (
     DEFAULT_ARM,
@@ -57,9 +57,9 @@ from sensemem.benchmarks.eval_results import (
     SampleResult,
 )
 from sensemem.benchmarks.eval_runtime import (
-    _SDK_OPERATION_LIMIT,
-    _SDK_STREAM_LIMIT,
     EVAL_RUNNER_VERSION,
+    SDK_OPERATION_LIMIT,
+    SDK_STREAM_LIMIT,
 )
 from sensemem.benchmarks.eval_telemetry import (
     EvaluationTelemetry,
@@ -85,7 +85,7 @@ from sensemem.models.base import (
 )
 
 
-def _task_performance(
+def task_performance(
     telemetry: EvaluationTelemetry,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
@@ -93,7 +93,7 @@ def _task_performance(
 ) -> dict[str, dict[str, Mapping[str, object]]]:
     """Read each (task, arm)'s aggregated spans.
 
-    `EvaluationTelemetry.result` is a non-destructive read, so a task that has just finished can
+    EvaluationTelemetry.result is a non-destructive read, so a task that has just finished can
     be summarised mid-run and summarised again in the final document. A mid-run read is missing
     the run-global standalone search replay, which by design runs only once every task has
     answered; the final read is the complete one.
@@ -114,7 +114,7 @@ def _task_performance(
     }
 
 
-def _with_grounding_loss(
+def with_grounding_loss(
     samples: Sequence[SampleResult],
     telemetry: EvaluationTelemetry,
 ) -> tuple[SampleResult, ...]:
@@ -138,7 +138,7 @@ def _with_grounding_loss(
     )
 
 
-def _incomplete_search_replay(rows: Sequence[Mapping[str, object]]) -> bool:
+def incomplete_search_replay(rows: Sequence[Mapping[str, object]]) -> bool:
     for row in rows:
         if row.get("arm") != DEFAULT_ARM:
             continue
@@ -149,8 +149,8 @@ def _incomplete_search_replay(rows: Sequence[Mapping[str, object]]) -> bool:
     return False
 
 
-def _task_rows(
-    arguments: _Arguments,
+def build_task_rows(
+    arguments: Arguments,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
     batch_sizes: Mapping[str, int],
@@ -160,19 +160,19 @@ def _task_rows(
 ) -> list[dict[str, object]]:
     """Score one row per (task, arm).
 
-    Separate from `_results` so a task that has finished answering can be scored and printed on
+    Separate from _results so a task that has finished answering can be scored and printed on
     its own, with exactly the arithmetic the final document uses, while later tasks still run.
     """
-    # A blind arm run here is the same control as an external `--blind` document, measured on the
+    # A blind arm run here is the same control as an external --blind document, measured on the
     # same inputs, so it satisfies the blind control too. An explicitly supplied document still
     # wins: the caller named it.
     blind_rows = {
-        **_in_run_blind_rows(arguments, tasks, samples),
-        **_blind_baseline_rows(
+        **in_run_blind_rows(arguments, tasks, samples),
+        **blind_baseline_rows(
             arguments.blind_baseline, tasks, answer_policy=arguments.answer_policy
         ),
     }
-    product_candidate_limit = _answer_retrieval_candidate_limit(
+    product_candidate_limit = answer_retrieval_candidate_limit(
         arguments.recall_limit,
         memory_config,
     )
@@ -181,7 +181,7 @@ def _task_rows(
         selected = tuple(
             sample for sample in samples if sample.task == task.spec.name and sample.arm == arm
         )
-        metrics = _metrics(
+        metrics = compute_task_metrics(
             task,
             selected,
             arguments,
@@ -193,9 +193,7 @@ def _task_rows(
                 else RETRIEVAL_CANDIDATE_LIMIT
                 if (
                     arm == "random"
-                    and any(
-                        retrieval_gold_ids(task.spec.name, sample.metadata) for sample in selected
-                    )
+                    and any(retrieval_gold_ids(sample.metadata) for sample in selected)
                 )
                 else arguments.recall_limit
             ),
@@ -208,7 +206,7 @@ def _task_rows(
                 # byte-indistinguishable from every earlier run of the same task.
                 "answer_policy": (
                     task_answer_policy(task.spec.name, arguments.answer_policy)
-                    if _requests_answer_policy(arm, task.spec.name)
+                    if requests_answer_policy(arm, task.spec.name)
                     else None
                 ),
                 "benchmark": task.spec.benchmark,
@@ -247,10 +245,10 @@ def _task_rows(
     return task_rows
 
 
-def _results(
-    arguments: _Arguments,
+def build_results_document(
+    arguments: Arguments,
     config: ModelConfig,
-    judge_config: _JudgeConfig,
+    judge_config: JudgeConfig,
     tasks: Sequence[LoadedTask],
     samples: Sequence[SampleResult],
     duration_seconds: float,
@@ -263,7 +261,7 @@ def _results(
     operations_applied: int = 0,
 ) -> dict[str, object]:
     fallback_reference_at = arguments.fallback_reference_at
-    task_rows = _task_rows(
+    task_rows = build_task_rows(
         arguments,
         tasks,
         samples,
@@ -289,7 +287,7 @@ def _results(
                 or sample.retrieval_diagnostic_error is not None
                 for sample in samples
             )
-            or (arguments.search_replay and _incomplete_search_replay(task_rows))
+            or (arguments.search_replay and incomplete_search_replay(task_rows))
             else "completed"
         ),
         "duration_seconds": duration_seconds,
@@ -303,7 +301,7 @@ def _results(
         "resume": arguments.resume,
         "cached_response_count": sum(sample.cached for sample in samples),
         "cached_judge_count": sum(sample.judge_cached for sample in samples),
-        "abstentions": _abstentions(samples),
+        "abstentions": abstentions(samples),
         "blind": arguments.blind,
         "blind_baseline": (
             None if arguments.blind_baseline is None else str(arguments.blind_baseline)
@@ -327,13 +325,11 @@ def _results(
         "media_roots": media_roots,
         "unit_concurrency": arguments.unit_concurrency,
         "ingest_concurrency": arguments.ingest_concurrency,
-        "effective_ingest_concurrency": min(arguments.ingest_concurrency, _SDK_OPERATION_LIMIT),
+        "effective_ingest_concurrency": min(arguments.ingest_concurrency, SDK_OPERATION_LIMIT),
         "request_concurrency": arguments.request_concurrency,
         "stream_answers": arguments.stream_answers,
         "recall_limit": arguments.recall_limit,
         "answer_policy_override": arguments.answer_policy,
-        # P5/P6: without this the configured consolidator was constructed, registered for close,
-        # and never called, and nothing in the report said so.
         "deliberation": {
             "enabled": arguments.deliberate,
             "operations_applied": operations_applied,
@@ -377,7 +373,7 @@ def _results(
 
 
 def _measurement_protocol(
-    arguments: _Arguments,
+    arguments: Arguments,
     samples: Sequence[SampleResult],
     *,
     embedding_warmup_count: int | None,
@@ -423,15 +419,15 @@ def _measurement_protocol(
 
 
 def _arm_provenance(
-    arguments: _Arguments,
+    arguments: Arguments,
     memory_config: MemorySpec | None = None,
 ) -> dict[str, object]:
     """Describe every arm precisely enough that a reader can attribute each number to one."""
-    answer_candidate_limit = _answer_retrieval_candidate_limit(
+    answer_candidate_limit = answer_retrieval_candidate_limit(
         arguments.recall_limit,
         memory_config,
     )
-    evidence_budget_chars = _evidence_budget_chars(memory_config)
+    evidence_budget_chars = resolve_evidence_budget_chars(memory_config)
     definitions: dict[str, object] = {
         DEFAULT_ARM: {
             "answers_from": (
@@ -506,7 +502,7 @@ def _arm_provenance(
                         "surface": "ask",
                         "evidence_budget_chars": evidence_budget_chars,
                     }
-                    if _answers_through_ask(name, task)
+                    if answers_through_ask(name, task)
                     else {
                         "surface": "compile",
                         "max_chars": arguments.compile_max_chars,
@@ -518,7 +514,7 @@ def _arm_provenance(
         definition["answer_policy"] = {
             task: (
                 task_answer_policy(task, arguments.answer_policy)
-                if _requests_answer_policy(name, task)
+                if requests_answer_policy(name, task)
                 else None
             )
             for task in sorted(arguments.tasks)
@@ -536,7 +532,7 @@ def _arm_provenance(
         "answer_delivery": "streamed" if arguments.stream_answers else "buffered",
         "effective_ask_concurrency": min(
             arguments.request_concurrency,
-            _SDK_STREAM_LIMIT if arguments.stream_answers else _SDK_OPERATION_LIMIT,
+            SDK_STREAM_LIMIT if arguments.stream_answers else SDK_OPERATION_LIMIT,
         ),
         "search_e2e_source": "post-answer public Memory.search replay",
         "evidence_budget_chars": evidence_budget_chars,
@@ -547,7 +543,7 @@ def _arm_provenance(
 
 
 def _model_result(
-    arguments: _Arguments,
+    arguments: Arguments,
     config: ModelConfig,
     memory_config: MemorySpec | None,
     *,
@@ -566,7 +562,7 @@ def _model_result(
         options = dict(
             item.split("=", 1) for item in arguments.gen_kwargs.split(",") if "=" in item
         )
-        generation_temperature = _generation_temperature(config.generation_model, options)
+        generation_temperature = resolve_generation_temperature(config.generation_model, options)
     result: dict[str, object] = {
         "adapter": DEFAULT_ARM,
         "embedding_model": None,
@@ -613,7 +609,7 @@ def _model_result(
             if speech["provider"] == "funasr"
             else speech["model"]
         ),
-        memory_config=_memory_config_payload(memory_config),
+        memory_config=memory_config_payload(memory_config),
     )
     return result
 
@@ -634,7 +630,7 @@ def _task_modalities(task: LoadedTask) -> list[str]:
         for item in unit.memories:
             for atom in item.content:
                 if isinstance(atom, Path):
-                    modality = _MODALITY_BY_SUFFIX.get(atom.suffix.casefold())
+                    modality = MODALITY_BY_SUFFIX.get(atom.suffix.casefold())
                     if modality is not None:
                         modalities.add(modality.value)
     return sorted(modalities)
@@ -658,7 +654,7 @@ def _version(distribution: str) -> str:
         return "source"
 
 
-def _regressed(comparisons: Sequence[Mapping[str, object]], *, threshold: float) -> bool:
+def has_regression(comparisons: Sequence[Mapping[str, object]], *, threshold: float) -> bool:
     for comparison in comparisons:
         interval = comparison.get("confidence_interval_95")
         score_scale = cast(float, comparison["score_scale"])

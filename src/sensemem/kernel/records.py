@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from opentelemetry.trace import Tracer
 
-from sensemem.content import Blob, ContentAtom
+from sensemem.content import Blob, ContentAtom, ContentInput
 from sensemem.control import operation_touches
 from sensemem.control_values import ExportBundle, MemoryOperationRecord, RetentionReport
 from sensemem.exceptions import (
@@ -34,10 +34,22 @@ from sensemem.kernel.validation import (
     validated_identifier,
 )
 from sensemem.records import MemoryRecord, Page
-from sensemem.types import RecordKind
+from sensemem.spatial import ObservationContext
+from sensemem.types import MemoryCategory, RecordKind
 
-if TYPE_CHECKING:
-    from sensemem.memory import Memory
+
+class ReplayDestination(Protocol):
+    def add(
+        self,
+        content: ContentInput,
+        *,
+        occurred_at: datetime | None = None,
+        occurred_end: datetime | None = None,
+        metadata: Mapping[str, object] | None = None,
+        memory_type: MemoryCategory = MemoryCategory.SEMANTIC,
+        context: ObservationContext | None = None,
+    ) -> MemoryRecord: ...
+
 
 # How much one retention pass may delete. Physical deletion is unrecoverable, so a pass is
 # bounded and repeatable rather than unbounded: an operator runs it again until it reports
@@ -112,7 +124,7 @@ class Records(Traced):
                 )
             return Blob(data, asset.mime_type, asset.name)
 
-    def replay_sources(self, destination: Memory) -> Generator[MemoryRecord, None, None]:
+    def replay_sources(self, destination: ReplayDestination) -> Generator[MemoryRecord, None, None]:
         """Re-ingest retained original observations into a separately owned directory."""
         after: tuple[datetime, str] | None = None
         while True:

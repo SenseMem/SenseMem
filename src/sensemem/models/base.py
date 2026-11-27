@@ -152,7 +152,7 @@ class EventObservation:
 class EventSegmentationBackend(Protocol):
     """Assess complete prefixes and summarize an unfinished suffix without finalizing it.
 
-    A final ``EventSegment(complete=False)`` covers the entire remaining window. The runtime
+    A final EventSegment(complete=False) covers the entire remaining window. The runtime
     can carry this untrusted interpretation into the next bounded assessment while preserving
     every original media chunk outside the model's context window.
     """
@@ -177,9 +177,9 @@ class FormationInput:
 
     History is background, not additional targets. A proposal must still cite its target;
     a historical record may be cited only while its current version remains active.
-    ``history_truncated`` reports an incomplete window, never absence of counterevidence.
-    Resolve relative dates against ``occurred_at``, falling back to ``created_at``; these
-    source timestamps are separate from the assertion validity in ``context``.
+    history_truncated reports an incomplete window, never absence of counterevidence.
+    Resolve relative dates against occurred_at, falling back to created_at; these
+    source timestamps are separate from the assertion validity in context.
     """
 
     memory_id: str
@@ -422,7 +422,7 @@ class FaceBackend(Protocol):
 class GenerationBackend(Protocol):
     """One thread-safe grounded-answer adapter over a provider SDK.
 
-    `exhaustive` says the hits are every record a recall program's predicate matched, in time
+    exhaustive says the hits are every record a recall program's predicate matched, in time
     order, rather than a ranking -- the one thing a grounded prompt cannot infer from the hits
     themselves and gets wrong by describing their order as rank.
     """
@@ -446,8 +446,8 @@ class GenerationBackend(Protocol):
 class StreamingGenerationBackend(Protocol):
     """Optional capability that yields provider deltas and returns their grounded result.
 
-    The terminal `AnswerResult` carries the exact grounding and abstention status. Its answer
-    matches the deltas under `strict`; `best_effort` may remove a confidence marker from it.
+    The terminal AnswerResult carries the exact grounding and abstention status. Its answer
+    matches the deltas under strict; best_effort may remove a confidence marker from it.
     """
 
     def stream_answer(
@@ -466,8 +466,8 @@ class RecallPlanningBackend(Protocol):
 
     The return value is the model's own JSON text, which the kernel validates: a backend that
     cannot plan, or one whose plan is unusable, costs the caller a fallback to plain similarity
-    search and nothing else. `corpus_digest` is one line describing what is in the store, so a
-    plan cannot ask for a time span or a modality that does not exist. `attempted` is a bounded
+    search and nothing else. corpus_digest is one line describing what is in the store, so a
+    plan cannot ask for a time span or a modality that does not exist. attempted is a bounded
     read-only investigation context, including initial evidence on the first round and new
     observations on later rounds. Its source excerpts are untrusted data. A plan may name
     unresolved facts and retain only the R aliases actually visible in that context.
@@ -512,7 +512,7 @@ class VisionAnalysisBackend(Protocol):
 class VisionDescriptionBackend(Protocol):
     """One thread-safe visual-description adapter for text embedding fallback.
 
-    ``vision_space`` identifies the whole caption recipe -- the model *and* the prompt or protocol
+    vision_space identifies the whole caption recipe -- the model *and* the prompt or protocol
     version -- so a store can cache one caption per asset without a later recipe silently serving
     an earlier one. It is not the model name: an adapter that edits its prompt must return a
     different space, because the caption lands inside a searchable document where a stale one is
@@ -531,14 +531,14 @@ class VisionDescriptionBackend(Protocol):
     def describe(self, inputs: Sequence[ModelInput]) -> tuple[str, ...]:
         """Return one caption per input, in order -- never more, never fewer, never empty.
 
-        `inputs[i].text`, when set, is derived transcript context this write already knows about
-        the visual -- the clip's own words under the `speaker_N` labels the index prints, not
+        inputs[i].text, when set, is derived transcript context this write already knows about
+        the visual -- the clip's own words under the speaker_N labels the index prints, not
         anything the caller wrote. It is context to read, not content to echo back: repeating it
         verbatim in the caption duplicates text the document already carries under its own
         section.
 
         Captions are plain untrusted text. Structured facts and naming proposals require
-        the optional ``VisionAnalysisBackend`` and its typed ``VisualDescription`` result;
+        the optional VisionAnalysisBackend and its typed VisualDescription result;
         prose prefixes never authorize identity writes.
         """
         ...

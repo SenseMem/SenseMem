@@ -93,7 +93,7 @@ def metrics_window(
 ) -> dict[str, object]:
     """Take the closing snapshot and report process-global deltas for the window.
 
-    ``excluded`` names completed sub-windows, such as an in-between judge pass, whose counter
+    excluded names completed sub-windows, such as an in-between judge pass, whose counter
     deltas must not be attributed to product execution. Gauges remain the outer window's endpoint
     readings because they are instantaneous rather than cumulative.
     """

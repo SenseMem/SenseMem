@@ -11,6 +11,11 @@ from typing import cast
 import httpx2 as httpx
 import pytest
 from _feature_support import TinyEmbedder
+from fixtures.formation import extract_memories as _memories
+from fixtures.formation import make_image_asset as _image
+from fixtures.openai import sdk_client as _sdk_client
+from fixtures.openai import search_hit as _search_hit
+from fixtures.openai import stream_chunk as _stream_chunk
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionChunk
 from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice
@@ -18,8 +23,6 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from test_image_source_prose import _image, _memories
-from test_openai_adapters import _sdk_client, _search_hit, _stream_chunk
 
 import sensemem.configuration as configuration
 import sensemem.models._openai_media as openai_media
@@ -810,7 +813,6 @@ def test_existing_media_rejection_keeps_original_body_and_counts_both_attempts(
 def test_native_stream_closes_once_and_iterator_failure_does_not_start_recovery(
     tmp_path: Path, broken: bool
 ) -> None:
-    del tmp_path
     close_count = 0
     requests = 0
 
@@ -965,7 +967,7 @@ def test_native_protocol_rejections_have_only_static_safe_categories(category: s
         if category == "protocol_finish":
             choice["finish_reason"] = "stop"
         elif category == "protocol_type":
-            del calls[0]["type"]
+            calls[0].pop("type")
         elif category == "protocol_count":
             calls.append(calls[0])
         elif category == "protocol_name":

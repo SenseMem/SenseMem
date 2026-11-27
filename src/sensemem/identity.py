@@ -13,9 +13,9 @@ from sensemem.exceptions import ValidationError
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IdentityClaim:
-    """Who one recognized person is, as an `IDENTIFY` operation claims it.
+    """Who one recognized person is, as an IDENTIFY operation claims it.
 
-    The kernel, not the backend, turns this into the typed ENTITY assertion `identities.name`
+    The kernel, not the backend, turns this into the typed ENTITY assertion identities.name
     projects, so a proposal only has to name the identity and cite its evidence.
     """
 
@@ -38,8 +38,8 @@ class ConsentState(str, Enum):
     """Whether a recognized person has agreed to be processed as a recognized person.
 
     Three states rather than a flag, because "nobody has asked" is not "they said no": an
-    identity with no recorded consent is unstated, `WITHHELD` is a refusal that was actually
-    given, and `WITHDRAWN` is a permission that was given and taken back. Only the last two
+    identity with no recorded consent is unstated, WITHHELD is a refusal that was actually
+    given, and WITHDRAWN is a permission that was given and taken back. Only the last two
     restrain the kernel, and they restrain it identically; the distinction is audit history.
     """
 
@@ -52,10 +52,10 @@ class ConsentState(str, Enum):
 class ConsentClaim:
     """One person's own statement about how they may be processed.
 
-    Carried on a `CONSENT` operation the way `IdentityClaim` is carried on an `IDENTIFY` one:
-    the kernel, not a backend, turns it into the typed STATE assertion `consent()` projects.
-    A model may never propose one -- the kernel refuses a proposed `CONSENT` as `unauthorized`,
-    the way it refuses a proposed `MERGE` -- so the recorded basis is always `USER_STATEMENT`.
+    Carried on a CONSENT operation the way IdentityClaim is carried on an IDENTIFY one:
+    the kernel, not a backend, turns it into the typed STATE assertion consent() projects.
+    A model may never propose one -- the kernel refuses a proposed CONSENT as unauthorized,
+    the way it refuses a proposed MERGE -- so the recorded basis is always USER_STATEMENT.
     """
 
     identity_id: str
@@ -76,12 +76,12 @@ class ConsentClaim:
 class IdentityChange:
     """Which recognized people one identity-lifecycle operation moved.
 
-    `identity_id` is the person who stands after the operation: the survivor of a cross-modal
+    identity_id is the person who stands after the operation: the survivor of a cross-modal
     merge, the identity a split was taken back out of, the person an erasure destroyed.
-    `moved_ids` are the other identities the operation names -- the absorbed identity of a
-    `MERGE`, the identity a `CORRECT` split restored, the aliases an erasure destroyed with the
+    moved_ids are the other identities the operation names -- the absorbed identity of a
+    MERGE, the identity a CORRECT split restored, the aliases an erasure destroyed with the
     person. An identity ID is not a memory ID, which is why it travels here rather than in
-    `target_ids`.
+    target_ids.
     """
 
     identity_id: str
@@ -144,8 +144,8 @@ class SpeakerSegment:
 class IdentityProfile:
     """What a caller has registered about one recognized person.
 
-    `confirmed` reports a visible host-authored naming assertion. A model-inferred name may
-    become visible with independent support, but remains unconfirmed; `evidence_ids` names
+    confirmed reports a visible host-authored naming assertion. A model-inferred name may
+    become visible with independent support, but remains unconfirmed; evidence_ids names
     its sources. An unnamed recognized person is provisional rather than an unknown ID.
     """
 
@@ -224,12 +224,12 @@ class FaceObservation:
 
 @dataclass(frozen=True, slots=True)
 class IdentityErasure:
-    """What one `forget_identity` call actually destroyed.
+    """What one forget_identity call actually destroyed.
 
     The counts are the audit record for a privacy operation: a caller that erased a person can
     state how many biometric templates and annotations were removed instead of assuming. It lives
-    here rather than in the storage layer because it is the return type of a public `Memory`
-    operation, and the supported import path is `sensemem`.
+    here rather than in the storage layer because it is the return type of a public Memory
+    operation, and the supported import path is sensemem.
     """
 
     identity_id: str

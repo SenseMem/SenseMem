@@ -207,7 +207,7 @@ def write_memory(
         or existing["occurred_at"] != optional_datetime_text(memory.occurred_at)
         or existing["occurred_end"] != optional_datetime_text(memory.occurred_end)
         or existing_asset_ids != supplied_asset_ids
-        # The index carries `place_id` as a filter field, so relabelling a room is a change
+        # The index carries place_id as a filter field, so relabelling a room is a change
         # to the indexed document even though none of its text moved.
         or existing["place_id"] != memory.place_id
     )
@@ -313,7 +313,7 @@ def delete_memory(  # noqa: C901 - one atomic dependency and lineage teardown
     connection: sqlite3.Connection,
     memory_id: str,
 ) -> tuple[bool, tuple[StoredAsset, ...]]:
-    """Delete one memory inside the caller's transaction; see `delete_memory_with_assets`."""
+    """Delete one memory inside the caller's transaction; see delete_memory_with_assets."""
     if (
         connection.execute(
             "SELECT 1 FROM memory_records WHERE memory_id = ?", (memory_id,)
@@ -488,14 +488,14 @@ class MemoryRecords:
     ) -> tuple[bool, ...]:
         """Create or update a batch with one commit and one durability sync.
 
-        `formation_pending_at` enqueues each written memory for the follow-up work the caller has
-        not done yet, in the same transaction that makes the record durable. The strong `add()`
+        formation_pending_at enqueues each written memory for the follow-up work the caller has
+        not done yet, in the same transaction that makes the record durable. The strong add()
         path uses it so a crash between this commit and formation leaves a queue row the next
-        `settle()` finds, instead of a searchable record nothing will ever form. The row carries
+        settle() finds, instead of a searchable record nothing will ever form. The row carries
         no state of its own: a queued record that already has vectors owes formation only, which
-        is what `read_embedding` tells the settler.
+        is what read_embedding tells the settler.
 
-        `replace_embeddings` withdraws every previous key before writing the supplied set, so
+        replace_embeddings withdraws every previous key before writing the supplied set, so
         refreshing a derivation cannot leave keys for a longer, obsolete interpretation.
         """
         supplied_memories, supplied_embeddings, supplied_by_memory = prepare_write_batch(
@@ -570,11 +570,11 @@ class MemoryRecords:
     ) -> tuple[StoredMemory, ...]:
         """Hydrate existing memories with one query and preserve input ranking.
 
-        `place_id` scopes the slate to one symbolic place. It is a hard filter, unlike `near`/
-        `radius_m` which the caller applies to metric pose, and it is applied in SQL so a scoped
+        place_id scopes the slate to one symbolic place. It is a hard filter, unlike near/
+        radius_m which the caller applies to metric pose, and it is applied in SQL so a scoped
         hydration reads only the rows it returns.
 
-        `identity_id` scopes it to one person, accepting a merged alias, and is a hard filter for
+        identity_id scopes it to one person, accepting a merged alias, and is a hard filter for
         the same reason: it is the authoritative answer the search index only approximates.
         """
         cacheable = (
@@ -633,7 +633,7 @@ class MemoryRecords:
         identity_id: str | None = None,
         active_only: bool = False,
     ) -> int:
-        """Count what `read_memories` would return for the same arguments.
+        """Count what read_memories would return for the same arguments.
 
         Applies every scope predicate through the same selection pass, and reads neither
         content, media assets, nor typed context rows: a caller that only needs the number of
@@ -687,7 +687,7 @@ class MemoryRecords:
                 scoped_ids=scoped.keys(),
             )
         }
-        # Counted per requested ID, not per distinct row, because `read_memories` repeats a
+        # Counted per requested ID, not per distinct row, because read_memories repeats a
         # memory that its caller asked for twice.
         return sum(1 for memory_id in memory_ids if memory_id in surviving)
 
@@ -698,7 +698,7 @@ class MemoryRecords:
         after: tuple[datetime, str] | None = None,
         oldest_first: bool = False,
     ) -> tuple[StoredMemory, ...]:
-        """List records with a stable `(created_at, memory_id)` keyset cursor."""
+        """List records with a stable (created_at, memory_id) keyset cursor."""
         if not 1 <= limit <= 1_000:
             raise ValueError("limit must be between 1 and 1000")
         parameters: tuple[object, ...]
@@ -904,7 +904,7 @@ class MemoryRecords:
     ) -> tuple[bool, tuple[StoredAsset, ...]]:
         """Delete one memory and return its assets that no remaining memory references.
 
-        Pass `memories` and `embeddings` to atomically replace indexed documents in the same
+        Pass memories and embeddings to atomically replace indexed documents in the same
         commit, which deleting a naming assertion needs: the projection it fed is recomputed
         here, so the indexed text quoting the name has to be rebuilt with it.
         """
@@ -931,7 +931,7 @@ class MemoryRecords:
     ) -> tuple[str, ...]:
         """Return memories cognitively forgotten before a moment, oldest forgetting first.
 
-        The read half of retention over `forget()`: cognitive forgetting is reversible by
+        The read half of retention over forget(): cognitive forgetting is reversible by
         design, so something has to decide when it becomes final, and only a declared policy or
         a person may.
         """

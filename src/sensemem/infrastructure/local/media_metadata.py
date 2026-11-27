@@ -10,14 +10,38 @@ from contextlib import nullcontext
 from datetime import datetime
 from numbers import Real
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from PIL.Image import Image as PILImage
+
+class _ExifFields(Protocol):
+    def get(self, key: int, /) -> object: ...
+
+
+class _ExifMap(_ExifFields, Protocol):
+    def __contains__(self, key: object, /) -> bool: ...
+
+    def get_ifd(self, key: int, /) -> Mapping[int, object]: ...
+
+
+class _ImageInfo(Protocol):
+    def get(self, key: str, /) -> object: ...
+
+
+class _OpenedImage(Protocol):
+    @property
+    def width(self) -> int: ...
+
+    @property
+    def height(self) -> int: ...
+
+    @property
+    def info(self) -> _ImageInfo: ...
+
+    def getexif(self) -> _ExifMap: ...
 
 
 def image_capture_metadata(
-    path: Path, *, opened_image: PILImage | None = None
+    path: Path, *, opened_image: _OpenedImage | None = None
 ) -> dict[str, object]:
     """Read bounded EXIF capture data, without decoding pixels or trusting free-form tags.
 
@@ -46,7 +70,7 @@ def image_capture_metadata(
 
 
 def _capture_fields(
-    exif: Mapping[int, object], details: Mapping[int, object], gps: Mapping[int, object]
+    exif: _ExifFields, details: Mapping[int, object], gps: Mapping[int, object]
 ) -> dict[str, object]:
     metadata: dict[str, object] = {}
     latitude = _gps_coordinate(gps.get(2), gps.get(1), latitude=True)

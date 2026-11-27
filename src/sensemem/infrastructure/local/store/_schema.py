@@ -452,13 +452,13 @@ _CONTROL_SCHEMA = """
 """
 
 
-# `memory_deliberations` is the already-weighed marker. Without it a candidate whose deliberation
+# memory_deliberations is the already-weighed marker. Without it a candidate whose deliberation
 # yielded nothing -- the backend proposed nothing, or the kernel refused everything -- left no
 # trace and came back every round, paying the model each time. A row is written per pass, zero
 # yield included, and candidate derivation excludes a candidate weighed since its own newest
 # signal.
 #
-# `query_failures` is the QUERY_FAILURE signal: a recall that returned nothing. It holds the
+# query_failures is the QUERY_FAILURE signal: a recall that returned nothing. It holds the
 # owner's own queries, which is their own memory domain, and is bounded on write rather than
 # growing without limit.
 _SCHEDULER_SCHEMA = """
@@ -495,11 +495,11 @@ CREATE INDEX query_failures_normalized_idx
 """
 
 
-# A symbolic room-level label, complementary to the metric pose on `memory_semantics`: the pose
+# A symbolic room-level label, complementary to the metric pose on memory_semantics: the pose
 # answers "within 2 m of here", this answers "in the kitchen", which is what a household query
 # asks and the only spatial label a robot can supply when it cannot localise. It lives on
-# `memory_records` rather than on the semantic row because the semantic row is conditional -- a
-# memory added without a former and without an `ObservationContext` has none -- and a place scope
+# memory_records rather than on the semantic row because the semantic row is conditional -- a
+# memory added without a former and without an ObservationContext has none -- and a place scope
 # that silently skipped those memories would be worse than no place scope. Partial, so a store
 # that labels nothing carries no index pages.
 _PLACE_INDEX_DDL = """
@@ -509,8 +509,8 @@ CREATE INDEX memory_records_place_idx
 """
 
 
-# `feedback_candidates` polls the most recently recalled records on every
-# `consolidation_candidates()`; without this it is a full scan plus a temp sort of the whole
+# feedback_candidates polls the most recently recalled records on every
+# consolidation_candidates(); without this it is a full scan plus a temp sort of the whole
 # store. Partial and in the query's own order, so a store that never reinforces carries no pages.
 _ACCESSED_INDEX_DDL = """
 CREATE INDEX memory_records_accessed_idx
@@ -520,10 +520,10 @@ CREATE INDEX memory_records_accessed_idx
 
 
 # A derived caption is a paid model call whose output is indexed text, so it is cached per asset
-# *content* -- `media_assets` enforces `asset_id = sha256`, so this key is the asset's own digest
-# and a second memory over the same bytes reuses the row. `space_id` is the describer's
-# `vision_space`, which covers the prompt as well as the model, and it is part of the primary key
-# rather than a plain column (as on `speech_analyses`) so two describers can hold their own caption
+# *content* -- media_assets enforces asset_id = sha256, so this key is the asset's own digest
+# and a second memory over the same bytes reuses the row. space_id is the describer's
+# vision_space, which covers the prompt as well as the model, and it is part of the primary key
+# rather than a plain column (as on speech_analyses) so two describers can hold their own caption
 # for one asset instead of the newer recipe evicting the older one.
 _VISUAL_DESCRIPTION_DDL = """
 CREATE TABLE visual_descriptions (

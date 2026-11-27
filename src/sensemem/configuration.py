@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated, Literal, Self, TypeVar, cast
+from typing import Annotated, Literal, Protocol, Self, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -31,7 +31,12 @@ from sensemem.candidate_sources import CandidateSource, DefaultCandidateSource
 from sensemem.context_selection import ContextSelector, DefaultContextSelector
 from sensemem.control_values import RetentionPolicy
 from sensemem.exceptions import ValidationError
-from sensemem.infrastructure.local.gazetteer import OfflineGazetteer
+from sensemem.infrastructure.local.gazetteer import (
+    DEFAULT_GAZETTEER_BUDGET_CHARS,
+    DEFAULT_GAZETTEER_LIMIT,
+    DEFAULT_GAZETTEER_RADIUS_M,
+    OfflineGazetteer,
+)
 from sensemem.infrastructure.local.source_metadata import GazetteerEnricher
 from sensemem.kernel.answer_evidence import EvidenceGeneration
 from sensemem.models._openai_defaults import (
@@ -71,6 +76,15 @@ from sensemem.settings import MemorySettings
 from sensemem.tools import RegisteredTool, ToolRegistry
 from sensemem.types import Modality
 
+MAX_IMAGE_PIXELS = 64_000_000
+DEFAULT_GENERATION_ANSWER_STYLE: Literal["default", "concise"] = "default"
+DEFAULT_GENERATION_ANSWER_FORMAT: Literal["text", "structured"] = "text"
+DEFAULT_IMAGE_SOURCE_PROSE: Literal["include", "context_when_supplied"] = "include"
+DEFAULT_SOURCE_METADATA_KEY = "source_id"
+DEFAULT_VIDEO_LIMIT = 8
+DEFAULT_MEDIA_MAX_TOKENS = 8192
+DEFAULT_VISION_VIDEO_FRAMES = 4
+
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 _PositiveFloat = Annotated[float, Field(strict=True, gt=0)]
 _PositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -78,8 +92,14 @@ _NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 _Temperature = Annotated[float, Field(strict=True, ge=0, le=2)]
 _Seed = Annotated[int, Field(strict=True, ge=0, lt=2**63)]
 _UnitInterval = Annotated[float, Field(strict=True, ge=0, le=1)]
+_ImageMaxPixels = Annotated[int, Field(strict=True, ge=1, le=MAX_IMAGE_PIXELS)]
 _DISCRIMINATED_SLOTS = frozenset({"embedding", "reranking", "speech"})
-PluginFactory = Callable[[Mapping[str, object]], Closable]
+
+
+class PluginFactory(Protocol):
+    def __call__(self, options: Mapping[str, object], /) -> Closable: ...
+
+
 _ConfigT = TypeVar("_ConfigT", bound=BaseModel)
 
 
@@ -102,8 +122,8 @@ class _OpenAIConfig(_ConfigModel):
     base_url: _Text | None = None
     # Each OpenAI-compatible slot builds its own client, so each needs its own credential:
     # without this field a composition pointing embedding at a local server and generation at a
-    # hosted one could only ever present the single key `OPENAI_API_KEY` names. `SecretStr` keeps
-    # the value out of `model_dump`, `repr`, and therefore out of anything that serialises a
+    # hosted one could only ever present the single key OPENAI_API_KEY names. SecretStr keeps
+    # the value out of model_dump, repr, and therefore out of anything that serialises a
     # configuration. Leaving it unset falls back to the SDK's own environment lookup.
     api_key: SecretStr | None = None
     timeout: _PositiveFloat | None = None
@@ -125,14 +145,14 @@ class OpenAIEmbeddingConfig(_OpenAIConfig):
     space: _Text | None = None
     # An OpenAI-compatible server may host a multimodal embedding model. Declaring which
     # modalities it accepts is what lets routing send image, video, and audio memories to it
-    # instead of failing the write; `messages` is the request shape those servers read media
+    # instead of failing the write; messages is the request shape those servers read media
     # parts from. Both already existed on the backend and were unreachable from configuration.
-    # At least one: an empty set declares a model that can embed nothing, which builds a `Memory`
+    # At least one: an empty set declares a model that can embed nothing, which builds a Memory
     # whose every write fails with "does not support: text". Configuration rejects out-of-range
-    # values rather than deferring them to the first `add`.
+    # values rather than deferring them to the first add.
     modalities: Annotated[frozenset[Modality], Field(min_length=1)] = frozenset({Modality.TEXT})
     request_format: Literal["input", "messages"] = "input"
-    image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
+    image_max_pixels: _ImageMaxPixels | None = None
 
 
 class SentenceTransformersEmbeddingConfig(_ConfigModel):
@@ -191,7 +211,7 @@ class VLLMRerankingConfig(_ConfigModel):
 
 
 class _OpenAICompletionConfig(_OpenAIConfig):
-    """Knobs `OpenAICompletion` reads for any chat-completion role."""
+    """Knobs OpenAICompletion reads for any chat-completion role."""
 
     model: _Text = DEFAULT_GENERATION_MODEL
     modalities: frozenset[Modality] = frozenset({Modality.TEXT})
@@ -209,30 +229,34 @@ class OfflineGazetteerConfig(_ConfigModel):
 
     index_path: Path
     index_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$", strict=True)]
-    radius_m: Annotated[float, Field(strict=True, gt=0, le=500)] = 500
-    limit: Annotated[int, Field(strict=True, ge=1, le=8)] = 8
-    budget_chars: _PositiveInt = 16_000
+    radius_m: Annotated[float, Field(strict=True, gt=0, le=DEFAULT_GAZETTEER_RADIUS_M)] = (
+        DEFAULT_GAZETTEER_RADIUS_M
+    )
+    limit: Annotated[int, Field(strict=True, ge=1, le=DEFAULT_GAZETTEER_LIMIT)] = (
+        DEFAULT_GAZETTEER_LIMIT
+    )
+    budget_chars: _PositiveInt = DEFAULT_GAZETTEER_BUDGET_CHARS
 
 
 class OpenAIGenerationConfig(_OpenAICompletionConfig):
     routes: tuple[OpenAIGenerationConfig, ...] = ()
     request_max_bytes: _PositiveInt | None = None
-    answer_style: Literal["default", "concise"] = "default"
-    answer_format: Literal["text", "structured"] = "text"
-    image_source_prose: Literal["include", "context_when_supplied"] = "include"
+    answer_style: Literal["default", "concise"] = DEFAULT_GENERATION_ANSWER_STYLE
+    answer_format: Literal["text", "structured"] = DEFAULT_GENERATION_ANSWER_FORMAT
+    image_source_prose: Literal["include", "context_when_supplied"] = DEFAULT_IMAGE_SOURCE_PROSE
     evidence_operation_tool: Annotated[bool, Field(strict=True)] = False
-    source_metadata_key: _Text = "source_id"
-    image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
-    video_limit: _PositiveInt | None = 8
+    source_metadata_key: _Text = DEFAULT_SOURCE_METADATA_KEY
+    image_max_pixels: _ImageMaxPixels | None = None
+    video_limit: _PositiveInt | None = DEFAULT_VIDEO_LIMIT
     # Below this duration a video is answered as four ordered stills instead. The option already
-    # existed on `OpenAICompletion` and was unreachable from configuration, which left every caller
+    # existed on OpenAICompletion and was unreachable from configuration, which left every caller
     # that builds its models from a file -- the benchmark harness included -- unable to set the
-    # floor its endpoint needs. Answer-only, like `video_limit`, so it is not on the shared
+    # floor its endpoint needs. Answer-only, like video_limit, so it is not on the shared
     # completion base that formation also reads.
     min_video_seconds: _PositiveFloat | None = None
     media_policy: Literal["all", "on_demand"] = "all"
     media_max_items: Annotated[int, Field(strict=True, ge=1, le=8)] = 2
-    media_max_tokens: _PositiveInt = 8192
+    media_max_tokens: _PositiveInt = DEFAULT_MEDIA_MAX_TOKENS
     offline_gazetteer: OfflineGazetteerConfig | None = None
 
     @model_validator(mode="after")
@@ -246,21 +270,21 @@ class OpenAIFormationConfig(_OpenAICompletionConfig):
     """Chat-completion knobs for the adapter that proposes derived typed memories.
 
     Formation is a separate LLM round-trip on the write path and usually wants its own model,
-    token budget, and endpoint, so it is its own slot rather than a reuse of `generation`;
+    token budget, and endpoint, so it is its own slot rather than a reuse of generation;
     leaving the slot out keeps that round-trip off, which is the default. It reads the same
-    completion knobs as generation, inherited here. `video_limit` is answer-only;
-    `image_max_pixels` bounds native image transport without changing the observation.
-    `formation_model` and `formation_space` are derived from these values.
+    completion knobs as generation, inherited here. video_limit is answer-only;
+    image_max_pixels bounds native image transport without changing the observation.
+    formation_model and formation_space are derived from these values.
 
-    Two inherited fields matter more here than they do for answering. `modalities` becomes
-    `formation_capabilities`, which gates which observations reach the former at all: an
+    Two inherited fields matter more here than they do for answering. modalities becomes
+    formation_capabilities, which gates which observations reach the former at all: an
     observation whose modalities are not covered is skipped, silently and by design, so declare
     the media the endpoint really accepts or image and video sources will never form anything.
-    And formation returns JSON, so a `max_tokens` truncation is a hard error rather than a
+    And formation returns JSON, so a max_tokens truncation is a hard error rather than a
     partial parse.
     """
 
-    image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
+    image_max_pixels: _ImageMaxPixels | None = None
 
 
 class OpenAIVisionConfig(_OpenAICompletionConfig):
@@ -273,22 +297,22 @@ class OpenAIVisionConfig(_OpenAICompletionConfig):
     embedded natively. Leaving the slot out keeps the write path exactly as cheap as it is today:
     no describer is constructed, and the derived-text branch returns its input unchanged.
 
-    Like `formation` this is its own slot and its own client rather than a reuse of `generation`,
+    Like formation this is its own slot and its own client rather than a reuse of generation,
     because captioning usually wants a smaller model than answering and because configuring an
-    answerer must never start spending on writes. `modalities` is the visual capability set and
-    accepts only `image` and `video`; an asset outside it is left undescribed. Video is described
+    answerer must never start spending on writes. modalities is the visual capability set and
+    accepts only image and video; an asset outside it is left undescribed. Video is described
     from four ordered stills decoded locally rather than by uploading the clip, so it costs
     four image parts per memory; that is why the default is image alone.
     """
 
     modalities: Annotated[frozenset[Modality], Field(min_length=1)] = frozenset({Modality.IMAGE})
-    video_frames: Annotated[int, Field(strict=True, ge=2, le=64)] = 4
-    image_max_pixels: Annotated[int, Field(strict=True, ge=1, le=64_000_000)] | None = None
+    video_frames: Annotated[int, Field(strict=True, ge=2, le=64)] = DEFAULT_VISION_VIDEO_FRAMES
+    image_max_pixels: _ImageMaxPixels | None = None
 
     @field_validator("modalities")
     @classmethod
     def _visual_modalities_only(cls, value: frozenset[Modality]) -> frozenset[Modality]:
-        # `Memory` rejects the same set at construction. Rejecting it here means a host that
+        # Memory rejects the same set at construction. Rejecting it here means a host that
         # validates a document before opening storage sees it too.
         if value - {Modality.IMAGE, Modality.VIDEO}:
             raise ValueError("must contain only image or video")
@@ -298,13 +322,13 @@ class OpenAIVisionConfig(_OpenAICompletionConfig):
 class OpenAIConsolidationConfig(_OpenAICompletionConfig):
     """Chat-completion knobs for the backend that proposes control-plane operations.
 
-    Declared like `formation` and off unless it is configured: consolidation is a paid reasoning
+    Declared like formation and off unless it is configured: consolidation is a paid reasoning
     call over a bounded evidence set, and a deployment that only wants recall should not start
-    making it. When these values match a `generation` or `formation` slot exactly, the composition
+    making it. When these values match a generation or formation slot exactly, the composition
     reuses that adapter instead of opening a second client against the same endpoint.
 
-    `modalities` matters here for the same reason it does for formation: it becomes
-    `generation_capabilities`, which decides which evidence media the adapter attaches to the
+    modalities matters here for the same reason it does for formation: it becomes
+    generation_capabilities, which decides which evidence media the adapter attaches to the
     request. A native image or audio memory with no derived description is otherwise opaque to
     the loop, which can then only propose forgetting it.
     """
@@ -374,15 +398,15 @@ class MemorySpec(_ConfigModel):
     embedding: ProviderOrFactory[EmbeddingProviderConfig]
     generation: ProviderOrFactory[OpenAIGenerationConfig] | None = None
     reranking: ProviderOrFactory[RerankingProviderConfig] | None = None
-    # Both reachable, but never implicit, and omitted by default. Configuring `generation` must
+    # Both reachable, but never implicit, and omitted by default. Configuring generation must
     # not enable either one: a former is an LLM call per observation and a describer an LLM call
     # per visual, both on the write path, and the only bundled adapters are cloud calls, which a
     # local-first deployment should opt into rather than discover. What each derives is also a
     # union with the raw sources rather than a replacement for them.
     formation: ProviderOrFactory[OpenAIFormationConfig] | None = None
     vision: ProviderOrFactory[OpenAIVisionConfig] | None = None
-    # The agentic memory control plane. Same rule as `formation`: reachable, never implicit. A
-    # deployment that never sets it keeps `consolidate()` unavailable and everything else
+    # The agentic memory control plane. Same rule as formation: reachable, never implicit. A
+    # deployment that never sets it keeps consolidate() unavailable and everything else
     # unchanged, which is what a host that only recalls should get.
     consolidation: ProviderOrFactory[OpenAIConsolidationConfig] | None = None
     speech: ProviderOrFactory[SpeechProviderConfig] | None = None
@@ -394,9 +418,9 @@ class MemorySpec(_ConfigModel):
     ingestion_stages: tuple[PluginConfig, ...] = ()
     tools: tuple[PluginConfig, ...] = ()
     settings: MemorySettings = Field(default_factory=MemorySettings)
-    # Its own section rather than a `settings` field: every other setting shapes what recall
-    # returns and can be changed back, and this one deletes. It reaches `Memory` as
-    # `MemorySettings.retention`, which is the same value under the name `from_plugins` reads;
+    # Its own section rather than a settings field: every other setting shapes what recall
+    # returns and can be changed back, and this one deletes. It reaches Memory as
+    # MemorySettings.retention, which is the same value under the name from_plugins reads;
     # declaring it twice is refused rather than silently resolved.
     retention: RetentionPolicy | None = None
 
@@ -405,7 +429,7 @@ class MemorySpec(_ConfigModel):
 class MemoryComposition:
     """Constructed plugins and settings whose resources the caller owns.
 
-    Close the composition unless its plugins are transferred to a ``Memory`` instance.
+    Close the composition unless its plugins are transferred to a Memory instance.
     Building this value does not open local storage.
     """
 
@@ -441,7 +465,7 @@ def build_memory_composition(  # noqa: C901 - each optional capability is wired 
     """Validate a specification and construct its plugins without opening storage.
 
     Provider construction may load models and allocate clients. The caller must close the
-    returned composition or transfer its plugins to a ``Memory`` instance.
+    returned composition or transfer its plugins to a Memory instance.
     """
     config = _validated_config(spec)
     settings = _with_retention(config)
@@ -454,106 +478,125 @@ def build_memory_composition(  # noqa: C901 - each optional capability is wired 
     resources: list[Closable] = []
     with ExitStack() as cleanup:
         cleanup.callback(lambda: close_quietly(*resources))
-        embedder = (
-            cast(
-                EmbeddingBackend,
-                _registered_plugin(config.embedding, catalog, (EmbeddingBackend,), resources),
-            )
-            if isinstance(config.embedding, PluginConfig)
-            else _build_embedding(config.embedding)
-        )
+        if isinstance(config.embedding, PluginConfig):
+            embedder_plugin = _load_plugin(config.embedding, catalog, resources)
+            if not isinstance(embedder_plugin, EmbeddingBackend):
+                raise _incompatible_plugin(config.embedding)
+            embedder: EmbeddingBackend = embedder_plugin
+        else:
+            embedder = _build_embedding(config.embedding)
         resources.append(embedder)
-        answerer = None
+        answerer: GenerationBackend | None = None
         if config.generation is not None:
-            answerer = (
-                cast(
-                    GenerationBackend,
-                    _registered_plugin(config.generation, catalog, (GenerationBackend,), resources),
-                )
-                if isinstance(config.generation, PluginConfig)
-                else _build_generation(config.generation)
-            )
+            if isinstance(config.generation, PluginConfig):
+                generation_plugin = _load_plugin(config.generation, catalog, resources)
+                if not isinstance(generation_plugin, GenerationBackend):
+                    raise _incompatible_plugin(config.generation)
+                answerer = generation_plugin
+            else:
+                answerer = _build_generation(config.generation)
             resources.append(answerer)
         if isinstance(config.generation, OpenAIGenerationConfig) and answerer is not None:
             completions.append((config.generation, answerer))
-        former = None
+        former: FormationBackend | None = None
         if config.formation is not None:
-            former = (
-                cast(
-                    FormationBackend,
-                    _registered_plugin(config.formation, catalog, (FormationBackend,), resources),
-                )
-                if isinstance(config.formation, PluginConfig)
-                else _build_formation(config.formation)
-            )
+            if isinstance(config.formation, PluginConfig):
+                formation_plugin = _load_plugin(config.formation, catalog, resources)
+                if not isinstance(formation_plugin, FormationBackend):
+                    raise _incompatible_plugin(config.formation)
+                former = formation_plugin
+            else:
+                former = _build_formation(config.formation)
             resources.append(former)
         if isinstance(config.formation, OpenAIFormationConfig) and former is not None:
             completions.append((config.formation, former))
-        consolidator = None
+        consolidator: ConsolidationBackend | None = None
         if config.consolidation is not None:
-            consolidator = (
-                cast(
-                    ConsolidationBackend,
-                    _registered_plugin(
-                        config.consolidation, catalog, (ConsolidationBackend,), resources
-                    ),
-                )
-                if isinstance(config.consolidation, PluginConfig)
-                else _build_consolidation(config.consolidation, completions=completions)
-            )
+            if isinstance(config.consolidation, PluginConfig):
+                consolidation_plugin = _load_plugin(config.consolidation, catalog, resources)
+                if not isinstance(consolidation_plugin, ConsolidationBackend):
+                    raise _incompatible_plugin(config.consolidation)
+                consolidator = consolidation_plugin
+            else:
+                consolidator = _build_consolidation(config.consolidation, completions=completions)
             resources.append(consolidator)
-        transcriber = None
+        transcriber: SpeechBackend | TranscriptionBackend | None = None
         if config.speech is not None:
-            transcriber = (
-                cast(
-                    SpeechBackend | TranscriptionBackend,
-                    _registered_plugin(
-                        config.speech, catalog, (SpeechBackend, TranscriptionBackend), resources
-                    ),
-                )
-                if isinstance(config.speech, PluginConfig)
-                else _build_speech(config.speech)
-            )
+            if isinstance(config.speech, PluginConfig):
+                speech_plugin = _load_plugin(config.speech, catalog, resources)
+                if not isinstance(speech_plugin, (SpeechBackend, TranscriptionBackend)):
+                    raise _incompatible_plugin(config.speech)
+                transcriber = speech_plugin
+            else:
+                transcriber = _build_speech(config.speech)
             resources.append(transcriber)
-        vision = None
+        vision: VisionDescriptionBackend | None = None
         if config.vision is not None:
-            vision = (
-                cast(
-                    VisionDescriptionBackend,
-                    _registered_plugin(
-                        config.vision, catalog, (VisionDescriptionBackend,), resources
-                    ),
-                )
-                if isinstance(config.vision, PluginConfig)
-                else _build_vision(config.vision)
-            )
+            if isinstance(config.vision, PluginConfig):
+                vision_plugin = _load_plugin(config.vision, catalog, resources)
+                if not isinstance(vision_plugin, VisionDescriptionBackend):
+                    raise _incompatible_plugin(config.vision)
+                vision = vision_plugin
+            else:
+                vision = _build_vision(config.vision)
             resources.append(vision)
-        face = None
+        face: FaceBackend | None = None
         if config.face is not None:
-            face = (
-                cast(
-                    FaceBackend, _registered_plugin(config.face, catalog, (FaceBackend,), resources)
-                )
-                if isinstance(config.face, PluginConfig)
-                else _build_face(config.face)
-            )
+            if isinstance(config.face, PluginConfig):
+                face_plugin = _load_plugin(config.face, catalog, resources)
+                if not isinstance(face_plugin, FaceBackend):
+                    raise _incompatible_plugin(config.face)
+                face = face_plugin
+            else:
+                face = _build_face(config.face)
             resources.append(face)
-        reranker = None
+        reranker: RerankingBackend | None = None
         if config.reranking is not None:
-            reranker = (
-                cast(
-                    RerankingBackend,
-                    _registered_plugin(config.reranking, catalog, (RerankingBackend,), resources),
-                )
-                if isinstance(config.reranking, PluginConfig)
-                else _build_reranking(config.reranking)
-            )
+            if isinstance(config.reranking, PluginConfig):
+                reranking_plugin = _load_plugin(config.reranking, catalog, resources)
+                if not isinstance(reranking_plugin, RerankingBackend):
+                    raise _incompatible_plugin(config.reranking)
+                reranker = reranking_plugin
+            else:
+                reranker = _build_reranking(config.reranking)
             resources.append(reranker)
-        stages = tuple(
-            cast(IngestionStage, _registered_plugin(stage, catalog, (IngestionStage,), resources))
-            for stage in config.ingestion_stages
-        )
-        tools = _build_tools(config.tools, catalog, resources)
+        stages_list: list[IngestionStage] = []
+        for stage_config in config.ingestion_stages:
+            stage_plugin = _load_plugin(stage_config, catalog, resources)
+            if not isinstance(stage_plugin, IngestionStage):
+                raise _incompatible_plugin(stage_config)
+            stages_list.append(stage_plugin)
+        tools = ToolRegistry()
+        resources.append(tools)
+        for tool_config in config.tools:
+            tool_plugin = _load_plugin(tool_config, catalog, resources)
+            if not isinstance(tool_plugin, RegisteredTool):
+                raise _incompatible_plugin(tool_config)
+            tools.register(tool_plugin)
+        query_policy: QueryPolicy | None = None
+        if config.query_policy is not None:
+            query_plugin = _load_plugin(config.query_policy, catalog, resources)
+            if not isinstance(query_plugin, QueryPolicy):
+                raise _incompatible_plugin(config.query_policy)
+            query_policy = query_plugin
+        candidate_source: CandidateSource | None = None
+        if config.candidate_source is not None:
+            candidate_plugin = _load_plugin(config.candidate_source, catalog, resources)
+            if not isinstance(candidate_plugin, CandidateSource):
+                raise _incompatible_plugin(config.candidate_source)
+            candidate_source = candidate_plugin
+        ranking_policy: RankingPolicy | None = None
+        if config.ranking_policy is not None:
+            ranking_plugin = _load_plugin(config.ranking_policy, catalog, resources)
+            if not isinstance(ranking_plugin, RankingPolicy):
+                raise _incompatible_plugin(config.ranking_policy)
+            ranking_policy = ranking_plugin
+        context_selector: ContextSelector | None = None
+        if config.context_selector is not None:
+            selector_plugin = _load_plugin(config.context_selector, catalog, resources)
+            if not isinstance(selector_plugin, ContextSelector):
+                raise _incompatible_plugin(config.context_selector)
+            context_selector = selector_plugin
         plugins = MemoryPlugins(
             embedder=embedder,
             answerer=answerer,
@@ -563,41 +606,20 @@ def build_memory_composition(  # noqa: C901 - each optional capability is wired 
             former=former,
             consolidator=consolidator,
             reranker=reranker,
-            query_policy=None
-            if config.query_policy is None
-            else cast(
-                QueryPolicy,
-                _registered_plugin(config.query_policy, catalog, (QueryPolicy,), resources),
-            ),
-            candidate_source=None
-            if config.candidate_source is None
-            else cast(
-                CandidateSource,
-                _registered_plugin(config.candidate_source, catalog, (CandidateSource,), resources),
-            ),
-            ranking_policy=None
-            if config.ranking_policy is None
-            else cast(
-                RankingPolicy,
-                _registered_plugin(config.ranking_policy, catalog, (RankingPolicy,), resources),
-            ),
-            context_selector=None
-            if config.context_selector is None
-            else cast(
-                ContextSelector,
-                _registered_plugin(config.context_selector, catalog, (ContextSelector,), resources),
-            ),
-            ingestion_stages=stages,
+            query_policy=query_policy,
+            candidate_source=candidate_source,
+            ranking_policy=ranking_policy,
+            context_selector=context_selector,
+            ingestion_stages=tuple(stages_list),
             tools=tools,
         )
         cleanup.pop_all()
     return MemoryComposition(config.data_dir, plugins, settings)
 
 
-def _registered_plugin(
+def _load_plugin(
     config: PluginConfig,
     factories: Mapping[str, PluginFactory],
-    expected: tuple[type[object], ...],
     resources: list[Closable],
 ) -> Closable:
     factory = factories.get(config.factory)
@@ -605,26 +627,11 @@ def _registered_plugin(
         raise ValidationError(f"unregistered plugin factory: {config.factory}")
     plugin = factory(config.options)
     resources.append(plugin)
-    if not isinstance(plugin, expected):
-        raise ValidationError(
-            f"plugin factory {config.factory} returned an incompatible capability"
-        )
     return plugin
 
 
-def _build_tools(
-    configs: tuple[PluginConfig, ...],
-    factories: Mapping[str, PluginFactory],
-    resources: list[Closable],
-) -> ToolRegistry:
-    registry = ToolRegistry()
-    resources.append(registry)
-    for config in configs:
-        tool = cast(
-            RegisteredTool, _registered_plugin(config, factories, (RegisteredTool,), resources)
-        )
-        registry.register(tool)
-    return registry
+def _incompatible_plugin(config: PluginConfig) -> ValidationError:
+    return ValidationError(f"plugin factory {config.factory} returned an incompatible capability")
 
 
 def _builtin_factories(
@@ -725,7 +732,7 @@ def _build_reranking(config: RerankingProviderConfig) -> RerankingBackend:
 
 
 def _with_retention(config: MemorySpec) -> MemorySettings:
-    """Fold the top-level `retention` section into the settings `Memory` is constructed from."""
+    """Fold the top-level retention section into the settings Memory is constructed from."""
     if config.retention is None:
         return config.settings
     if config.settings.retention != RetentionPolicy():
@@ -836,18 +843,18 @@ def _build_native_generation(config: OpenAIGenerationConfig) -> GenerationBacken
     values = _completion_values(config)
     for name, value, default in (
         ("generation_request_max_bytes", config.request_max_bytes, None),
-        ("generation_answer_format", config.answer_format, "text"),
-        ("generation_image_source_prose", config.image_source_prose, "include"),
+        ("generation_answer_format", config.answer_format, DEFAULT_GENERATION_ANSWER_FORMAT),
+        ("generation_image_source_prose", config.image_source_prose, DEFAULT_IMAGE_SOURCE_PROSE),
         ("generation_evidence_operation_tool", config.evidence_operation_tool, False),
-        ("generation_source_metadata_key", config.source_metadata_key, "source_id"),
-        ("generation_answer_style", config.answer_style, "default"),
-        ("generation_media_max_tokens", config.media_max_tokens, 8192),
+        ("generation_source_metadata_key", config.source_metadata_key, DEFAULT_SOURCE_METADATA_KEY),
+        ("generation_answer_style", config.answer_style, DEFAULT_GENERATION_ANSWER_STYLE),
+        ("generation_media_max_tokens", config.media_max_tokens, DEFAULT_MEDIA_MAX_TOKENS),
     ):
         if value != default:
             values[name] = value
     if config.image_max_pixels is not None:
         values["image_max_pixels"] = config.image_max_pixels
-    if config.video_limit != 8:
+    if config.video_limit != DEFAULT_VIDEO_LIMIT:
         values["generation_video_limit"] = config.video_limit
     if config.min_video_seconds is not None:
         values["generation_min_video_seconds"] = config.min_video_seconds
@@ -869,7 +876,7 @@ def _build_native_generation(config: OpenAIGenerationConfig) -> GenerationBacken
 
 
 def _build_formation(config: OpenAIFormationConfig) -> FormationBackend:
-    # The bundled adapter reads the generation controls for `form`; `video_limit` is answer-only.
+    # The bundled adapter reads the generation controls for form; video_limit is answer-only.
     values = _completion_values(config)
     if config.image_max_pixels is not None:
         values["image_max_pixels"] = config.image_max_pixels
@@ -877,9 +884,9 @@ def _build_formation(config: OpenAIFormationConfig) -> FormationBackend:
 
 
 def _build_vision(config: OpenAIVisionConfig) -> VisionDescriptionBackend:
-    # `describe` reads the same generation controls; its capability set is the visual one.
+    # describe reads the same generation controls; its capability set is the visual one.
     values = _completion_values(config)
-    if config.video_frames != 4:
+    if config.video_frames != DEFAULT_VISION_VIDEO_FRAMES:
         values["vision_video_frames"] = config.video_frames
     if config.image_max_pixels is not None:
         values["image_max_pixels"] = config.image_max_pixels
@@ -893,7 +900,7 @@ def _build_consolidation(
 ) -> ConsolidationBackend:
     """Build the consolidation adapter, reusing an identical generation or formation client.
 
-    `OpenAICompletion` implements every reasoning protocol on one generation client, so a slot that
+    OpenAICompletion implements every reasoning protocol on one generation client, so a slot that
     declares exactly the same completion values wants that same object, not a second HTTP client
     and connection pool against the same endpoint.
     """

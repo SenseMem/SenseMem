@@ -139,7 +139,6 @@ class IdentityAgent:
     def step(
         self, input: ModelInput, *, tools: Sequence[ToolDefinition], history: Sequence[AgentTurn]
     ) -> AgentStep:
-        del input, tools
         if not history:
             return AgentStep(
                 calls=(

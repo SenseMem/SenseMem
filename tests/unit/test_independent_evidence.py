@@ -27,6 +27,7 @@ from sensemem import (
     ValidationError,
 )
 from sensemem.infrastructure.local import LocalStore
+from sensemem.infrastructure.local.store import _corroboration
 
 
 def _open(path: Path, independent: bool = True) -> Memory:
@@ -250,7 +251,6 @@ def test_truncated_ancestry_does_not_fabricate_support(
     caplog: pytest.LogCaptureFixture,
     limit_name: str,
 ) -> None:
-    from sensemem.infrastructure.local.store import _corroboration
 
     monkeypatch.setattr(_corroboration, limit_name, 3)
     with _open(tmp_path) as memory:

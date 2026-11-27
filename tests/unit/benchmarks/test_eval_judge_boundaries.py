@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import httpx as download_httpx
@@ -15,7 +16,7 @@ from opentelemetry import trace
 
 from sensemem.benchmarks import eval_judge, eval_results
 from sensemem.benchmarks.eval_cache import ResponseCache
-from sensemem.benchmarks.eval_config import _JudgeConfig
+from sensemem.benchmarks.eval_config import JudgeConfig
 from sensemem.benchmarks.eval_results import SampleResult
 from sensemem.benchmarks.official_scorers import finalize_scores, judge_plan
 
@@ -42,7 +43,12 @@ def _sample() -> SampleResult:
     )
 
 
-async def _judge(client: AsyncOpenAI, cache: ResponseCache | None = None) -> SampleResult:
+async def _judge(
+    client: AsyncOpenAI,
+    cache: ResponseCache | None = None,
+    *,
+    extra_body: dict[str, object] | None = None,
+) -> SampleResult:
     plan = judge_plan(
         "m3-bench-robot",
         question="Is the door open?",
@@ -51,13 +57,15 @@ async def _judge(client: AsyncOpenAI, cache: ResponseCache | None = None) -> Sam
         metadata={},
     )
     assert plan is not None
+    if extra_body is not None:
+        plan = replace(plan, extra_body=extra_body)
     return await eval_judge._judge_sample(
         _sample(),
         plan,
         client=client,
         cache=cache,
         semaphore=asyncio.Semaphore(1),
-        config=_JudgeConfig("qwen3", "http://judge.invalid/v1"),
+        config=JudgeConfig("judge-model", "http://judge.invalid/v1"),
         log_samples=False,
         tracer=trace.get_tracer(__name__),
     )
@@ -133,7 +141,10 @@ async def test_exhausted_provider_failure_still_scores_zero(
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(fail)),
     ) as client:
-        result = await _judge(client)
+        result = await _judge(
+            client,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
     assert result.error_code == "JudgeError"
     assert result.score == 0.0
     assert result.metrics["retrieval_recall@5"] == 1.0
@@ -209,7 +220,10 @@ async def test_raw_request_transport_failure_scores_zero(
 
     async with AsyncOpenAI(api_key="test") as client:
         monkeypatch.setattr(client.chat.completions, "create", fail)
-        result = await _judge(client)
+        result = await _judge(
+            client,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
     assert result.error_code == "JudgeError"
     assert result.score == 0.0
     assert result.scorer_error == f"{failure.__name__}: request transport failed"
@@ -251,7 +265,10 @@ async def test_provider_fallback_and_transient_retry_preserve_answer(
         max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(reply)),
     ) as client:
-        result = await _judge(client)
+        result = await _judge(
+            client,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
     assert result.score == 1.0
     assert result.error_code is None
     assert len(requests) == 2
