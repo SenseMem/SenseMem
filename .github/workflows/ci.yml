@@ -142,6 +142,8 @@ jobs:
         with:
           args: >-
             --no-progress
+            --host-concurrency 1
+            --host-request-interval 500ms
             --root-dir "${{ github.workspace }}"
             --exclude-path 'docs/research/'
             './*.md'
