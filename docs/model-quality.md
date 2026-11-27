@@ -56,10 +56,10 @@ Focused pytest integration suites verify individual capabilities when enabled by
 
 ## Configure CI
 
-The [model-quality workflow](../.github/workflows/model-quality.yml) runs the answering and workflow gates on pull requests that touch product code, dependencies, integration fixtures, or the gates.
+The [model-quality workflow](../.github/workflows/model-quality.yml) runs the answering and workflow gates on pull requests that touch product code, dependencies, integration fixtures, or the gates, and on weekly schedules when `MODEL_QUALITY_ENABLED=true` is set.
 
 1. Set the `MODEL_QUALITY_API_KEY` repository secret and `MODEL_QUALITY_MODEL` repository variable.
 2. Optionally set `MODEL_QUALITY_BASE_URL` and `MODEL_QUALITY_RESPONSE_FORMAT` for a compatible endpoint.
-3. Optionally set `MODEL_QUALITY_ENABLED=true` to enable scheduled weekly runs.
+3. Set the `MODEL_QUALITY_ENABLED` repository variable to `true` to enable pull-request and scheduled weekly runs.
 
 Manual workflow dispatches accept model, response-format, and repeat count inputs. Fork pull requests do not receive repository secrets and require a maintainer-triggered run.
